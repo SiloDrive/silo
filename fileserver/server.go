@@ -46,6 +46,7 @@ import (
 
 var dataDir, absDataDir string
 var configFile string
+var bindAddr string
 var logFile, absLogFile string
 var pidFilePath string
 var logFp *os.File
@@ -334,9 +335,8 @@ func removePidfile(pid_file_path string) error {
 // which calls os.Exit directly — that behavior is unchanged from the previous
 // standalone binary.
 func Run(args []string) error {
-	fs := flag.NewFlagSet("silo serve", flag.ContinueOnError)
-	fs.StringVar(&configFile, "C", "", "path to config file (optional)")
-	fs.StringVar(&dataDir, "d", "", "data directory (default: $SILO_DATA_DIR or ~/.local/share/silo)")
+	fs := commandFlags("serve")
+	fs.StringVar(&bindAddr, "b", "", "bind address (default: $SILO_HOST or 127.0.0.1)")
 	fs.StringVar(&logFile, "l", "", "log file path (default: stdout)")
 	fs.StringVar(&pidFilePath, "P", "", "pid file path")
 	fs.BoolVar(&debugLog, "debug", false, "log every HTTP request (method, path, status, duration)")
@@ -384,6 +384,12 @@ func Run(args []string) error {
 	}
 
 	option.LoadFileServerOptions(configFile)
+	// After the options, so the flag beats both SILO_HOST and the config file.
+	// Same precedence as -d over SILO_DATA_DIR: what you typed on this command
+	// line wins over what the environment happens to be carrying.
+	if bindAddr != "" {
+		option.Host = bindAddr
+	}
 	loadDatabases()
 
 	level, err := log.ParseLevel(option.LogLevel)
@@ -475,15 +481,31 @@ func Run(args []string) error {
 		// platform shipped.
 		httpServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
+	// Bind before reporting, and before backgrounding the serve loop. A
+	// listener opened inside the goroutine could only report its failure by
+	// logging, and Run would then block on shutdownDone forever — a process
+	// that is alive, says it is listening, and serves nothing. Under systemd
+	// that unit stays "active", so Restart=on-failure never fires. Binding
+	// here turns a bad address or a taken port into a returned error, which is
+	// the difference between a typo in -b costing a second and costing an
+	// afternoon.
+	ln, err := net.Listen("tcp", httpServer.Addr)
+	if err != nil {
+		return fmt.Errorf("failed to bind %s: %v", httpServer.Addr, err)
+	}
+
+	// Reported as configured rather than as ln.Addr(), which renders a 0.0.0.0
+	// bind as "[::]" — accurate, since the wildcard listener is dual-stack,
+	// but not what anyone typed, and it would disagree with the warning below.
 	log.Printf("Silo server listening on %s://%s:%d", scheme, option.Host, option.Port)
 	warnIfExposedWithoutTLS(useTLS)
 
 	go func() {
 		var err error
 		if useTLS {
-			err = httpServer.ListenAndServeTLS(tlsCert, tlsKey)
+			err = httpServer.ServeTLS(ln, tlsCert, tlsKey)
 		} else {
-			err = httpServer.ListenAndServe()
+			err = httpServer.Serve(ln)
 		}
 		if err != nil && err != http.ErrServerClosed {
 			log.Errorf("File server exiting: %v", err)

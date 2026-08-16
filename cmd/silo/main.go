@@ -17,7 +17,7 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.3.32"
+var Version = "0.3.33"
 
 func main() {
 	args := os.Args[1:]
@@ -88,7 +88,7 @@ func printUsage(w *os.File) {
 	_, _ = fmt.Fprint(w, `silo — Seafile-compatible server and client in one binary
 
 Usage:
-  silo serve [flags]              Run the file server daemon
+  silo serve [-b addr] [flags]    Run the file server daemon
   silo gc [-delete]               Reclaim disk from deleted libraries
   silo backup-db <dir>            Snapshot the databases (server may be running)
   silo token list <email>         Show a user's sync and API tokens

@@ -207,10 +207,15 @@ Env vars take precedence over `seafile.conf`, so the same binary can be pointed 
 | Flag | Purpose |
 |---|---|
 | `-d <dir>` | Data directory (default: `$SILO_DATA_DIR` or `~/.local/share/silo`) |
+| `-b <addr>` | Bind address, `serve` only (default: `$SILO_HOST` or `127.0.0.1`) |
 | `-C <file>` | Path to `seafile.conf` (optional; only needed to override compiled defaults) |
 | `-l <file>` | Log file path |
 | `-P <file>` | PID file path |
 | `-debug` | Log every HTTP request |
+
+Flags beat environment variables, which beat `seafile.conf`, which beats the
+compiled defaults. So `-b` overrides `SILO_HOST` for one invocation without
+disturbing whatever the service normally runs with.
 
 ## Backups
 
