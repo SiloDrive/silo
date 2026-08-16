@@ -414,6 +414,12 @@ func Run(args []string) error {
 	scheme := "http"
 	if tlsCert != "" && tlsKey != "" {
 		scheme = "https"
+		// Pinned rather than left to the default so that the floor is a
+		// property of this server and not of whichever Go version built it.
+		// 1.2 rather than 1.3 because Silo exists to keep existing Seafile
+		// clients working, and their TLS comes from whatever OpenSSL the
+		// platform shipped.
+		httpServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	log.Printf("Silo server listening on %s://%s:%d", scheme, option.Host, option.Port)
 	warnIfExposedWithoutTLS(scheme)

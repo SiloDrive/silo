@@ -5,12 +5,19 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -ldflags "-X main.Version=${VERSION}" -o /silo ./cmd/silo
+# An empty directory to become /data. Docker seeds a fresh named volume from
+# the image's mountpoint, ownership included, so /data has to exist and be
+# owned by the runtime uid before the volume is created — otherwise the
+# volume comes up root-owned and the nonroot process cannot write it.
+# distroless has no shell, so it is built here and copied.
+RUN mkdir /data-empty
 
 # :nonroot runs as uid/gid 65532 instead of root. A bind-mounted data
 # directory must be readable and writable by that uid:
 #   chown -R 65532:65532 /path/to/silo-data
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /silo /usr/local/bin/silo
+COPY --from=build --chown=65532:65532 /data-empty /data
 ENV SILO_DATA_DIR=/data
 # The binary defaults to loopback, which inside a container means the
 # published port reaches nothing. A container's network namespace is the
