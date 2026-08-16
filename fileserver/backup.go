@@ -134,7 +134,7 @@ backup is in progress.
 func rejectTrailingFlags(cmd string, rest []string) error {
 	for _, arg := range rest {
 		if len(arg) > 1 && arg[0] == '-' {
-			return fmt.Errorf("flag %s must come before the arguments: silo %s %s ...", arg, cmd, arg)
+			return fmt.Errorf("flag %s must come before the arguments, as in: silo %s %s <args>", arg, cmd, arg)
 		}
 	}
 	return nil
