@@ -161,6 +161,13 @@ func loadDatabases() {
 	} else {
 		loadMySQLDatabases(dbOpt)
 	}
+
+	// Runs for both engines: CreateSeafileTables only executes on the SQLite
+	// path, but a MySQL deployment with an externally-provisioned schema needs
+	// the added columns just as much.
+	if err := dbutil.MigrateSeafileTables(seafilePair.Write, option.APITokenTTL); err != nil {
+		log.Fatalf("Failed to migrate seafile database: %v", err)
+	}
 }
 
 func loadSQLiteDatabases() {
@@ -351,6 +358,7 @@ func Run(args []string) error {
 	authmgr.Init(ccnetPair.Read, ccnetPair.Write)
 	api.Init(seafilePair.Read, seafilePair.Write)
 	apitokenstore.Init(seafilePair.Read, seafilePair.Write)
+	apitokenstore.StartCleanup()
 
 	// Create admin user from env vars if set
 	adminEmail := option.EnvWithFallback("SILO_ADMIN_EMAIL", "SEAFILE_ADMIN_EMAIL")
@@ -570,6 +578,7 @@ func newHTTPRouter() *mux.Router {
 	api2Router := r.PathPrefix("/api2").Subrouter()
 	api2Router.Use(middleware.RequireAPIToken)
 	api2Router.HandleFunc("/auth/ping/", api.SeaDriveAuthPingHandler).Methods("GET")
+	api2Router.HandleFunc("/auth/logout/", api.SeaDriveLogoutHandler).Methods("POST")
 	api2Router.HandleFunc("/account/info/", api.SeaDriveAccountInfoHandler).Methods("GET")
 	api2Router.HandleFunc("/server-info/", api.SeaDriveServerInfoHandler).Methods("GET")
 	api2Router.HandleFunc("/repos/", api.SeaDriveReposHandler).Methods("GET")

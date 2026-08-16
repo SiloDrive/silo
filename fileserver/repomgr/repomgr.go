@@ -815,20 +815,50 @@ func SetLastGCID(repoID, clientID, gcID string) error {
 
 // GenerateRepoToken creates a new per-repo sync token for the given user.
 // Token format matches the C implementation: SHA1(UUID) → 40-char hex string.
+//
+// A new token is minted on every call rather than reusing an existing one for
+// the same (repo, user). That is intentional: each client install gets its own
+// token, so revoking one device does not stop the others syncing. Upstream
+// Seahub's get_repo_token_nonnull collapses these to one token per user per
+// repo; Silo does not, because the device identity that makes per-device
+// revocation useful (client_id, bound to the token at first permission-check)
+// is not available here at mint time.
+//
+// Sync tokens deliberately have no expiry. Seafile and SeaDrive persist them
+// in local config and treat them as durable, so ageing them out would stop
+// sync silently at the TTL. Revocation is the intended way to invalidate one.
 func GenerateRepoToken(repoID, email string) (string, error) {
 	u := uuid.New().String()
 	h := sha1.New()
 	h.Write([]byte(u))
 	token := hex.EncodeToString(h.Sum(nil))
 
-	sqlStr := "INSERT INTO RepoUserToken (repo_id, email, token) VALUES (?, ?, ?)"
+	sqlStr := "INSERT INTO RepoUserToken (repo_id, email, token, ctime) VALUES (?, ?, ?, ?)"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, email, token); err != nil {
+	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, email, token, time.Now().Unix()); err != nil {
 		return "", fmt.Errorf("failed to insert repo token: %v", err)
 	}
 
 	return token, nil
+}
+
+// DeleteRepoTokensByEmail revokes every sync token a user holds, across all
+// repos, stopping all of their devices from syncing. Returns the count.
+func DeleteRepoTokensByEmail(email string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+
+	res, err := seafileWriteDB.ExecContext(ctx,
+		"DELETE FROM RepoUserToken WHERE email = ?", email)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete repo tokens: %v", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return n, nil
 }
 
 // DeleteRepoToken removes a specific sync token.

@@ -75,6 +75,17 @@ var (
 	// DB default timeout
 	DBOpTimeout time.Duration
 
+	// APITokenTTL bounds how long an /api2/ API token stays valid without
+	// being used. The expiry slides on use, so an actively syncing client is
+	// never logged out; only an idle — or leaked and unused — token ages out.
+	//
+	// Configurable because the failure mode on the client side is not fully
+	// known: a client that does not re-authenticate on 401 would stop working
+	// at the TTL, and an operator who hits that needs a way to raise it
+	// without a rebuild. Sync tokens (RepoUserToken) deliberately have no
+	// equivalent — Seafile clients persist those and treat them as durable.
+	APITokenTTL time.Duration
+
 	// database — use dbutil.DBEngine for portable SQL helpers
 	DBType string
 
@@ -128,6 +139,7 @@ func initDefaultOptions() {
 	RedisMaxConn = 100
 	RedisTimeout = 1 * time.Second
 	MaxIndexingFiles = 10
+	APITokenTTL = 30 * 24 * time.Hour
 }
 
 // LoadFileServerOptions loads seafile.conf from the given path. An empty
@@ -205,6 +217,17 @@ func LoadFileServerOptions(configFile string) {
 
 	if lvl := os.Getenv("SILO_LOG_LEVEL"); lvl != "" {
 		LogLevel = lvl
+	}
+
+	// Accepts a Go duration ("720h", "30m"). An unparseable or non-positive
+	// value keeps the default rather than disabling expiry, so a typo cannot
+	// silently turn API tokens back into permanent credentials.
+	if v := os.Getenv("SILO_API_TOKEN_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			APITokenTTL = d
+		} else {
+			log.Warnf("Ignoring invalid SILO_API_TOKEN_TTL %q, using %s", v, APITokenTTL)
+		}
 	}
 }
 
