@@ -3,6 +3,7 @@ package silod
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
@@ -611,14 +612,25 @@ func RecoverWrapper(f func()) {
 	f()
 }
 
+// profilingAuthorized reports whether r carries the configured profiling
+// password. The comparison is constant-time so response timing cannot reveal
+// how much of a guess was correct. An empty configured password is never
+// valid: option.go already fatals when profile_password is absent, but a
+// present-and-empty value would otherwise leave pprof open to everyone.
+func profilingAuthorized(r *http.Request) bool {
+	if !option.EnableProfiling || option.ProfilePassword == "" {
+		return false
+	}
+	password := r.URL.Query().Get("password")
+	return subtle.ConstantTimeCompare([]byte(password), []byte(option.ProfilePassword)) == 1
+}
+
 type profileHandler struct {
 	pHandler http.Handler
 }
 
 func (p *profileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	queries := r.URL.Query()
-	password := queries.Get("password")
-	if !option.EnableProfiling || password != option.ProfilePassword {
+	if !profilingAuthorized(r) {
 		http.Error(w, "", http.StatusUnauthorized)
 		return
 	}
@@ -630,9 +642,7 @@ type traceHandler struct {
 }
 
 func (p *traceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	queries := r.URL.Query()
-	password := queries.Get("password")
-	if !option.EnableProfiling || password != option.ProfilePassword {
+	if !profilingAuthorized(r) {
 		http.Error(w, "", http.StatusUnauthorized)
 		return
 	}

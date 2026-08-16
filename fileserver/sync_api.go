@@ -1317,13 +1317,15 @@ func validateToken(r *http.Request, repoID string, skipCache bool) (string, *app
 
 	email, err := repomgr.GetEmailByToken(repoID, token)
 	if err != nil {
-		log.Errorf("Failed to get email by token %s: %v", token, err)
+		// The token is a bearer credential — log the repo instead, which is
+		// the useful correlation key and not a secret.
+		log.Errorf("Failed to get email by token for repo %s: %v", repoID, err)
 		tokenCache.Delete(token)
 		return email, &appError{err, "", http.StatusInternalServerError}
 	}
 	if email == "" {
 		tokenCache.Delete(token)
-		msg := fmt.Sprintf("Failed to get email by token %s", token)
+		msg := "Invalid token"
 		return email, &appError{nil, msg, http.StatusForbidden}
 	}
 
