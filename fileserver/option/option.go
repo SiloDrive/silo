@@ -17,6 +17,15 @@ import (
 // InfiniteQuota indicates that the quota is unlimited.
 const InfiniteQuota = -2
 
+// MinAPITokenTTL is the shortest API token lifetime an operator may configure.
+// It is a floor on operator input, not on the code: dbutil separately refuses a
+// non-positive TTL, which catches the different failure of a caller reaching the
+// migration before options are loaded.
+//
+// An hour is already far shorter than any real deployment wants for a sliding
+// credential; anything below it is a typo rather than an intent.
+const MinAPITokenTTL = time.Hour
+
 // Storage unit.
 const (
 	KB = 1000
@@ -219,14 +228,31 @@ func LoadFileServerOptions(configFile string) {
 		LogLevel = lvl
 	}
 
-	// Accepts a Go duration ("720h", "30m"). An unparseable or non-positive
-	// value keeps the default rather than disabling expiry, so a typo cannot
-	// silently turn API tokens back into permanent credentials.
+	// Accepts a Go duration ("720h", "30m"). An unparseable value keeps the
+	// default rather than disabling expiry, so a typo cannot silently turn API
+	// tokens back into permanent credentials.
 	if v := os.Getenv("SILO_API_TOKEN_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		d, err := time.ParseDuration(v)
+		switch {
+		case err != nil:
+			log.Warnf("Ignoring unparseable SILO_API_TOKEN_TTL %q, using %s", v, APITokenTTL)
+		case d < MinAPITokenTTL:
+			// Rejected rather than clamped, because the difference between a
+			// deliberate short TTL and a typo is not knowable here and the
+			// consequence of guessing wrong is not recoverable. The migration
+			// stamps every pre-existing token with expires_at = now + TTL, and
+			// backfills only rows where expires_at IS NULL — so once a too-short
+			// TTL has stamped them, correcting the variable and restarting does
+			// not undo it. Every token stays expired, with nothing in the logs
+			// connecting the symptom to the cause.
+			//
+			// The realistic typo this catches is "30m" for an intended "30 days",
+			// which is 720h.
+			log.Warnf("Ignoring SILO_API_TOKEN_TTL %q: below the %s minimum. Using %s. "+
+				"A shorter value would expire existing tokens irrecoverably.",
+				v, MinAPITokenTTL, APITokenTTL)
+		default:
 			APITokenTTL = d
-		} else {
-			log.Warnf("Ignoring invalid SILO_API_TOKEN_TTL %q, using %s", v, APITokenTTL)
 		}
 	}
 }
