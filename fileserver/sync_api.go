@@ -544,7 +544,15 @@ func recvFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 			return &appError{nil, msg, http.StatusBadRequest}
 		}
 
-		objBuffer := bytes.NewBuffer(fsBuf[44 : 44+objSize])
+		objData := fsBuf[44 : 44+objSize]
+		if option.VerifyFSObjectHashes {
+			if err := fsmgr.VerifyObjectID(objID, objData); err != nil {
+				log.Warnf("rejecting fs object for repo %s: %v", repoID, err)
+				return &appError{nil, "Fs object does not match its id", http.StatusBadRequest}
+			}
+		}
+
+		objBuffer := bytes.NewBuffer(objData)
 		if err := fsmgr.WriteRaw(storeID, objID, objBuffer); err != nil {
 			err := fmt.Errorf("failed to write fs obj %s:%s : %v", storeID, objID, err)
 			return &appError{err, "", http.StatusInternalServerError}
@@ -1051,6 +1059,15 @@ func putCommitCB(rsp http.ResponseWriter, r *http.Request) *appError {
 
 	if commit.RepoID != repoID {
 		msg := "The repo id in commit does not match current repo id"
+		return &appError{nil, msg, http.StatusBadRequest}
+	}
+
+	// The commit is stored under the id in the URL while everything that
+	// reads it goes by the id in the body. Letting the two disagree files a
+	// commit under a name that does not describe it, permanently: the branch
+	// head can then point at an id whose object says it is something else.
+	if commit.CommitID != commitID {
+		msg := "The commit id in the request does not match the commit"
 		return &appError{nil, msg, http.StatusBadRequest}
 	}
 

@@ -202,3 +202,60 @@ func TestUncompressAcceptsObjectAtTheLimit(t *testing.T) {
 		t.Errorf("uncompress returned %d bytes, want %d", len(got), len(payload))
 	}
 }
+
+// An fs object's id is the SHA-1 of its uncompressed JSON, while the wire and
+// the store both carry the compressed form. recvFSCB stored whatever a client
+// sent under whatever id it named, and SaveSeafile skips an id that already
+// exists — so wrong bytes under a right id are permanent, and served to
+// everyone sharing the store.
+func TestVerifyObjectID(t *testing.T) {
+	seafile, err := NewSeafile(1, 100, []string{blkID, subDirID})
+	if err != nil {
+		t.Fatalf("failed to build test object: %v", err)
+	}
+	compressed, err := compress(seafile.data)
+	if err != nil {
+		t.Fatalf("failed to compress: %v", err)
+	}
+
+	if err := VerifyObjectID(seafile.FileID, compressed); err != nil {
+		t.Errorf("VerifyObjectID rejected an object that matches its id: %v", err)
+	}
+
+	// Same content, someone else's id.
+	other := "0401fc662e3bc87a41f299a907c056aaf8322a27"
+	if other == seafile.FileID {
+		t.Fatal("test ids collided")
+	}
+	if err := VerifyObjectID(other, compressed); err == nil {
+		t.Error("VerifyObjectID accepted content stored under the wrong id")
+	}
+
+	// Content that is not a valid zlib stream at all.
+	if err := VerifyObjectID(seafile.FileID, []byte("not compressed")); err == nil {
+		t.Error("VerifyObjectID accepted data that is not a zlib stream")
+	}
+	if err := VerifyObjectID(seafile.FileID, nil); err == nil {
+		t.Error("VerifyObjectID accepted empty data")
+	}
+}
+
+// The verification path must not become a way in for the bomb it exists to
+// reject — it decompresses, so it has to use the same bounded reader.
+func TestVerifyObjectIDIsBounded(t *testing.T) {
+	var compressed bytes.Buffer
+	w := zlib.NewWriter(&compressed)
+	zeros := make([]byte, 1<<20)
+	for written := 0; written <= MaxObjectSize; written += len(zeros) {
+		if _, err := w.Write(zeros); err != nil {
+			t.Fatalf("failed to build test payload: %v", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("failed to build test payload: %v", err)
+	}
+
+	if err := VerifyObjectID("0401fc662e3bc87a41f299a907c056aaf8322a27", compressed.Bytes()); err == nil {
+		t.Error("VerifyObjectID expanded a payload past MaxObjectSize")
+	}
+}

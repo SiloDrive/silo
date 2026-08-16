@@ -18,8 +18,9 @@ type ObjectStore struct {
 type storageBackend interface {
 	// Read an object from backend and write the contents into w.
 	read(repoID string, objID string, w io.Writer) (err error)
-	// Write the contents from r to the object.
-	write(repoID string, objID string, r io.Reader, sync bool) (err error)
+	// Write the contents from r to the object. When verify is set, the
+	// object is published only if its content hashes to objID.
+	write(repoID string, objID string, r io.Reader, sync, verify bool) (err error)
 	// exists checks whether an object exists.
 	exists(repoID string, objID string) (res bool, err error)
 	// stat calculates an object's size
@@ -42,7 +43,22 @@ func (s *ObjectStore) Read(repoID string, objID string, w io.Writer) (err error)
 
 // Write data to storage backends.
 func (s *ObjectStore) Write(repoID string, objID string, r io.Reader, sync bool) (err error) {
-	return s.backend.write(repoID, objID, r, sync)
+	return s.backend.write(repoID, objID, r, sync, false)
+}
+
+// WriteVerified writes an object and publishes it only if its content hashes
+// to objID.
+//
+// For blocks — the only object type whose id is the SHA-1 of exactly the bytes
+// stored — this is the invariant of the store itself, so it is enforced here
+// rather than at each caller. Commit and fs ids are computed over other
+// representations and cannot use this.
+//
+// The check runs before the rename, not after the write, which matters: the
+// object may already exist with the correct content, and a verify-then-delete
+// would let one bad upload destroy a good block.
+func (s *ObjectStore) WriteVerified(repoID string, objID string, r io.Reader, sync bool) (err error) {
+	return s.backend.write(repoID, objID, r, sync, true)
 }
 
 // Check whether object exists.

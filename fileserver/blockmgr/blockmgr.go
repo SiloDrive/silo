@@ -25,9 +25,19 @@ func Read(repoID string, blockID string, w io.Writer) error {
 	return nil
 }
 
-// Write writes block to storage backend.
+// Write writes block to storage backend, refusing to publish content that
+// does not hash to blockID.
+//
+// A block id is the SHA-1 of exactly the bytes stored, so the check is
+// unconditional and costs one pass of hashing over data already being copied.
+// It is not configurable: a wrong-bytes-under-a-right-id write is permanent —
+// every later writer of that id skips it as already present, and reads serve
+// the wrong content to everyone sharing the store, virtual repos included.
+// The sync ingest path (putSendBlockCB) wrote whatever a client sent under
+// whatever id it named; the local upload path already hashed, and now cannot
+// drift from this.
 func Write(repoID string, blockID string, r io.Reader) error {
-	err := store.Write(repoID, blockID, r, option.SyncObjectWrites)
+	err := store.WriteVerified(repoID, blockID, r, option.SyncObjectWrites)
 	if err != nil {
 		return err
 	}

@@ -128,6 +128,23 @@ var (
 	// equivalent — Seafile clients persist those and treat them as durable.
 	APITokenTTL time.Duration
 
+	// VerifyFSObjectHashes checks that an uploaded fs object hashes to the id
+	// it was sent under, before it is stored.
+	//
+	// Only fs objects need an option. A block id is the SHA-1 of exactly the
+	// bytes stored, so that check is free and unconditional; a commit is
+	// checked by comparing two ids already in hand. An fs object's id is the
+	// SHA-1 of its uncompressed JSON while the stored form is compressed, so
+	// verifying costs an inflate per object — the one case where an operator
+	// on slow hardware might reasonably decline.
+	//
+	// On by default, for the same reason object writes are fsynced by
+	// default: what it prevents is silent, permanent and shared. An object
+	// stored under the wrong id is never rewritten, because every later
+	// writer sees the id already present, and it is served to everyone using
+	// that store.
+	VerifyFSObjectHashes = true
+
 	// TLSCertFile and TLSKeyFile, when both are set, make the server speak
 	// HTTPS directly. Left empty, it speaks plaintext and expects a TLS
 	// reverse proxy in front of it — every credential Silo uses is a bearer
@@ -292,6 +309,13 @@ func LoadFileServerOptions(configFile string) {
 		// One without the other silently means no TLS, which is exactly the
 		// mistake worth failing loudly on.
 		log.Fatal("SILO_TLS_CERT and SILO_TLS_KEY must be set together.")
+	}
+
+	VerifyFSObjectHashes = true
+	if v := os.Getenv("SILO_VERIFY_FS_OBJECT_HASHES"); v == "false" || v == "0" {
+		VerifyFSObjectHashes = false
+		log.Warn("SILO_VERIFY_FS_OBJECT_HASHES is off: an fs object stored under " +
+			"the wrong id will not be detected, and cannot be repaired afterwards.")
 	}
 
 	// Durability of object writes. Opt-out only — an operator has to say so

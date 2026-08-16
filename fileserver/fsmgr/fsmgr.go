@@ -592,6 +592,27 @@ func (seafdir *SeafDir) FromData(p []byte, reader io.ReadCloser) error {
 	return nil
 }
 
+// VerifyObjectID checks that a compressed fs object is the one its id names.
+//
+// Unlike a block, whose id is the SHA-1 of the bytes stored, an fs object's id
+// is the SHA-1 of its *uncompressed* JSON while the wire and the store both
+// carry the compressed form — so verifying one costs an inflate. That is why
+// this is behind option.VerifyFSObjectHashes rather than unconditional.
+//
+// It goes through the same bounded decompression as every other read, so a
+// zlib bomb cannot ride in through the check that exists to reject bad data.
+func VerifyObjectID(objID string, compressed []byte) error {
+	data, err := uncompress(compressed, nil)
+	if err != nil {
+		return fmt.Errorf("failed to decompress fs object %s: %v", objID, err)
+	}
+	checkSum := sha1.Sum(data)
+	if got := hex.EncodeToString(checkSum[:]); got != objID {
+		return fmt.Errorf("fs object %s hashes to %s: content does not match its id", objID, got)
+	}
+	return nil
+}
+
 // ReadRaw reads data in binary format from storage backend.
 func ReadRaw(repoID string, objID string, w io.Writer) error {
 	err := store.Read(repoID, objID, w)

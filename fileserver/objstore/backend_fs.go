@@ -2,7 +2,10 @@
 package objstore
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path"
@@ -74,7 +77,7 @@ func (b *fsBackend) read(repoID string, objID string, w io.Writer) error {
 // zero-length or absent block. Nothing repairs that afterwards: the client
 // believes it has already uploaded those blocks, so a resync does not send them
 // again.
-func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) error {
+func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync, verify bool) error {
 	if !utils.IsObjectIDValid(objID) {
 		return fmt.Errorf("invalid object id %q", objID)
 	}
@@ -100,10 +103,25 @@ func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) e
 		}
 	}()
 
+	// Hashed on the way past rather than in a second pass, so verification
+	// costs no extra read of an object that can be several megabytes.
+	var hash hash.Hash
+	if verify {
+		hash = sha1.New()
+		r = io.TeeReader(r, hash)
+	}
+
 	_, err = io.Copy(tFile, r)
 	if err != nil {
 		_ = tFile.Close()
 		return err
+	}
+
+	if verify {
+		if got := hex.EncodeToString(hash.Sum(nil)); got != objID {
+			_ = tFile.Close()
+			return fmt.Errorf("object %s/%s hashes to %s: content does not match its id", repoID, objID, got)
+		}
 	}
 
 	if sync {
