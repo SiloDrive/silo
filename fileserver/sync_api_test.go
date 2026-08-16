@@ -67,6 +67,62 @@ func TestHeadCommitsMultiUnderSQLite(t *testing.T) {
 	}
 }
 
+// The /seafhttp sync routes had no body limit at all: server.go caps only
+// MaxHeaderBytes, and the 1MB MaxBytesReader it installs covers the
+// /api/silo/v1 JSON routes only. One request from any client with write access
+// to one library could make the server allocate until it was OOM-killed.
+func TestBodyLimits(t *testing.T) {
+	const limit = 1024
+
+	t.Run("readLimitedBody accepts a body at the limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(strings.Repeat("a", limit)))
+		data, appErr := readLimitedBody(httptest.NewRecorder(), req, limit)
+		if appErr != nil {
+			t.Fatalf("readLimitedBody returned %d: %v", appErr.Code, appErr.Message)
+		}
+		if len(data) != limit {
+			t.Errorf("read %d bytes, want %d", len(data), limit)
+		}
+	})
+
+	t.Run("readLimitedBody refuses one byte past the limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(strings.Repeat("a", limit+1)))
+		_, appErr := readLimitedBody(httptest.NewRecorder(), req, limit)
+		if appErr == nil {
+			t.Fatal("readLimitedBody accepted an oversized body, want an error")
+		}
+		if appErr.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("status = %d, want %d", appErr.Code, http.StatusRequestEntityTooLarge)
+		}
+	})
+
+	t.Run("decodeLimitedJSON refuses an oversized body", func(t *testing.T) {
+		// Valid JSON, so nothing but the limit can reject it.
+		body := "[" + strings.Repeat(`"x",`, limit) + `"x"]`
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		var got []string
+		appErr := decodeLimitedJSON(httptest.NewRecorder(), req, limit, &got)
+		if appErr == nil {
+			t.Fatal("decodeLimitedJSON accepted an oversized body, want an error")
+		}
+		if appErr.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("status = %d, want %d", appErr.Code, http.StatusRequestEntityTooLarge)
+		}
+	})
+
+	t.Run("decodeLimitedJSON reports malformed JSON as a bad request", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{not json"))
+		var got []string
+		appErr := decodeLimitedJSON(httptest.NewRecorder(), req, limit, &got)
+		if appErr == nil {
+			t.Fatal("decodeLimitedJSON accepted malformed JSON, want an error")
+		}
+		if appErr.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", appErr.Code, http.StatusBadRequest)
+		}
+	})
+}
+
 // A repo ID that is not a UUID reaches the SELECT by string interpolation, so
 // the handler has to reject it before building the statement.
 func TestHeadCommitsMultiRejectsNonUUID(t *testing.T) {

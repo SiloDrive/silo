@@ -48,6 +48,54 @@ const (
 	fsIdWorkers                = 10
 )
 
+// Body limits for the sync endpoints. server.go caps only MaxHeaderBytes, and
+// the 1MB MaxBytesReader it installs covers the /api/silo/v1 JSON routes
+// only — /seafhttp had no limit at all, so one request from any client with
+// write access to one library could make the server allocate until it was
+// OOM-killed.
+//
+// The limits are set well above what the protocol produces rather than tight
+// to it, because the cost of being wrong is a client that cannot sync.
+const (
+	// A commit is a small JSON object: ids, timestamps and a description.
+	maxCommitBodySize = 1 << 20 // 1MB
+	// Lists of 40-char object or repo ids. 16MB is roughly 380k ids.
+	maxIDListBodySize = 16 << 20 // 16MB
+	// A pack of fs objects. The server builds its own packs to
+	// maxObjectPackSize (1MB) and clients do the same, except that a single
+	// object larger than that is sent alone — so the real bound is one
+	// maximum-size fs object, well inside this.
+	maxFSPackBodySize = 16 << 20 // 16MB
+)
+
+// readLimitedBody reads an entire request body, refusing anything past limit.
+func readLimitedBody(rsp http.ResponseWriter, r *http.Request, limit int64) ([]byte, *appError) {
+	data, err := io.ReadAll(http.MaxBytesReader(rsp, r.Body, limit))
+	if err != nil {
+		return nil, bodyLimitError(err)
+	}
+	return data, nil
+}
+
+// decodeLimitedJSON decodes a JSON request body into v, refusing anything past
+// limit. The decoder streams, so the limit bounds the allocation rather than
+// only rejecting it after the fact.
+func decodeLimitedJSON(rsp http.ResponseWriter, r *http.Request, limit int64, v any) *appError {
+	if err := json.NewDecoder(http.MaxBytesReader(rsp, r.Body, limit)).Decode(v); err != nil {
+		return bodyLimitError(err)
+	}
+	return nil
+}
+
+func bodyLimitError(err error) *appError {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		msg := fmt.Sprintf("Request body exceeds %d bytes", maxErr.Limit)
+		return &appError{nil, msg, http.StatusRequestEntityTooLarge}
+	}
+	return &appError{nil, err.Error(), http.StatusBadRequest}
+}
+
 var (
 	tokenCache           sync.Map
 	permCache            sync.Map
@@ -468,9 +516,9 @@ func recvFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		err := fmt.Errorf("failed to get repo store id by repo id %s: %v", repoID, err)
 		return &appError{err, "", http.StatusInternalServerError}
 	}
-	fsBuf, err := io.ReadAll(r.Body)
-	if err != nil {
-		return &appError{nil, err.Error(), http.StatusBadRequest}
+	fsBuf, appErr := readLimitedBody(rsp, r, maxFSPackBodySize)
+	if appErr != nil {
+		return appErr
 	}
 
 	for len(fsBuf) > 44 {
@@ -535,8 +583,8 @@ func postCheckExistCB(rsp http.ResponseWriter, r *http.Request, existType checkE
 	}
 
 	var objIDList []string
-	if err := json.NewDecoder(r.Body).Decode(&objIDList); err != nil {
-		return &appError{nil, err.Error(), http.StatusBadRequest}
+	if appErr := decodeLimitedJSON(rsp, r, maxIDListBodySize, &objIDList); appErr != nil {
+		return appErr
 	}
 
 	var neededObjs []string
@@ -593,8 +641,8 @@ func packFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	}
 
 	var fsIDList []string
-	if err := json.NewDecoder(r.Body).Decode(&fsIDList); err != nil {
-		return &appError{nil, err.Error(), http.StatusBadRequest}
+	if appErr := decodeLimitedJSON(rsp, r, maxIDListBodySize, &fsIDList); appErr != nil {
+		return appErr
 	}
 
 	var totalSize int
@@ -629,8 +677,8 @@ func packFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 
 func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	var repoIDList []string
-	if err := json.NewDecoder(r.Body).Decode(&repoIDList); err != nil {
-		return &appError{err, "", http.StatusBadRequest}
+	if appErr := decodeLimitedJSON(rsp, r, maxIDListBodySize, &repoIDList); appErr != nil {
+		return appErr
 	}
 	if len(repoIDList) == 0 {
 		return &appError{nil, "", http.StatusBadRequest}
@@ -942,9 +990,9 @@ func putCommitCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return appErr
 	}
 
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		return &appError{nil, err.Error(), http.StatusBadRequest}
+	data, appErr := readLimitedBody(rsp, r, maxCommitBodySize)
+	if appErr != nil {
+		return appErr
 	}
 
 	commit := new(commitmgr.Commit)

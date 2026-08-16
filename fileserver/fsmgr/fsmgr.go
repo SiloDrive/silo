@@ -425,6 +425,20 @@ func NewSeafile(version int, fileSize int64, blkIDs []string) (*Seafile, error) 
 	return seafile, nil
 }
 
+// MaxObjectSize bounds how much an fs object may expand to when decompressed.
+//
+// Without a bound, a few kilobytes of zlib expand to gigabytes and the copy
+// into memory OOM-kills the fileserver. The compressed bytes arrive from a
+// client — recvFSCB stores them without decompressing or verifying that the
+// object ID matches their hash — and are decompressed later, when the commit
+// that references them is processed.
+//
+// 64MB is far above anything real. An fs object is a JSON block list, so the
+// largest legitimate one belongs to the largest single file: at the 8MB fixed
+// block size and ~43 bytes per block ID, 64MB of block list describes a file
+// of roughly 12TB.
+const MaxObjectSize = 64 << 20
+
 func uncompress(p []byte, reader io.ReadCloser) ([]byte, error) {
 	b := bytes.NewReader(p)
 	var out bytes.Buffer
@@ -435,7 +449,7 @@ func uncompress(p []byte, reader io.ReadCloser) ([]byte, error) {
 			return nil, err
 		}
 
-		_, err = io.Copy(&out, r)
+		err = copyBounded(&out, r)
 		if err != nil {
 			_ = r.Close()
 			return nil, err
@@ -452,12 +466,26 @@ func uncompress(p []byte, reader io.ReadCloser) ([]byte, error) {
 		return nil, err
 	}
 
-	_, err = io.Copy(&out, reader)
+	err = copyBounded(&out, reader)
 	if err != nil {
 		return nil, err
 	}
 
 	return out.Bytes(), nil
+}
+
+// copyBounded copies src into out, failing rather than allocating once the
+// output passes MaxObjectSize. It reads one byte past the limit so that
+// hitting it exactly is not mistaken for an overrun.
+func copyBounded(out *bytes.Buffer, src io.Reader) error {
+	n, err := io.Copy(out, io.LimitReader(src, MaxObjectSize+1))
+	if err != nil {
+		return err
+	}
+	if n > MaxObjectSize {
+		return fmt.Errorf("fs object expands past the %d byte limit when decompressed", MaxObjectSize)
+	}
+	return nil
 }
 
 func compress(p []byte) ([]byte, error) {

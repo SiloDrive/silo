@@ -1,6 +1,8 @@
 package fsmgr
 
 import (
+	"bytes"
+	"compress/zlib"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -142,4 +144,61 @@ func TestGetSeafdirByPath(t *testing.T) {
 		}
 	}
 
+}
+
+// A few kilobytes of zlib expand to gigabytes, and the fs object they claim to
+// be is only decompressed later — recvFSCB stores the compressed bytes without
+// looking at them. Decompressing into an unbounded buffer let one request from
+// any client with write access to one library OOM-kill the fileserver.
+func TestUncompressRejectsDecompressionBomb(t *testing.T) {
+	var compressed bytes.Buffer
+	w := zlib.NewWriter(&compressed)
+	// Zeroes compress to almost nothing, so the bomb is a few KB on the wire.
+	zeros := make([]byte, 1<<20)
+	for written := 0; written <= MaxObjectSize; written += len(zeros) {
+		if _, err := w.Write(zeros); err != nil {
+			t.Fatalf("failed to build test payload: %v", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("failed to build test payload: %v", err)
+	}
+	if compressed.Len() > MaxObjectSize {
+		t.Fatalf("test payload is %d bytes compressed, which does not test the limit", compressed.Len())
+	}
+
+	if _, err := uncompress(compressed.Bytes(), nil); err == nil {
+		t.Error("uncompress accepted a payload larger than MaxObjectSize, want an error")
+	}
+
+	// The same path with a reused reader, which is how the hot loop calls it.
+	reader, err := zlib.NewReader(bytes.NewReader(compressed.Bytes()))
+	if err != nil {
+		t.Fatalf("failed to create reader: %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	if _, err := uncompress(compressed.Bytes(), reader); err == nil {
+		t.Error("uncompress with a reused reader accepted an oversized payload, want an error")
+	}
+}
+
+// The limit must not reject objects of a legitimate size, including one right
+// at the boundary.
+func TestUncompressAcceptsObjectAtTheLimit(t *testing.T) {
+	payload := make([]byte, MaxObjectSize)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+
+	compressed, err := compress(payload)
+	if err != nil {
+		t.Fatalf("failed to compress: %v", err)
+	}
+	got, err := uncompress(compressed, nil)
+	if err != nil {
+		t.Fatalf("uncompress returned %v for an object exactly at the limit", err)
+	}
+	if len(got) != len(payload) {
+		t.Errorf("uncompress returned %d bytes, want %d", len(got), len(payload))
+	}
 }
