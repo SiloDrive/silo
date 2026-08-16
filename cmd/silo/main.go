@@ -17,7 +17,7 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.3.9"
+var Version = "0.3.10"
 
 func main() {
 	args := os.Args[1:]

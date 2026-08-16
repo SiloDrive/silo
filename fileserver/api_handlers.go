@@ -53,6 +53,25 @@ func checkEntryName(w http.ResponseWriter, name string) bool {
 	return true
 }
 
+// movesIntoOwnSubtree reports whether dstDir sits at or beneath srcPath. A
+// move is add-then-delete, so relocating a directory beneath itself would put
+// the copy inside the tree that the delete then removes, destroying it. The
+// trailing separator keeps "/ab" from matching a move into "/abc".
+func movesIntoOwnSubtree(srcPath, dstDir string) bool {
+	src := upath.Clean(srcPath)
+	dst := upath.Clean(dstDir)
+	if dst == src {
+		return true
+	}
+	// Everything is beneath the root. moveHandler cannot reach this (it trims
+	// the trailing slash and rejects the resulting empty src), but src+"/"
+	// below would be "//" and match nothing, so handle it explicitly.
+	if src == "/" {
+		return true
+	}
+	return strings.HasPrefix(dst, src+"/")
+}
+
 func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserEmail(r)
 	repoID := mux.Vars(r)["repoid"]
@@ -300,6 +319,11 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 	srcName := upath.Base(srcPath)
 	dstDir := upath.Dir(dstPath)
 	dstName := upath.Base(dstPath)
+
+	if fsmgr.IsDir(srcEntry.Mode) && movesIntoOwnSubtree(srcPath, dstDir) {
+		http.Error(w, "Cannot move a directory into itself", http.StatusBadRequest)
+		return
+	}
 
 	// Phase 1: Add to destination
 	newDent := fsmgr.NewDirent(srcEntry.ID, dstName, srcEntry.Mode, time.Now().Unix(), srcEntry.Modifier, srcEntry.Size)
