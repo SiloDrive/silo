@@ -17,7 +17,7 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.3.21"
+var Version = "0.3.22"
 
 func main() {
 	args := os.Args[1:]
@@ -35,6 +35,11 @@ func main() {
 		}
 	case "gc":
 		if err := silod.RunGC(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "token":
+		if err := silod.RunToken(rest); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -86,6 +91,8 @@ Usage:
   silo serve [flags]              Run the file server daemon
   silo gc [-delete]               Reclaim disk from deleted libraries
   silo backup-db <dir>            Snapshot the databases (server may be running)
+  silo token list <email>         Show a user's sync and API tokens
+  silo token revoke <email> [tok] Revoke every token a user holds, or just one
   silo tui [url]                  Launch the interactive terminal UI
   silo repos [--json]             List libraries
   silo repo create <name>         Create a library (prints ID)

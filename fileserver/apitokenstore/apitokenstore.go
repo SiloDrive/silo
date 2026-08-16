@@ -124,6 +124,39 @@ func renew(token string, now time.Time) {
 	}
 }
 
+// Token is one row of the ApiToken table.
+type Token struct {
+	Token     string
+	Email     string
+	Ctime     sql.NullInt64
+	ExpiresAt sql.NullInt64
+}
+
+// ListByEmail returns every API token a user holds, including expired ones.
+// Lookup hides expired tokens because they cannot authenticate; an operator
+// deciding what to revoke needs to see what is actually in the table.
+func ListByEmail(email string) ([]Token, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+
+	rows, err := readDB.QueryContext(ctx,
+		"SELECT token, email, ctime, expires_at FROM ApiToken WHERE email = ? ORDER BY ctime", email)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var tokens []Token
+	for rows.Next() {
+		var t Token
+		if err := rows.Scan(&t.Token, &t.Email, &t.Ctime, &t.ExpiresAt); err != nil {
+			return nil, err
+		}
+		tokens = append(tokens, t)
+	}
+	return tokens, rows.Err()
+}
+
 // Delete revokes a single token. Used by logout.
 func Delete(token string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)

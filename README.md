@@ -212,6 +212,21 @@ Both steps are safe with the server running, and the order matters. See
 [`docs/backup.md`](docs/backup.md) for why, plus cold backup, restore and
 verification.
 
+## Revoking access
+
+Sync tokens have no expiry — Seafile clients persist them and treat them as
+durable — so revoking one is the only way to cut a device off. A password
+change does not.
+
+```sh
+silo token list bob@example.com      # sync tokens (per device) and API tokens
+silo token revoke bob@example.com    # every token: all devices, all libraries
+silo token revoke bob@example.com <token>   # just one device
+```
+
+The server caches token lookups for up to two hours, so restart it if a
+revocation needs to take effect immediately.
+
 ## Client compatibility
 
 Silo has been tested with:

@@ -50,6 +50,9 @@ func RunBackupDB(args []string) error {
 	}
 
 	rest := flags.Args()
+	if err := rejectTrailingFlags("backup-db", rest); err != nil {
+		return err
+	}
 	if len(rest) != 1 {
 		return fmt.Errorf("usage: silo backup-db [-d datadir] [-C config] [-f] <destination-dir>")
 	}
@@ -118,6 +121,22 @@ at objects the backup does not contain. Do not run "silo gc -delete" while a
 backup is in progress.
 `, storeDir, destDir)
 
+	return nil
+}
+
+// rejectTrailingFlags fails on a flag that appears after the first positional
+// argument. flag.Parse stops parsing there and hands the rest back as
+// positionals, so "-d /srv/silo" written at the end is not a parse error — it
+// is silently ignored, and the command runs against the default data
+// directory. For a command that reports what a user's tokens are, or writes a
+// backup, being pointed at the wrong deployment without saying so is worse
+// than refusing.
+func rejectTrailingFlags(cmd string, rest []string) error {
+	for _, arg := range rest {
+		if len(arg) > 1 && arg[0] == '-' {
+			return fmt.Errorf("flag %s must come before the arguments: silo %s %s ...", arg, cmd, arg)
+		}
+	}
 	return nil
 }
 

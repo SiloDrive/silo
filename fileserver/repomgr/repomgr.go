@@ -876,11 +876,12 @@ type RepoToken struct {
 	RepoID string
 	Email  string
 	Token  string
+	Ctime  sql.NullInt64
 }
 
 // ListRepoTokensByEmail returns all sync tokens for a user.
 func ListRepoTokensByEmail(email string) ([]RepoToken, error) {
-	sqlStr := "SELECT repo_id, email, token FROM RepoUserToken WHERE email = ?"
+	sqlStr := "SELECT repo_id, email, token, ctime FROM RepoUserToken WHERE email = ? ORDER BY ctime"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 	rows, err := seafileDB.QueryContext(ctx, sqlStr, email)
@@ -892,12 +893,15 @@ func ListRepoTokensByEmail(email string) ([]RepoToken, error) {
 	var tokens []RepoToken
 	for rows.Next() {
 		var t RepoToken
-		if err := rows.Scan(&t.RepoID, &t.Email, &t.Token); err != nil {
-			continue
+		// A scan failure is returned rather than skipped: this list is what an
+		// operator revokes from, and silently omitting a row would show a
+		// token as already gone while it still authenticates.
+		if err := rows.Scan(&t.RepoID, &t.Email, &t.Token, &t.Ctime); err != nil {
+			return nil, fmt.Errorf("failed to read repo token row: %v", err)
 		}
 		tokens = append(tokens, t)
 	}
-	return tokens, nil
+	return tokens, rows.Err()
 }
 
 const emptySHA1 = "0000000000000000000000000000000000000000"

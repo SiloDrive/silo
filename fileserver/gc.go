@@ -100,7 +100,7 @@ func RunGC(args []string) error {
 
 	if !*del {
 		fmt.Printf("\n%d librar%s reclaimable, %d objects, %s. Re-run with -delete to remove.\n",
-			len(repos)-skipped, plural(len(repos)-skipped), totalFiles, humanBytes(totalBytes))
+			len(repos)-skipped, pluralY(len(repos)-skipped), totalFiles, humanBytes(totalBytes))
 		if skipped > 0 {
 			fmt.Printf("%d skipped — see above.\n", skipped)
 		}
@@ -122,7 +122,7 @@ func RunGC(args []string) error {
 	}
 
 	fmt.Printf("\nReclaimed %d librar%s, %d objects, %s.\n",
-		removed, plural(removed), totalFiles, humanBytes(totalBytes))
+		removed, pluralY(removed), totalFiles, humanBytes(totalBytes))
 	if skipped > 0 {
 		fmt.Printf("%d skipped — see above.\n", skipped)
 	}
@@ -304,7 +304,7 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-func plural(n int) string {
+func pluralY(n int) string {
 	if n == 1 {
 		return "y"
 	}
