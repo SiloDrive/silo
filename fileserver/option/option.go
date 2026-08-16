@@ -84,6 +84,23 @@ var (
 	// DB default timeout
 	DBOpTimeout time.Duration
 
+	// SyncObjectWrites fsyncs every commit, fs and block object before it is
+	// published, and fsyncs the directory entry after. On by default: the
+	// branch head lives in SQLite, which fsyncs its own WAL, so without this
+	// a power cut can leave a durable head pointing at objects that never
+	// reached the platter. That damage does not heal — the client believes
+	// those blocks are uploaded and never sends them again.
+	//
+	// Set SILO_SYNC_OBJECT_WRITES=false only where the storage is already
+	// crash-safe by other means, or where losing the last few seconds of
+	// writes is genuinely acceptable.
+	//
+	// Initialised here rather than only in initDefaultOptions so that the
+	// durable behaviour is what you get without loading options at all —
+	// the bool zero value would otherwise turn fsync off for any caller
+	// that reaches the object store first.
+	SyncObjectWrites = true
+
 	// APITokenTTL bounds how long an /api2/ API token stays valid without
 	// being used. The expiry slides on use, so an actively syncing client is
 	// never logged out; only an idle — or leaked and unused — token ages out.
@@ -149,6 +166,7 @@ func initDefaultOptions() {
 	RedisTimeout = 1 * time.Second
 	MaxIndexingFiles = 10
 	APITokenTTL = 30 * 24 * time.Hour
+	SyncObjectWrites = true
 }
 
 // LoadFileServerOptions loads seafile.conf from the given path. An empty
@@ -186,6 +204,15 @@ func LoadFileServerOptions(configFile string) {
 	EnableNotification = true
 	if v := EnvWithFallback("SILO_ENABLE_NOTIFICATIONS", "ENABLE_NOTIFICATION_SERVER"); v == "false" || v == "0" {
 		EnableNotification = false
+	}
+
+	// Durability of object writes. Opt-out only — an operator has to say so
+	// explicitly, because the failure it protects against is silent and
+	// unrecoverable rather than merely inconvenient.
+	if v := os.Getenv("SILO_SYNC_OBJECT_WRITES"); v == "false" || v == "0" {
+		SyncObjectWrites = false
+		log.Warn("SILO_SYNC_OBJECT_WRITES is off: objects are not fsynced, " +
+			"so a crash or power loss can leave repositories permanently corrupt.")
 	}
 
 	if section, err := config.GetSection("httpserver"); err == nil {

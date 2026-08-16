@@ -117,6 +117,87 @@ func TestObjStore(t *testing.T) {
 	testExists(t)
 }
 
+// A zero-length object is the signature of a write that was published but
+// never made durable — the failure mode the fsync in write() exists to
+// prevent, and the one already on disk in stores written before it. Exists has
+// to report it absent: /check-blocks answers the client from Exists, so
+// calling it present tells the client the block is already uploaded and it is
+// never sent again, which is what turns a lost write into permanent damage.
+func TestObjStoreZeroLengthObjectIsAbsent(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "seafile-data")
+	bend := New(seafileConfPath, dataDir, "blocks")
+
+	if err := bend.Write(repoID, objID, strings.NewReader(""), true); err != nil {
+		t.Fatalf("Write() returned %v", err)
+	}
+
+	exists, err := bend.Exists(repoID, objID)
+	if err != nil {
+		t.Errorf("Exists() returned error %v, want nil", err)
+	}
+	if exists {
+		t.Error("Exists() = true for a zero-length object, want false")
+	}
+}
+
+// Exists distinguishes "not there" from "could not tell": a missing object is
+// not an error, and no failure reports the object as present.
+func TestObjStoreExistsOnMissingObject(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "seafile-data")
+	bend := New(seafileConfPath, dataDir, "blocks")
+
+	exists, err := bend.Exists(repoID, objID)
+	if err != nil {
+		t.Errorf("Exists() on a missing object returned error %v, want nil", err)
+	}
+	if exists {
+		t.Error("Exists() = true for a missing object, want false")
+	}
+}
+
+// The durable write path creates the repo and fan-out directories itself and
+// fsyncs each one it had to create. Writing into a store that has never seen
+// the repo before is the case where those syncs run.
+func TestObjStoreSyncWriteIntoNewRepoDir(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "seafile-data")
+
+	for _, objType := range []string{"blocks", "commit", "fs"} {
+		bend := New(seafileConfPath, dataDir, objType)
+		if err := bend.Write(repoID, objID, strings.NewReader("payload"), true); err != nil {
+			t.Fatalf("Write(%s) into a new repo dir returned %v", objType, err)
+		}
+
+		exists, err := bend.Exists(repoID, objID)
+		if err != nil || !exists {
+			t.Fatalf("Exists(%s) = (%v, %v), want (true, nil)", objType, exists, err)
+		}
+
+		var buf strings.Builder
+		if err := bend.Read(repoID, objID, &buf); err != nil {
+			t.Fatalf("Read(%s) returned %v", objType, err)
+		}
+		if buf.String() != "payload" {
+			t.Errorf("Read(%s) = %q, want %q", objType, buf.String(), "payload")
+		}
+
+		// The object is published by rename, so nothing partial may be left
+		// beside it — a stray temp file is invisible to reads and to the GC,
+		// which only walks well-formed object paths.
+		fanoutDir := filepath.Join(dataDir, "storage", objType, repoID, objID[:2])
+		entries, err := os.ReadDir(fanoutDir)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", fanoutDir, err)
+		}
+		if len(entries) != 1 || entries[0].Name() != objID[2:] {
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			t.Errorf("%s contains %v, want just %q", fanoutDir, names, objID[2:])
+		}
+	}
+}
+
 // The store fans objects out as objID[:2]/objID[2:], which panics outright on
 // an ID shorter than two characters, so every entry point must reject a
 // malformed ID rather than slicing it.

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dkam/silo/fileserver/objstore"
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/utils"
 )
 
@@ -137,7 +138,7 @@ func ReadRaw(repoID string, commitID string, w io.Writer) error {
 
 // WriteRaw writes data in binary format to storage backend.
 func WriteRaw(repoID string, commitID string, r io.Reader) error {
-	err := store.Write(repoID, commitID, r, false)
+	err := store.Write(repoID, commitID, r, option.SyncObjectWrites)
 	if err != nil {
 		return err
 	}

@@ -2,8 +2,10 @@
 package blockmgr
 
 import (
-	"github.com/dkam/silo/fileserver/objstore"
 	"io"
+
+	"github.com/dkam/silo/fileserver/objstore"
+	"github.com/dkam/silo/fileserver/option"
 )
 
 var store *objstore.ObjectStore
@@ -25,7 +27,7 @@ func Read(repoID string, blockID string, w io.Writer) error {
 
 // Write writes block to storage backend.
 func Write(repoID string, blockID string, r io.Reader) error {
-	err := store.Write(repoID, blockID, r, false)
+	err := store.Write(repoID, blockID, r, option.SyncObjectWrites)
 	if err != nil {
 		return err
 	}

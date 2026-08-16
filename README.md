@@ -181,6 +181,7 @@ silo repo rm <repo-id>
 | `SILO_ADMIN_PASSWORD` | Admin password | — |
 | `SILO_JWT_SECRET` | JWT signing key | auto-generated (ephemeral) |
 | `SILO_LOG_LEVEL` | Log level: debug, info, warn, error | — |
+| `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
 | `SILO_URL` | Server base URL (client/TUI) | `http://localhost:8082` |
 | `SILO_EMAIL` | Account email (client/TUI) | — |
 | `SILO_PASSWORD` | Account password (client/TUI) | — |

@@ -64,14 +64,24 @@ func (b *fsBackend) read(repoID string, objID string, w io.Writer) error {
 	return nil
 }
 
+// write stores an object. When sync is set the object is durable by the time
+// write returns: the data is fsynced before the rename that publishes it, and
+// the directory entry is fsynced after.
+//
+// That ordering is not optional for correctness. The branch head lives in
+// SQLite, which fsyncs its WAL, so a head-commit UPDATE can survive a power cut
+// that the objects it references do not — leaving a head pointing at a
+// zero-length or absent block. Nothing repairs that afterwards: the client
+// believes it has already uploaded those blocks, so a resync does not send them
+// again.
 func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) error {
 	if !utils.IsObjectIDValid(objID) {
 		return fmt.Errorf("invalid object id %q", objID)
 	}
-	parentDir := path.Join(b.objDir, repoID, objID[:2])
+	repoDir := path.Join(b.objDir, repoID)
+	parentDir := path.Join(repoDir, objID[:2])
 	p := path.Join(parentDir, objID[2:])
-	err := os.MkdirAll(parentDir, os.ModePerm)
-	if err != nil {
+	if err := b.mkObjDirs(repoDir, parentDir, sync); err != nil {
 		return err
 	}
 
@@ -96,6 +106,13 @@ func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) e
 		return err
 	}
 
+	if sync {
+		if err := tFile.Sync(); err != nil {
+			_ = tFile.Close()
+			return fmt.Errorf("failed to sync object %s/%s: %v", repoID, objID, err)
+		}
+	}
+
 	err = tFile.Close()
 	if err != nil {
 		return err
@@ -106,23 +123,96 @@ func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) e
 		return err
 	}
 
+	if sync {
+		// Until the directory itself is synced the rename can be lost, which
+		// would leave the object under its temp name — invisible to reads and
+		// invisible to the GC, which only walks well-formed object paths.
+		if err := syncDir(parentDir); err != nil {
+			return err
+		}
+	}
+
 	success = true
 	return nil
 }
 
+// mkObjDirs creates the repo and fan-out directories an object is written
+// into. When sync is set, any directory it has to create is made durable
+// before the object lands in it — fsyncing a file does not make the chain of
+// directory entries leading to it durable, so a new fan-out directory can
+// otherwise take a freshly synced object down with it.
+//
+// The object type directory is created once at startup, so at most two levels
+// can be missing here and the syncs cost nothing in the common case where the
+// repo has been written to before.
+func (b *fsBackend) mkObjDirs(repoDir, parentDir string, sync bool) error {
+	if !sync {
+		return os.MkdirAll(parentDir, os.ModePerm)
+	}
+
+	newRepoDir := !dirExists(repoDir)
+	newParentDir := newRepoDir || !dirExists(parentDir)
+	if err := os.MkdirAll(parentDir, os.ModePerm); err != nil {
+		return err
+	}
+	if newRepoDir {
+		if err := syncDir(b.objDir); err != nil {
+			return err
+		}
+	}
+	if newParentDir {
+		if err := syncDir(repoDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
+// syncDir fsyncs a directory so that renames and creations within it survive
+// a crash.
+func syncDir(p string) error {
+	d, err := os.Open(p)
+	if err != nil {
+		return fmt.Errorf("failed to open dir %s for sync: %v", p, err)
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return fmt.Errorf("failed to sync dir %s: %v", p, err)
+	}
+	if err := d.Close(); err != nil {
+		return fmt.Errorf("failed to close dir %s after sync: %v", p, err)
+	}
+	return nil
+}
+
+// exists reports whether an object is present and usable.
+//
+// A zero-length file counts as absent. No object type has a valid empty
+// encoding, so a zero-length file is the signature of a write that was
+// published but never made durable — the pre-fsync failure mode. Calling it
+// present is what made that damage permanent: /check-blocks would answer that
+// the client already uploaded the block, so it would never be sent again.
+//
+// A stat error other than "not exist" is returned rather than swallowed, and
+// never reported as present.
 func (b *fsBackend) exists(repoID string, objID string) (bool, error) {
-	path, err := b.objPath(repoID, objID)
+	p, err := b.objPath(repoID, objID)
 	if err != nil {
 		return false, err
 	}
-	_, err = os.Stat(path)
+	fileInfo, err := os.Stat(p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, err
+			return false, nil
 		}
-		return true, err
+		return false, err
 	}
-	return true, nil
+	return fileInfo.Size() > 0, nil
 }
 
 func (b *fsBackend) stat(repoID string, objID string) (int64, error) {

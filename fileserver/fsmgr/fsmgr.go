@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/dkam/silo/fileserver/objstore"
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/utils"
 	jsoniter "github.com/json-iterator/go"
 
@@ -575,7 +576,7 @@ func ReadRaw(repoID string, objID string, w io.Writer) error {
 
 // WriteRaw writes data in binary format to storage backend.
 func WriteRaw(repoID string, objID string, r io.Reader) error {
-	err := store.Write(repoID, objID, r, false)
+	err := store.Write(repoID, objID, r, option.SyncObjectWrites)
 	if err != nil {
 		return err
 	}
