@@ -91,6 +91,31 @@ type accessTokenResponse struct {
 	Token string `json:"token"`
 }
 
+// tokenOps maps each access-token operation to the repo permission needed to
+// mint a token for it. The handlers that consume these tokens (/files/,
+// /blks/, /zip/, /upload-api/, ...) authorize from the token alone and never
+// re-check the caller's permission, so this map is the only gate on them.
+//
+// Ops absent from the map are rejected rather than passed through: an
+// unrecognized op must not be able to produce a bearer credential.
+var tokenOps = map[string]string{
+	// Read: any permission on the repo is enough.
+	"view":                "r",
+	"download":            "r",
+	"download-link":       "r",
+	"downloadblks":        "r",
+	"download-dir":        "r",
+	"download-dir-link":   "r",
+	"download-multi":      "r",
+	"download-multi-link": "r",
+
+	// Write: "rw" required. A read-only share must not yield an upload token.
+	"upload":      "rw",
+	"upload-link": "rw",
+	"update":      "rw",
+	"update-link": "rw",
+}
+
 func CreateAccessTokenHandler(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserEmail(r)
 
@@ -101,6 +126,21 @@ func CreateAccessTokenHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.RepoID == "" || req.Op == "" {
 		http.Error(w, "repo_id and op are required", http.StatusBadRequest)
+		return
+	}
+
+	needed, ok := tokenOps[req.Op]
+	if !ok {
+		http.Error(w, "Unsupported op", http.StatusBadRequest)
+		return
+	}
+
+	// CheckPerm returns "" for a repo the user can't see and for one that
+	// doesn't exist, so a 403 here also avoids confirming which repo IDs are
+	// real.
+	perm := share.CheckPerm(req.RepoID, user)
+	if perm == "" || (needed == "rw" && perm != "rw") {
+		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
 
