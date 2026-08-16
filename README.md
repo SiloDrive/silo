@@ -2,7 +2,7 @@
 
 A single-binary Go file sync server, protocol-compatible with Seafile clients.
 
-This code is experimental.  Assume dataloss is likely.
+Status: pre-1.0 and young, but no longer reckless with your data. Object writes are fsynced before they are published, and every uploaded object is verified against its content hash on the way in, so a crash or a bad client can no longer silently corrupt a library. That said, it has not yet seen wide real-world use — run it, but keep an independent backup of anything you care about.
 
 ## What is Silo?
 
