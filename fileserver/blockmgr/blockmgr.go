@@ -2,6 +2,10 @@
 package blockmgr
 
 import (
+	"bytes"
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
 	"io"
 
 	"github.com/dkam/silo/fileserver/objstore"
@@ -43,6 +47,35 @@ func Write(repoID string, blockID string, r io.Reader) error {
 	}
 
 	return nil
+}
+
+// WriteBytes stores a block already held in memory and returns the id it was
+// stored under, which is derived from the content rather than supplied.
+//
+// This is for the upload paths, which have the whole block in hand and would
+// otherwise hash it once to name it and again to verify it. Naming the block
+// from its own digest makes the two agree by construction, so a second pass
+// buys nothing — it is a stronger guarantee than Write's check, not a way
+// around it.
+//
+// wantID, when non-empty, is the id the caller was promised: the block is
+// rejected before anything is written if the content does not match it.
+//
+// A block that is already present is left alone. Blocks are immutable, so a
+// second copy of the same id is the same bytes.
+func WriteBytes(repoID string, data []byte, wantID string) (string, error) {
+	checkSum := sha1.Sum(data)
+	blockID := hex.EncodeToString(checkSum[:])
+	if wantID != "" && blockID != wantID {
+		return "", fmt.Errorf("block id %s:%s doesn't match content", blockID, wantID)
+	}
+	if exists, _ := store.Exists(repoID, blockID); exists {
+		return blockID, nil
+	}
+	if err := store.Write(repoID, blockID, bytes.NewReader(data), option.SyncObjectWrites); err != nil {
+		return "", err
+	}
+	return blockID, nil
 }
 
 // Exists checks block if exists.

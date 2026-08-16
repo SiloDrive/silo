@@ -233,8 +233,39 @@ func initDefaultOptions() {
 	RedisTimeout = 1 * time.Second
 	MaxIndexingFiles = 10
 	APITokenTTL = 30 * 24 * time.Hour
-	SyncObjectWrites = true
 	AuthCacheTTL = 5 * time.Minute
+	SyncObjectWrites = true
+	VerifyFSObjectHashes = true
+	LoginRateLimit = true
+	TrustProxyHeaders = false
+	EnableNotification = true
+}
+
+// envBool reads the first of names that is set and parses it as a boolean,
+// returning def when none is set or the value makes no sense.
+//
+// One parser for all of them, because the alternative failed quietly: a
+// hand-written `v == "false"` test accepts "false" and "0" and silently
+// ignores "no" and "off", and each knob picked its own polarity — so
+// SILO_TRUST_PROXY_HEADERS=yes did nothing at all, with nothing in the log to
+// say why, and the resulting symptom (every client sharing one rate-limit
+// bucket) is exactly what setting it was meant to prevent.
+func envBool(def bool, names ...string) bool {
+	for _, name := range names {
+		v := strings.TrimSpace(os.Getenv(name))
+		if v == "" {
+			continue
+		}
+		switch strings.ToLower(v) {
+		case "true", "1", "yes", "on":
+			return true
+		case "false", "0", "no", "off":
+			return false
+		}
+		log.Warnf("Ignoring unparseable %s=%q, using %v", name, v, def)
+		return def
+	}
+	return def
 }
 
 // LoadFileServerOptions loads seafile.conf from the given path. An empty
@@ -269,10 +300,8 @@ func LoadFileServerOptions(configFile string) {
 
 	// Notification server: silo runs it in-process at /notification.
 	// Enabled by default; set SILO_ENABLE_NOTIFICATIONS=false to disable.
-	EnableNotification = true
-	if v := EnvWithFallback("SILO_ENABLE_NOTIFICATIONS", "ENABLE_NOTIFICATION_SERVER"); v == "false" || v == "0" {
-		EnableNotification = false
-	}
+	EnableNotification = envBool(EnableNotification,
+		"SILO_ENABLE_NOTIFICATIONS", "ENABLE_NOTIFICATION_SERVER")
 
 	// Accepts a Go duration ("5m", "30s") or "0" to disable the auth caches
 	// entirely. Unlike the token TTL, a wrong value here is recoverable by
@@ -291,17 +320,13 @@ func LoadFileServerOptions(configFile string) {
 		}
 	}
 
-	LoginRateLimit = true
-	if v := os.Getenv("SILO_LOGIN_RATE_LIMIT"); v == "false" || v == "0" {
-		LoginRateLimit = false
+	LoginRateLimit = envBool(LoginRateLimit, "SILO_LOGIN_RATE_LIMIT")
+	if !LoginRateLimit {
 		log.Warn("SILO_LOGIN_RATE_LIMIT is off: password guessing against the login " +
 			"endpoints is unthrottled.")
 	}
 
-	TrustProxyHeaders = false
-	if v := os.Getenv("SILO_TRUST_PROXY_HEADERS"); v == "true" || v == "1" {
-		TrustProxyHeaders = true
-	}
+	TrustProxyHeaders = envBool(TrustProxyHeaders, "SILO_TRUST_PROXY_HEADERS")
 
 	TLSCertFile = os.Getenv("SILO_TLS_CERT")
 	TLSKeyFile = os.Getenv("SILO_TLS_KEY")
@@ -311,9 +336,8 @@ func LoadFileServerOptions(configFile string) {
 		log.Fatal("SILO_TLS_CERT and SILO_TLS_KEY must be set together.")
 	}
 
-	VerifyFSObjectHashes = true
-	if v := os.Getenv("SILO_VERIFY_FS_OBJECT_HASHES"); v == "false" || v == "0" {
-		VerifyFSObjectHashes = false
+	VerifyFSObjectHashes = envBool(VerifyFSObjectHashes, "SILO_VERIFY_FS_OBJECT_HASHES")
+	if !VerifyFSObjectHashes {
 		log.Warn("SILO_VERIFY_FS_OBJECT_HASHES is off: an fs object stored under " +
 			"the wrong id will not be detected, and cannot be repaired afterwards.")
 	}
@@ -321,8 +345,8 @@ func LoadFileServerOptions(configFile string) {
 	// Durability of object writes. Opt-out only — an operator has to say so
 	// explicitly, because the failure it protects against is silent and
 	// unrecoverable rather than merely inconvenient.
-	if v := os.Getenv("SILO_SYNC_OBJECT_WRITES"); v == "false" || v == "0" {
-		SyncObjectWrites = false
+	SyncObjectWrites = envBool(SyncObjectWrites, "SILO_SYNC_OBJECT_WRITES")
+	if !SyncObjectWrites {
 		log.Warn("SILO_SYNC_OBJECT_WRITES is off: objects are not fsynced, " +
 			"so a crash or power loss can leave repositories permanently corrupt.")
 	}

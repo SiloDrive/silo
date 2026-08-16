@@ -4,8 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2645,38 +2643,21 @@ func chunkFile(job chunkingData) (string, error) {
 }
 
 func writeChunk(repoID string, input []byte, blkSize int64, cryptKey *seafileCrypt) (string, error) {
-	var blkID string
+	data := input
 	if cryptKey != nil && blkSize > 0 {
 		encoded, err := cryptKey.encrypt(input)
 		if err != nil {
 			err := fmt.Errorf("failed to encrypt block: %v", err)
 			return "", err
 		}
-		checkSum := sha1.Sum(encoded)
-		blkID = hex.EncodeToString(checkSum[:])
-		if blockmgr.Exists(repoID, blkID) {
-			return blkID, nil
-		}
-		reader := bytes.NewReader(encoded)
-		err = blockmgr.Write(repoID, blkID, reader)
-		if err != nil {
-			err := fmt.Errorf("failed to write block: %v", err)
-			return "", err
-		}
-	} else {
-		checkSum := sha1.Sum(input)
-		blkID = hex.EncodeToString(checkSum[:])
-		if blockmgr.Exists(repoID, blkID) {
-			return blkID, nil
-		}
-		reader := bytes.NewReader(input)
-		err := blockmgr.Write(repoID, blkID, reader)
-		if err != nil {
-			err := fmt.Errorf("failed to write block: %v", err)
-			return "", err
-		}
+		data = encoded
 	}
 
+	blkID, err := blockmgr.WriteBytes(repoID, data, "")
+	if err != nil {
+		err := fmt.Errorf("failed to write block: %v", err)
+		return "", err
+	}
 	return blkID, nil
 }
 
@@ -3673,17 +3654,8 @@ func indexRawBlocks(repoID string, blockIDs []string, fileHeaders []*multipart.F
 			err := fmt.Errorf("failed to read block: %v", err)
 			return err
 		}
-		checkSum := sha1.Sum(buf.Bytes())
-		blkID := hex.EncodeToString(checkSum[:])
-		if blkID != blockIDs[i] {
-			err := fmt.Errorf("block id %s:%s doesn't match content", blkID, blockIDs[i])
-			return err
-		}
-
-		err = blockmgr.Write(repoID, blkID, &buf)
-		if err != nil {
-			err := fmt.Errorf("failed to write block: %s/%s: %v", repoID, blkID, err)
-			return err
+		if _, err := blockmgr.WriteBytes(repoID, buf.Bytes(), blockIDs[i]); err != nil {
+			return fmt.Errorf("failed to store block %s/%s: %v", repoID, blockIDs[i], err)
 		}
 	}
 

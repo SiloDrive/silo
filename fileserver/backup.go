@@ -2,13 +2,14 @@ package silod
 
 import (
 	"database/sql"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/internal/format"
 )
 
 // RunBackupDB snapshots the SQLite databases into a destination directory.
@@ -38,19 +39,10 @@ import (
 // one thing that can invalidate the rule is gc -delete removing objects
 // mid-backup, so do not run GC and a backup together.
 func RunBackupDB(args []string) error {
-	flags := flag.NewFlagSet("silo backup-db", flag.ContinueOnError)
-	flags.StringVar(&configFile, "C", "", "path to config file (optional)")
-	flags.StringVar(&dataDir, "d", "", "data directory (default: $SILO_DATA_DIR or ~/.local/share/silo)")
+	flags := commandFlags("backup-db")
 	force := flags.Bool("f", false, "overwrite existing files in the destination")
-	if err := flags.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return nil
-		}
-		return err
-	}
-
-	rest := flags.Args()
-	if err := rejectTrailingFlags("backup-db", rest); err != nil {
+	rest, done, err := parseCommandArgs("backup-db", flags, args)
+	if err != nil || done {
 		return err
 	}
 	if len(rest) != 1 {
@@ -106,10 +98,10 @@ func RunBackupDB(args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to stat %s: %v", dst, err)
 		}
-		fmt.Printf("%s → %s (%s)\n", src, dst, humanBytes(info.Size()))
+		fmt.Printf("%s → %s (%s)\n", src, dst, format.Bytes(info.Size()))
 	}
 
-	storeDir := filepath.Join(absDataDir, "storage")
+	storeDir := objstore.Root(absDataDir)
 	fmt.Printf(`
 Databases copied. Now copy the object store, in this order — never before:
 
@@ -121,22 +113,6 @@ at objects the backup does not contain. Do not run "silo gc -delete" while a
 backup is in progress.
 `, storeDir, destDir)
 
-	return nil
-}
-
-// rejectTrailingFlags fails on a flag that appears after the first positional
-// argument. flag.Parse stops parsing there and hands the rest back as
-// positionals, so "-d /srv/silo" written at the end is not a parse error — it
-// is silently ignored, and the command runs against the default data
-// directory. For a command that reports what a user's tokens are, or writes a
-// backup, being pointed at the wrong deployment without saying so is worse
-// than refusing.
-func rejectTrailingFlags(cmd string, rest []string) error {
-	for _, arg := range rest {
-		if len(arg) > 1 && arg[0] == '-' {
-			return fmt.Errorf("flag %s must come before the arguments, as in: silo %s %s <args>", arg, cmd, arg)
-		}
-	}
 	return nil
 }
 

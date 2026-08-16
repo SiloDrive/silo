@@ -168,25 +168,35 @@ func MigrateSeafileTables(db *sql.DB, apiTokenTTL time.Duration) error {
 
 	now := time.Now().Unix()
 
-	if err := AddColumnIfMissing(db, "ApiToken", "expires_at", "BIGINT"); err != nil {
+	// The backfills run only in the start that adds the column. Every row
+	// written afterwards populates it, so re-running them would be a
+	// write-transaction table scan that can never match anything — on every
+	// server start and every gc/token invocation, for the life of the install.
+	added, err := AddColumnIfMissing(db, "ApiToken", "expires_at", "BIGINT")
+	if err != nil {
 		return err
 	}
-	if _, err := db.Exec(
-		"UPDATE ApiToken SET expires_at = ? WHERE expires_at IS NULL",
-		now+int64(apiTokenTTL.Seconds())); err != nil {
-		return fmt.Errorf("failed to backfill ApiToken.expires_at: %v", err)
+	if added {
+		if _, err := db.Exec(
+			"UPDATE ApiToken SET expires_at = ? WHERE expires_at IS NULL",
+			now+int64(apiTokenTTL.Seconds())); err != nil {
+			return fmt.Errorf("failed to backfill ApiToken.expires_at: %v", err)
+		}
 	}
 
 	// Safe only now that expires_at is guaranteed to exist. See the note in
 	// seafileSchema for why it isn't declared alongside the table.
 	addIndexIfMissing(db, "apitoken_expires_idx", "ApiToken", "expires_at")
 
-	if err := AddColumnIfMissing(db, "RepoUserToken", "ctime", "BIGINT"); err != nil {
+	added, err = AddColumnIfMissing(db, "RepoUserToken", "ctime", "BIGINT")
+	if err != nil {
 		return err
 	}
-	if _, err := db.Exec(
-		"UPDATE RepoUserToken SET ctime = ? WHERE ctime IS NULL", now); err != nil {
-		return fmt.Errorf("failed to backfill RepoUserToken.ctime: %v", err)
+	if added {
+		if _, err := db.Exec(
+			"UPDATE RepoUserToken SET ctime = ? WHERE ctime IS NULL", now); err != nil {
+			return fmt.Errorf("failed to backfill RepoUserToken.ctime: %v", err)
+		}
 	}
 
 	return nil
@@ -215,10 +225,13 @@ func addIndexIfMissing(db *sql.DB, name, table, columns string) {
 // Presence is probed with a zero-row SELECT rather than an engine-specific
 // catalogue query — PRAGMA table_info on SQLite, information_schema on MySQL —
 // so one implementation covers both engines.
-func AddColumnIfMissing(db *sql.DB, table, column, definition string) error {
+//
+// It reports whether the column was actually added, so a caller that needs to
+// backfill the new column can do it once rather than on every start.
+func AddColumnIfMissing(db *sql.DB, table, column, definition string) (bool, error) {
 	probe := fmt.Sprintf("SELECT %s FROM %s LIMIT 0", column, table)
 	if _, err := db.Exec(probe); err == nil {
-		return nil
+		return false, nil
 	}
 
 	alter := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)
@@ -227,13 +240,14 @@ func AddColumnIfMissing(db *sql.DB, table, column, definition string) error {
 		// ALTER. Re-probe before reporting failure: losing that race is
 		// success, not an error.
 		if _, perr := db.Exec(probe); perr == nil {
-			return nil
+			// The winner of the race owns the backfill.
+			return false, nil
 		}
-		return fmt.Errorf("failed to add column %s.%s: %v", table, column, err)
+		return false, fmt.Errorf("failed to add column %s.%s: %v", table, column, err)
 	}
 
 	log.Infof("Migrated: added column %s.%s", table, column)
-	return nil
+	return true, nil
 }
 
 func execSchema(db *sql.DB, schema string) error {

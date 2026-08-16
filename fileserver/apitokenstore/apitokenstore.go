@@ -15,6 +15,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/option"
 	log "github.com/sirupsen/logrus"
 )
@@ -176,13 +177,7 @@ func DeleteByEmail(email string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	// The delete itself succeeded; only the count is unavailable. Report zero
-	// rather than failing a caller that only wants the rows gone.
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, nil
-	}
-	return n, nil
+	return dbutil.RowsAffected(res), nil
 }
 
 // DeleteExpired removes rows whose expiry has passed, returning the count.
@@ -196,13 +191,7 @@ func DeleteExpired() (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	// The delete itself succeeded; only the count is unavailable. Report zero
-	// rather than failing a caller that only wants the rows gone.
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, nil
-	}
-	return n, nil
+	return dbutil.RowsAffected(res), nil
 }
 
 // StartCleanup runs DeleteExpired on a ticker for the life of the process.

@@ -3,20 +3,16 @@ package silod
 import (
 	"context"
 	"database/sql"
-	"flag"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 
+	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
+	"github.com/dkam/silo/internal/format"
 	log "github.com/sirupsen/logrus"
 )
-
-// Object stores are laid out as <data-dir>/storage/<type>/<store-id>/…, so a
-// repo's objects can be reclaimed by removing its directory from each store.
-var objectStoreTypes = []string{"commits", "fs", "blocks"}
 
 // garbageRepo is one row of GarbageRepos together with what GC decided to do
 // about it. A non-empty skip means GC refused to touch it and why.
@@ -42,20 +38,15 @@ type garbageRepo struct {
 //
 // Reporting is the default; -delete is required to remove anything.
 func RunGC(args []string) error {
-	flags := flag.NewFlagSet("silo gc", flag.ContinueOnError)
-	flags.StringVar(&configFile, "C", "", "path to config file (optional)")
-	flags.StringVar(&dataDir, "d", "", "data directory (default: $SILO_DATA_DIR or ~/.local/share/silo)")
+	flags := commandFlags("gc")
 	del := flags.Bool("delete", false, "remove the objects (default: report what would be removed)")
 	quiet := flags.Bool("q", false, "only print the summary")
-	if err := flags.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return nil
-		}
+	rest, done, err := parseCommandArgs("gc", flags, args)
+	if err != nil || done {
 		return err
 	}
-
-	if err := resolvePaths(); err != nil {
-		return err
+	if len(rest) != 0 {
+		return fmt.Errorf("usage: silo gc [-d datadir] [-C config] [-delete] [-q]")
 	}
 
 	// The server keeps no lock on the data directory, so GC cannot detect a
@@ -66,9 +57,9 @@ func RunGC(args []string) error {
 		log.Warn("Stop the server before running gc -delete.")
 	}
 
-	option.LoadFileServerOptions(configFile)
-	loadDatabases()
-	repomgr.Init(seafilePair.Read, seafilePair.Write)
+	if err := openStores(); err != nil {
+		return err
+	}
 
 	repos, err := collectGarbageRepos()
 	if err != nil {
@@ -94,13 +85,13 @@ func RunGC(args []string) error {
 			if *del {
 				verb = "reclaiming"
 			}
-			fmt.Printf("%s %s: %d objects, %s\n", verb, r.repoID, r.files, humanBytes(r.bytes))
+			fmt.Printf("%s %s: %d objects, %s\n", verb, r.repoID, r.files, format.Bytes(r.bytes))
 		}
 	}
 
 	if !*del {
 		fmt.Printf("\n%d librar%s reclaimable, %d objects, %s. Re-run with -delete to remove.\n",
-			len(repos)-skipped, pluralY(len(repos)-skipped), totalFiles, humanBytes(totalBytes))
+			len(repos)-skipped, pluralY(len(repos)-skipped), totalFiles, format.Bytes(totalBytes))
 		if skipped > 0 {
 			fmt.Printf("%d skipped — see above.\n", skipped)
 		}
@@ -122,7 +113,7 @@ func RunGC(args []string) error {
 	}
 
 	fmt.Printf("\nReclaimed %d librar%s, %d objects, %s.\n",
-		removed, pluralY(removed), totalFiles, humanBytes(totalBytes))
+		removed, pluralY(removed), totalFiles, format.Bytes(totalBytes))
 	if skipped > 0 {
 		fmt.Printf("%d skipped — see above.\n", skipped)
 	}
@@ -180,45 +171,35 @@ func collectGarbageRepos() ([]*garbageRepo, error) {
 // live repo's only copy of its data, and a dead virtual repo owns no directory
 // of its own at all.
 func unsafeToReclaim(ctx context.Context, repoID string) (string, error) {
+	for _, b := range reclaimBlockers {
+		found, err := rowExists(ctx, b.query, repoID)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			return b.reason, nil
+		}
+	}
+	return "", nil
+}
+
+// reclaimBlockers is the set of "someone still needs this" checks, in the
+// order they are reported. A repo is safe to reclaim only when none match.
+var reclaimBlockers = []struct{ query, reason string }{
 	// The library came back, or the ID was never really dead.
-	live, err := rowExists(ctx, "SELECT 1 FROM Repo WHERE repo_id = ?", repoID)
-	if err != nil {
-		return "", err
-	}
-	if live {
-		return "still present in Repo — not a deleted library", nil
-	}
-
+	{"SELECT 1 FROM Repo WHERE repo_id = ?",
+		"still present in Repo — not a deleted library"},
 	// Rows in Branch mean commits are still reachable through a head.
-	branched, err := rowExists(ctx, "SELECT 1 FROM Branch WHERE repo_id = ?", repoID)
-	if err != nil {
-		return "", err
-	}
-	if branched {
-		return "still has rows in Branch — a head still references its commits", nil
-	}
-
+	{"SELECT 1 FROM Branch WHERE repo_id = ?",
+		"still has rows in Branch — a head still references its commits"},
 	// A live virtual repo whose objects are written into this store.
-	origin, err := rowExists(ctx, "SELECT 1 FROM VirtualRepo WHERE origin_repo = ?", repoID)
-	if err != nil {
-		return "", err
-	}
-	if origin {
-		return "still the origin of a virtual repo, which stores its objects here", nil
-	}
-
+	{"SELECT 1 FROM VirtualRepo WHERE origin_repo = ?",
+		"still the origin of a virtual repo, which stores its objects here"},
 	// The dead repo is itself virtual: its objects are in the origin's store,
 	// so there is nothing of its own to remove and any directory sharing its
 	// name would belong to something else.
-	virtual, err := rowExists(ctx, "SELECT 1 FROM VirtualRepo WHERE repo_id = ?", repoID)
-	if err != nil {
-		return "", err
-	}
-	if virtual {
-		return "is a virtual repo — its objects live in the origin's store", nil
-	}
-
-	return "", nil
+	{"SELECT 1 FROM VirtualRepo WHERE repo_id = ?",
+		"is a virtual repo — its objects live in the origin's store"},
 }
 
 func rowExists(ctx context.Context, query, arg string) (bool, error) {
@@ -236,8 +217,12 @@ func rowExists(ctx context.Context, query, arg string) (bool, error) {
 // measure records which store directories exist for a repo and how much they
 // hold, so a dry run can report the same set the delete pass would remove.
 func measure(r *garbageRepo) error {
-	for _, objType := range objectStoreTypes {
-		dir := filepath.Join(absDataDir, "storage", objType, r.repoID)
+	// The layout and the type names come from objstore rather than being
+	// spelled again here: a directory this does not find is silently nothing
+	// to reclaim, so a disagreement would make gc report success and remove
+	// nothing.
+	for _, objType := range objstore.Types {
+		dir := objstore.RepoDir(absDataDir, objType, r.repoID)
 		info, err := os.Stat(dir)
 		if os.IsNotExist(err) {
 			continue
@@ -289,19 +274,6 @@ func reclaim(r *garbageRepo) error {
 		return fmt.Errorf("removed objects but failed to clear GarbageRepos row: %v", err)
 	}
 	return nil
-}
-
-func humanBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for v := n / unit; v >= unit; v /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func pluralY(n int) string {

@@ -150,6 +150,59 @@ func resolvePaths() error {
 	return nil
 }
 
+// commandFlags returns the flag set every subcommand starts from. -d and -C
+// mean the same thing to all of them, so they are declared once: a subcommand
+// that spelled either differently would point at a different data directory
+// than the server it is meant to operate on.
+func commandFlags(name string) *flag.FlagSet {
+	flags := flag.NewFlagSet("silo "+name, flag.ContinueOnError)
+	flags.StringVar(&configFile, "C", "", "path to config file (optional)")
+	flags.StringVar(&dataDir, "d", "", "data directory (default: $SILO_DATA_DIR or ~/.local/share/silo)")
+	return flags
+}
+
+// parseCommandArgs parses a subcommand's arguments and returns the positional
+// ones. done is true when -h was handled and the command should return without
+// doing anything.
+//
+// The trailing-flag check belongs here rather than at each command because
+// forgetting it is silent, and gc had already forgotten it. flag.Parse stops
+// at the first positional and hands the rest back, so "-d /srv/silo" written
+// at the end is not a parse error — it is ignored, and the command runs
+// against the default data directory. For a command that reports what a
+// user's tokens are, writes a backup, or deletes objects, being pointed at the
+// wrong deployment without saying so is worse than refusing.
+func parseCommandArgs(name string, flags *flag.FlagSet, args []string) ([]string, bool, error) {
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	rest := flags.Args()
+	for _, arg := range rest {
+		if len(arg) > 1 && arg[0] == '-' {
+			return nil, false, fmt.Errorf(
+				"flag %s must come before the arguments, as in: silo %s %s <args>", arg, name, arg)
+		}
+	}
+	return rest, false, nil
+}
+
+// openStores resolves the paths, loads the options and opens the databases —
+// the preamble a subcommand needs before it can read anything. The order is
+// not free: loadDatabases migrates, and the migration reads the API token TTL
+// that LoadFileServerOptions sets.
+func openStores() error {
+	if err := resolvePaths(); err != nil {
+		return err
+	}
+	option.LoadFileServerOptions(configFile)
+	loadDatabases()
+	repomgr.Init(seafilePair.Read, seafilePair.Write)
+	return nil
+}
+
 func loadDatabases() {
 	dbOpt, err := option.LoadDBOption(configFile)
 	if err != nil {
@@ -411,8 +464,9 @@ func Run(args []string) error {
 	go handleUser1Signal()
 
 	tlsCert, tlsKey := option.TLSCertFile, option.TLSKeyFile
+	useTLS := tlsCert != "" && tlsKey != ""
 	scheme := "http"
-	if tlsCert != "" && tlsKey != "" {
+	if useTLS {
 		scheme = "https"
 		// Pinned rather than left to the default so that the floor is a
 		// property of this server and not of whichever Go version built it.
@@ -422,11 +476,11 @@ func Run(args []string) error {
 		httpServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	log.Printf("Silo server listening on %s://%s:%d", scheme, option.Host, option.Port)
-	warnIfExposedWithoutTLS(scheme)
+	warnIfExposedWithoutTLS(useTLS)
 
 	go func() {
 		var err error
-		if scheme == "https" {
+		if useTLS {
 			err = httpServer.ListenAndServeTLS(tlsCert, tlsKey)
 		} else {
 			err = httpServer.ListenAndServe()
@@ -446,8 +500,8 @@ func Run(args []string) error {
 // one and keep it. It is a warning rather than a refusal because terminating
 // TLS at a reverse proxy is the normal deployment, and the server cannot tell
 // from here whether one is in front of it.
-func warnIfExposedWithoutTLS(scheme string) {
-	if scheme == "https" {
+func warnIfExposedWithoutTLS(useTLS bool) {
+	if useTLS {
 		return
 	}
 	ip := net.ParseIP(option.Host)

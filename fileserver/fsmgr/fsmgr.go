@@ -6,6 +6,7 @@ import (
 	"compress/zlib"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -601,17 +602,27 @@ func (seafdir *SeafDir) FromData(p []byte, reader io.ReadCloser) error {
 //
 // It goes through the same bounded decompression as every other read, so a
 // zlib bomb cannot ride in through the check that exists to reject bad data.
-func VerifyObjectID(objID string, compressed []byte) error {
-	data, err := uncompress(compressed, nil)
+//
+// reader may be nil; a caller verifying a run of objects should pass one from
+// GetOneZlibReader so the whole run shares a single inflate window instead of
+// allocating one per object.
+func VerifyObjectID(objID string, compressed []byte, reader io.ReadCloser) error {
+	data, err := uncompress(compressed, reader)
 	if err != nil {
-		return fmt.Errorf("failed to decompress fs object %s: %v", objID, err)
+		return fmt.Errorf("%w: failed to decompress fs object %s: %v", ErrVerification, objID, err)
 	}
 	checkSum := sha1.Sum(data)
 	if got := hex.EncodeToString(checkSum[:]); got != objID {
-		return fmt.Errorf("fs object %s hashes to %s: content does not match its id", objID, got)
+		return fmt.Errorf("%w: fs object %s hashes to %s: content does not match its id",
+			ErrVerification, objID, got)
 	}
 	return nil
 }
+
+// ErrVerification marks an object that failed the check against its own id.
+// It says the data is wrong, not that the server is: callers translating this
+// to a status code should answer 400 rather than 500.
+var ErrVerification = errors.New("fs object failed verification")
 
 // ReadRaw reads data in binary format from storage backend.
 func ReadRaw(repoID string, objID string, w io.Writer) error {
@@ -630,6 +641,27 @@ func WriteRaw(repoID string, objID string, r io.Reader) error {
 		return err
 	}
 	return nil
+}
+
+// WriteRawIngested stores a compressed fs object that arrived from a client,
+// checking it against its id first when option.VerifyFSObjectHashes is on.
+//
+// The option is honoured here rather than at the handler for the same reason
+// SyncObjectWrites is: both describe how an object reaches the store, so a
+// second ingest path should not be able to skip either by forgetting to ask.
+// It is separate from WriteRaw because the server's own writers derive the id
+// from the very bytes they are about to write — re-inflating those to confirm
+// what is true by construction would be the one case where the check buys
+// nothing.
+//
+// reader may be nil; see VerifyObjectID.
+func WriteRawIngested(repoID string, objID string, data []byte, reader io.ReadCloser) error {
+	if option.VerifyFSObjectHashes {
+		if err := VerifyObjectID(objID, data, reader); err != nil {
+			return err
+		}
+	}
+	return WriteRaw(repoID, objID, bytes.NewReader(data))
 }
 
 // GetSeafile gets seafile from storage backend.

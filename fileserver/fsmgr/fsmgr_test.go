@@ -3,10 +3,13 @@ package fsmgr
 import (
 	"bytes"
 	"compress/zlib"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/dkam/silo/fileserver/option"
 )
 
 const (
@@ -218,7 +221,7 @@ func TestVerifyObjectID(t *testing.T) {
 		t.Fatalf("failed to compress: %v", err)
 	}
 
-	if err := VerifyObjectID(seafile.FileID, compressed); err != nil {
+	if err := VerifyObjectID(seafile.FileID, compressed, nil); err != nil {
 		t.Errorf("VerifyObjectID rejected an object that matches its id: %v", err)
 	}
 
@@ -227,16 +230,62 @@ func TestVerifyObjectID(t *testing.T) {
 	if other == seafile.FileID {
 		t.Fatal("test ids collided")
 	}
-	if err := VerifyObjectID(other, compressed); err == nil {
+	if err := VerifyObjectID(other, compressed, nil); err == nil {
 		t.Error("VerifyObjectID accepted content stored under the wrong id")
 	}
 
 	// Content that is not a valid zlib stream at all.
-	if err := VerifyObjectID(seafile.FileID, []byte("not compressed")); err == nil {
+	if err := VerifyObjectID(seafile.FileID, []byte("not compressed"), nil); err == nil {
 		t.Error("VerifyObjectID accepted data that is not a zlib stream")
 	}
-	if err := VerifyObjectID(seafile.FileID, nil); err == nil {
+	if err := VerifyObjectID(seafile.FileID, nil, nil); err == nil {
 		t.Error("VerifyObjectID accepted empty data")
+	}
+}
+
+// The check belongs to the ingest path, not to whichever handler happens to
+// call it: a second raw-fs ingest that forgot the option would otherwise store
+// unverified client data. WriteRawIngested is where that is enforced, so it is
+// what the test holds to it — including that a rejection is reported as bad
+// data, so callers answer 400 rather than 500.
+func TestWriteRawIngestedVerifies(t *testing.T) {
+	seafile, err := NewSeafile(1, 100, []string{blkID, subDirID})
+	if err != nil {
+		t.Fatalf("failed to build test object: %v", err)
+	}
+	compressed, err := compress(seafile.data)
+	if err != nil {
+		t.Fatalf("failed to compress: %v", err)
+	}
+
+	origVerify := option.VerifyFSObjectHashes
+	defer func() { option.VerifyFSObjectHashes = origVerify }()
+	option.VerifyFSObjectHashes = true
+
+	// A pooled reader has to work as well as no reader: the sync path shares
+	// one across a whole pack.
+	reader := GetOneZlibReader()
+	defer ReturnOneZlibReader(reader)
+
+	if err := WriteRawIngested(repoID, seafile.FileID, compressed, reader); err != nil {
+		t.Errorf("WriteRawIngested rejected an object that matches its id: %v", err)
+	}
+
+	err = WriteRawIngested(repoID, subDirID, compressed, reader)
+	if err == nil {
+		t.Fatal("WriteRawIngested stored content under the wrong id")
+	}
+	if !errors.Is(err, ErrVerification) {
+		t.Errorf("rejection is %v, want an ErrVerification the caller can map to 400", err)
+	}
+	if exists, _ := Exists(repoID, subDirID); exists {
+		t.Error("the rejected object was written to the store anyway")
+	}
+
+	// Off, the bytes go in unchecked — that is what the option means.
+	option.VerifyFSObjectHashes = false
+	if err := WriteRawIngested(repoID, subDirID, compressed, reader); err != nil {
+		t.Errorf("WriteRawIngested refused to store with verification off: %v", err)
 	}
 }
 
@@ -255,7 +304,7 @@ func TestVerifyObjectIDIsBounded(t *testing.T) {
 		t.Fatalf("failed to build test payload: %v", err)
 	}
 
-	if err := VerifyObjectID("0401fc662e3bc87a41f299a907c056aaf8322a27", compressed.Bytes()); err == nil {
+	if err := VerifyObjectID("0401fc662e3bc87a41f299a907c056aaf8322a27", compressed.Bytes(), nil); err == nil {
 		t.Error("VerifyObjectID expanded a payload past MaxObjectSize")
 	}
 }

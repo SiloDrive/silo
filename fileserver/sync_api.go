@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -111,8 +110,10 @@ type tokenInfo struct {
 	expireTime int64
 }
 
+// permInfo is a cached "this check passed", nothing more. The permission
+// string itself is not kept: the cache key already carries the operation it
+// was checked for, so a hit is only ever asked whether it is still fresh.
 type permInfo struct {
-	perm       string
 	expireTime int64
 }
 
@@ -290,14 +291,11 @@ func permissionCheckCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	if err != nil {
 		return err
 	}
-	ip := getClientIPAddr(r)
-	if ip == "" {
-		// Log the repo, never the token: appErrors are written to the log,
-		// and the token is a bearer credential that grants access to this
-		// repo until it is revoked.
-		err := fmt.Errorf("failed to get client ip for repo %s", repoID)
-		return &appError{err, "", http.StatusInternalServerError}
-	}
+	// Same resolver, and so the same proxy-trust policy, as the login limiter:
+	// this address is stored as the token's peer and reported in the sync
+	// event, so an unconditionally trusted X-Forwarded-For would let any
+	// client with a sync token forge both.
+	ip := utils.ClientIP(r, option.TrustProxyHeaders)
 
 	if op == "download" {
 		onRepoOper("repo-download-sync", repoID, user, ip, clientName)
@@ -349,7 +347,7 @@ func getBlockMapCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{nil, msg, http.StatusNotFound}
 	}
 
-	var blockSizes []int64
+	blockSizes := []int64{}
 	for _, blockID := range seafile.BlkIDs {
 		blockSize, err := blockmgr.Stat(storeID, blockID)
 		if err != nil {
@@ -359,22 +357,7 @@ func getBlockMapCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		blockSizes = append(blockSizes, blockSize)
 	}
 
-	var data []byte
-	if blockSizes != nil {
-		data, err = json.Marshal(blockSizes)
-		if err != nil {
-			err := fmt.Errorf("failed to marshal json: %v", err)
-			return &appError{err, "", http.StatusInternalServerError}
-		}
-	} else {
-		data = []byte{'[', ']'}
-	}
-
-	rsp.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	rsp.WriteHeader(http.StatusOK)
-	_, _ = rsp.Write(data)
-
-	return nil
+	return writeJSON(rsp, blockSizes)
 }
 
 func getAccessibleRepoListCB(rsp http.ResponseWriter, r *http.Request) *appError {
@@ -399,7 +382,7 @@ func getAccessibleRepoListCB(rsp http.ResponseWriter, r *http.Request) *appError
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 
-	var repoObjects []*share.SharedRepo
+	repoObjects := []*share.SharedRepo{}
 	for _, repo := range repos {
 		if repo.RepoType != "" {
 			continue
@@ -466,20 +449,7 @@ func getAccessibleRepoListCB(rsp http.ResponseWriter, r *http.Request) *appError
 		repoObjects = append(repoObjects, sRepo)
 	}
 
-	var data []byte
-	if repoObjects != nil {
-		data, err = json.Marshal(repoObjects)
-		if err != nil {
-			err := fmt.Errorf("failed to marshal json: %v", err)
-			return &appError{err, "", http.StatusInternalServerError}
-		}
-	} else {
-		data = []byte{'[', ']'}
-	}
-	rsp.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	rsp.WriteHeader(http.StatusOK)
-	_, _ = rsp.Write(data)
-	return nil
+	return writeJSON(rsp, repoObjects)
 }
 
 func filterGroupRepos(repos []*share.SharedRepo) map[string]*share.SharedRepo {
@@ -525,6 +495,13 @@ func recvFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return appErr
 	}
 
+	// One inflate window for the whole pack. A pack holds up to
+	// maxFSPackBodySize of small objects, so taking a reader per object would
+	// allocate one window each — thousands per request on a path that
+	// verifies by default.
+	zlibReader := fsmgr.GetOneZlibReader()
+	defer fsmgr.ReturnOneZlibReader(zlibReader)
+
 	for len(fsBuf) > 44 {
 		objID := string(fsBuf[:40])
 		if !utils.IsObjectIDValid(objID) {
@@ -545,15 +522,11 @@ func recvFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		}
 
 		objData := fsBuf[44 : 44+objSize]
-		if option.VerifyFSObjectHashes {
-			if err := fsmgr.VerifyObjectID(objID, objData); err != nil {
+		if err := fsmgr.WriteRawIngested(storeID, objID, objData, zlibReader); err != nil {
+			if errors.Is(err, fsmgr.ErrVerification) {
 				log.Warnf("rejecting fs object for repo %s: %v", repoID, err)
 				return &appError{nil, "Fs object does not match its id", http.StatusBadRequest}
 			}
-		}
-
-		objBuffer := bytes.NewBuffer(objData)
-		if err := fsmgr.WriteRaw(storeID, objID, objBuffer); err != nil {
 			err := fmt.Errorf("failed to write fs obj %s:%s : %v", storeID, objID, err)
 			return &appError{err, "", http.StatusInternalServerError}
 		}
@@ -599,7 +572,7 @@ func postCheckExistCB(rsp http.ResponseWriter, r *http.Request, existType checkE
 		return appErr
 	}
 
-	var neededObjs []string
+	neededObjs := []string{}
 	var ret bool
 	for i := 0; i < len(objIDList); i++ {
 		if !utils.IsObjectIDValid(objIDList[i]) {
@@ -616,21 +589,7 @@ func postCheckExistCB(rsp http.ResponseWriter, r *http.Request, existType checkE
 		}
 	}
 
-	var data []byte
-	if neededObjs != nil {
-		data, err = json.Marshal(neededObjs)
-		if err != nil {
-			err := fmt.Errorf("failed to marshal json: %v", err)
-			return &appError{err, "", http.StatusInternalServerError}
-		}
-	} else {
-		data = []byte{'[', ']'}
-	}
-	rsp.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	rsp.WriteHeader(http.StatusOK)
-	_, _ = rsp.Write(data)
-
-	return nil
+	return writeJSON(rsp, neededObjs)
 }
 
 func packFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
@@ -747,7 +706,7 @@ func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	// Nothing the caller may read. An empty map rather than an error: which
 	// of the ids were rejected is itself the thing not to disclose.
 	if allowed == 0 {
-		return writeJSONMap(rsp, map[string]string{})
+		return writeJSON(rsp, map[string]string{})
 	}
 
 	sqlStr := fmt.Sprintf(
@@ -779,11 +738,17 @@ func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 
-	return writeJSONMap(rsp, commitIDMap)
+	return writeJSON(rsp, commitIDMap)
 }
 
-func writeJSONMap(rsp http.ResponseWriter, m map[string]string) *appError {
-	data, err := json.Marshal(m)
+// writeJSON sends v as the whole 200 response.
+//
+// Slices reaching here must be non-nil: a nil slice marshals to "null", and
+// the sync clients expect "[]". Declaring them empty rather than nil is what
+// keeps that true, and is why this takes any value rather than each handler
+// special-casing the empty case on its way out.
+func writeJSON(rsp http.ResponseWriter, v any) *appError {
+	data, err := json.Marshal(v)
 	if err != nil {
 		err := fmt.Errorf("failed to marshal json: %v", err)
 		return &appError{err, "", http.StatusInternalServerError}
@@ -1418,7 +1383,7 @@ func checkPermission(repoID, user, op string, skipCache bool) *appError {
 			return &appError{nil, "", http.StatusForbidden}
 		}
 		if expireTime, caching := authCacheExpiry(); caching {
-			permCache.Store(key, &permInfo{perm: perm, expireTime: expireTime})
+			permCache.Store(key, &permInfo{expireTime: expireTime})
 		}
 		return nil
 	}
@@ -1486,12 +1451,7 @@ func authCacheExpiry() (int64, bool) {
 // longer exists — recreating the storage directories `silo gc -delete` had
 // just reclaimed.
 func invalidateRepoAuth(repoID string) {
-	tokenCache.Range(func(key, value interface{}) bool {
-		if info, ok := value.(*tokenInfo); ok && info.repoID == repoID {
-			tokenCache.Delete(key)
-		}
-		return true
-	})
+	deleteCachedTokens(func(info *tokenInfo) bool { return info.repoID == repoID })
 	permCache.Range(func(key, value interface{}) bool {
 		if k, ok := key.(string); ok && strings.HasPrefix(k, repoID+":") {
 			permCache.Delete(key)
@@ -1505,8 +1465,13 @@ func invalidateRepoAuth(repoID string) {
 // revocation this process performs takes effect on the next request rather
 // than at the next cache expiry.
 func invalidateUserAuth(email string) {
+	deleteCachedTokens(func(info *tokenInfo) bool { return info.email == email })
+}
+
+// deleteCachedTokens drops every cached token entry that match selects.
+func deleteCachedTokens(match func(*tokenInfo) bool) {
 	tokenCache.Range(func(key, value interface{}) bool {
-		if info, ok := value.(*tokenInfo); ok && info.email == email {
+		if info, ok := value.(*tokenInfo); ok && match(info) {
 			tokenCache.Delete(key)
 		}
 		return true
@@ -1529,30 +1494,6 @@ func validateClientVer(clientVer string) int {
 	}
 
 	return http.StatusOK
-}
-
-func getClientIPAddr(r *http.Request) string {
-	xForwardedFor := r.Header.Get("X-Forwarded-For")
-	addr := strings.TrimSpace(strings.Split(xForwardedFor, ",")[0])
-	ip := net.ParseIP(addr)
-	if ip != nil {
-		return ip.String()
-	}
-
-	addr = strings.TrimSpace(r.Header.Get("X-Real-Ip"))
-	ip = net.ParseIP(addr)
-	if ip != nil {
-		return ip.String()
-	}
-
-	if addr, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr)); err == nil {
-		ip = net.ParseIP(addr)
-		if ip != nil {
-			return ip.String()
-		}
-	}
-
-	return ""
 }
 
 func onRepoOper(eType, repoID, user, ip, clientName string) {

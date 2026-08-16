@@ -36,9 +36,19 @@ func schemaTestDB(t *testing.T) *DBPair {
 func TestMigrateRejectsNonPositiveTTL(t *testing.T) {
 	pair := schemaTestDB(t)
 
+	// Stand in for a database from before expires_at existed: the backfill only
+	// runs in the migration that adds the column, so a table that already has
+	// it is not the case under test.
 	const token = "0401fc662e3bc87a41f299a907c056aaf8322a27"
+	if _, err := pair.Write.Exec("DROP TABLE ApiToken"); err != nil {
+		t.Fatalf("failed to drop ApiToken: %v", err)
+	}
 	if _, err := pair.Write.Exec(
-		"INSERT INTO ApiToken (token, email, ctime, expires_at) VALUES (?, ?, ?, NULL)",
+		"CREATE TABLE ApiToken (token CHAR(40) PRIMARY KEY, email VARCHAR(255) NOT NULL, ctime BIGINT)"); err != nil {
+		t.Fatalf("failed to create legacy ApiToken: %v", err)
+	}
+	if _, err := pair.Write.Exec(
+		"INSERT INTO ApiToken (token, email, ctime) VALUES (?, ?, ?)",
 		token, "user@example.com", time.Now().Unix()); err != nil {
 		t.Fatalf("failed to seed token: %v", err)
 	}
@@ -48,15 +58,10 @@ func TestMigrateRejectsNonPositiveTTL(t *testing.T) {
 			t.Errorf("MigrateSeafileTables accepted a TTL of %v, want refusal", ttl)
 		}
 
-		// The refusal has to happen before the backfill, not after it.
-		var expiresAt sql.NullInt64
-		if err := pair.Read.QueryRow(
-			"SELECT expires_at FROM ApiToken WHERE token = ?", token).Scan(&expiresAt); err != nil {
-			t.Fatalf("failed to read back token: %v", err)
-		}
-		if expiresAt.Valid {
-			t.Errorf("TTL %v: token was stamped with expires_at=%d despite the refusal",
-				ttl, expiresAt.Int64)
+		// The refusal has to happen before the migration touches anything, so
+		// the column it would have backfilled should not even exist yet.
+		if _, err := pair.Read.Exec("SELECT expires_at FROM ApiToken LIMIT 0"); err == nil {
+			t.Errorf("TTL %v: migration added expires_at despite the refusal", ttl)
 		}
 	}
 

@@ -21,7 +21,7 @@ type fsBackend struct {
 }
 
 func newFSBackend(seafileDataDir string, objType string) (*fsBackend, error) {
-	objDir := path.Join(seafileDataDir, "storage", objType)
+	objDir := TypeDir(seafileDataDir, objType)
 	err := os.MkdirAll(objDir, os.ModePerm)
 	if err != nil {
 		return nil, err
@@ -78,13 +78,12 @@ func (b *fsBackend) read(repoID string, objID string, w io.Writer) error {
 // believes it has already uploaded those blocks, so a resync does not send them
 // again.
 func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync, verify bool) error {
-	if !utils.IsObjectIDValid(objID) {
-		return fmt.Errorf("invalid object id %q", objID)
+	p, err := b.objPath(repoID, objID)
+	if err != nil {
+		return err
 	}
-	repoDir := path.Join(b.objDir, repoID)
-	parentDir := path.Join(repoDir, objID[:2])
-	p := path.Join(parentDir, objID[2:])
-	if err := b.mkObjDirs(repoDir, parentDir, sync); err != nil {
+	parentDir := path.Dir(p)
+	if err := b.mkObjDirs(parentDir, sync); err != nil {
 		return err
 	}
 
@@ -163,11 +162,12 @@ func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync, verify
 // The object type directory is created once at startup, so at most two levels
 // can be missing here and the syncs cost nothing in the common case where the
 // repo has been written to before.
-func (b *fsBackend) mkObjDirs(repoDir, parentDir string, sync bool) error {
+func (b *fsBackend) mkObjDirs(parentDir string, sync bool) error {
 	if !sync {
 		return os.MkdirAll(parentDir, os.ModePerm)
 	}
 
+	repoDir := path.Dir(parentDir)
 	newRepoDir := !dirExists(repoDir)
 	newParentDir := newRepoDir || !dirExists(parentDir)
 	if err := os.MkdirAll(parentDir, os.ModePerm); err != nil {

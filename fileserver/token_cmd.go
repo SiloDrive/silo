@@ -2,7 +2,6 @@ package silod
 
 import (
 	"database/sql"
-	"flag"
 	"fmt"
 	"time"
 
@@ -27,21 +26,9 @@ import (
 // because there is no admin role in the API layer to gate such an endpoint
 // with — every authenticated user has equal permissions today.
 func RunToken(args []string) error {
-	flags := flag.NewFlagSet("silo token", flag.ContinueOnError)
-	flags.StringVar(&configFile, "C", "", "path to config file (optional)")
-	flags.StringVar(&dataDir, "d", "", "data directory (default: $SILO_DATA_DIR or ~/.local/share/silo)")
-	if err := flags.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return nil
-		}
-		return err
-	}
-
-	rest := flags.Args()
-	// flag.Parse stops at the first positional, so "token list bob -d /srv"
-	// leaves -d unparsed and silently operates on the default data directory —
-	// reporting "no tokens" for an account whose tokens are somewhere else.
-	if err := rejectTrailingFlags("token", rest); err != nil {
+	flags := commandFlags("token")
+	rest, done, err := parseCommandArgs("token", flags, args)
+	if err != nil || done {
 		return err
 	}
 	if len(rest) < 2 {
@@ -52,12 +39,9 @@ func RunToken(args []string) error {
 	}
 	action, email := rest[0], rest[1]
 
-	if err := resolvePaths(); err != nil {
+	if err := openStores(); err != nil {
 		return err
 	}
-	option.LoadFileServerOptions(configFile)
-	loadDatabases()
-	repomgr.Init(seafilePair.Read, seafilePair.Write)
 	apitokenstore.Init(seafilePair.Read, seafilePair.Write)
 
 	switch action {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
 )
 
@@ -125,8 +126,8 @@ func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
 
 	absDataDir = t.TempDir()
 	for _, repoID := range []string{dead, live} {
-		for _, objType := range objectStoreTypes {
-			objDir := filepath.Join(absDataDir, "storage", objType, repoID, "04")
+		for _, objType := range objstore.Types {
+			objDir := filepath.Join(objstore.RepoDir(absDataDir, objType, repoID), "04")
 			if err := os.MkdirAll(objDir, 0700); err != nil {
 				t.Fatalf("failed to create %s: %v", objDir, err)
 			}
@@ -151,26 +152,26 @@ func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
 	if r.skip != "" {
 		t.Fatalf("expected %s to be reclaimable, got skip %q", dead, r.skip)
 	}
-	if len(r.dirs) != len(objectStoreTypes) {
-		t.Errorf("expected %d store dirs, got %d: %v", len(objectStoreTypes), len(r.dirs), r.dirs)
+	if len(r.dirs) != len(objstore.Types) {
+		t.Errorf("expected %d store dirs, got %d: %v", len(objstore.Types), len(r.dirs), r.dirs)
 	}
-	if r.files != len(objectStoreTypes) {
-		t.Errorf("counted %d objects, want %d", r.files, len(objectStoreTypes))
+	if r.files != len(objstore.Types) {
+		t.Errorf("counted %d objects, want %d", r.files, len(objstore.Types))
 	}
-	if r.bytes != int64(len("payload")*len(objectStoreTypes)) {
-		t.Errorf("measured %d bytes, want %d", r.bytes, len("payload")*len(objectStoreTypes))
+	if r.bytes != int64(len("payload")*len(objstore.Types)) {
+		t.Errorf("measured %d bytes, want %d", r.bytes, len("payload")*len(objstore.Types))
 	}
 
 	if err := reclaim(r); err != nil {
 		t.Fatalf("reclaim returned error: %v", err)
 	}
 
-	for _, objType := range objectStoreTypes {
-		deadDir := filepath.Join(absDataDir, "storage", objType, dead)
+	for _, objType := range objstore.Types {
+		deadDir := objstore.RepoDir(absDataDir, objType, dead)
 		if _, err := os.Stat(deadDir); !os.IsNotExist(err) {
 			t.Errorf("%s survived reclaim", deadDir)
 		}
-		liveDir := filepath.Join(absDataDir, "storage", objType, live)
+		liveDir := objstore.RepoDir(absDataDir, objType, live)
 		if _, err := os.Stat(liveDir); err != nil {
 			t.Errorf("live repo's %s was removed: %v", liveDir, err)
 		}

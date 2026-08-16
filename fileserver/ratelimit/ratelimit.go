@@ -9,7 +9,6 @@
 package ratelimit
 
 import (
-	"math"
 	"sync"
 	"time"
 )
@@ -61,15 +60,28 @@ func (l *Limiter) Allowed(key string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	b := l.refillLocked(key)
+	// A key with no bucket has a full one, so answering from the absence keeps
+	// this read-only. That matters because Allowed runs before the password is
+	// checked, on a key derived from the submitted email: creating an entry
+	// here would let an attacker cycling through usernames grow the map with
+	// one allocation per request, all of them carrying no state. Only
+	// Penalize, which runs after an attempt has actually failed, creates
+	// buckets.
+	b, ok := l.buckets[key]
+	if !ok {
+		return true, 0
+	}
+	l.refillBucket(b)
 	if b.tokens >= 1 {
 		return true, 0
 	}
-	// Rounded up to a whole second: Retry-After carries seconds, and reporting
-	// a truncated wait would invite a retry that is still too early.
-	wait := time.Duration(math.Ceil((1-b.tokens)/l.refill)) * time.Second
-	if wait < time.Second {
-		wait = time.Second
+	// The exact wait. Callers that have to report it in coarser units round it
+	// up themselves — rounding here as well would mean two layers deciding how
+	// long a caller should wait, and only one of them knows why.
+	wait := time.Duration((1 - b.tokens) / l.refill * float64(time.Second))
+	if wait <= 0 {
+		// A caller that is refused is entitled to a wait it can act on.
+		wait = 1
 	}
 	return false, wait
 }
@@ -96,20 +108,26 @@ func (l *Limiter) Reset(key string) {
 	delete(l.buckets, key)
 }
 
+// refillLocked returns key's bucket, creating a full one if it has none.
 func (l *Limiter) refillLocked(key string) *bucket {
-	now := l.now()
 	b, ok := l.buckets[key]
 	if !ok {
-		b = &bucket{tokens: l.capacity, last: now}
+		b = &bucket{tokens: l.capacity, last: l.now()}
 		l.buckets[key] = b
 		return b
 	}
+	l.refillBucket(b)
+	return b
+}
+
+// refillBucket credits b for the time since it was last touched.
+func (l *Limiter) refillBucket(b *bucket) {
+	now := l.now()
 	b.tokens += now.Sub(b.last).Seconds() * l.refill
 	if b.tokens > l.capacity {
 		b.tokens = l.capacity
 	}
 	b.last = now
-	return b
 }
 
 // Cleanup drops buckets that have refilled completely.

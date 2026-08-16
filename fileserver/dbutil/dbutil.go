@@ -102,6 +102,21 @@ func SharedLockSuffix() string {
 	}
 }
 
+// RowsAffected reports how many rows a statement touched, or zero when the
+// driver cannot say.
+//
+// The statement has already succeeded by the time this is called — only the
+// count is in doubt — so a driver that does not support the count must not
+// turn a completed delete into a caller-visible failure. Callers that report
+// a count to a user get a truthful "0" instead of a spurious error.
+func RowsAffected(res sql.Result) int64 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 func splitColumns(columns string) []string {
 	parts := strings.Split(columns, ",")
 	for i := range parts {

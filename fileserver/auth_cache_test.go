@@ -109,10 +109,10 @@ func TestInvalidateRepoAuthDropsOnlyThatRepo(t *testing.T) {
 		t.Fatalf("validateToken returned %d: %v", appErr.Code, appErr.Message)
 	}
 	permCache.Store(sharedRepoID+":"+victim+":upload", &permInfo{
-		perm: "rw", expireTime: time.Now().Add(time.Hour).Unix(),
+		expireTime: time.Now().Add(time.Hour).Unix(),
 	})
 	permCache.Store(otherRepoID+":"+victim+":upload", &permInfo{
-		perm: "rw", expireTime: time.Now().Add(time.Hour).Unix(),
+		expireTime: time.Now().Add(time.Hour).Unix(),
 	})
 	virtualRepoInfoCache.Store(sharedRepoID, &virtualRepoInfo{storeID: sharedRepoID})
 

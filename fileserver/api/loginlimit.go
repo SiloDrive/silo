@@ -1,6 +1,7 @@
 package api
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -88,7 +89,9 @@ func accountKey(account string) string {
 }
 
 func tooManyAttempts(w http.ResponseWriter, retry time.Duration) {
-	seconds := int(retry.Seconds())
+	// Rounded up: Retry-After carries whole seconds, and a truncated wait
+	// would invite a retry that is still too early.
+	seconds := int(math.Ceil(retry.Seconds()))
 	if seconds < 1 {
 		seconds = 1
 	}

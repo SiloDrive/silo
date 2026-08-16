@@ -879,11 +879,7 @@ func DeleteRepoTokensByEmail(email string) (int64, error) {
 	}
 	notify(OnTokensRevoked, email)
 
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, nil
-	}
-	return n, nil
+	return dbutil.RowsAffected(res), nil
 }
 
 // DeleteRepoToken removes a specific sync token.
