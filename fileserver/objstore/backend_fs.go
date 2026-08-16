@@ -2,9 +2,12 @@
 package objstore
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path"
+
+	"github.com/dkam/silo/fileserver/utils"
 )
 
 type fsBackend struct {
@@ -32,8 +35,21 @@ func newFSBackend(seafileDataDir string, objType string) (*fsBackend, error) {
 	return backend, nil
 }
 
+// objPath builds the on-disk path for an object. Object IDs are fanned out
+// as objID[:2]/objID[2:], which panics on an ID shorter than two characters,
+// so the store validates rather than trusting its callers.
+func (b *fsBackend) objPath(repoID string, objID string) (string, error) {
+	if !utils.IsObjectIDValid(objID) {
+		return "", fmt.Errorf("invalid object id %q", objID)
+	}
+	return path.Join(b.objDir, repoID, objID[:2], objID[2:]), nil
+}
+
 func (b *fsBackend) read(repoID string, objID string, w io.Writer) error {
-	p := path.Join(b.objDir, repoID, objID[:2], objID[2:])
+	p, err := b.objPath(repoID, objID)
+	if err != nil {
+		return err
+	}
 	fd, err := os.Open(p)
 	if err != nil {
 		return err
@@ -49,6 +65,9 @@ func (b *fsBackend) read(repoID string, objID string, w io.Writer) error {
 }
 
 func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) error {
+	if !utils.IsObjectIDValid(objID) {
+		return fmt.Errorf("invalid object id %q", objID)
+	}
 	parentDir := path.Join(b.objDir, repoID, objID[:2])
 	p := path.Join(parentDir, objID[2:])
 	err := os.MkdirAll(parentDir, os.ModePerm)
@@ -92,8 +111,11 @@ func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync bool) e
 }
 
 func (b *fsBackend) exists(repoID string, objID string) (bool, error) {
-	path := path.Join(b.objDir, repoID, objID[:2], objID[2:])
-	_, err := os.Stat(path)
+	path, err := b.objPath(repoID, objID)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, err
@@ -104,7 +126,10 @@ func (b *fsBackend) exists(repoID string, objID string) (bool, error) {
 }
 
 func (b *fsBackend) stat(repoID string, objID string) (int64, error) {
-	path := path.Join(b.objDir, repoID, objID[:2], objID[2:])
+	path, err := b.objPath(repoID, objID)
+	if err != nil {
+		return -1, err
+	}
 	fileInfo, err := os.Stat(path)
 	if err != nil {
 		return -1, err

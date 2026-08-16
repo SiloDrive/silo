@@ -2,9 +2,11 @@ package objstore
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -113,4 +115,38 @@ func TestObjStore(t *testing.T) {
 	testWrite(t)
 	testRead(t)
 	testExists(t)
+}
+
+// The store fans objects out as objID[:2]/objID[2:], which panics outright on
+// an ID shorter than two characters, so every entry point must reject a
+// malformed ID rather than slicing it.
+func TestObjStoreRejectsInvalidObjectID(t *testing.T) {
+	bad := []string{
+		"",
+		"a",
+		"ab",
+		"../../../etc/passwd",
+		"0401fc662e3bc87a41f299a907c056aaf8322a2",   // 39 chars
+		"0401fc662e3bc87a41f299a907c056aaf8322a277", // 41 chars
+		"0401FC662E3BC87A41F299A907C056AAF8322A27",  // uppercase hex
+		"0401fc662e3bc87a41f299a907c056aaf8322g27",  // non-hex
+	}
+
+	bend := New(seafileConfPath, seafileDataDir, "commit")
+	for _, id := range bad {
+		// Each of these would panic rather than return if the guard were gone.
+		if err := bend.Read(repoID, id, io.Discard); err == nil {
+			t.Errorf("Read(%q) returned nil error, want rejection", id)
+		}
+		if err := bend.Write(repoID, id, strings.NewReader("data"), true); err == nil {
+			t.Errorf("Write(%q) returned nil error, want rejection", id)
+		}
+		exists, err := bend.Exists(repoID, id)
+		if err == nil || exists {
+			t.Errorf("Exists(%q) = (%v, %v), want (false, error)", id, exists, err)
+		}
+		if _, err := bend.Stat(repoID, id); err == nil {
+			t.Errorf("Stat(%q) returned nil error, want rejection", id)
+		}
+	}
 }
