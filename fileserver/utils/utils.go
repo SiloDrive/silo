@@ -28,6 +28,23 @@ func IsObjectIDValid(objID string) bool {
 	return true
 }
 
+// Every Silo JWT is signed with the same key (option.JWTPrivateKey), so a
+// token of one kind parses cleanly as another kind's claims — a notification
+// token read as session claims yields an empty email rather than an error.
+// Each token Silo issues *and validates* therefore carries an audience naming
+// the only validator allowed to accept it, and each validator requires it.
+const (
+	AudSession = "silo:session"
+	AudNotif   = "silo:notif"
+)
+
+// SigningAlg is the only JWT algorithm Silo issues or accepts. Validators pass
+// it to jwt.WithValidMethods so a token cannot select its own algorithm.
+const SigningAlg = "HS256"
+
+// SeahubClaims is deliberately left without an audience: unlike the session
+// and notification tokens, this one is consumed by Seahub rather than by Silo,
+// and PyJWT rejects a token carrying an `aud` it wasn't told to expect.
 type SeahubClaims struct {
 	IsInternal bool `json:"is_internal"`
 	jwt.RegisteredClaims
@@ -57,10 +74,11 @@ type MyClaims struct {
 func GenNotifJWTToken(repoID, user string, exp int64) (string, error) {
 	claims := new(MyClaims)
 	claims.ExpiresAt = jwt.NewNumericDate(time.Unix(exp, 0))
+	claims.Audience = jwt.ClaimStrings{AudNotif}
 	claims.RepoID = repoID
 	claims.UserName = user
 
-	token := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claims)
+	token := jwt.NewWithClaims(jwt.GetSigningMethod(SigningAlg), claims)
 	tokenString, err := token.SignedString([]byte(option.JWTPrivateKey))
 	if err != nil {
 		err := fmt.Errorf("failed to gen jwt token for repo %s: %w", repoID, err)

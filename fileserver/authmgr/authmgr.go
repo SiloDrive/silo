@@ -17,6 +17,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/utils"
 	jwt "github.com/golang-jwt/jwt/v5"
 	log "github.com/sirupsen/logrus"
 )
@@ -130,12 +131,17 @@ type SessionClaims struct {
 }
 
 func GenerateSessionToken(email string) (string, error) {
+	if email == "" {
+		return "", fmt.Errorf("refusing to issue a session token with no email")
+	}
+
 	now := time.Now()
 	claims := SessionClaims{
 		Email: email,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(24 * time.Hour)),
+			Audience:  jwt.ClaimStrings{utils.AudSession},
 		},
 	}
 
@@ -149,12 +155,17 @@ func GenerateSessionToken(email string) (string, error) {
 }
 
 func ValidateSessionToken(tokenString string) (string, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &SessionClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(option.JWTPrivateKey), nil
-	})
+	token, err := jwt.ParseWithClaims(tokenString, &SessionClaims{},
+		func(token *jwt.Token) (interface{}, error) {
+			return []byte(option.JWTPrivateKey), nil
+		},
+		// The notification tokens are signed with this same key, so the
+		// signature alone proves nothing about which validator a token was
+		// meant for. WithAudience makes that explicit and rejects a token
+		// carrying no audience at all.
+		jwt.WithValidMethods([]string{utils.SigningAlg}),
+		jwt.WithAudience(utils.AudSession),
+	)
 	if err != nil {
 		return "", fmt.Errorf("invalid token: %v", err)
 	}
@@ -162,6 +173,13 @@ func ValidateSessionToken(tokenString string) (string, error) {
 	claims, ok := token.Claims.(*SessionClaims)
 	if !ok || !token.Valid {
 		return "", fmt.Errorf("invalid token claims")
+	}
+
+	// A token of another kind that somehow satisfied the checks above would
+	// carry no email, and an empty identity must never reach a handler:
+	// share.CheckPerm("") denies, but repo creation would happily accept it.
+	if claims.Email == "" {
+		return "", fmt.Errorf("token has no email claim")
 	}
 
 	return claims.Email, nil

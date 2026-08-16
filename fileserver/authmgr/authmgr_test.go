@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/pbkdf2"
 
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/utils"
+	jwt "github.com/golang-jwt/jwt/v5"
 )
 
 func init() {
@@ -139,5 +142,111 @@ func TestSessionTokenDifferentUsers(t *testing.T) {
 	t2, _ := GenerateSessionToken("bob@example.com")
 	if t1 == t2 {
 		t.Error("expected different tokens for different users")
+	}
+}
+
+// TestValidateSessionTokenRejectsNotifToken is the regression test for the
+// token-confusion bug: notification tokens are signed with the same key, carry
+// "username" rather than "email", and so used to parse as session claims with
+// an empty email and a nil error — admitting an empty identity.
+func TestValidateSessionTokenRejectsNotifToken(t *testing.T) {
+	notifTok, err := utils.GenNotifJWTToken(
+		"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "mallory@example.com",
+		time.Now().Add(72*time.Hour).Unix())
+	if err != nil {
+		t.Fatalf("failed to generate notif token: %v", err)
+	}
+
+	email, err := ValidateSessionToken(notifTok)
+	if err == nil {
+		t.Errorf("notification token was accepted as a session token (email=%q)", email)
+	}
+	if email != "" {
+		t.Errorf("expected no email, got %q", email)
+	}
+}
+
+// A token with no audience at all — i.e. one issued before audiences existed —
+// must not be accepted.
+func TestValidateSessionTokenRejectsMissingAudience(t *testing.T) {
+	claims := SessionClaims{
+		Email: "user@example.com",
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	}
+	legacy, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
+		SignedString([]byte(option.JWTPrivateKey))
+	if err != nil {
+		t.Fatalf("failed to sign legacy token: %v", err)
+	}
+
+	if _, err := ValidateSessionToken(legacy); err == nil {
+		t.Error("token with no audience was accepted")
+	}
+}
+
+func TestValidateSessionTokenRejectsWrongAudience(t *testing.T) {
+	claims := SessionClaims{
+		Email: "user@example.com",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			Audience:  jwt.ClaimStrings{utils.AudNotif},
+		},
+	}
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
+		SignedString([]byte(option.JWTPrivateKey))
+	if err != nil {
+		t.Fatalf("failed to sign token: %v", err)
+	}
+
+	if _, err := ValidateSessionToken(tok); err == nil {
+		t.Error("token with the notification audience was accepted as a session")
+	}
+}
+
+// The validator pins HS256 rather than accepting whatever the token's header
+// selects, so a correctly-keyed token under another HMAC variant is refused.
+func TestValidateSessionTokenPinsAlgorithm(t *testing.T) {
+	claims := SessionClaims{
+		Email: "user@example.com",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			Audience:  jwt.ClaimStrings{utils.AudSession},
+		},
+	}
+	hs512, err := jwt.NewWithClaims(jwt.SigningMethodHS512, claims).
+		SignedString([]byte(option.JWTPrivateKey))
+	if err != nil {
+		t.Fatalf("failed to sign HS512 token: %v", err)
+	}
+
+	if _, err := ValidateSessionToken(hs512); err == nil {
+		t.Error("HS512 token was accepted despite the HS256 pin")
+	}
+}
+
+func TestValidateSessionTokenRejectsEmptyEmail(t *testing.T) {
+	claims := SessionClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			Audience:  jwt.ClaimStrings{utils.AudSession},
+		},
+	}
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
+		SignedString([]byte(option.JWTPrivateKey))
+	if err != nil {
+		t.Fatalf("failed to sign token: %v", err)
+	}
+
+	if _, err := ValidateSessionToken(tok); err == nil {
+		t.Error("session token with an empty email was accepted")
+	}
+}
+
+func TestGenerateSessionTokenRejectsEmptyEmail(t *testing.T) {
+	if _, err := GenerateSessionToken(""); err == nil {
+		t.Error("expected an error when generating a token with no email")
 	}
 }
