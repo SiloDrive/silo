@@ -358,6 +358,29 @@ func GetEmailByToken(repoID string, token string) (string, error) {
 	return email, nil
 }
 
+// GetEmailForToken resolves a sync token to its owner without naming a repo.
+//
+// GetEmailByToken is the one to use wherever the repo is known — it is the
+// stronger check, since it also proves the token was issued for that repo.
+// This exists for the batched endpoints, which are handed a list of repos and
+// one token and have to establish who is asking before they can decide which
+// of those repos to answer for.
+func GetEmailForToken(token string) (string, error) {
+	var email string
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+
+	row := seafileDB.QueryRowContext(ctx,
+		"SELECT email FROM RepoUserToken WHERE token = ?", token)
+	if err := row.Scan(&email); err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return email, nil
+}
+
 // GetRepoStatus return repo status by repo id.
 func GetRepoStatus(repoID string) (int, error) {
 	var status = -1

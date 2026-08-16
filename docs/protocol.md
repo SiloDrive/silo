@@ -99,7 +99,7 @@ validated against the `RepoUserToken` SQL table per request (with a
 | POST | `/repo/{id}/check-blocks` | Check which blocks exist server-side |
 | GET | `/repo/{id}/quota-check?delta=N` | Will this write fit in quota? |
 | GET | `/repo/{id}/jwt-token` | Get a JWT for notification server |
-| POST | `/repo/head-commits-multi` | Get HEAD commits for multiple repos in one round-trip |
+| POST | `/repo/head-commits-multi` | Get HEAD commits for multiple repos in one round-trip. Silo requires a sync token here and answers only for repos that token's owner can read; upstream leaves it unauthenticated. A client that sends no token gets 400 and should fall back to per-repo `GET /commit/HEAD`. |
 | GET | `/files/{token}/{filename}` | Download a file via a short-lived access token |
 | GET | `/repos/{repoid}/files/{filepath}` | Download a file by path (uses repo token) |
 

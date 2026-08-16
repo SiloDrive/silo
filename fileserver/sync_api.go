@@ -679,7 +679,37 @@ func packFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	return nil
 }
 
+// headCommitsMultiCB answers the batched head poll: given a list of repo ids,
+// return each one's head commit.
+//
+// It answers only for the repos the caller can actually read. Unauthenticated
+// — which is how upstream ships it, and how this did — it is an oracle:
+// anyone who can reach the port and knows a repo's id learns whether that
+// library exists and watches its head move, which is its activity, without
+// ever holding a credential. It is also an unauthenticated way to make the
+// server run a large IN query.
+//
+// The caller is identified from a sync token by value rather than against a
+// named repo, because the whole point of the endpoint is that many repos come
+// in one request. Each repo is then permission-checked individually, so
+// holding a token for one library does not reveal anything about another.
 func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
+	token := r.Header.Get("Seafile-Repo-Token")
+	if token == "" {
+		token = utils.GetAuthorizationToken(r.Header)
+	}
+	if token == "" {
+		return &appError{nil, "token is null", http.StatusBadRequest}
+	}
+	user, err := repomgr.GetEmailForToken(token)
+	if err != nil {
+		log.Errorf("Failed to resolve token for head-commits-multi: %v", err)
+		return &appError{err, "", http.StatusInternalServerError}
+	}
+	if user == "" {
+		return &appError{nil, "Invalid token", http.StatusForbidden}
+	}
+
 	var repoIDList []string
 	if appErr := decodeLimitedJSON(rsp, r, maxIDListBodySize, &repoIDList); appErr != nil {
 		return appErr
@@ -689,15 +719,27 @@ func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	}
 
 	var repoIDs strings.Builder
+	var allowed int
 	for i := 0; i < len(repoIDList); i++ {
 		if !utils.IsValidUUID(repoIDList[i]) {
 			return &appError{nil, "", http.StatusBadRequest}
 		}
-		if i == 0 {
-			fmt.Fprintf(&repoIDs, "'%s'", repoIDList[i])
-		} else {
-			fmt.Fprintf(&repoIDs, ",'%s'", repoIDList[i])
+		// Filtered before the query rather than after, so an unreadable repo
+		// is not even looked up.
+		if checkPermission(repoIDList[i], user, "download", false) != nil {
+			continue
 		}
+		if allowed > 0 {
+			repoIDs.WriteString(",")
+		}
+		fmt.Fprintf(&repoIDs, "'%s'", repoIDList[i])
+		allowed++
+	}
+
+	// Nothing the caller may read. An empty map rather than an error: which
+	// of the ids were rejected is itself the thing not to disclose.
+	if allowed == 0 {
+		return writeJSONMap(rsp, map[string]string{})
 	}
 
 	sqlStr := fmt.Sprintf(
@@ -729,7 +771,11 @@ func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 
-	data, err := json.Marshal(commitIDMap)
+	return writeJSONMap(rsp, commitIDMap)
+}
+
+func writeJSONMap(rsp http.ResponseWriter, m map[string]string) *appError {
+	data, err := json.Marshal(m)
 	if err != nil {
 		err := fmt.Errorf("failed to marshal json: %v", err)
 		return &appError{err, "", http.StatusInternalServerError}
@@ -738,7 +784,6 @@ func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	rsp.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	rsp.WriteHeader(http.StatusOK)
 	_, _ = rsp.Write(data)
-
 	return nil
 }
 
@@ -1259,6 +1304,21 @@ func includeInvalidPath(baseCommit, newCommit *commitmgr.Commit) bool {
 	return false
 }
 
+// getHeadCommit returns a repo's head commit, or the deleted status if the
+// repo is gone.
+//
+// The existence check deliberately runs before the token check, which does
+// mean anyone holding a repo id learns whether that library still exists.
+// That cannot be closed by reordering: DeleteRepo removes the repo's
+// RepoUserToken rows along with everything else, so after a deletion there is
+// no credential left to authenticate with. Requiring one first would turn
+// every deleted library into a 403, and a client that cannot tell "deleted"
+// from "not yours" never removes it — the library would sit in the client
+// forever, retrying.
+//
+// What is not disclosed is the head itself, which is behind validateToken
+// below. Existence alone, to someone who already knows a 122-bit id, is the
+// price of the client being able to clean up.
 func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
