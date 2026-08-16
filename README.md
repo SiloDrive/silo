@@ -76,6 +76,13 @@ This produces a `silo` executable (~20 MB) that contains the file server daemon,
 
 ### Docker
 
+The image runs as uid 65532, not root, so a bind-mounted data directory has to
+be writable by that uid:
+
+```bash
+mkdir -p /path/to/silo-data && chown -R 65532:65532 /path/to/silo-data
+```
+
 Build and run directly from GitHub — no clone needed:
 
 ```bash
@@ -120,7 +127,9 @@ SILO_ADMIN_PASSWORD=changeme \
 ./silo serve -d /path/to/silo-data
 ```
 
-The server listens on `:8082`. On first run it creates the ccnet and seafile SQLite databases, the storage directory, and the admin user. No config file is required — Silo runs on compiled defaults plus environment variables. If you want to tweak low-level settings (quota defaults, cache limits, cluster options) you can pass a `seafile.conf` with `-C /path/to/seafile.conf`.
+The server listens on `127.0.0.1:8082`. On first run it creates the ccnet and seafile SQLite databases, the storage directory, and the admin user. No config file is required — Silo runs on compiled defaults plus environment variables. If you want to tweak low-level settings (quota defaults, cache limits, cluster options) you can pass a `seafile.conf` with `-C /path/to/seafile.conf`.
+
+**Loopback is the default on purpose.** Silo speaks plaintext unless given a certificate, and every credential it uses — sync tokens, API tokens, JWTs — is a bearer token in a header. To reach it from other machines, see [Exposing the server](#exposing-the-server).
 
 ### Run the TUI client
 
@@ -175,7 +184,8 @@ silo repo rm <repo-id>
 | Variable | Purpose | Default |
 |---|---|---|
 | `SILO_DATA_DIR` | Data directory | `~/.local/share/silo` |
-| `SILO_HOST` | Bind address | `0.0.0.0` |
+| `SILO_HOST` | Bind address | `127.0.0.1` (`0.0.0.0` in the Docker image) |
+| `SILO_TLS_CERT` / `SILO_TLS_KEY` | Serve HTTPS directly (set both) | — |
 | `SILO_PORT` | Listen port | `8082` |
 | `SILO_ADMIN_EMAIL` | Create admin user on startup | — |
 | `SILO_ADMIN_PASSWORD` | Admin password | — |
@@ -214,6 +224,50 @@ rsync -a "$SILO_DATA_DIR"/storage/ /backup/silo/$(date +%F)/storage/   # objects
 Both steps are safe with the server running, and the order matters. See
 [`docs/backup.md`](docs/backup.md) for why, plus cold backup, restore and
 verification.
+
+## Exposing the server
+
+Silo binds `127.0.0.1` by default and speaks plaintext. Every credential it
+uses is a bearer token in a header, so publishing that port without TLS hands
+those tokens to anyone on the path. Two supported ways to expose it:
+
+**Behind a TLS reverse proxy** (recommended). Leave Silo on loopback and
+terminate TLS in front of it:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name silo.example.com;
+    ssl_certificate     /etc/letsencrypt/live/silo.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/silo.example.com/privkey.pem;
+
+    # Uploads are whole files; do not let the proxy cap them.
+    client_max_body_size 0;
+    proxy_request_buffering off;
+
+    location / {
+        proxy_pass http://127.0.0.1:8082;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+Then set `SILO_TRUST_PROXY_HEADERS=true` so per-address rate limiting sees the
+real client rather than the proxy.
+
+**Serving TLS directly**, for a deployment with no proxy:
+
+```bash
+SILO_HOST=0.0.0.0 \
+SILO_TLS_CERT=/etc/silo/fullchain.pem \
+SILO_TLS_KEY=/etc/silo/privkey.pem \
+./silo serve -d /path/to/silo-data
+```
+
+Setting `SILO_HOST` to a non-loopback address without either option logs a
+warning on every start.
 
 ## Revoking access
 

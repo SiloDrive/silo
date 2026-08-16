@@ -17,7 +17,7 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.3.24"
+var Version = "0.3.25"
 
 func main() {
 	args := os.Args[1:]
@@ -108,7 +108,9 @@ Usage:
 
 Server environment:
   SILO_DATA_DIR          Data directory (default: ~/.local/share/silo)
-  SILO_HOST              Listen address (default: 0.0.0.0)
+  SILO_HOST              Listen address (default: 127.0.0.1)
+  SILO_TLS_CERT          TLS certificate file (with SILO_TLS_KEY, serves HTTPS)
+  SILO_TLS_KEY           TLS private key file
   SILO_PORT              Listen port (default: 8082)
   SILO_ADMIN_EMAIL       Bootstrap admin email (first run)
   SILO_ADMIN_PASSWORD    Bootstrap admin password (first run)

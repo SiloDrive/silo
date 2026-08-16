@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -409,16 +410,48 @@ func Run(args []string) error {
 	go handleSignals()
 	go handleUser1Signal()
 
-	log.Printf("Silo server listening on %s:%d", option.Host, option.Port)
+	tlsCert, tlsKey := option.TLSCertFile, option.TLSKeyFile
+	scheme := "http"
+	if tlsCert != "" && tlsKey != "" {
+		scheme = "https"
+	}
+	log.Printf("Silo server listening on %s://%s:%d", scheme, option.Host, option.Port)
+	warnIfExposedWithoutTLS(scheme)
 
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if scheme == "https" {
+			err = httpServer.ListenAndServeTLS(tlsCert, tlsKey)
+		} else {
+			err = httpServer.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Errorf("File server exiting: %v", err)
 		}
 	}()
 
 	<-shutdownDone
 	return nil
+}
+
+// warnIfExposedWithoutTLS says so when the server is reachable from off the
+// machine over plaintext. Every credential Silo uses is a bearer token sent in
+// a header — sync tokens, API tokens, JWTs — so anyone on the path can lift
+// one and keep it. It is a warning rather than a refusal because terminating
+// TLS at a reverse proxy is the normal deployment, and the server cannot tell
+// from here whether one is in front of it.
+func warnIfExposedWithoutTLS(scheme string) {
+	if scheme == "https" {
+		return
+	}
+	ip := net.ParseIP(option.Host)
+	if ip != nil && ip.IsLoopback() {
+		return
+	}
+	log.Warnf("Listening on %s without TLS. Passwords and tokens will cross the "+
+		"network in clear text — put a TLS reverse proxy in front (and set "+
+		"SILO_TRUST_PROXY_HEADERS=true), or set SILO_TLS_CERT and SILO_TLS_KEY.",
+		option.Host)
 }
 
 func handleSignals() {

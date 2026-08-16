@@ -128,6 +128,13 @@ var (
 	// equivalent — Seafile clients persist those and treat them as durable.
 	APITokenTTL time.Duration
 
+	// TLSCertFile and TLSKeyFile, when both are set, make the server speak
+	// HTTPS directly. Left empty, it speaks plaintext and expects a TLS
+	// reverse proxy in front of it — every credential Silo uses is a bearer
+	// token in a header, so plaintext on an exposed address gives them away.
+	TLSCertFile string
+	TLSKeyFile  string
+
 	// LoginRateLimit throttles failed password attempts per client address
 	// and per account. On by default: both login endpoints run a PBKDF2
 	// verification with nothing in front of it, so without this an attacker
@@ -184,7 +191,14 @@ func EnvWithFallback(names ...string) string {
 }
 
 func initDefaultOptions() {
-	Host = "0.0.0.0"
+	// Loopback by default. Silo speaks plaintext unless given a certificate,
+	// and every credential it uses is a bearer token in a header, so a
+	// default that publishes the port to the whole network is a default that
+	// gives those tokens to anyone on it. Exposing the server is a decision
+	// to make deliberately, with SILO_HOST or the config file — the Docker
+	// image sets SILO_HOST=0.0.0.0 itself, since a container that binds
+	// loopback cannot be reached through a published port at all.
+	Host = "127.0.0.1"
 	Port = 8082
 	FixedBlockSize = 1 << 23
 	MaxIndexingThreads = 1
@@ -270,6 +284,14 @@ func LoadFileServerOptions(configFile string) {
 	TrustProxyHeaders = false
 	if v := os.Getenv("SILO_TRUST_PROXY_HEADERS"); v == "true" || v == "1" {
 		TrustProxyHeaders = true
+	}
+
+	TLSCertFile = os.Getenv("SILO_TLS_CERT")
+	TLSKeyFile = os.Getenv("SILO_TLS_KEY")
+	if (TLSCertFile == "") != (TLSKeyFile == "") {
+		// One without the other silently means no TLS, which is exactly the
+		// mistake worth failing loudly on.
+		log.Fatal("SILO_TLS_CERT and SILO_TLS_KEY must be set together.")
 	}
 
 	// Durability of object writes. Opt-out only — an operator has to say so
