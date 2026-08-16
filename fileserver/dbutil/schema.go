@@ -155,6 +155,17 @@ func CreateSeafileTables(db *sql.DB) error {
 // The TTL is passed in rather than read from the option package so that
 // dbutil stays free of dependencies on the rest of the server.
 func MigrateSeafileTables(db *sql.DB, apiTokenTTL time.Duration) error {
+	// A zero TTL reaches here whenever a caller forgets to load options first,
+	// and the backfill below would then stamp every pre-existing token with
+	// expires_at = now — signing out every client as a side effect of running
+	// whatever command made the mistake. The callers get this right today; the
+	// guard is here because the damage is silent, immediate and irreversible,
+	// and the correct ordering is not visible from this function.
+	if apiTokenTTL <= 0 {
+		return fmt.Errorf("refusing to migrate with a non-positive API token TTL (%v): "+
+			"load the file server options before the databases", apiTokenTTL)
+	}
+
 	now := time.Now().Unix()
 
 	if err := AddColumnIfMissing(db, "ApiToken", "expires_at", "BIGINT"); err != nil {
