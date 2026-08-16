@@ -40,6 +40,19 @@ func loadRepoAndCommit(w http.ResponseWriter, repoID, user string) (*repomgr.Rep
 	return repo, head, true
 }
 
+// checkEntryName applies the same name guard the upload path uses before a
+// dirent reaches the tree, replying 400 when the name is rejected. Syncing
+// clients write dirent names straight to disk relative to the library root,
+// so "..", embedded separators, invalid UTF-8 and over-long names must never
+// be stored.
+func checkEntryName(w http.ResponseWriter, name string) bool {
+	if name == "" || name == "." || shouldIgnoreFile(name) {
+		http.Error(w, "Invalid name", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
 func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserEmail(r)
 	repoID := mux.Vars(r)["repoid"]
@@ -82,13 +95,16 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	parentDir := upath.Dir(path)
+	dirName := upath.Base(path)
+	if !checkEntryName(w, dirName) {
+		return
+	}
+
 	repo, head, ok := loadRepoAndCommit(w, repoID, user)
 	if !ok {
 		return
 	}
-
-	parentDir := upath.Dir(path)
-	dirName := upath.Base(path)
 
 	mode := uint32(syscall.S_IFDIR | 0644)
 	dent := fsmgr.NewDirent(fsmgr.EmptySha1, dirName, mode, time.Now().Unix(), "", 0)
@@ -199,6 +215,9 @@ func renameHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path and newname are required", http.StatusBadRequest)
 		return
 	}
+	if !checkEntryName(w, newName) {
+		return
+	}
 
 	repo, head, ok := loadRepoAndCommit(w, repoID, user)
 	if !ok {
@@ -259,6 +278,9 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if srcPath == dstPath {
 		http.Error(w, "src and dst are the same", http.StatusBadRequest)
+		return
+	}
+	if !checkEntryName(w, upath.Base(dstPath)) {
 		return
 	}
 

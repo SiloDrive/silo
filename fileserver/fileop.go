@@ -2409,6 +2409,13 @@ func postMultiFilesRecursive(repo *repomgr.Repo, dirID, toPath, user string, den
 
 func addNewEntries(repo *repomgr.Repo, user string, oldDents *[]*fsmgr.SeafDirent, newDents []*fsmgr.SeafDirent, replaceExisted bool, names *[]string) error {
 	for _, dent := range newDents {
+		// Last line of defense: a dirent name is written verbatim to the
+		// filesystem by every syncing client, so never let one containing
+		// "..", a path separator or invalid UTF-8 into the tree.
+		if shouldIgnoreFile(dent.Name) {
+			return fmt.Errorf("invalid file name %q", dent.Name)
+		}
+
 		var replace bool
 		var uniqueName string
 		if replaceExisted {
