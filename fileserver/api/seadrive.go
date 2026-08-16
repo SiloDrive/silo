@@ -29,12 +29,18 @@ func SeaDriveAuthTokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !allowLoginAttempt(w, r, username) {
+		return
+	}
+
 	email, err := authmgr.ValidatePassword(username, password)
 	if err != nil {
+		loginFailed(r, username)
 		log.Infof("SeaDrive login failed for %s: %v", username, err)
 		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
 		return
 	}
+	loginSucceeded(username)
 
 	token, err := apitokenstore.Create(email)
 	if err != nil {

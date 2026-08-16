@@ -183,6 +183,8 @@ silo repo rm <repo-id>
 | `SILO_LOG_LEVEL` | Log level: debug, info, warn, error | — |
 | `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
 | `SILO_AUTH_CACHE_TTL` | How long token/permission lookups are cached (`0` disables) | `5m` |
+| `SILO_LOGIN_RATE_LIMIT` | Throttle failed logins per address and per account | `true` |
+| `SILO_TRUST_PROXY_HEADERS` | Believe `X-Forwarded-For` / `X-Real-Ip` — **set this behind a reverse proxy** | `false` |
 | `SILO_URL` | Server base URL (client/TUI) | `http://localhost:8082` |
 | `SILO_EMAIL` | Account email (client/TUI) | — |
 | `SILO_PASSWORD` | Account password (client/TUI) | — |
@@ -224,6 +226,11 @@ silo token list bob@example.com      # sync tokens (per device) and API tokens
 silo token revoke bob@example.com    # every token: all devices, all libraries
 silo token revoke bob@example.com <token>   # just one device
 ```
+
+Failed logins are throttled per client address and per account, so online
+password guessing is bounded. **Behind a reverse proxy, set
+`SILO_TRUST_PROXY_HEADERS=true`** — otherwise every client arrives as the
+proxy's address and shares one bucket, and one attacker throttles everyone.
 
 Revoking through the CLI takes effect within `SILO_AUTH_CACHE_TTL` (5 minutes
 by default), since a separate process cannot purge the running server's auth

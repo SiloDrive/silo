@@ -363,6 +363,7 @@ func Run(args []string) error {
 	keycache.StartReaper()
 	authmgr.Init(ccnetPair.Read, ccnetPair.Write)
 	api.Init(seafilePair.Read, seafilePair.Write)
+	api.StartLoginLimiterCleanup()
 	apitokenstore.Init(seafilePair.Read, seafilePair.Write)
 	apitokenstore.StartCleanup()
 

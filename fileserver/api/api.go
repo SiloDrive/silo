@@ -63,12 +63,18 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !allowLoginAttempt(w, r, req.Email) {
+		return
+	}
+
 	email, err := authmgr.ValidatePassword(req.Email, req.Password)
 	if err != nil {
+		loginFailed(r, req.Email)
 		log.Infof("Login failed for %s: %v", req.Email, err)
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
+	loginSucceeded(req.Email)
 
 	token, err := authmgr.GenerateSessionToken(email)
 	if err != nil {

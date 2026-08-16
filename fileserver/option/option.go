@@ -128,6 +128,26 @@ var (
 	// equivalent — Seafile clients persist those and treat them as durable.
 	APITokenTTL time.Duration
 
+	// LoginRateLimit throttles failed password attempts per client address
+	// and per account. On by default: both login endpoints run a PBKDF2
+	// verification with nothing in front of it, so without this an attacker
+	// can guess online as fast as the server can hash, and every success
+	// mints a durable token.
+	//
+	// SILO_LOGIN_RATE_LIMIT=false turns it off, for a deployment that
+	// throttles at the proxy instead.
+	LoginRateLimit = true
+
+	// TrustProxyHeaders decides whether X-Forwarded-For and X-Real-Ip are
+	// believed when attributing a request to a client address.
+	//
+	// Off by default, because the headers are trivially forged and the rate
+	// limiter counts by address: believing them would hand an attacker a
+	// fresh identity per request. Behind a reverse proxy it must be turned
+	// on, or every client shares the proxy's bucket and one attacker
+	// throttles everyone.
+	TrustProxyHeaders bool
+
 	// database — use dbutil.DBEngine for portable SQL helpers
 	DBType string
 
@@ -238,6 +258,18 @@ func LoadFileServerOptions(configFile string) {
 		default:
 			AuthCacheTTL = d
 		}
+	}
+
+	LoginRateLimit = true
+	if v := os.Getenv("SILO_LOGIN_RATE_LIMIT"); v == "false" || v == "0" {
+		LoginRateLimit = false
+		log.Warn("SILO_LOGIN_RATE_LIMIT is off: password guessing against the login " +
+			"endpoints is unthrottled.")
+	}
+
+	TrustProxyHeaders = false
+	if v := os.Getenv("SILO_TRUST_PROXY_HEADERS"); v == "true" || v == "1" {
+		TrustProxyHeaders = true
 	}
 
 	// Durability of object writes. Opt-out only — an operator has to say so
