@@ -64,6 +64,27 @@ const (
 	timestampFormat = "[2006-01-02 15:04:05] "
 )
 
+// HTTP server limits.
+//
+// Only the two timeouts that are safe for a file server are set.
+// ReadTimeout and WriteTimeout are deliberately left at zero: they bound the
+// whole request body read and the whole response write respectively, and both
+// uploads and downloads here stream arbitrarily large files through the same
+// handler, so any finite value would sever legitimate transfers of a big
+// enough file on a slow enough link. ReadHeaderTimeout closes the Slowloris
+// hole those two would otherwise have covered, since it bounds the part an
+// attacker controls without touching the body.
+//
+// IdleTimeout must be set explicitly: left at zero it falls back to
+// ReadTimeout, which is also zero here, so keep-alive connections would idle
+// forever. WebSocket connections on /notification are unaffected — once
+// Upgrade hijacks the connection these no longer apply.
+const (
+	readHeaderTimeout = 30 * time.Second
+	idleTimeout       = 120 * time.Second
+	maxHeaderBytes    = 1 << 20 // 1MB, matching net/http's default
+)
+
 type LogFormatter struct{}
 
 func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
@@ -352,6 +373,9 @@ func Run(args []string) error {
 		handler = middleware.DebugLogger(handler)
 	}
 	httpServer.Handler = handler
+	httpServer.ReadHeaderTimeout = readHeaderTimeout
+	httpServer.IdleTimeout = idleTimeout
+	httpServer.MaxHeaderBytes = maxHeaderBytes
 
 	// Start signal handlers AFTER httpServer is fully constructed: the
 	// shutdown handler reads httpServer concurrently, and goroutine creation
