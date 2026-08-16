@@ -292,8 +292,10 @@ func permissionCheckCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	}
 	ip := getClientIPAddr(r)
 	if ip == "" {
-		token := r.Header.Get("Seafile-Repo-Token")
-		err := fmt.Errorf("%s failed to get client ip", token)
+		// Log the repo, never the token: appErrors are written to the log,
+		// and the token is a bearer credential that grants access to this
+		// repo until it is revoked.
+		err := fmt.Errorf("failed to get client ip for repo %s", repoID)
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 
@@ -304,7 +306,7 @@ func permissionCheckCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		token := r.Header.Get("Seafile-Repo-Token")
 		exists, err := repomgr.TokenPeerInfoExists(token)
 		if err != nil {
-			err := fmt.Errorf("failed to check whether token %s peer info exist: %v", token, err)
+			err := fmt.Errorf("failed to check token peer info for repo %s: %v", repoID, err)
 			return &appError{err, "", http.StatusInternalServerError}
 		}
 		if !exists {
