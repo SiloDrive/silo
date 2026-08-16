@@ -111,6 +111,44 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	return buf, nil
 }
 
+// resolvePaths fills absDataDir and configFile from the -d/-C flags, the
+// environment and the XDG defaults, in that order. `serve` and `gc` share it
+// so they cannot disagree about which data directory they are pointed at —
+// a divergence would have gc reclaiming objects from the wrong store.
+func resolvePaths() error {
+	if dataDir == "" {
+		dataDir = os.Getenv("SILO_DATA_DIR")
+	}
+	if dataDir == "" {
+		xdgDefault, err := xdg.DataHome("silo")
+		if err != nil {
+			return fmt.Errorf("cannot determine data directory: %v; use -d or set SILO_DATA_DIR", err)
+		}
+		dataDir = xdgDefault
+	}
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return fmt.Errorf("failed to create data directory %s: %v", dataDir, err)
+	}
+	var err error
+	absDataDir, err = filepath.Abs(dataDir)
+	if err != nil {
+		return fmt.Errorf("failed to convert data dir to absolute path: %v", err)
+	}
+
+	if configFile == "" {
+		if xdgConf, err := xdg.ConfigHome("silo"); err == nil {
+			for _, name := range []string{"silo.conf", "seafile.conf"} {
+				candidate := filepath.Join(xdgConf, name)
+				if _, err := os.Stat(candidate); err == nil {
+					configFile = candidate
+					break
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func loadDatabases() {
 	dbOpt, err := option.LoadDBOption(configFile)
 	if err != nil {
@@ -254,42 +292,14 @@ func Run(args []string) error {
 		}
 	}
 
-	// Resolve data directory: -d flag > SILO_DATA_DIR env > XDG default
-	if dataDir == "" {
-		dataDir = os.Getenv("SILO_DATA_DIR")
-	}
-	if dataDir == "" {
-		xdgDefault, err := xdg.DataHome("silo")
-		if err != nil {
-			log.Fatalf("Cannot determine data directory: %v. Use -d or set SILO_DATA_DIR.", err)
-		}
-		dataDir = xdgDefault
-	}
-	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		log.Fatalf("Failed to create data directory %s: %v", dataDir, err)
-	}
-	var err error
-	absDataDir, err = filepath.Abs(dataDir)
-	if err != nil {
-		log.Fatalf("Failed to convert data dir to absolute path: %v.", err)
+	if err := resolvePaths(); err != nil {
+		log.Fatalf("%v", err)
 	}
 	log.Infof("Data directory: %s", absDataDir)
 
-	// Resolve config file: -C flag > XDG config home > none
-	if configFile == "" {
-		if xdgConf, err := xdg.ConfigHome("silo"); err == nil {
-			for _, name := range []string{"silo.conf", "seafile.conf"} {
-				candidate := filepath.Join(xdgConf, name)
-				if _, err := os.Stat(candidate); err == nil {
-					configFile = candidate
-					break
-				}
-			}
-		}
-	}
-
 	// Logging: default to stdout. Use -l to write to a file instead.
 	if logFile != "" && logFile != "-" {
+		var err error
 		absLogFile, err = filepath.Abs(logFile)
 		if err != nil {
 			log.Fatalf("Failed to convert log file path to absolute path: %v", err)

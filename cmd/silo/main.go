@@ -17,7 +17,7 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.3.13"
+var Version = "0.3.14"
 
 func main() {
 	args := os.Args[1:]
@@ -30,6 +30,11 @@ func main() {
 	switch sub {
 	case "serve":
 		if err := silod.Run(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "gc":
+		if err := silod.RunGC(rest); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -74,6 +79,7 @@ func printUsage(w *os.File) {
 
 Usage:
   silo serve [flags]              Run the file server daemon
+  silo gc [-delete]               Reclaim disk from deleted libraries
   silo tui [url]                  Launch the interactive terminal UI
   silo repos [--json]             List libraries
   silo repo create <name>         Create a library (prints ID)
@@ -102,5 +108,9 @@ Client environment:
   SILO_PASSWORD          Account password for TUI/CLI
 
 Run "silo serve -h" for server-side flags.
+
+"silo gc" reports what deleting a library left behind and reclaims it with
+-delete. It only ever touches libraries that are already deleted, but stop
+the server first: nothing locks the data directory.
 `)
 }
