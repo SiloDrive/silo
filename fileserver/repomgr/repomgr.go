@@ -983,6 +983,26 @@ func CreateRepo(name, owner string) (string, error) {
 // DeleteRepo removes a repository and all associated DB records.
 // Filesystem objects (commits, blocks, fs) are NOT deleted — GC handles that.
 func DeleteRepo(repoID string) error {
+	// Virtual repos derived from this one go first. Deleting only the origin
+	// removed their VirtualRepo rows but left their Repo, Branch and
+	// RepoUserToken rows in place, so each child survived as an apparently
+	// ordinary library — while its StoreID still pointed at the origin's
+	// object store, which GC had just reclaimed. A client kept syncing
+	// against an empty store, and nothing ever cleaned the rows up.
+	children, err := listVirtualRepoIDs(repoID)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		// A repo listed as its own origin would otherwise recurse forever.
+		if child == repoID {
+			continue
+		}
+		if err := DeleteRepo(child); err != nil {
+			return fmt.Errorf("failed to delete virtual repo %s of %s: %v", child, repoID, err)
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout*2)
 	defer cancel()
 
@@ -1028,6 +1048,29 @@ func DeleteRepo(repoID string) error {
 
 	notify(OnRepoDeleted, repoID)
 	return nil
+}
+
+// listVirtualRepoIDs returns the repos whose origin is repoID.
+func listVirtualRepoIDs(repoID string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+
+	rows, err := seafileDB.QueryContext(ctx,
+		"SELECT repo_id FROM VirtualRepo WHERE origin_repo = ?", repoID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list virtual repos of %s: %v", repoID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to read virtual repo row: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // OnRepoDeleted and OnTokensRevoked let the fileserver drop cached

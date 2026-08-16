@@ -1783,6 +1783,13 @@ retry:
 			err := fmt.Errorf("failed to generate new commit: %w", err)
 			return "", err
 		}
+		// Bounded, like GenNewCommit's own loop. retryCnt was counted here
+		// and never compared against anything, so sustained contention on a
+		// non-replace upload retried forever, holding the request open and
+		// re-walking the tree each time.
+		if retryCnt >= maxPostFilesRetries {
+			return "", ErrConflict
+		}
 		retryCnt++
 		/* Sleep random time between 0 and 3 seconds. */
 		random := rand.Intn(30) + 1
@@ -1843,6 +1850,13 @@ var (
 	ErrConflict   = errors.New("concurrent upload conflict")
 	ErrGCConflict = errors.New("GC Conflict")
 )
+
+// maxPostFilesRetries bounds how many times postFilesAndGenCommit re-walks and
+// re-commits after losing a race for the branch head. Ten, matching
+// GenNewCommit's own limit — the two loops retry the same contention from
+// different depths, and there is no reason for the outer one to be more
+// patient than the inner.
+const maxPostFilesRetries = 10
 
 // GenNewCommit creates a new commit with the given root and updates the branch.
 func GenNewCommit(repo *repomgr.Repo, base *commitmgr.Commit, newRoot, user, desc string, handleConncurrentUpdate bool, lastGCID string, checkGC bool) (string, error) {

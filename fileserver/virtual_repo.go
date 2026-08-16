@@ -331,23 +331,28 @@ func editRepo(repoID, name, desc, user string) error {
 		return err
 	}
 
-	var retryCnt int
-	for retry, err := editRepoNeedRetry(repoID, name, desc, user); err != nil || retry; {
+	// The loop calls editRepoNeedRetry each time round. It used to call it
+	// once, in the for-statement's init, with an empty post statement — so
+	// retry and err never changed, the body could only sleep or return, and
+	// no retry ever happened. Combined with editRepoNeedRetry returning
+	// retry=true on success, every rename slept about a second and then
+	// reported "stop edit repo after 3 retries" to a caller whose rename had
+	// in fact already landed.
+	const maxRetries = 3
+	for retryCnt := 0; ; retryCnt++ {
+		retry, err := editRepoNeedRetry(repoID, name, desc, user)
 		if err != nil {
-			err := fmt.Errorf("failed to edit repo: %v", err)
-			return err
+			return fmt.Errorf("failed to edit repo: %v", err)
 		}
-		if retryCnt < 3 {
-			random := rand.Intn(10) + 1
-			time.Sleep(time.Duration(random*100) * time.Millisecond)
-			retryCnt++
-		} else {
-			err := fmt.Errorf("stop edit repo %s after 3 retries", repoID)
-			return err
+		if !retry {
+			return nil
 		}
+		if retryCnt >= maxRetries {
+			return fmt.Errorf("stop edit repo %s after %d retries", repoID, maxRetries)
+		}
+		random := rand.Intn(10) + 1
+		time.Sleep(time.Duration(random*100) * time.Millisecond)
 	}
-
-	return nil
 }
 
 func editRepoNeedRetry(repoID, name, desc, user string) (bool, error) {
@@ -384,6 +389,8 @@ func editRepoNeedRetry(repoID, name, desc, user string) (bool, error) {
 		return false, err
 	}
 
+	// A failed branch update means someone else moved the head first; the
+	// caller should reload and try again.
 	_, err = updateBranch(repoID, repo.StoreID, commit.CommitID, parent.CommitID, "", false, "")
 	if err != nil {
 		return true, nil
@@ -393,5 +400,7 @@ func editRepoNeedRetry(repoID, name, desc, user string) (bool, error) {
 		log.Warnf("failed to update repo info for %s: %v", repoID, err)
 	}
 
-	return true, nil
+	// Done — no retry. This returned true, which is what made the caller
+	// treat every successful rename as a lost race.
+	return false, nil
 }
