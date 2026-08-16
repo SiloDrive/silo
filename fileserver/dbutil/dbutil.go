@@ -78,6 +78,30 @@ func InsertOrIgnore(table, columns string) string {
 	}
 }
 
+// SharedLockSuffix returns the clause that puts a shared read lock on the rows
+// a SELECT returns, including its leading space, or "" for engines that have
+// no such clause.
+//
+//	MySQL:    " LOCK IN SHARE MODE"
+//	Postgres: " FOR SHARE"
+//	SQLite:   ""
+//
+// SQLite has no row locks and no such syntax — appending the MySQL clause is a
+// parse error, not a no-op, so the whole statement fails to prepare. It needs
+// no substitute: under WAL a reader sees a consistent snapshot without
+// blocking, and writes are already serialised onto the single write
+// connection.
+func SharedLockSuffix() string {
+	switch DBEngine {
+	case EnginePostgres:
+		return " FOR SHARE"
+	case EngineSQLite:
+		return ""
+	default: // mysql
+		return " LOCK IN SHARE MODE"
+	}
+}
+
 func splitColumns(columns string) []string {
 	parts := strings.Split(columns, ",")
 	for i := range parts {

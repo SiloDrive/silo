@@ -19,6 +19,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/blockmgr"
 	"github.com/dkam/silo/fileserver/commitmgr"
+	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/diff"
 	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/option"
@@ -649,8 +650,8 @@ func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 
 	sqlStr := fmt.Sprintf(
 		"SELECT repo_id, commit_id FROM Branch WHERE name='master' AND "+
-			"repo_id IN (%s) LOCK IN SHARE MODE",
-		repoIDs.String())
+			"repo_id IN (%s)%s",
+		repoIDs.String(), dbutil.SharedLockSuffix())
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()

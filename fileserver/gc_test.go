@@ -12,9 +12,9 @@ import (
 	"github.com/dkam/silo/fileserver/option"
 )
 
-// gcTestDB points the package's seafile connection at a throwaway SQLite file
+// sqliteTestDB points the package's seafile connection at a throwaway SQLite file
 // and restores whatever was there when the test finishes.
-func gcTestDB(t *testing.T) {
+func sqliteTestDB(t *testing.T) {
 	t.Helper()
 
 	origEngine := dbutil.DBEngine
@@ -47,7 +47,7 @@ func gcTestDB(t *testing.T) {
 	})
 }
 
-func gcExec(t *testing.T, query string, args ...interface{}) {
+func dbExec(t *testing.T, query string, args ...interface{}) {
 	t.Helper()
 	if _, err := seafilePair.Write.Exec(query, args...); err != nil {
 		t.Fatalf("failed to exec %q: %v", query, err)
@@ -58,7 +58,7 @@ func gcExec(t *testing.T, query string, args ...interface{}) {
 // virtual repo's StoreID to its origin's ID, so a directory named for a dead
 // repo can still hold a live repo's only copy.
 func TestUnsafeToReclaim(t *testing.T) {
-	gcTestDB(t)
+	sqliteTestDB(t)
 
 	const (
 		clean    = "11111111-1111-1111-1111-111111111111"
@@ -69,14 +69,14 @@ func TestUnsafeToReclaim(t *testing.T) {
 		liveVirt = "66666666-6666-6666-6666-666666666666"
 	)
 
-	gcExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", resurrec)
-	gcExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)",
+	dbExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", resurrec)
+	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)",
 		branched, "0401fc662e3bc87a41f299a907c056aaf8322a27")
 	// A live virtual repo whose objects are written into the dead origin's store.
-	gcExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, '/sub', ?)",
+	dbExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, '/sub', ?)",
 		liveVirt, origin, "0401fc662e3bc87a41f299a907c056aaf8322a27")
 	// A dead repo that is itself virtual: it owns no store directory.
-	gcExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, '/sub', ?)",
+	dbExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, '/sub', ?)",
 		virtual, "77777777-7777-7777-7777-777777777777", "0401fc662e3bc87a41f299a907c056aaf8322a27")
 
 	cases := []struct {
@@ -116,7 +116,7 @@ func TestUnsafeToReclaim(t *testing.T) {
 // Reclaiming must remove every store directory for the dead repo and clear its
 // GarbageRepos row, and must leave a live repo's store alone.
 func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
-	gcTestDB(t)
+	sqliteTestDB(t)
 
 	const (
 		dead = "11111111-1111-1111-1111-111111111111"
@@ -137,8 +137,8 @@ func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
 		}
 	}
 
-	gcExec(t, "INSERT INTO GarbageRepos (repo_id) VALUES (?)", dead)
-	gcExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", live)
+	dbExec(t, "INSERT INTO GarbageRepos (repo_id) VALUES (?)", dead)
+	dbExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", live)
 
 	repos, err := collectGarbageRepos()
 	if err != nil {
@@ -188,7 +188,7 @@ func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
 // A dead origin whose virtual repo is still live must survive collection
 // entirely: no directories measured, so a -delete pass has nothing to remove.
 func TestCollectSkipsOriginOfLiveVirtualRepo(t *testing.T) {
-	gcTestDB(t)
+	sqliteTestDB(t)
 
 	const (
 		origin  = "11111111-1111-1111-1111-111111111111"
@@ -205,9 +205,9 @@ func TestCollectSkipsOriginOfLiveVirtualRepo(t *testing.T) {
 		t.Fatalf("failed to write %s: %v", obj, err)
 	}
 
-	gcExec(t, "INSERT INTO GarbageRepos (repo_id) VALUES (?)", origin)
-	gcExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", virtual)
-	gcExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, '/sub', ?)",
+	dbExec(t, "INSERT INTO GarbageRepos (repo_id) VALUES (?)", origin)
+	dbExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", virtual)
+	dbExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, '/sub', ?)",
 		virtual, origin, "0401fc662e3bc87a41f299a907c056aaf8322a27")
 
 	repos, err := collectGarbageRepos()
