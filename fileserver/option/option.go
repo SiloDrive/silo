@@ -382,9 +382,11 @@ func LoadJWTConfig() error {
 		log.Info("SILO_JWT_SECRET not set, generated ephemeral key")
 	}
 
-	// SeahubURL is used by legacy merge conflict notification and
-	// share-link access checks. Silo has no Seahub, but the code paths
-	// still reference it — they'll fail gracefully (HTTP error, logged).
+	// SeahubURL now has exactly one caller left: postGetNickName, which looks
+	// up a display name for merge conflict messages. The share-link and web
+	// file-access paths that also used it were removed, since Silo runs no
+	// Seahub and they could only fail. The remaining call degrades quietly —
+	// postGetNickName falls back to the raw modifier string on any error.
 	siteRoot := os.Getenv("SITE_ROOT")
 	if siteRoot != "" {
 		SeahubURL = fmt.Sprintf("http://127.0.0.1:8000%sapi/v2.1/internal", siteRoot)

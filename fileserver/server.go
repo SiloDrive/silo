@@ -485,12 +485,11 @@ func newHTTPRouter() *mux.Router {
 	r.Handle("/upload-blks-api/{.*}", appHandler(uploadBlksAPICB))
 	r.Handle("/upload-raw-blks-api/{.*}", appHandler(uploadRawBlksAPICB))
 
-	// links api
-	//r.Handle("/u/{.*}", appHandler(uploadLinkCB))
-	r.Handle("/f/{.*}{slash:\\/?}", appHandler(accessLinkCB))
-	//r.Handle("/d/{.*}", appHandler(accessDirLinkCB))
-
-	r.Handle("/repos/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/files/{filepath:.*}", appHandler(accessV2CB))
+	// The share-link routes (/f/, /u/, /d/) and the web file-access route
+	// (/repos/{id}/files/{path}) were removed: every one of them authorized
+	// by POSTing to Seahub, which a standalone Silo deploy does not run, so
+	// they could only ever fail. Reinstating them means implementing the
+	// authorization against Silo's own share store, not restoring these.
 
 	// file syncing api
 	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/permission-check{slash:\\/?}",
