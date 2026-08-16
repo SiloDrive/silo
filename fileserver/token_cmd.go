@@ -173,16 +173,17 @@ func revokeOneToken(email, token string) error {
 		token, email, email)
 }
 
-// warnAboutServerCache states the window in which a revoked sync token still
-// works. validateToken serves positive hits from an in-memory cache, and a
-// separate process cannot reach into the running server to purge it.
+// warnAboutServerCache states the window in which a revoked token still
+// works. validateToken answers from an in-memory cache, and this being a
+// separate process, there is no way to reach into the running server and
+// purge it — only the TTL bounds it.
 func warnAboutServerCache(revoked int64) {
-	if revoked == 0 {
+	if revoked == 0 || option.AuthCacheTTL <= 0 {
 		return
 	}
-	fmt.Printf("\nA running server caches sync-token lookups for up to %s, so a revoked\n"+
-		"token can keep working until its cache entry ages out. Restart the server to\n"+
-		"apply the revocation immediately.\n", time.Duration(tokenExpireTime)*time.Second)
+	fmt.Printf("\nA running server caches token lookups for up to %s (SILO_AUTH_CACHE_TTL),\n"+
+		"so a revoked token can keep working until its cache entry ages out. Restart the\n"+
+		"server to apply the revocation immediately.\n", option.AuthCacheTTL)
 }
 
 func formatUnix(v sql.NullInt64) string {

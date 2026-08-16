@@ -342,6 +342,12 @@ func Run(args []string) error {
 
 	repomgr.Init(seafilePair.Read, seafilePair.Write)
 
+	// Drop cached authorisations as soon as the rows behind them go away,
+	// rather than at the next cache expiry. Registered here because repomgr
+	// sits below this package and cannot call into it.
+	repomgr.OnRepoDeleted = invalidateRepoAuth
+	repomgr.OnTokensRevoked = invalidateUserAuth
+
 	// First arg is the legacy "central config path"; it's threaded into
 	// objstore.New but never used there. Passing "" keeps the signatures
 	// untouched until a wider cleanup removes the parameter entirely.

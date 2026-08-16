@@ -39,9 +39,11 @@ const (
 )
 
 const (
-	emptySHA1                  = "0000000000000000000000000000000000000000"
-	tokenExpireTime            = 7200
-	permExpireTime             = 7200
+	emptySHA1 = "0000000000000000000000000000000000000000"
+	// The token and permission caches are bounded by option.AuthCacheTTL,
+	// which is a security window and configurable. This one is not: a repo's
+	// store id never changes while the repo exists, and repo deletion evicts
+	// the entry outright.
 	virtualRepoExpireTime      = 7200
 	syncAPICleaningIntervalSec = 300
 	maxObjectPackSize          = 1 << 20 // 1MB
@@ -1304,17 +1306,21 @@ func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 }
 
 func checkPermission(repoID, user, op string, skipCache bool) *appError {
-	var info *permInfo
+	key := fmt.Sprintf("%s:%s:%s", repoID, user, op)
 	if !skipCache {
-		if value, ok := permCache.Load(fmt.Sprintf("%s:%s:%s", repoID, user, op)); ok {
-			info = value.(*permInfo)
+		if value, ok := permCache.Load(key); ok {
+			// The expiry is checked here, not only by the sweeper. A hit used
+			// to be served without looking at it, so an entry stayed
+			// authoritative for its whole life plus however long until the
+			// next sweep — a permission withdrawn, or a library deleted, kept
+			// authorising uploads for that entire window.
+			if info, ok := value.(*permInfo); ok && info.expireTime > time.Now().Unix() {
+				return nil
+			}
 		}
 	}
-	if info != nil {
-		return nil
-	}
 
-	permCache.Delete(fmt.Sprintf("%s:%s:%s", repoID, user, op))
+	permCache.Delete(key)
 
 	if op == "upload" {
 		status, err := repomgr.GetRepoStatus(repoID)
@@ -1332,10 +1338,9 @@ func checkPermission(repoID, user, op string, skipCache bool) *appError {
 		if perm == "r" && op == "upload" {
 			return &appError{nil, "", http.StatusForbidden}
 		}
-		info = new(permInfo)
-		info.perm = perm
-		info.expireTime = time.Now().Unix() + permExpireTime
-		permCache.Store(fmt.Sprintf("%s:%s:%s", repoID, user, op), info)
+		if expireTime, caching := authCacheExpiry(); caching {
+			permCache.Store(key, &permInfo{perm: perm, expireTime: expireTime})
+		}
 		return nil
 	}
 
@@ -1354,7 +1359,7 @@ func validateToken(r *http.Request, repoID string, skipCache bool) (string, *app
 
 	if !skipCache {
 		if value, ok := tokenCache.Load(token); ok {
-			if info, ok := value.(*tokenInfo); ok {
+			if info, ok := value.(*tokenInfo); ok && info.expireTime > time.Now().Unix() {
 				if info.repoID != repoID {
 					msg := "Invalid token"
 					return "", &appError{nil, msg, http.StatusForbidden}
@@ -1378,13 +1383,55 @@ func validateToken(r *http.Request, repoID string, skipCache bool) (string, *app
 		return email, &appError{nil, msg, http.StatusForbidden}
 	}
 
-	info := new(tokenInfo)
-	info.email = email
-	info.expireTime = time.Now().Unix() + tokenExpireTime
-	info.repoID = repoID
-	tokenCache.Store(token, info)
+	if expireTime, caching := authCacheExpiry(); caching {
+		tokenCache.Store(token, &tokenInfo{email: email, expireTime: expireTime, repoID: repoID})
+	}
 
 	return email, nil
+}
+
+// authCacheExpiry returns the expiry stamp for a new auth cache entry, and
+// whether caching is on at all. option.AuthCacheTTL of zero means every
+// request re-checks the database, which is the only way to make a revocation
+// made outside this process take effect instantly.
+func authCacheExpiry() (int64, bool) {
+	if option.AuthCacheTTL <= 0 {
+		return 0, false
+	}
+	return time.Now().Add(option.AuthCacheTTL).Unix(), true
+}
+
+// invalidateRepoAuth drops every cached authorisation for a repository. It
+// runs when the repo is deleted: a cached permission outlives the rows it was
+// derived from, and would keep authorising uploads to a library that no
+// longer exists — recreating the storage directories `silo gc -delete` had
+// just reclaimed.
+func invalidateRepoAuth(repoID string) {
+	tokenCache.Range(func(key, value interface{}) bool {
+		if info, ok := value.(*tokenInfo); ok && info.repoID == repoID {
+			tokenCache.Delete(key)
+		}
+		return true
+	})
+	permCache.Range(func(key, value interface{}) bool {
+		if k, ok := key.(string); ok && strings.HasPrefix(k, repoID+":") {
+			permCache.Delete(key)
+		}
+		return true
+	})
+	virtualRepoInfoCache.Delete(repoID)
+}
+
+// invalidateUserAuth drops every cached token belonging to a user, so a
+// revocation this process performs takes effect on the next request rather
+// than at the next cache expiry.
+func invalidateUserAuth(email string) {
+	tokenCache.Range(func(key, value interface{}) bool {
+		if info, ok := value.(*tokenInfo); ok && info.email == email {
+			tokenCache.Delete(key)
+		}
+		return true
+	})
 }
 
 func validateClientVer(clientVer string) int {

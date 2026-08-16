@@ -84,6 +84,22 @@ var (
 	// DB default timeout
 	DBOpTimeout time.Duration
 
+	// AuthCacheTTL bounds how long validateToken and checkPermission may
+	// answer from memory before consulting the database again. It is the
+	// window in which a revoked token or a deleted library still works on a
+	// running server.
+	//
+	// Changes this process makes itself — a library deleted through the
+	// management API — purge the caches immediately, so the TTL only bounds
+	// what it cannot see: `silo token revoke` running as a separate process,
+	// and edits made directly to the database.
+	//
+	// Five minutes keeps effectively all of the benefit. The caches exist to
+	// keep a database round trip out of the path of every block request, and
+	// an actively syncing client makes far more than one request per five
+	// minutes. Set SILO_AUTH_CACHE_TTL=0 to check the database every time.
+	AuthCacheTTL time.Duration
+
 	// SyncObjectWrites fsyncs every commit, fs and block object before it is
 	// published, and fsyncs the directory entry after. On by default: the
 	// branch head lives in SQLite, which fsyncs its own WAL, so without this
@@ -167,6 +183,7 @@ func initDefaultOptions() {
 	MaxIndexingFiles = 10
 	APITokenTTL = 30 * 24 * time.Hour
 	SyncObjectWrites = true
+	AuthCacheTTL = 5 * time.Minute
 }
 
 // LoadFileServerOptions loads seafile.conf from the given path. An empty
@@ -204,6 +221,23 @@ func LoadFileServerOptions(configFile string) {
 	EnableNotification = true
 	if v := EnvWithFallback("SILO_ENABLE_NOTIFICATIONS", "ENABLE_NOTIFICATION_SERVER"); v == "false" || v == "0" {
 		EnableNotification = false
+	}
+
+	// Accepts a Go duration ("5m", "30s") or "0" to disable the auth caches
+	// entirely. Unlike the token TTL, a wrong value here is recoverable by
+	// fixing it and restarting, so it is clamped rather than rejected: a
+	// negative duration means the same thing as zero.
+	if v := os.Getenv("SILO_AUTH_CACHE_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		switch {
+		case err != nil:
+			log.Warnf("Ignoring unparseable SILO_AUTH_CACHE_TTL %q, using %s", v, AuthCacheTTL)
+		case d <= 0:
+			log.Info("SILO_AUTH_CACHE_TTL is zero: every request will re-check the database.")
+			AuthCacheTTL = 0
+		default:
+			AuthCacheTTL = d
+		}
 	}
 
 	// Durability of object writes. Opt-out only — an operator has to say so

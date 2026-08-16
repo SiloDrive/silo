@@ -182,6 +182,7 @@ silo repo rm <repo-id>
 | `SILO_JWT_SECRET` | JWT signing key | auto-generated (ephemeral) |
 | `SILO_LOG_LEVEL` | Log level: debug, info, warn, error | — |
 | `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
+| `SILO_AUTH_CACHE_TTL` | How long token/permission lookups are cached (`0` disables) | `5m` |
 | `SILO_URL` | Server base URL (client/TUI) | `http://localhost:8082` |
 | `SILO_EMAIL` | Account email (client/TUI) | — |
 | `SILO_PASSWORD` | Account password (client/TUI) | — |
@@ -224,8 +225,10 @@ silo token revoke bob@example.com    # every token: all devices, all libraries
 silo token revoke bob@example.com <token>   # just one device
 ```
 
-The server caches token lookups for up to two hours, so restart it if a
-revocation needs to take effect immediately.
+Revoking through the CLI takes effect within `SILO_AUTH_CACHE_TTL` (5 minutes
+by default), since a separate process cannot purge the running server's auth
+cache. Set it to `0` to check the database on every request, or restart the
+server to apply a revocation at once.
 
 ## Client compatibility
 

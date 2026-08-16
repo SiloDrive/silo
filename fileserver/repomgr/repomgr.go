@@ -854,6 +854,8 @@ func DeleteRepoTokensByEmail(email string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete repo tokens: %v", err)
 	}
+	notify(OnTokensRevoked, email)
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, nil
@@ -869,6 +871,7 @@ func DeleteRepoToken(repoID, token, email string) error {
 	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, token, email); err != nil {
 		return fmt.Errorf("failed to delete repo token: %v", err)
 	}
+	notify(OnTokensRevoked, email)
 	return nil
 }
 
@@ -1000,5 +1003,26 @@ func DeleteRepo(repoID string) error {
 		return fmt.Errorf("failed to commit transaction: %v", err)
 	}
 
+	notify(OnRepoDeleted, repoID)
 	return nil
+}
+
+// OnRepoDeleted and OnTokensRevoked let the fileserver drop cached
+// authorisations the moment the rows they were derived from go away. Without
+// them a cached token or permission stays authoritative for its full TTL,
+// which for a deletion means the server keeps accepting uploads to a library
+// that no longer exists.
+//
+// They are package variables rather than a direct call because repomgr sits
+// below the fileserver package and cannot import it. Nil until the server
+// registers them, so the CLI paths — which have no caches — need no wiring.
+var (
+	OnRepoDeleted   func(repoID string)
+	OnTokensRevoked func(email string)
+)
+
+func notify(hook func(string), arg string) {
+	if hook != nil {
+		hook(arg)
+	}
 }
