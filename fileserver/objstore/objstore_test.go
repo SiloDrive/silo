@@ -4,16 +4,22 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"testing"
 )
 
 const (
-	testFile        = "output.data"
-	seafileConfPath = "/tmp/conf"
-	seafileDataDir  = "/tmp/conf/seafile-data"
-	repoID          = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
-	objID           = "0401fc662e3bc87a41f299a907c056aaf8322a27"
+	repoID = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
+	objID  = "0401fc662e3bc87a41f299a907c056aaf8322a27"
 )
+
+// Set from os.MkdirTemp in TestMain (t.TempDir needs a *testing.T, which
+// TestMain has no access to) so this package's object store is its own and
+// does not collide with the other packages' tests when they run in parallel.
+// testFile lives under it too, rather than being written into the package dir.
+var seafileConfPath string
+var seafileDataDir string
+var testFile string
 
 func createFile() error {
 	outputFile, err := os.OpenFile(testFile, os.O_WRONLY|os.O_CREATE, 0666)
@@ -31,12 +37,8 @@ func createFile() error {
 }
 
 func delFile() error {
-	err := os.Remove(testFile)
-	if err != nil {
-		return err
-	}
-
-	err = os.RemoveAll(seafileConfPath)
+	// testFile lives under seafileConfPath, so one RemoveAll covers both.
+	err := os.RemoveAll(seafileConfPath)
 	if err != nil {
 		return err
 	}
@@ -45,7 +47,16 @@ func delFile() error {
 }
 
 func TestMain(m *testing.M) {
-	err := createFile()
+	var err error
+	seafileConfPath, err = os.MkdirTemp("", "silo-objstore-test")
+	if err != nil {
+		fmt.Printf("Failed to create test dir : %v\n", err)
+		os.Exit(1)
+	}
+	seafileDataDir = filepath.Join(seafileConfPath, "seafile-data")
+	testFile = filepath.Join(seafileConfPath, "output.data")
+
+	err = createFile()
 	if err != nil {
 		fmt.Printf("Failed to create test file : %v\n", err)
 		os.Exit(1)

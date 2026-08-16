@@ -3,6 +3,7 @@ package silod
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 
@@ -12,11 +13,14 @@ import (
 )
 
 const (
-	mergeTestCommitID        = "0401fc662e3bc87a41f299a907c056aaf8322a27"
-	mergeTestRepoID          = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
-	mergeTestSeafileConfPath = "/tmp/conf"
-	mergeTestSeafileDataDir  = "/tmp/conf/seafile-data"
+	mergeTestCommitID = "0401fc662e3bc87a41f299a907c056aaf8322a27"
+	mergeTestRepoID   = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
 )
+
+// Set from t.TempDir() so this package's object store is its own and does not
+// collide with the other packages' tests when they run in parallel.
+var mergeTestSeafileConfPath string
+var mergeTestSeafileDataDir string
 
 var mergeTestTree1 string
 var mergeTestTree2 string
@@ -205,16 +209,10 @@ func mergeTestCreateSeafdir(dents []*fsmgr.SeafDirent) (string, error) {
 	return seafdir.DirID, nil
 }
 
-func mergeTestDelFile() error {
-	err := os.RemoveAll(mergeTestSeafileConfPath)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func TestMergeTrees(t *testing.T) {
+	mergeTestSeafileConfPath = t.TempDir()
+	mergeTestSeafileDataDir = filepath.Join(mergeTestSeafileConfPath, "seafile-data")
+
 	commitmgr.Init(mergeTestSeafileConfPath, mergeTestSeafileDataDir)
 	fsmgr.Init(mergeTestSeafileConfPath, mergeTestSeafileDataDir, option.FsCacheLimit)
 	err := mergeTestCreateTestDir()
@@ -235,12 +233,6 @@ func TestMergeTrees(t *testing.T) {
 	t.Run("test10", testMergeTrees10)
 	t.Run("test11", testMergeTrees11)
 	t.Run("test12", testMergeTrees12)
-
-	err = mergeTestDelFile()
-	if err != nil {
-		fmt.Printf("failed to remove test file : %v", err)
-		os.Exit(1)
-	}
 }
 
 // head add file

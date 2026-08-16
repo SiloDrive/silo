@@ -3,16 +3,21 @@ package fsmgr
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
 const (
-	seafileConfPath = "/tmp/conf"
-	seafileDataDir  = "/tmp/conf/seafile-data"
-	repoID          = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
-	blkID           = "0401fc662e3bc87a41f299a907c056aaf8322a26"
-	subDirID        = "0401fc662e3bc87a41f299a907c056aaf8322a27"
+	repoID   = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
+	blkID    = "0401fc662e3bc87a41f299a907c056aaf8322a26"
+	subDirID = "0401fc662e3bc87a41f299a907c056aaf8322a27"
 )
+
+// Set from os.MkdirTemp in TestMain (t.TempDir needs a *testing.T, which
+// TestMain has no access to) so this package's object store is its own and
+// does not collide with the other packages' tests when they run in parallel.
+var seafileConfPath string
+var seafileDataDir string
 
 var dirID string
 var fileID string
@@ -65,8 +70,16 @@ func delFile() error {
 }
 
 func TestMain(m *testing.M) {
+	var err error
+	seafileConfPath, err = os.MkdirTemp("", "silo-fsmgr-test")
+	if err != nil {
+		fmt.Printf("Failed to create test dir : %v.\n", err)
+		os.Exit(1)
+	}
+	seafileDataDir = filepath.Join(seafileConfPath, "seafile-data")
+
 	Init(seafileConfPath, seafileDataDir, 2<<30)
-	err := createFile()
+	err = createFile()
 	if err != nil {
 		fmt.Printf("Failed to create test file : %v.\n", err)
 		os.Exit(1)

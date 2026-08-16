@@ -3,17 +3,22 @@ package commitmgr
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
 const (
-	commitID        = "0401fc662e3bc87a41f299a907c056aaf8322a27"
-	rootID          = "6a1608dc2a1248838464e9b194800d35252e2ce3"
-	repoID          = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
-	seafileConfPath = "/tmp/conf"
-	seafileDataDir  = "/tmp/conf/seafile-data"
+	commitID = "0401fc662e3bc87a41f299a907c056aaf8322a27"
+	rootID   = "6a1608dc2a1248838464e9b194800d35252e2ce3"
+	repoID   = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
 )
+
+// Set from os.MkdirTemp in TestMain (t.TempDir needs a *testing.T, which
+// TestMain has no access to) so this package's object store is its own and
+// does not collide with the other packages' tests when they run in parallel.
+var seafileConfPath string
+var seafileDataDir string
 
 func delFile() error {
 	err := os.RemoveAll(seafileConfPath)
@@ -25,8 +30,16 @@ func delFile() error {
 }
 
 func TestMain(m *testing.M) {
+	var err error
+	seafileConfPath, err = os.MkdirTemp("", "silo-commitmgr-test")
+	if err != nil {
+		fmt.Printf("Failed to create test dir : %v\n", err)
+		os.Exit(1)
+	}
+	seafileDataDir = filepath.Join(seafileConfPath, "seafile-data")
+
 	code := m.Run()
-	err := delFile()
+	err = delFile()
 	if err != nil {
 		fmt.Printf("Failed to remove test file : %v\n", err)
 		os.Exit(1)
