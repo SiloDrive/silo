@@ -198,6 +198,20 @@ Env vars take precedence over `seafile.conf`, so the same binary can be pointed 
 | `-P <file>` | PID file path |
 | `-debug` | Log every HTTP request |
 
+## Backups
+
+`cp seafile.db` is not a backup — the databases run in WAL mode, so a plain
+copy silently loses every write since the last checkpoint. Use:
+
+```sh
+silo backup-db /backup/silo/$(date +%F)                       # databases, first
+rsync -a "$SILO_DATA_DIR"/storage/ /backup/silo/$(date +%F)/storage/   # objects, second
+```
+
+Both steps are safe with the server running, and the order matters. See
+[`docs/backup.md`](docs/backup.md) for why, plus cold backup, restore and
+verification.
+
 ## Client compatibility
 
 Silo has been tested with:

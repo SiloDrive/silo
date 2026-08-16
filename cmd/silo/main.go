@@ -17,7 +17,7 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.3.19"
+var Version = "0.3.20"
 
 func main() {
 	args := os.Args[1:]
@@ -35,6 +35,11 @@ func main() {
 		}
 	case "gc":
 		if err := silod.RunGC(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "backup-db":
+		if err := silod.RunBackupDB(rest); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -80,6 +85,7 @@ func printUsage(w *os.File) {
 Usage:
   silo serve [flags]              Run the file server daemon
   silo gc [-delete]               Reclaim disk from deleted libraries
+  silo backup-db <dir>            Snapshot the databases (server may be running)
   silo tui [url]                  Launch the interactive terminal UI
   silo repos [--json]             List libraries
   silo repo create <name>         Create a library (prints ID)
@@ -112,5 +118,10 @@ Run "silo serve -h" for server-side flags.
 "silo gc" reports what deleting a library left behind and reclaims it with
 -delete. It only ever touches libraries that are already deleted, but stop
 the server first: nothing locks the data directory.
+
+"silo backup-db" writes a consistent snapshot of ccnet.db and seafile.db,
+safely while the server runs — copying them with cp loses everything since
+the last WAL checkpoint. Copy storage/ afterwards, never before; see
+docs/backup.md.
 `)
 }
