@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 
@@ -11,11 +12,14 @@ import (
 )
 
 const (
-	emptySHA1               = "0000000000000000000000000000000000000000"
-	diffTestSeafileConfPath = "/tmp/conf"
-	diffTestSeafileDataDir  = "/tmp/conf/seafile-data"
-	diffTestRepoID          = "0d18a711-c988-4f7b-960c-211b34705ce3"
+	emptySHA1      = "0000000000000000000000000000000000000000"
+	diffTestRepoID = "0d18a711-c988-4f7b-960c-211b34705ce3"
 )
+
+// Set from t.TempDir() so this package's object store is its own and does not
+// collide with the other packages' tests when they run in parallel.
+var diffTestSeafileConfPath string
+var diffTestSeafileDataDir string
 
 var diffTestTree1 string
 var diffTestTree2 string
@@ -44,6 +48,9 @@ var diffTestDirID2 string
 */
 
 func TestDiffTrees(t *testing.T) {
+	diffTestSeafileConfPath = t.TempDir()
+	diffTestSeafileDataDir = filepath.Join(diffTestSeafileConfPath, "seafile-data")
+
 	fsmgr.Init(diffTestSeafileConfPath, diffTestSeafileDataDir, 2<<30)
 
 	err := diffTestCreateTestDir()
@@ -57,11 +64,6 @@ func TestDiffTrees(t *testing.T) {
 	t.Run("test3", testDiffTrees3)
 	t.Run("test4", testDiffTrees4)
 	t.Run("test5", testDiffTrees5)
-
-	err = diffTestDelFile()
-	if err != nil {
-		fmt.Printf("failed to remove test file : %v", err)
-	}
 }
 
 func diffTestCreateTestDir() error {
@@ -244,15 +246,6 @@ func diffTestCreateSeafdir(dents []*fsmgr.SeafDirent) (string, error) {
 	}
 
 	return seafdir.DirID, nil
-}
-
-func diffTestDelFile() error {
-	err := os.RemoveAll(diffTestSeafileConfPath)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func diffTestFileCB(ctx context.Context, baseDir string, files []*fsmgr.SeafDirent, data interface{}) error {

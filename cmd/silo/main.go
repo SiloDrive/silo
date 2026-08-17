@@ -18,7 +18,7 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.3.4"
+var Version = "0.3.33"
 
 func main() {
 	args := os.Args[1:]
@@ -33,6 +33,21 @@ func main() {
 	switch sub {
 	case "serve":
 		if err := silod.Run(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "gc":
+		if err := silod.RunGC(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "token":
+		if err := silod.RunToken(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "backup-db":
+		if err := silod.RunBackupDB(rest); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -76,7 +91,11 @@ func printUsage(w *os.File) {
 	_, _ = fmt.Fprint(w, `silo — Seafile-compatible server and client in one binary
 
 Usage:
-  silo serve [flags]              Run the file server daemon
+  silo serve [-b addr] [flags]    Run the file server daemon
+  silo gc [-delete]               Reclaim disk from deleted libraries
+  silo backup-db <dir>            Snapshot the databases (server may be running)
+  silo token list <email>         Show a user's sync and API tokens
+  silo token revoke <email> [tok] Revoke every token a user holds, or just one
   silo tui [url]                  Launch the interactive terminal UI
   silo repos [--json]             List libraries
   silo repo create <name>         Create a library (prints ID)
@@ -92,7 +111,9 @@ Usage:
 
 Server environment:
   SILO_DATA_DIR          Data directory (default: ~/.local/share/silo)
-  SILO_HOST              Listen address (default: 0.0.0.0)
+  SILO_HOST              Listen address (default: 127.0.0.1)
+  SILO_TLS_CERT          TLS certificate file (with SILO_TLS_KEY, serves HTTPS)
+  SILO_TLS_KEY           TLS private key file
   SILO_PORT              Listen port (default: 8082)
   SILO_ADMIN_EMAIL       Bootstrap admin email (first run)
   SILO_ADMIN_PASSWORD    Bootstrap admin password (first run)
@@ -105,5 +126,14 @@ Client environment:
   SILO_PASSWORD          Account password for TUI/CLI
 
 Run "silo serve -h" for server-side flags.
+
+"silo gc" reports what deleting a library left behind and reclaims it with
+-delete. It only ever touches libraries that are already deleted, but stop
+the server first: nothing locks the data directory.
+
+"silo backup-db" writes a consistent snapshot of ccnet.db and seafile.db,
+safely while the server runs — copying them with cp loses everything since
+the last WAL checkpoint. Copy storage/ afterwards, never before; see
+docs/backup.md.
 `)
 }

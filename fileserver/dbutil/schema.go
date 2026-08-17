@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -48,7 +49,7 @@ CREATE INDEX IF NOT EXISTS repogroup_repoid_index on RepoGroup (repo_id);
 CREATE INDEX IF NOT EXISTS repogroup_username_indx on RepoGroup (user_name);
 CREATE TABLE IF NOT EXISTS InnerPubRepo (repo_id CHAR(37) PRIMARY KEY, permission CHAR(15));
 
-CREATE TABLE IF NOT EXISTS RepoUserToken (repo_id CHAR(37), email VARCHAR(255), token CHAR(41));
+CREATE TABLE IF NOT EXISTS RepoUserToken (repo_id CHAR(37), email VARCHAR(255), token CHAR(41), ctime BIGINT);
 CREATE UNIQUE INDEX IF NOT EXISTS repo_token_indx on RepoUserToken (repo_id, token);
 CREATE INDEX IF NOT EXISTS repo_token_email_indx on RepoUserToken (email);
 CREATE TABLE IF NOT EXISTS RepoTokenPeerInfo (token CHAR(41) PRIMARY KEY, peer_id CHAR(41), peer_ip VARCHAR(50), peer_name VARCHAR(255), sync_time BIGINT, client_ver VARCHAR(20));
@@ -123,7 +124,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS lastgcid_repoid_clientid_idx ON LastGCID (repo
 
 CREATE TABLE IF NOT EXISTS SystemInfo (info_key VARCHAR(256), info_value VARCHAR(1024));
 
-CREATE TABLE IF NOT EXISTS ApiToken (token CHAR(40) PRIMARY KEY, email VARCHAR(255) NOT NULL, ctime BIGINT);
+-- The index on expires_at is NOT declared here. This block runs before the
+-- migration, and on a database created by an earlier version the CREATE TABLE
+-- above is a no-op, leaving ApiToken without an expires_at column — so
+-- indexing it here would fail and abort startup. MigrateSeafileTables adds the
+-- index once the column is guaranteed to exist.
+CREATE TABLE IF NOT EXISTS ApiToken (token CHAR(40) PRIMARY KEY, email VARCHAR(255) NOT NULL, ctime BIGINT, expires_at BIGINT);
 CREATE INDEX IF NOT EXISTS apitoken_email_idx ON ApiToken (email);
 `
 
@@ -135,6 +141,113 @@ func CreateCcnetTables(db *sql.DB) error {
 // CreateSeafileTables creates all seafile tables if they don't exist.
 func CreateSeafileTables(db *sql.DB) error {
 	return execSchema(db, seafileSchema)
+}
+
+// MigrateSeafileTables brings a database created by an earlier version up to
+// the current schema. CREATE TABLE IF NOT EXISTS silently leaves an existing
+// table alone, so columns added after a release need an explicit migration.
+//
+// Both backfills date existing rows from *now* rather than from their real
+// creation time. That is deliberate: dating them from ctime would expire every
+// API token issued before the upgrade the moment the server restarts, logging
+// every client out on a flag day. Giving them a full fresh interval applies
+// the new policy going forward without that.
+// The TTL is passed in rather than read from the option package so that
+// dbutil stays free of dependencies on the rest of the server.
+func MigrateSeafileTables(db *sql.DB, apiTokenTTL time.Duration) error {
+	// A zero TTL reaches here whenever a caller forgets to load options first,
+	// and the backfill below would then stamp every pre-existing token with
+	// expires_at = now — signing out every client as a side effect of running
+	// whatever command made the mistake. The callers get this right today; the
+	// guard is here because the damage is silent, immediate and irreversible,
+	// and the correct ordering is not visible from this function.
+	if apiTokenTTL <= 0 {
+		return fmt.Errorf("refusing to migrate with a non-positive API token TTL (%v): "+
+			"load the file server options before the databases", apiTokenTTL)
+	}
+
+	now := time.Now().Unix()
+
+	// The backfills run only in the start that adds the column. Every row
+	// written afterwards populates it, so re-running them would be a
+	// write-transaction table scan that can never match anything — on every
+	// server start and every gc/token invocation, for the life of the install.
+	added, err := AddColumnIfMissing(db, "ApiToken", "expires_at", "BIGINT")
+	if err != nil {
+		return err
+	}
+	if added {
+		if _, err := db.Exec(
+			"UPDATE ApiToken SET expires_at = ? WHERE expires_at IS NULL",
+			now+int64(apiTokenTTL.Seconds())); err != nil {
+			return fmt.Errorf("failed to backfill ApiToken.expires_at: %v", err)
+		}
+	}
+
+	// Safe only now that expires_at is guaranteed to exist. See the note in
+	// seafileSchema for why it isn't declared alongside the table.
+	addIndexIfMissing(db, "apitoken_expires_idx", "ApiToken", "expires_at")
+
+	added, err = AddColumnIfMissing(db, "RepoUserToken", "ctime", "BIGINT")
+	if err != nil {
+		return err
+	}
+	if added {
+		if _, err := db.Exec(
+			"UPDATE RepoUserToken SET ctime = ? WHERE ctime IS NULL", now); err != nil {
+			return fmt.Errorf("failed to backfill RepoUserToken.ctime: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// addIndexIfMissing creates an index, tolerating one that is already there.
+//
+// MySQL has no portable "CREATE INDEX IF NOT EXISTS", so the duplicate case is
+// absorbed rather than tested for. An index is only an optimisation, so a
+// failure here is logged and the caller continues — the alternative, aborting
+// startup because an index could not be created, trades a slow sweep for an
+// outage.
+func addIndexIfMissing(db *sql.DB, name, table, columns string) {
+	stmt := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s)", name, table, columns)
+	if DBEngine == EngineMySQL {
+		stmt = fmt.Sprintf("CREATE INDEX %s ON %s (%s)", name, table, columns)
+	}
+	if _, err := db.Exec(stmt); err != nil {
+		log.Debugf("Index %s on %s(%s) not created: %v", name, table, columns, err)
+	}
+}
+
+// AddColumnIfMissing adds a column to an existing table unless it is already
+// there.
+//
+// Presence is probed with a zero-row SELECT rather than an engine-specific
+// catalogue query — PRAGMA table_info on SQLite, information_schema on MySQL —
+// so one implementation covers both engines.
+//
+// It reports whether the column was actually added, so a caller that needs to
+// backfill the new column can do it once rather than on every start.
+func AddColumnIfMissing(db *sql.DB, table, column, definition string) (bool, error) {
+	probe := fmt.Sprintf("SELECT %s FROM %s LIMIT 0", column, table)
+	if _, err := db.Exec(probe); err == nil {
+		return false, nil
+	}
+
+	alter := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)
+	if _, err := db.Exec(alter); err != nil {
+		// Another process may have added the column between the probe and the
+		// ALTER. Re-probe before reporting failure: losing that race is
+		// success, not an error.
+		if _, perr := db.Exec(probe); perr == nil {
+			// The winner of the race owns the backfill.
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to add column %s.%s: %v", table, column, err)
+	}
+
+	log.Infof("Migrated: added column %s.%s", table, column)
+	return true, nil
 }
 
 func execSchema(db *sql.DB, schema string) error {

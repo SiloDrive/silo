@@ -275,13 +275,22 @@ func (c *Client) sendJWTExpired(repoID string) {
 // parseNotifToken validates a repo-scoped notification JWT. On success it
 // returns the claimed username, expiry (unix seconds), and true.
 func parseNotifToken(tokenString, repoID string) (string, int64, bool) {
-	if tokenString == "" {
+	// An empty repoID would otherwise match the empty RepoID claim of a
+	// session token, which is signed with the same key.
+	if tokenString == "" || repoID == "" {
 		return "", 0, false
 	}
 	claims := &utils.MyClaims{}
-	tok, err := jwt.ParseWithClaims(tokenString, claims, func(*jwt.Token) (any, error) {
-		return []byte(option.JWTPrivateKey), nil
-	})
+	tok, err := jwt.ParseWithClaims(tokenString, claims,
+		func(*jwt.Token) (any, error) {
+			return []byte(option.JWTPrivateKey), nil
+		},
+		// Pin the algorithm rather than accepting whatever the token's header
+		// asks for, and require the notification audience so a session token
+		// cannot be replayed here.
+		jwt.WithValidMethods([]string{utils.SigningAlg}),
+		jwt.WithAudience(utils.AudNotif),
+	)
 	if err != nil || !tok.Valid {
 		return "", 0, false
 	}

@@ -4,11 +4,47 @@ package objstore
 
 import (
 	"io"
+	"path/filepath"
 )
+
+// The three object types, and the directory each one's store occupies.
+//
+// Exported because they are not private to this package in practice: gc walks
+// the same directories to reclaim them and backup names them in its
+// instructions. Both used to spell the strings out for themselves, and a
+// mismatch would not have failed — gc treats a directory it cannot find as
+// nothing to reclaim, so a renamed store would have turned "silo gc -delete"
+// into a silent no-op that still reported success.
+const (
+	TypeCommits = "commits"
+	TypeFS      = "fs"
+	TypeBlocks  = "blocks"
+)
+
+// Types lists every object store a repository has, for callers that must
+// cover all of them.
+var Types = []string{TypeCommits, TypeFS, TypeBlocks}
+
+// Root returns the directory holding every object store.
+func Root(seafileDataDir string) string {
+	return filepath.Join(seafileDataDir, "storage")
+}
+
+// TypeDir returns the directory holding one object type's stores.
+func TypeDir(seafileDataDir, objType string) string {
+	return filepath.Join(Root(seafileDataDir), objType)
+}
+
+// RepoDir returns the directory holding one repository's objects of one type.
+// The store id is not always the repo's own id — a virtual repo's objects live
+// in its origin's store — so callers pass whichever they mean.
+func RepoDir(seafileDataDir, objType, storeID string) string {
+	return filepath.Join(TypeDir(seafileDataDir, objType), storeID)
+}
 
 // ObjectStore is a container to access storage backend
 type ObjectStore struct {
-	// can be "commit", "fs", or "block"
+	// one of TypeCommits, TypeFS or TypeBlocks
 	ObjType string
 	backend storageBackend
 }
@@ -18,8 +54,9 @@ type ObjectStore struct {
 type storageBackend interface {
 	// Read an object from backend and write the contents into w.
 	read(repoID string, objID string, w io.Writer) (err error)
-	// Write the contents from r to the object.
-	write(repoID string, objID string, r io.Reader, sync bool) (err error)
+	// Write the contents from r to the object. When verify is set, the
+	// object is published only if its content hashes to objID.
+	write(repoID string, objID string, r io.Reader, sync, verify bool) (err error)
 	// exists checks whether an object exists.
 	exists(repoID string, objID string) (res bool, err error)
 	// stat calculates an object's size
@@ -27,7 +64,7 @@ type storageBackend interface {
 }
 
 // New returns a new object store for a given type of objects.
-// objType can be "commit", "fs", or "block".
+// objType is one of TypeCommits, TypeFS or TypeBlocks.
 func New(seafileConfPath string, seafileDataDir string, objType string) *ObjectStore {
 	obj := new(ObjectStore)
 	obj.ObjType = objType
@@ -42,7 +79,22 @@ func (s *ObjectStore) Read(repoID string, objID string, w io.Writer) (err error)
 
 // Write data to storage backends.
 func (s *ObjectStore) Write(repoID string, objID string, r io.Reader, sync bool) (err error) {
-	return s.backend.write(repoID, objID, r, sync)
+	return s.backend.write(repoID, objID, r, sync, false)
+}
+
+// WriteVerified writes an object and publishes it only if its content hashes
+// to objID.
+//
+// For blocks — the only object type whose id is the SHA-1 of exactly the bytes
+// stored — this is the invariant of the store itself, so it is enforced here
+// rather than at each caller. Commit and fs ids are computed over other
+// representations and cannot use this.
+//
+// The check runs before the rename, not after the write, which matters: the
+// object may already exist with the correct content, and a verify-then-delete
+// would let one bad upload destroy a good block.
+func (s *ObjectStore) WriteVerified(repoID string, objID string, r io.Reader, sync bool) (err error) {
+	return s.backend.write(repoID, objID, r, sync, true)
 }
 
 // Check whether object exists.

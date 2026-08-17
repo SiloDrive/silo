@@ -3,11 +3,13 @@ package silod
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -44,6 +46,7 @@ import (
 
 var dataDir, absDataDir string
 var configFile string
+var bindAddr string
 var logFile, absLogFile string
 var pidFilePath string
 var logFp *os.File
@@ -62,6 +65,27 @@ func init() {
 
 const (
 	timestampFormat = "[2006-01-02 15:04:05] "
+)
+
+// HTTP server limits.
+//
+// Only the two timeouts that are safe for a file server are set.
+// ReadTimeout and WriteTimeout are deliberately left at zero: they bound the
+// whole request body read and the whole response write respectively, and both
+// uploads and downloads here stream arbitrarily large files through the same
+// handler, so any finite value would sever legitimate transfers of a big
+// enough file on a slow enough link. ReadHeaderTimeout closes the Slowloris
+// hole those two would otherwise have covered, since it bounds the part an
+// attacker controls without touching the body.
+//
+// IdleTimeout must be set explicitly: left at zero it falls back to
+// ReadTimeout, which is also zero here, so keep-alive connections would idle
+// forever. WebSocket connections on /notification are unaffected — once
+// Upgrade hijacks the connection these no longer apply.
+const (
+	readHeaderTimeout = 30 * time.Second
+	idleTimeout       = 120 * time.Second
+	maxHeaderBytes    = 1 << 20 // 1MB, matching net/http's default
 )
 
 type LogFormatter struct{}
@@ -89,6 +113,97 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	return buf, nil
 }
 
+// resolvePaths fills absDataDir and configFile from the -d/-C flags, the
+// environment and the XDG defaults, in that order. `serve` and `gc` share it
+// so they cannot disagree about which data directory they are pointed at —
+// a divergence would have gc reclaiming objects from the wrong store.
+func resolvePaths() error {
+	if dataDir == "" {
+		dataDir = os.Getenv("SILO_DATA_DIR")
+	}
+	if dataDir == "" {
+		xdgDefault, err := xdg.DataHome("silo")
+		if err != nil {
+			return fmt.Errorf("cannot determine data directory: %v; use -d or set SILO_DATA_DIR", err)
+		}
+		dataDir = xdgDefault
+	}
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return fmt.Errorf("failed to create data directory %s: %v", dataDir, err)
+	}
+	var err error
+	absDataDir, err = filepath.Abs(dataDir)
+	if err != nil {
+		return fmt.Errorf("failed to convert data dir to absolute path: %v", err)
+	}
+
+	if configFile == "" {
+		if xdgConf, err := xdg.ConfigHome("silo"); err == nil {
+			for _, name := range []string{"silo.conf", "seafile.conf"} {
+				candidate := filepath.Join(xdgConf, name)
+				if _, err := os.Stat(candidate); err == nil {
+					configFile = candidate
+					break
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// commandFlags returns the flag set every subcommand starts from. -d and -C
+// mean the same thing to all of them, so they are declared once: a subcommand
+// that spelled either differently would point at a different data directory
+// than the server it is meant to operate on.
+func commandFlags(name string) *flag.FlagSet {
+	flags := flag.NewFlagSet("silo "+name, flag.ContinueOnError)
+	flags.StringVar(&configFile, "C", "", "path to config file (optional)")
+	flags.StringVar(&dataDir, "d", "", "data directory (default: $SILO_DATA_DIR or ~/.local/share/silo)")
+	return flags
+}
+
+// parseCommandArgs parses a subcommand's arguments and returns the positional
+// ones. done is true when -h was handled and the command should return without
+// doing anything.
+//
+// The trailing-flag check belongs here rather than at each command because
+// forgetting it is silent, and gc had already forgotten it. flag.Parse stops
+// at the first positional and hands the rest back, so "-d /srv/silo" written
+// at the end is not a parse error — it is ignored, and the command runs
+// against the default data directory. For a command that reports what a
+// user's tokens are, writes a backup, or deletes objects, being pointed at the
+// wrong deployment without saying so is worse than refusing.
+func parseCommandArgs(name string, flags *flag.FlagSet, args []string) ([]string, bool, error) {
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	rest := flags.Args()
+	for _, arg := range rest {
+		if len(arg) > 1 && arg[0] == '-' {
+			return nil, false, fmt.Errorf(
+				"flag %s must come before the arguments, as in: silo %s %s <args>", arg, name, arg)
+		}
+	}
+	return rest, false, nil
+}
+
+// openStores resolves the paths, loads the options and opens the databases —
+// the preamble a subcommand needs before it can read anything. The order is
+// not free: loadDatabases migrates, and the migration reads the API token TTL
+// that LoadFileServerOptions sets.
+func openStores() error {
+	if err := resolvePaths(); err != nil {
+		return err
+	}
+	option.LoadFileServerOptions(configFile)
+	loadDatabases()
+	repomgr.Init(seafilePair.Read, seafilePair.Write)
+	return nil
+}
+
 func loadDatabases() {
 	dbOpt, err := option.LoadDBOption(configFile)
 	if err != nil {
@@ -100,6 +215,13 @@ func loadDatabases() {
 		loadSQLiteDatabases()
 	} else {
 		loadMySQLDatabases(dbOpt)
+	}
+
+	// Runs for both engines: CreateSeafileTables only executes on the SQLite
+	// path, but a MySQL deployment with an externally-provisioned schema needs
+	// the added columns just as much.
+	if err := dbutil.MigrateSeafileTables(seafilePair.Write, option.APITokenTTL); err != nil {
+		log.Fatalf("Failed to migrate seafile database: %v", err)
 	}
 }
 
@@ -213,9 +335,8 @@ func removePidfile(pid_file_path string) error {
 // which calls os.Exit directly — that behavior is unchanged from the previous
 // standalone binary.
 func Run(args []string) error {
-	fs := flag.NewFlagSet("silo serve", flag.ContinueOnError)
-	fs.StringVar(&configFile, "C", "", "path to config file (optional)")
-	fs.StringVar(&dataDir, "d", "", "data directory (default: $SILO_DATA_DIR or ~/.local/share/silo)")
+	fs := commandFlags("serve")
+	fs.StringVar(&bindAddr, "b", "", "bind address (default: $SILO_HOST or 127.0.0.1)")
 	fs.StringVar(&logFile, "l", "", "log file path (default: stdout)")
 	fs.StringVar(&pidFilePath, "P", "", "pid file path")
 	fs.BoolVar(&debugLog, "debug", false, "log every HTTP request (method, path, status, duration)")
@@ -232,42 +353,14 @@ func Run(args []string) error {
 		}
 	}
 
-	// Resolve data directory: -d flag > SILO_DATA_DIR env > XDG default
-	if dataDir == "" {
-		dataDir = os.Getenv("SILO_DATA_DIR")
-	}
-	if dataDir == "" {
-		xdgDefault, err := xdg.DataHome("silo")
-		if err != nil {
-			log.Fatalf("Cannot determine data directory: %v. Use -d or set SILO_DATA_DIR.", err)
-		}
-		dataDir = xdgDefault
-	}
-	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		log.Fatalf("Failed to create data directory %s: %v", dataDir, err)
-	}
-	var err error
-	absDataDir, err = filepath.Abs(dataDir)
-	if err != nil {
-		log.Fatalf("Failed to convert data dir to absolute path: %v.", err)
+	if err := resolvePaths(); err != nil {
+		log.Fatalf("%v", err)
 	}
 	log.Infof("Data directory: %s", absDataDir)
 
-	// Resolve config file: -C flag > XDG config home > none
-	if configFile == "" {
-		if xdgConf, err := xdg.ConfigHome("silo"); err == nil {
-			for _, name := range []string{"silo.conf", "seafile.conf"} {
-				candidate := filepath.Join(xdgConf, name)
-				if _, err := os.Stat(candidate); err == nil {
-					configFile = candidate
-					break
-				}
-			}
-		}
-	}
-
 	// Logging: default to stdout. Use -l to write to a file instead.
 	if logFile != "" && logFile != "-" {
+		var err error
 		absLogFile, err = filepath.Abs(logFile)
 		if err != nil {
 			log.Fatalf("Failed to convert log file path to absolute path: %v", err)
@@ -291,6 +384,12 @@ func Run(args []string) error {
 	}
 
 	option.LoadFileServerOptions(configFile)
+	// After the options, so the flag beats both SILO_HOST and the config file.
+	// Same precedence as -d over SILO_DATA_DIR: what you typed on this command
+	// line wins over what the environment happens to be carrying.
+	if bindAddr != "" {
+		option.Host = bindAddr
+	}
 	loadDatabases()
 
 	level, err := log.ParseLevel(option.LogLevel)
@@ -302,6 +401,12 @@ func Run(args []string) error {
 	}
 
 	repomgr.Init(seafilePair.Read, seafilePair.Write)
+
+	// Drop cached authorisations as soon as the rows behind them go away,
+	// rather than at the next cache expiry. Registered here because repomgr
+	// sits below this package and cannot call into it.
+	repomgr.OnRepoDeleted = invalidateRepoAuth
+	repomgr.OnTokensRevoked = invalidateUserAuth
 
 	// First arg is the legacy "central config path"; it's threaded into
 	// objstore.New but never used there. Passing "" keeps the signatures
@@ -318,7 +423,9 @@ func Run(args []string) error {
 	keycache.StartReaper()
 	authmgr.Init(ccnetPair.Read, ccnetPair.Write)
 	api.Init(seafilePair.Read, seafilePair.Write)
+	api.StartLoginLimiterCleanup()
 	apitokenstore.Init(seafilePair.Read, seafilePair.Write)
+	apitokenstore.StartCleanup()
 
 	// Create admin user from env vars if set
 	adminEmail := option.EnvWithFallback("SILO_ADMIN_EMAIL", "SEAFILE_ADMIN_EMAIL")
@@ -352,6 +459,9 @@ func Run(args []string) error {
 		handler = middleware.DebugLogger(handler)
 	}
 	httpServer.Handler = handler
+	httpServer.ReadHeaderTimeout = readHeaderTimeout
+	httpServer.IdleTimeout = idleTimeout
+	httpServer.MaxHeaderBytes = maxHeaderBytes
 
 	// Start signal handlers AFTER httpServer is fully constructed: the
 	// shutdown handler reads httpServer concurrently, and goroutine creation
@@ -359,16 +469,71 @@ func Run(args []string) error {
 	go handleSignals()
 	go handleUser1Signal()
 
-	log.Printf("Silo server listening on %s:%d", option.Host, option.Port)
+	tlsCert, tlsKey := option.TLSCertFile, option.TLSKeyFile
+	useTLS := tlsCert != "" && tlsKey != ""
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+		// Pinned rather than left to the default so that the floor is a
+		// property of this server and not of whichever Go version built it.
+		// 1.2 rather than 1.3 because Silo exists to keep existing Seafile
+		// clients working, and their TLS comes from whatever OpenSSL the
+		// platform shipped.
+		httpServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	// Bind before reporting, and before backgrounding the serve loop. A
+	// listener opened inside the goroutine could only report its failure by
+	// logging, and Run would then block on shutdownDone forever — a process
+	// that is alive, says it is listening, and serves nothing. Under systemd
+	// that unit stays "active", so Restart=on-failure never fires. Binding
+	// here turns a bad address or a taken port into a returned error, which is
+	// the difference between a typo in -b costing a second and costing an
+	// afternoon.
+	ln, err := net.Listen("tcp", httpServer.Addr)
+	if err != nil {
+		return fmt.Errorf("failed to bind %s: %v", httpServer.Addr, err)
+	}
+
+	// Reported as configured rather than as ln.Addr(), which renders a 0.0.0.0
+	// bind as "[::]" — accurate, since the wildcard listener is dual-stack,
+	// but not what anyone typed, and it would disagree with the warning below.
+	log.Printf("Silo server listening on %s://%s:%d", scheme, option.Host, option.Port)
+	warnIfExposedWithoutTLS(useTLS)
 
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if useTLS {
+			err = httpServer.ServeTLS(ln, tlsCert, tlsKey)
+		} else {
+			err = httpServer.Serve(ln)
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Errorf("File server exiting: %v", err)
 		}
 	}()
 
 	<-shutdownDone
 	return nil
+}
+
+// warnIfExposedWithoutTLS says so when the server is reachable from off the
+// machine over plaintext. Every credential Silo uses is a bearer token sent in
+// a header — sync tokens, API tokens, JWTs — so anyone on the path can lift
+// one and keep it. It is a warning rather than a refusal because terminating
+// TLS at a reverse proxy is the normal deployment, and the server cannot tell
+// from here whether one is in front of it.
+func warnIfExposedWithoutTLS(useTLS bool) {
+	if useTLS {
+		return
+	}
+	ip := net.ParseIP(option.Host)
+	if ip != nil && ip.IsLoopback() {
+		return
+	}
+	log.Warnf("Listening on %s without TLS. Passwords and tokens will cross the "+
+		"network in clear text — put a TLS reverse proxy in front (and set "+
+		"SILO_TRUST_PROXY_HEADERS=true), or set SILO_TLS_CERT and SILO_TLS_KEY.",
+		option.Host)
 }
 
 func handleSignals() {
@@ -460,12 +625,11 @@ func newHTTPRouter() *mux.Router {
 	r.Handle("/upload-blks-api/{.*}", appHandler(uploadBlksAPICB))
 	r.Handle("/upload-raw-blks-api/{.*}", appHandler(uploadRawBlksAPICB))
 
-	// links api
-	//r.Handle("/u/{.*}", appHandler(uploadLinkCB))
-	r.Handle("/f/{.*}{slash:\\/?}", appHandler(accessLinkCB))
-	//r.Handle("/d/{.*}", appHandler(accessDirLinkCB))
-
-	r.Handle("/repos/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/files/{filepath:.*}", appHandler(accessV2CB))
+	// The share-link routes (/f/, /u/, /d/) and the web file-access route
+	// (/repos/{id}/files/{path}) were removed: every one of them authorized
+	// by POSTing to Seahub, which a standalone Silo deploy does not run, so
+	// they could only ever fail. Reinstating them means implementing the
+	// authorization against Silo's own share store, not restoring these.
 
 	// file syncing api
 	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/permission-check{slash:\\/?}",
@@ -537,6 +701,7 @@ func newHTTPRouter() *mux.Router {
 	api2Router := r.PathPrefix("/api2").Subrouter()
 	api2Router.Use(middleware.RequireAPIToken)
 	api2Router.HandleFunc("/auth/ping/", api.SeaDriveAuthPingHandler).Methods("GET")
+	api2Router.HandleFunc("/auth/logout/", api.SeaDriveLogoutHandler).Methods("POST")
 	api2Router.HandleFunc("/account/info/", api.SeaDriveAccountInfoHandler).Methods("GET")
 	api2Router.HandleFunc("/server-info/", api.SeaDriveServerInfoHandler).Methods("GET")
 	api2Router.HandleFunc("/repos/", api.SeaDriveReposHandler).Methods("GET")
@@ -588,14 +753,25 @@ func RecoverWrapper(f func()) {
 	f()
 }
 
+// profilingAuthorized reports whether r carries the configured profiling
+// password. The comparison is constant-time so response timing cannot reveal
+// how much of a guess was correct. An empty configured password is never
+// valid: option.go already fatals when profile_password is absent, but a
+// present-and-empty value would otherwise leave pprof open to everyone.
+func profilingAuthorized(r *http.Request) bool {
+	if !option.EnableProfiling || option.ProfilePassword == "" {
+		return false
+	}
+	password := r.URL.Query().Get("password")
+	return subtle.ConstantTimeCompare([]byte(password), []byte(option.ProfilePassword)) == 1
+}
+
 type profileHandler struct {
 	pHandler http.Handler
 }
 
 func (p *profileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	queries := r.URL.Query()
-	password := queries.Get("password")
-	if !option.EnableProfiling || password != option.ProfilePassword {
+	if !profilingAuthorized(r) {
 		http.Error(w, "", http.StatusUnauthorized)
 		return
 	}
@@ -607,9 +783,7 @@ type traceHandler struct {
 }
 
 func (p *traceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	queries := r.URL.Query()
-	password := queries.Get("password")
-	if !option.EnableProfiling || password != option.ProfilePassword {
+	if !profilingAuthorized(r) {
 		http.Error(w, "", http.StatusUnauthorized)
 		return
 	}

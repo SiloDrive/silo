@@ -358,6 +358,29 @@ func GetEmailByToken(repoID string, token string) (string, error) {
 	return email, nil
 }
 
+// GetEmailForToken resolves a sync token to its owner without naming a repo.
+//
+// GetEmailByToken is the one to use wherever the repo is known — it is the
+// stronger check, since it also proves the token was issued for that repo.
+// This exists for the batched endpoints, which are handed a list of repos and
+// one token and have to establish who is asking before they can decide which
+// of those repos to answer for.
+func GetEmailForToken(token string) (string, error) {
+	var email string
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+
+	row := seafileDB.QueryRowContext(ctx,
+		"SELECT email FROM RepoUserToken WHERE token = ?", token)
+	if err := row.Scan(&email); err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return email, nil
+}
+
 // GetRepoStatus return repo status by repo id.
 func GetRepoStatus(repoID string) (int, error) {
 	var status = -1
@@ -815,20 +838,48 @@ func SetLastGCID(repoID, clientID, gcID string) error {
 
 // GenerateRepoToken creates a new per-repo sync token for the given user.
 // Token format matches the C implementation: SHA1(UUID) → 40-char hex string.
+//
+// A new token is minted on every call rather than reusing an existing one for
+// the same (repo, user). That is intentional: each client install gets its own
+// token, so revoking one device does not stop the others syncing. Upstream
+// Seahub's get_repo_token_nonnull collapses these to one token per user per
+// repo; Silo does not, because the device identity that makes per-device
+// revocation useful (client_id, bound to the token at first permission-check)
+// is not available here at mint time.
+//
+// Sync tokens deliberately have no expiry. Seafile and SeaDrive persist them
+// in local config and treat them as durable, so ageing them out would stop
+// sync silently at the TTL. Revocation is the intended way to invalidate one.
 func GenerateRepoToken(repoID, email string) (string, error) {
 	u := uuid.New().String()
 	h := sha1.New()
 	h.Write([]byte(u))
 	token := hex.EncodeToString(h.Sum(nil))
 
-	sqlStr := "INSERT INTO RepoUserToken (repo_id, email, token) VALUES (?, ?, ?)"
+	sqlStr := "INSERT INTO RepoUserToken (repo_id, email, token, ctime) VALUES (?, ?, ?, ?)"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, email, token); err != nil {
+	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, email, token, time.Now().Unix()); err != nil {
 		return "", fmt.Errorf("failed to insert repo token: %v", err)
 	}
 
 	return token, nil
+}
+
+// DeleteRepoTokensByEmail revokes every sync token a user holds, across all
+// repos, stopping all of their devices from syncing. Returns the count.
+func DeleteRepoTokensByEmail(email string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+
+	res, err := seafileWriteDB.ExecContext(ctx,
+		"DELETE FROM RepoUserToken WHERE email = ?", email)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete repo tokens: %v", err)
+	}
+	notify(OnTokensRevoked, email)
+
+	return dbutil.RowsAffected(res), nil
 }
 
 // DeleteRepoToken removes a specific sync token.
@@ -839,6 +890,7 @@ func DeleteRepoToken(repoID, token, email string) error {
 	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, token, email); err != nil {
 		return fmt.Errorf("failed to delete repo token: %v", err)
 	}
+	notify(OnTokensRevoked, email)
 	return nil
 }
 
@@ -846,11 +898,12 @@ type RepoToken struct {
 	RepoID string
 	Email  string
 	Token  string
+	Ctime  sql.NullInt64
 }
 
 // ListRepoTokensByEmail returns all sync tokens for a user.
 func ListRepoTokensByEmail(email string) ([]RepoToken, error) {
-	sqlStr := "SELECT repo_id, email, token FROM RepoUserToken WHERE email = ?"
+	sqlStr := "SELECT repo_id, email, token, ctime FROM RepoUserToken WHERE email = ? ORDER BY ctime"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 	rows, err := seafileDB.QueryContext(ctx, sqlStr, email)
@@ -862,12 +915,15 @@ func ListRepoTokensByEmail(email string) ([]RepoToken, error) {
 	var tokens []RepoToken
 	for rows.Next() {
 		var t RepoToken
-		if err := rows.Scan(&t.RepoID, &t.Email, &t.Token); err != nil {
-			continue
+		// A scan failure is returned rather than skipped: this list is what an
+		// operator revokes from, and silently omitting a row would show a
+		// token as already gone while it still authenticates.
+		if err := rows.Scan(&t.RepoID, &t.Email, &t.Token, &t.Ctime); err != nil {
+			return nil, fmt.Errorf("failed to read repo token row: %v", err)
 		}
 		tokens = append(tokens, t)
 	}
-	return tokens, nil
+	return tokens, rows.Err()
 }
 
 const emptySHA1 = "0000000000000000000000000000000000000000"
@@ -923,6 +979,26 @@ func CreateRepo(name, owner string) (string, error) {
 // DeleteRepo removes a repository and all associated DB records.
 // Filesystem objects (commits, blocks, fs) are NOT deleted — GC handles that.
 func DeleteRepo(repoID string) error {
+	// Virtual repos derived from this one go first. Deleting only the origin
+	// removed their VirtualRepo rows but left their Repo, Branch and
+	// RepoUserToken rows in place, so each child survived as an apparently
+	// ordinary library — while its StoreID still pointed at the origin's
+	// object store, which GC had just reclaimed. A client kept syncing
+	// against an empty store, and nothing ever cleaned the rows up.
+	children, err := listVirtualRepoIDs(repoID)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		// A repo listed as its own origin would otherwise recurse forever.
+		if child == repoID {
+			continue
+		}
+		if err := DeleteRepo(child); err != nil {
+			return fmt.Errorf("failed to delete virtual repo %s of %s: %v", child, repoID, err)
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout*2)
 	defer cancel()
 
@@ -966,5 +1042,49 @@ func DeleteRepo(repoID string) error {
 		return fmt.Errorf("failed to commit transaction: %v", err)
 	}
 
+	notify(OnRepoDeleted, repoID)
 	return nil
+}
+
+// listVirtualRepoIDs returns the repos whose origin is repoID.
+func listVirtualRepoIDs(repoID string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+
+	rows, err := seafileDB.QueryContext(ctx,
+		"SELECT repo_id FROM VirtualRepo WHERE origin_repo = ?", repoID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list virtual repos of %s: %v", repoID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to read virtual repo row: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// OnRepoDeleted and OnTokensRevoked let the fileserver drop cached
+// authorisations the moment the rows they were derived from go away. Without
+// them a cached token or permission stays authoritative for its full TTL,
+// which for a deletion means the server keeps accepting uploads to a library
+// that no longer exists.
+//
+// They are package variables rather than a direct call because repomgr sits
+// below the fileserver package and cannot import it. Nil until the server
+// registers them, so the CLI paths — which have no caches — need no wiring.
+var (
+	OnRepoDeleted   func(repoID string)
+	OnTokensRevoked func(email string)
+)
+
+func notify(hook func(string), arg string) {
+	if hook != nil {
+		hook(arg)
+	}
 }

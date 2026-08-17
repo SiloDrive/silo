@@ -234,9 +234,9 @@ SPA (HTMX or similar) served from the same Go binary, talking to `/api/silo/v1/`
   on `/metrics` in Prometheus format.
 - **Healthcheck**: a real `/healthz` that pings both SQLite handles and
   returns 503 if either is wedged.
-- **Backup story**: document the safe way to snapshot `storage/` + the two
-  SQLite files. SQLite WAL mode means `cp` is not safe during writes — need
-  `VACUUM INTO` or the online backup API.
+- ~~**Backup story**~~: done — `silo backup-db` snapshots both SQLite files
+  with `VACUUM INTO`, and [`backup.md`](backup.md) documents the ordering the
+  object-store copy has to follow.
 
 ## Protocol / Client Compat Gaps
 

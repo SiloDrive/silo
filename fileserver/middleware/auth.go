@@ -12,6 +12,10 @@ type contextKey string
 
 const UserEmailKey contextKey = "user_email"
 
+// APITokenKey carries the raw API token that authenticated a request, set by
+// RequireAPIToken only. Bearer-JWT requests do not set it.
+const APITokenKey contextKey = "api_token"
+
 // RequireAuth is middleware that validates a Bearer JWT token and injects
 // the user email into the request context.
 func RequireAuth(next http.Handler) http.Handler {

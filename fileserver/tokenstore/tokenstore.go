@@ -37,6 +37,14 @@ func CreateToken(repoID, objID, op, user string, oneTime bool) string {
 	return token
 }
 
+// QueryToken returns the access a token grants, redeeming it if it is
+// one-time.
+//
+// The redemption is a single LoadAndDelete rather than a Load followed by a
+// Delete. Under the old pair, two requests arriving together both saw the
+// token before either removed it, and both were served — a one-time token,
+// which exists precisely so that a URL carrying it cannot be replayed, could
+// be spent twice.
 func QueryToken(token string) *AccessInfo {
 	val, ok := tokens.Load(token)
 	if !ok {
@@ -44,13 +52,18 @@ func QueryToken(token string) *AccessInfo {
 	}
 	info := val.(*AccessInfo)
 
+	if info.OneTime {
+		// Exactly one caller gets loaded=true; anyone racing it gets nothing.
+		claimed, loaded := tokens.LoadAndDelete(token)
+		if !loaded {
+			return nil
+		}
+		info = claimed.(*AccessInfo)
+	}
+
 	if time.Now().Unix() >= info.ExpireTime {
 		tokens.Delete(token)
 		return nil
-	}
-
-	if info.OneTime {
-		tokens.Delete(token)
 	}
 
 	return info

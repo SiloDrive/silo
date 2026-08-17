@@ -6,6 +6,7 @@ import (
 	"compress/zlib"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"unsafe"
 
 	"github.com/dkam/silo/fileserver/objstore"
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/utils"
 	jsoniter "github.com/json-iterator/go"
 
@@ -424,6 +426,20 @@ func NewSeafile(version int, fileSize int64, blkIDs []string) (*Seafile, error) 
 	return seafile, nil
 }
 
+// MaxObjectSize bounds how much an fs object may expand to when decompressed.
+//
+// Without a bound, a few kilobytes of zlib expand to gigabytes and the copy
+// into memory OOM-kills the fileserver. The compressed bytes arrive from a
+// client — recvFSCB stores them without decompressing or verifying that the
+// object ID matches their hash — and are decompressed later, when the commit
+// that references them is processed.
+//
+// 64MB is far above anything real. An fs object is a JSON block list, so the
+// largest legitimate one belongs to the largest single file: at the 8MB fixed
+// block size and ~43 bytes per block ID, 64MB of block list describes a file
+// of roughly 12TB.
+const MaxObjectSize = 64 << 20
+
 func uncompress(p []byte, reader io.ReadCloser) ([]byte, error) {
 	b := bytes.NewReader(p)
 	var out bytes.Buffer
@@ -434,7 +450,7 @@ func uncompress(p []byte, reader io.ReadCloser) ([]byte, error) {
 			return nil, err
 		}
 
-		_, err = io.Copy(&out, r)
+		err = copyBounded(&out, r)
 		if err != nil {
 			_ = r.Close()
 			return nil, err
@@ -451,12 +467,26 @@ func uncompress(p []byte, reader io.ReadCloser) ([]byte, error) {
 		return nil, err
 	}
 
-	_, err = io.Copy(&out, reader)
+	err = copyBounded(&out, reader)
 	if err != nil {
 		return nil, err
 	}
 
 	return out.Bytes(), nil
+}
+
+// copyBounded copies src into out, failing rather than allocating once the
+// output passes MaxObjectSize. It reads one byte past the limit so that
+// hitting it exactly is not mistaken for an overrun.
+func copyBounded(out *bytes.Buffer, src io.Reader) error {
+	n, err := io.Copy(out, io.LimitReader(src, MaxObjectSize+1))
+	if err != nil {
+		return err
+	}
+	if n > MaxObjectSize {
+		return fmt.Errorf("fs object expands past the %d byte limit when decompressed", MaxObjectSize)
+	}
+	return nil
 }
 
 func compress(p []byte) ([]byte, error) {
@@ -563,6 +593,37 @@ func (seafdir *SeafDir) FromData(p []byte, reader io.ReadCloser) error {
 	return nil
 }
 
+// VerifyObjectID checks that a compressed fs object is the one its id names.
+//
+// Unlike a block, whose id is the SHA-1 of the bytes stored, an fs object's id
+// is the SHA-1 of its *uncompressed* JSON while the wire and the store both
+// carry the compressed form — so verifying one costs an inflate. That is why
+// this is behind option.VerifyFSObjectHashes rather than unconditional.
+//
+// It goes through the same bounded decompression as every other read, so a
+// zlib bomb cannot ride in through the check that exists to reject bad data.
+//
+// reader may be nil; a caller verifying a run of objects should pass one from
+// GetOneZlibReader so the whole run shares a single inflate window instead of
+// allocating one per object.
+func VerifyObjectID(objID string, compressed []byte, reader io.ReadCloser) error {
+	data, err := uncompress(compressed, reader)
+	if err != nil {
+		return fmt.Errorf("%w: failed to decompress fs object %s: %v", ErrVerification, objID, err)
+	}
+	checkSum := sha1.Sum(data)
+	if got := hex.EncodeToString(checkSum[:]); got != objID {
+		return fmt.Errorf("%w: fs object %s hashes to %s: content does not match its id",
+			ErrVerification, objID, got)
+	}
+	return nil
+}
+
+// ErrVerification marks an object that failed the check against its own id.
+// It says the data is wrong, not that the server is: callers translating this
+// to a status code should answer 400 rather than 500.
+var ErrVerification = errors.New("fs object failed verification")
+
 // ReadRaw reads data in binary format from storage backend.
 func ReadRaw(repoID string, objID string, w io.Writer) error {
 	err := store.Read(repoID, objID, w)
@@ -575,11 +636,32 @@ func ReadRaw(repoID string, objID string, w io.Writer) error {
 
 // WriteRaw writes data in binary format to storage backend.
 func WriteRaw(repoID string, objID string, r io.Reader) error {
-	err := store.Write(repoID, objID, r, false)
+	err := store.Write(repoID, objID, r, option.SyncObjectWrites)
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+// WriteRawIngested stores a compressed fs object that arrived from a client,
+// checking it against its id first when option.VerifyFSObjectHashes is on.
+//
+// The option is honoured here rather than at the handler for the same reason
+// SyncObjectWrites is: both describe how an object reaches the store, so a
+// second ingest path should not be able to skip either by forgetting to ask.
+// It is separate from WriteRaw because the server's own writers derive the id
+// from the very bytes they are about to write — re-inflating those to confirm
+// what is true by construction would be the one case where the check buys
+// nothing.
+//
+// reader may be nil; see VerifyObjectID.
+func WriteRawIngested(repoID string, objID string, data []byte, reader io.ReadCloser) error {
+	if option.VerifyFSObjectHashes {
+		if err := VerifyObjectID(objID, data, reader); err != nil {
+			return err
+		}
+	}
+	return WriteRaw(repoID, objID, bytes.NewReader(data))
 }
 
 // GetSeafile gets seafile from storage backend.

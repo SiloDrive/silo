@@ -4,8 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,9 +36,7 @@ import (
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/tokenstore"
-	"github.com/dkam/silo/fileserver/utils"
 	"github.com/dkam/silo/fileserver/workerpool"
-	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/text/unicode/norm"
 )
@@ -237,142 +233,6 @@ func parseCryptKey(rsp http.ResponseWriter, repoID string, user string, version 
 	}
 
 	return seafileKey, nil
-}
-
-func accessV2CB(rsp http.ResponseWriter, r *http.Request) *appError {
-	vars := mux.Vars(r)
-	repoID := vars["repoid"]
-	filePath := vars["filepath"]
-
-	if filePath == "" {
-		msg := "No file path\n"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-	rpath := getCanonPath(filePath)
-	fileName := filepath.Base(rpath)
-
-	op := r.URL.Query().Get("op")
-	if op != "view" && op != "download" {
-		msg := "Operation is neither view or download\n"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	token := utils.GetAuthorizationToken(r.Header)
-	cookie := r.Header.Get("Cookie")
-
-	if token == "" && cookie == "" {
-		msg := "Both token and cookie are not set\n"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	ipAddr := getClientIPAddr(r)
-	userAgent := r.Header.Get("User-Agent")
-	user, appErr := checkFileAccess(repoID, token, cookie, filePath, "download", ipAddr, userAgent)
-	if appErr != nil {
-		return appErr
-	}
-
-	repo := repomgr.Get(repoID)
-	if repo == nil {
-		msg := "Bad repo id"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	fileID, _, err := fsmgr.GetObjIDByPath(repo.StoreID, repo.RootID, rpath)
-	if err != nil {
-		msg := "Invalid file_path\n"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	etag := r.Header.Get("If-None-Match")
-	if etag == fileID {
-		return &appError{nil, "", http.StatusNotModified}
-	}
-
-	rsp.Header().Set("ETag", fileID)
-	rsp.Header().Set("Cache-Control", "private, no-cache")
-
-	ranges := r.Header["Range"]
-	byteRanges := strings.Join(ranges, "")
-
-	var cryptKey *seafileCrypt
-	if repo.IsEncrypted {
-		key, err := parseCryptKey(rsp, repoID, user, repo.EncVersion)
-		if err != nil {
-			return err
-		}
-		cryptKey = key
-	}
-
-	exists, _ := fsmgr.Exists(repo.StoreID, fileID)
-	if !exists {
-		msg := "Invalid file id"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	if !repo.IsEncrypted && len(byteRanges) != 0 {
-		if err := doFileRange(rsp, r, repo, fileID, fileName, op, byteRanges, user); err != nil {
-			return err
-		}
-	} else if err := doFile(rsp, r, repo, fileID, fileName, op, cryptKey, user); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-type UserInfo struct {
-	User string `json:"user"`
-}
-
-func checkFileAccess(repoID, token, cookie, filePath, op, ipAddr, userAgent string) (string, *appError) {
-	tokenString, err := utils.GenSeahubJWTToken()
-	if err != nil {
-		err := fmt.Errorf("failed to sign jwt token: %v", err)
-		return "", &appError{err, "", http.StatusInternalServerError}
-	}
-	url := fmt.Sprintf("%s/repos/%s/check-access/", option.SeahubURL, repoID)
-	header := map[string][]string{
-		"Authorization": {"Token " + tokenString},
-	}
-	if cookie != "" {
-		header["Cookie"] = []string{cookie}
-	}
-	req := make(map[string]string)
-	req["op"] = op
-	req["path"] = filePath
-	if token != "" {
-		req["token"] = token
-	}
-	if ipAddr != "" {
-		req["ip_addr"] = ipAddr
-	}
-	if userAgent != "" {
-		req["user_agent"] = userAgent
-	}
-	msg, err := json.Marshal(req)
-	if err != nil {
-		err := fmt.Errorf("failed to encode access token: %v", err)
-		return "", &appError{err, "", http.StatusInternalServerError}
-	}
-	status, body, err := utils.HttpCommon("POST", url, header, bytes.NewReader(msg))
-	if err != nil {
-		if status != http.StatusInternalServerError {
-			return "", &appError{nil, string(body), status}
-		} else {
-			err := fmt.Errorf("failed to get access token info: %v", err)
-			return "", &appError{err, "", http.StatusInternalServerError}
-		}
-	}
-
-	info := new(UserInfo)
-	err = json.Unmarshal(body, &info)
-	if err != nil {
-		err := fmt.Errorf("failed to decode access token info: %v", err)
-		return "", &appError{err, "", http.StatusInternalServerError}
-	}
-
-	return info.User, nil
 }
 
 func doFile(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID string,
@@ -1921,6 +1781,13 @@ retry:
 			err := fmt.Errorf("failed to generate new commit: %w", err)
 			return "", err
 		}
+		// Bounded, like GenNewCommit's own loop. retryCnt was counted here
+		// and never compared against anything, so sustained contention on a
+		// non-replace upload retried forever, holding the request open and
+		// re-walking the tree each time.
+		if retryCnt >= maxPostFilesRetries {
+			return "", ErrConflict
+		}
 		retryCnt++
 		/* Sleep random time between 0 and 3 seconds. */
 		random := rand.Intn(30) + 1
@@ -1981,6 +1848,13 @@ var (
 	ErrConflict   = errors.New("concurrent upload conflict")
 	ErrGCConflict = errors.New("GC Conflict")
 )
+
+// maxPostFilesRetries bounds how many times postFilesAndGenCommit re-walks and
+// re-commits after losing a race for the branch head. Ten, matching
+// GenNewCommit's own limit — the two loops retry the same contention from
+// different depths, and there is no reason for the outer one to be more
+// patient than the inner.
+const maxPostFilesRetries = 10
 
 // GenNewCommit creates a new commit with the given root and updates the branch.
 func GenNewCommit(repo *repomgr.Repo, base *commitmgr.Commit, newRoot, user, desc string, handleConncurrentUpdate bool, lastGCID string, checkGC bool) (string, error) {
@@ -2409,6 +2283,13 @@ func postMultiFilesRecursive(repo *repomgr.Repo, dirID, toPath, user string, den
 
 func addNewEntries(repo *repomgr.Repo, user string, oldDents *[]*fsmgr.SeafDirent, newDents []*fsmgr.SeafDirent, replaceExisted bool, names *[]string) error {
 	for _, dent := range newDents {
+		// Last line of defense: a dirent name is written verbatim to the
+		// filesystem by every syncing client, so never let one containing
+		// "..", a path separator or invalid UTF-8 into the tree.
+		if shouldIgnoreFile(dent.Name) {
+			return fmt.Errorf("invalid file name %q", dent.Name)
+		}
+
 		var replace bool
 		var uniqueName string
 		if replaceExisted {
@@ -2762,38 +2643,21 @@ func chunkFile(job chunkingData) (string, error) {
 }
 
 func writeChunk(repoID string, input []byte, blkSize int64, cryptKey *seafileCrypt) (string, error) {
-	var blkID string
+	data := input
 	if cryptKey != nil && blkSize > 0 {
 		encoded, err := cryptKey.encrypt(input)
 		if err != nil {
 			err := fmt.Errorf("failed to encrypt block: %v", err)
 			return "", err
 		}
-		checkSum := sha1.Sum(encoded)
-		blkID = hex.EncodeToString(checkSum[:])
-		if blockmgr.Exists(repoID, blkID) {
-			return blkID, nil
-		}
-		reader := bytes.NewReader(encoded)
-		err = blockmgr.Write(repoID, blkID, reader)
-		if err != nil {
-			err := fmt.Errorf("failed to write block: %v", err)
-			return "", err
-		}
-	} else {
-		checkSum := sha1.Sum(input)
-		blkID = hex.EncodeToString(checkSum[:])
-		if blockmgr.Exists(repoID, blkID) {
-			return blkID, nil
-		}
-		reader := bytes.NewReader(input)
-		err := blockmgr.Write(repoID, blkID, reader)
-		if err != nil {
-			err := fmt.Errorf("failed to write block: %v", err)
-			return "", err
-		}
+		data = encoded
 	}
 
+	blkID, err := blockmgr.WriteBytes(repoID, data, "")
+	if err != nil {
+		err := fmt.Errorf("failed to write block: %v", err)
+		return "", err
+	}
 	return blkID, nil
 }
 
@@ -3790,411 +3654,13 @@ func indexRawBlocks(repoID string, blockIDs []string, fileHeaders []*multipart.F
 			err := fmt.Errorf("failed to read block: %v", err)
 			return err
 		}
-		checkSum := sha1.Sum(buf.Bytes())
-		blkID := hex.EncodeToString(checkSum[:])
-		if blkID != blockIDs[i] {
-			err := fmt.Errorf("block id %s:%s doesn't match content", blkID, blockIDs[i])
-			return err
-		}
-
-		err = blockmgr.Write(repoID, blkID, &buf)
-		if err != nil {
-			err := fmt.Errorf("failed to write block: %s/%s: %v", repoID, blkID, err)
-			return err
+		if _, err := blockmgr.WriteBytes(repoID, buf.Bytes(), blockIDs[i]); err != nil {
+			return fmt.Errorf("failed to store block %s/%s: %v", repoID, blockIDs[i], err)
 		}
 	}
 
 	return nil
 }
-
-/*
-func uploadLinkCB(rsp http.ResponseWriter, r *http.Request) *appError {
-	if seahubPK == "" {
-		err := fmt.Errorf("no seahub private key is configured")
-		return &appError{err, "", http.StatusNotFound}
-	}
-	if r.Method == "OPTIONS" {
-		setAccessControl(rsp)
-		rsp.WriteHeader(http.StatusOK)
-		return nil
-	}
-
-	fsm, err := parseUploadLinkHeaders(r)
-	if err != nil {
-		return err
-	}
-
-	if err := doUpload(rsp, r, fsm, false); err != nil {
-		formatJSONError(rsp, err)
-		return err
-	}
-
-	return nil
-}
-
-func parseUploadLinkHeaders(r *http.Request) (*recvData, *appError) {
-	tokenLen := 36
-	parts := strings.Split(r.URL.Path[1:], "/")
-	if len(parts) < 2 {
-		msg := "Invalid URL"
-		return nil, &appError{nil, msg, http.StatusBadRequest}
-	}
-	if len(parts[1]) < tokenLen {
-		msg := "Invalid URL"
-		return nil, &appError{nil, msg, http.StatusBadRequest}
-	}
-	token := parts[1][:tokenLen]
-
-	info, appErr := queryShareLinkInfo(token, "upload")
-	if appErr != nil {
-		return nil, appErr
-	}
-
-	repoID := info.RepoID
-	parentDir := normalizeUTF8Path(info.ParentDir)
-
-	status, err := repomgr.GetRepoStatus(repoID)
-	if err != nil {
-		return nil, &appError{err, "", http.StatusInternalServerError}
-	}
-	if status != repomgr.RepoStatusNormal && status != -1 {
-		msg := "Repo status not writable."
-		return nil, &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	user, _ := repomgr.GetRepoOwner(repoID)
-
-	fsm := new(recvData)
-
-	fsm.parentDir = parentDir
-	fsm.tokenType = "upload-link"
-	fsm.repoID = repoID
-	fsm.user = user
-	fsm.rstart = -1
-	fsm.rend = -1
-	fsm.fsize = -1
-
-	ranges := r.Header.Get("Content-Range")
-	if ranges != "" {
-		parseContentRange(ranges, fsm)
-	}
-
-	return fsm, nil
-}
-*/
-
-type ShareLinkInfo struct {
-	RepoID    string `json:"repo_id"`
-	FilePath  string `json:"file_path"`
-	ParentDir string `json:"parent_dir"`
-	ShareType string `json:"share_type"`
-}
-
-func queryShareLinkInfo(token, cookie, opType, ipAddr, userAgent string) (*ShareLinkInfo, *appError) {
-	tokenString, err := utils.GenSeahubJWTToken()
-	if err != nil {
-		err := fmt.Errorf("failed to sign jwt token: %v", err)
-		return nil, &appError{err, "", http.StatusInternalServerError}
-	}
-	url := fmt.Sprintf("%s?type=%s", option.SeahubURL+"/check-share-link-access/", opType)
-	header := map[string][]string{
-		"Authorization": {"Token " + tokenString},
-	}
-	if cookie != "" {
-		header["Cookie"] = []string{cookie}
-	}
-	req := make(map[string]string)
-	req["token"] = token
-	if ipAddr != "" {
-		req["ip_addr"] = ipAddr
-	}
-	if userAgent != "" {
-		req["user_agent"] = userAgent
-	}
-	msg, err := json.Marshal(req)
-	if err != nil {
-		err := fmt.Errorf("failed to encode access token: %v", err)
-		return nil, &appError{err, "", http.StatusInternalServerError}
-	}
-	status, body, err := utils.HttpCommon("POST", url, header, bytes.NewReader(msg))
-	if err != nil {
-		if status != http.StatusInternalServerError {
-			return nil, &appError{nil, string(body), status}
-		} else {
-			err := fmt.Errorf("failed to get share link info: %v", err)
-			return nil, &appError{err, "", http.StatusInternalServerError}
-		}
-	}
-
-	info := new(ShareLinkInfo)
-	err = json.Unmarshal(body, &info)
-	if err != nil {
-		err := fmt.Errorf("failed to decode share link info: %v", err)
-		return nil, &appError{err, "", http.StatusInternalServerError}
-	}
-
-	return info, nil
-}
-
-func accessLinkCB(rsp http.ResponseWriter, r *http.Request) *appError {
-	if option.JWTPrivateKey == "" {
-		err := fmt.Errorf("no seahub private key is configured")
-		return &appError{err, "", http.StatusNotFound}
-	}
-
-	parts := strings.Split(r.URL.Path[1:], "/")
-	if len(parts) < 2 {
-		msg := "Invalid URL"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-	token := parts[1]
-	cookie := r.Header.Get("Cookie")
-	ipAddr := getClientIPAddr(r)
-	userAgent := r.Header.Get("User-Agent")
-	info, appErr := queryShareLinkInfo(token, cookie, "file", ipAddr, userAgent)
-	if appErr != nil {
-		return appErr
-	}
-
-	if info.FilePath == "" {
-		msg := "Internal server error\n"
-		err := fmt.Errorf("failed to get file_path by token %s", token)
-		return &appError{err, msg, http.StatusInternalServerError}
-	}
-	if info.ShareType != "f" {
-		msg := "Link type mismatch"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	repoID := info.RepoID
-	filePath := normalizeUTF8Path(info.FilePath)
-	fileName := filepath.Base(filePath)
-
-	op := r.URL.Query().Get("op")
-	if op != "view" {
-		op = "download-link"
-	}
-
-	ranges := r.Header["Range"]
-	byteRanges := strings.Join(ranges, "")
-
-	repo := repomgr.Get(repoID)
-	if repo == nil {
-		msg := "Bad repo id\n"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	user, _ := repomgr.GetRepoOwner(repoID)
-
-	fileID, _, err := fsmgr.GetObjIDByPath(repo.StoreID, repo.RootID, filePath)
-	if err != nil {
-		msg := "Invalid file_path\n"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	// Check for file changes by comparing the ETag in the If-None-Match header with the file ID. Set no-cache to allow clients to validate file changes before using the cache.
-	etag := r.Header.Get("If-None-Match")
-	if etag == fileID {
-		return &appError{nil, "", http.StatusNotModified}
-	}
-
-	rsp.Header().Set("ETag", fileID)
-	rsp.Header().Set("Cache-Control", "public, no-cache")
-
-	var cryptKey *seafileCrypt
-	if repo.IsEncrypted {
-		key, err := parseCryptKey(rsp, repoID, user, repo.EncVersion)
-		if err != nil {
-			return err
-		}
-		cryptKey = key
-	}
-
-	exists, _ := fsmgr.Exists(repo.StoreID, fileID)
-	if !exists {
-		msg := "Invalid file id"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	if !repo.IsEncrypted && len(byteRanges) != 0 {
-		if err := doFileRange(rsp, r, repo, fileID, fileName, op, byteRanges, user); err != nil {
-			return err
-		}
-	} else if err := doFile(rsp, r, repo, fileID, fileName, op, cryptKey, user); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-/*
-func accessDirLinkCB(rsp http.ResponseWriter, r *http.Request) *appError {
-	if seahubPK == "" {
-		err := fmt.Errorf("no seahub private key is configured")
-		return &appError{err, "", http.StatusNotFound}
-	}
-
-	parts := strings.Split(r.URL.Path[1:], "/")
-	if len(parts) < 2 {
-		msg := "Invalid URL"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-	token := parts[1]
-	info, appErr := queryShareLinkInfo(token, "dir")
-	if appErr != nil {
-		return appErr
-	}
-
-	repoID := info.RepoID
-	parentDir := normalizeUTF8Path(info.ParentDir)
-	op := "download-link"
-
-	repo := repomgr.Get(repoID)
-	if repo == nil {
-		msg := "Bad repo id\n"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-	user, _ := repomgr.GetRepoOwner(repoID)
-
-	filePath := r.URL.Query().Get("p")
-	if filePath == "" {
-		err := r.ParseForm()
-		if err != nil {
-			msg := "Invalid form\n"
-			return &appError{nil, msg, http.StatusBadRequest}
-		}
-		parentDir := r.FormValue("parent_dir")
-		if parentDir == "" {
-			msg := "Invalid parent_dir\n"
-			return &appError{nil, msg, http.StatusBadRequest}
-		}
-		parentDir = normalizeUTF8Path(parentDir)
-		parentDir = getCanonPath(parentDir)
-		dirents := r.FormValue("dirents")
-		if dirents == "" {
-			msg := "Invalid dirents\n"
-			return &appError{nil, msg, http.StatusBadRequest}
-		}
-		// opStr:=r.FormVale("op")
-		list, err := jsonToDirentList(repo, parentDir, dirents)
-		if err != nil {
-			log.Warnf("failed to parse dirent list: %v", err)
-			msg := "Invalid dirents\n"
-			return &appError{nil, msg, http.StatusBadRequest}
-		}
-		if len(list) == 0 {
-			msg := "Invalid dirents\n"
-			return &appError{nil, msg, http.StatusBadRequest}
-		}
-
-		obj := make(map[string]interface{})
-		if len(list) == 1 {
-			dent := list[0]
-			op = "download-dir-link"
-			obj["dir_name"] = dent.Name
-			obj["obj_id"] = dent.ID
-		} else {
-			op = "download-multi-link"
-			obj["parent_dir"] = parentDir
-			var fileList []string
-			for _, dent := range list {
-				fileList = append(fileList, dent.Name)
-			}
-			obj["file_list"] = fileList
-		}
-		data, err := json.Marshal(obj)
-		if err != nil {
-			err := fmt.Errorf("failed to encode zip obj: %v", err)
-			return &appError{err, "", http.StatusInternalServerError}
-		}
-		if err := downloadZipFile(rsp, r, string(data), repoID, user, op); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	// file path is not empty string
-	if _, ok := r.Header["If-Modified-Since"]; ok {
-		return &appError{nil, "", http.StatusNotModified}
-	}
-
-	filePath = normalizeUTF8Path(filePath)
-	fullPath := filepath.Join(parentDir, filePath)
-	fileName := filepath.Base(filePath)
-
-	fileID, _, err := fsmgr.GetObjIDByPath(repo.StoreID, repo.RootID, fullPath)
-	if err != nil {
-		msg := "Invalid file_path\n"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-	rsp.Header().Set("ETag", fileID)
-
-	now := time.Now()
-	rsp.Header().Set("Last-Modified", now.Format("Mon, 2 Jan 2006 15:04:05 GMT"))
-	rsp.Header().Set("Cache-Control", "max-age=3600")
-
-	ranges := r.Header["Range"]
-	byteRanges := strings.Join(ranges, "")
-
-	var cryptKey *seafileCrypt
-	if repo.IsEncrypted {
-		key, err := parseCryptKey(rsp, repoID, user, repo.EncVersion)
-		if err != nil {
-			return err
-		}
-		cryptKey = key
-	}
-
-	exists, _ := fsmgr.Exists(repo.StoreID, fileID)
-	if !exists {
-		msg := "Invalid file id"
-		return &appError{nil, msg, http.StatusBadRequest}
-	}
-
-	if !repo.IsEncrypted && len(byteRanges) != 0 {
-		if err := doFileRange(rsp, r, repo, fileID, fileName, op, byteRanges, user); err != nil {
-			return err
-		}
-	} else if err := doFile(rsp, r, repo, fileID, fileName, op, cryptKey, user); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func jsonToDirentList(repo *repomgr.Repo, parentDir, dirents string) ([]*fsmgr.SeafDirent, error) {
-	var list []string
-	err := json.Unmarshal([]byte(dirents), &list)
-	if err != nil {
-		return nil, err
-	}
-
-	dir, err := fsmgr.GetSeafdirByPath(repo.StoreID, repo.RootID, parentDir)
-	if err != nil {
-		return nil, err
-	}
-
-	direntHash := make(map[string]*fsmgr.SeafDirent)
-	for _, dent := range dir.Entries {
-		direntHash[dent.Name] = dent
-	}
-
-	var direntList []*fsmgr.SeafDirent
-	for _, path := range list {
-		normPath := normalizeUTF8Path(path)
-		if normPath == "" || normPath == "/" {
-			return nil, fmt.Errorf("invalid download file name: %s", normPath)
-		}
-		dent, ok := direntHash[normPath]
-		if !ok {
-			return nil, fmt.Errorf("failed to get dient for %s in dir %s in repo %s", normPath, parentDir, repo.StoreID)
-		}
-		direntList = append(direntList, dent)
-	}
-
-	return direntList, nil
-}
-*/
 
 func removeFileopExpireCache() {
 	deleteBlockMaps := func(key interface{}, value interface{}) bool {

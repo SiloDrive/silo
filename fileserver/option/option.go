@@ -17,6 +17,15 @@ import (
 // InfiniteQuota indicates that the quota is unlimited.
 const InfiniteQuota = -2
 
+// MinAPITokenTTL is the shortest API token lifetime an operator may configure.
+// It is a floor on operator input, not on the code: dbutil separately refuses a
+// non-positive TTL, which catches the different failure of a caller reaching the
+// migration before options are loaded.
+//
+// An hour is already far shorter than any real deployment wants for a sliding
+// credential; anything below it is a typo rather than an intent.
+const MinAPITokenTTL = time.Hour
+
 // Storage unit.
 const (
 	KB = 1000
@@ -78,6 +87,94 @@ var (
 	// DB default timeout
 	DBOpTimeout time.Duration
 
+	// AuthCacheTTL bounds how long validateToken and checkPermission may
+	// answer from memory before consulting the database again. It is the
+	// window in which a revoked token or a deleted library still works on a
+	// running server.
+	//
+	// Changes this process makes itself — a library deleted through the
+	// management API — purge the caches immediately, so the TTL only bounds
+	// what it cannot see: `silo token revoke` running as a separate process,
+	// and edits made directly to the database.
+	//
+	// Five minutes keeps effectively all of the benefit. The caches exist to
+	// keep a database round trip out of the path of every block request, and
+	// an actively syncing client makes far more than one request per five
+	// minutes. Set SILO_AUTH_CACHE_TTL=0 to check the database every time.
+	AuthCacheTTL time.Duration
+
+	// SyncObjectWrites fsyncs every commit, fs and block object before it is
+	// published, and fsyncs the directory entry after. On by default: the
+	// branch head lives in SQLite, which fsyncs its own WAL, so without this
+	// a power cut can leave a durable head pointing at objects that never
+	// reached the platter. That damage does not heal — the client believes
+	// those blocks are uploaded and never sends them again.
+	//
+	// Set SILO_SYNC_OBJECT_WRITES=false only where the storage is already
+	// crash-safe by other means, or where losing the last few seconds of
+	// writes is genuinely acceptable.
+	//
+	// Initialised here rather than only in initDefaultOptions so that the
+	// durable behaviour is what you get without loading options at all —
+	// the bool zero value would otherwise turn fsync off for any caller
+	// that reaches the object store first.
+	SyncObjectWrites = true
+
+	// APITokenTTL bounds how long an /api2/ API token stays valid without
+	// being used. The expiry slides on use, so an actively syncing client is
+	// never logged out; only an idle — or leaked and unused — token ages out.
+	//
+	// Configurable because the failure mode on the client side is not fully
+	// known: a client that does not re-authenticate on 401 would stop working
+	// at the TTL, and an operator who hits that needs a way to raise it
+	// without a rebuild. Sync tokens (RepoUserToken) deliberately have no
+	// equivalent — Seafile clients persist those and treat them as durable.
+	APITokenTTL time.Duration
+
+	// VerifyFSObjectHashes checks that an uploaded fs object hashes to the id
+	// it was sent under, before it is stored.
+	//
+	// Only fs objects need an option. A block id is the SHA-1 of exactly the
+	// bytes stored, so that check is free and unconditional; a commit is
+	// checked by comparing two ids already in hand. An fs object's id is the
+	// SHA-1 of its uncompressed JSON while the stored form is compressed, so
+	// verifying costs an inflate per object — the one case where an operator
+	// on slow hardware might reasonably decline.
+	//
+	// On by default, for the same reason object writes are fsynced by
+	// default: what it prevents is silent, permanent and shared. An object
+	// stored under the wrong id is never rewritten, because every later
+	// writer sees the id already present, and it is served to everyone using
+	// that store.
+	VerifyFSObjectHashes = true
+
+	// TLSCertFile and TLSKeyFile, when both are set, make the server speak
+	// HTTPS directly. Left empty, it speaks plaintext and expects a TLS
+	// reverse proxy in front of it — every credential Silo uses is a bearer
+	// token in a header, so plaintext on an exposed address gives them away.
+	TLSCertFile string
+	TLSKeyFile  string
+
+	// LoginRateLimit throttles failed password attempts per client address
+	// and per account. On by default: both login endpoints run a PBKDF2
+	// verification with nothing in front of it, so without this an attacker
+	// can guess online as fast as the server can hash, and every success
+	// mints a durable token.
+	//
+	// SILO_LOGIN_RATE_LIMIT=false turns it off, for a deployment that
+	// throttles at the proxy instead.
+	LoginRateLimit = true
+
+	// TrustProxyHeaders decides whether X-Forwarded-For and X-Real-Ip are
+	// believed when attributing a request to a client address.
+	//
+	// Off by default, because the headers are trivially forged and the rate
+	// limiter counts by address: believing them would hand an attacker a
+	// fresh identity per request. Behind a reverse proxy it must be turned
+	// on, or every client shares the proxy's bucket and one attacker
+	// throttles everyone.
+	TrustProxyHeaders bool
+
 	// database — use dbutil.DBEngine for portable SQL helpers
 	DBType string
 
@@ -114,7 +211,14 @@ func EnvWithFallback(names ...string) string {
 }
 
 func initDefaultOptions() {
-	Host = "0.0.0.0"
+	// Loopback by default. Silo speaks plaintext unless given a certificate,
+	// and every credential it uses is a bearer token in a header, so a
+	// default that publishes the port to the whole network is a default that
+	// gives those tokens to anyone on it. Exposing the server is a decision
+	// to make deliberately, with SILO_HOST or the config file — the Docker
+	// image sets SILO_HOST=0.0.0.0 itself, since a container that binds
+	// loopback cannot be reached through a published port at all.
+	Host = "127.0.0.1"
 	Port = 8082
 	FixedBlockSize = 1 << 23
 	MaxIndexingThreads = 1
@@ -131,6 +235,40 @@ func initDefaultOptions() {
 	RedisMaxConn = 100
 	RedisTimeout = 1 * time.Second
 	MaxIndexingFiles = 10
+	APITokenTTL = 30 * 24 * time.Hour
+	AuthCacheTTL = 5 * time.Minute
+	SyncObjectWrites = true
+	VerifyFSObjectHashes = true
+	LoginRateLimit = true
+	TrustProxyHeaders = false
+	EnableNotification = true
+}
+
+// envBool reads the first of names that is set and parses it as a boolean,
+// returning def when none is set or the value makes no sense.
+//
+// One parser for all of them, because the alternative failed quietly: a
+// hand-written `v == "false"` test accepts "false" and "0" and silently
+// ignores "no" and "off", and each knob picked its own polarity — so
+// SILO_TRUST_PROXY_HEADERS=yes did nothing at all, with nothing in the log to
+// say why, and the resulting symptom (every client sharing one rate-limit
+// bucket) is exactly what setting it was meant to prevent.
+func envBool(def bool, names ...string) bool {
+	for _, name := range names {
+		v := strings.TrimSpace(os.Getenv(name))
+		if v == "" {
+			continue
+		}
+		switch strings.ToLower(v) {
+		case "true", "1", "yes", "on":
+			return true
+		case "false", "0", "no", "off":
+			return false
+		}
+		log.Warnf("Ignoring unparseable %s=%q, using %v", name, v, def)
+		return def
+	}
+	return def
 }
 
 // LoadFileServerOptions loads seafile.conf from the given path. An empty
@@ -165,9 +303,55 @@ func LoadFileServerOptions(configFile string) {
 
 	// Notification server: silo runs it in-process at /notification.
 	// Enabled by default; set SILO_ENABLE_NOTIFICATIONS=false to disable.
-	EnableNotification = true
-	if v := EnvWithFallback("SILO_ENABLE_NOTIFICATIONS", "ENABLE_NOTIFICATION_SERVER"); v == "false" || v == "0" {
-		EnableNotification = false
+	EnableNotification = envBool(EnableNotification,
+		"SILO_ENABLE_NOTIFICATIONS", "ENABLE_NOTIFICATION_SERVER")
+
+	// Accepts a Go duration ("5m", "30s") or "0" to disable the auth caches
+	// entirely. Unlike the token TTL, a wrong value here is recoverable by
+	// fixing it and restarting, so it is clamped rather than rejected: a
+	// negative duration means the same thing as zero.
+	if v := os.Getenv("SILO_AUTH_CACHE_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		switch {
+		case err != nil:
+			log.Warnf("Ignoring unparseable SILO_AUTH_CACHE_TTL %q, using %s", v, AuthCacheTTL)
+		case d <= 0:
+			log.Info("SILO_AUTH_CACHE_TTL is zero: every request will re-check the database.")
+			AuthCacheTTL = 0
+		default:
+			AuthCacheTTL = d
+		}
+	}
+
+	LoginRateLimit = envBool(LoginRateLimit, "SILO_LOGIN_RATE_LIMIT")
+	if !LoginRateLimit {
+		log.Warn("SILO_LOGIN_RATE_LIMIT is off: password guessing against the login " +
+			"endpoints is unthrottled.")
+	}
+
+	TrustProxyHeaders = envBool(TrustProxyHeaders, "SILO_TRUST_PROXY_HEADERS")
+
+	TLSCertFile = os.Getenv("SILO_TLS_CERT")
+	TLSKeyFile = os.Getenv("SILO_TLS_KEY")
+	if (TLSCertFile == "") != (TLSKeyFile == "") {
+		// One without the other silently means no TLS, which is exactly the
+		// mistake worth failing loudly on.
+		log.Fatal("SILO_TLS_CERT and SILO_TLS_KEY must be set together.")
+	}
+
+	VerifyFSObjectHashes = envBool(VerifyFSObjectHashes, "SILO_VERIFY_FS_OBJECT_HASHES")
+	if !VerifyFSObjectHashes {
+		log.Warn("SILO_VERIFY_FS_OBJECT_HASHES is off: an fs object stored under " +
+			"the wrong id will not be detected, and cannot be repaired afterwards.")
+	}
+
+	// Durability of object writes. Opt-out only — an operator has to say so
+	// explicitly, because the failure it protects against is silent and
+	// unrecoverable rather than merely inconvenient.
+	SyncObjectWrites = envBool(SyncObjectWrites, "SILO_SYNC_OBJECT_WRITES")
+	if !SyncObjectWrites {
+		log.Warn("SILO_SYNC_OBJECT_WRITES is off: objects are not fsynced, " +
+			"so a crash or power loss can leave repositories permanently corrupt.")
 	}
 
 	if section, err := config.GetSection("httpserver"); err == nil {
@@ -208,6 +392,34 @@ func LoadFileServerOptions(configFile string) {
 
 	if lvl := os.Getenv("SILO_LOG_LEVEL"); lvl != "" {
 		LogLevel = lvl
+	}
+
+	// Accepts a Go duration ("720h", "30m"). An unparseable value keeps the
+	// default rather than disabling expiry, so a typo cannot silently turn API
+	// tokens back into permanent credentials.
+	if v := os.Getenv("SILO_API_TOKEN_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		switch {
+		case err != nil:
+			log.Warnf("Ignoring unparseable SILO_API_TOKEN_TTL %q, using %s", v, APITokenTTL)
+		case d < MinAPITokenTTL:
+			// Rejected rather than clamped, because the difference between a
+			// deliberate short TTL and a typo is not knowable here and the
+			// consequence of guessing wrong is not recoverable. The migration
+			// stamps every pre-existing token with expires_at = now + TTL, and
+			// backfills only rows where expires_at IS NULL — so once a too-short
+			// TTL has stamped them, correcting the variable and restarting does
+			// not undo it. Every token stays expired, with nothing in the logs
+			// connecting the symptom to the cause.
+			//
+			// The realistic typo this catches is "30m" for an intended "30 days",
+			// which is 720h.
+			log.Warnf("Ignoring SILO_API_TOKEN_TTL %q: below the %s minimum. Using %s. "+
+				"A shorter value would expire existing tokens irrecoverably.",
+				v, MinAPITokenTTL, APITokenTTL)
+		default:
+			APITokenTTL = d
+		}
 	}
 }
 
@@ -385,9 +597,11 @@ func LoadJWTConfig() error {
 		log.Info("SILO_JWT_SECRET not set, generated ephemeral key")
 	}
 
-	// SeahubURL is used by legacy merge conflict notification and
-	// share-link access checks. Silo has no Seahub, but the code paths
-	// still reference it — they'll fail gracefully (HTTP error, logged).
+	// SeahubURL now has exactly one caller left: postGetNickName, which looks
+	// up a display name for merge conflict messages. The share-link and web
+	// file-access paths that also used it were removed, since Silo runs no
+	// Seahub and they could only fail. The remaining call degrades quietly —
+	// postGetNickName falls back to the raw modifier string on any error.
 	siteRoot := os.Getenv("SITE_ROOT")
 	if siteRoot != "" {
 		SeahubURL = fmt.Sprintf("http://127.0.0.1:8000%sapi/v2.1/internal", siteRoot)

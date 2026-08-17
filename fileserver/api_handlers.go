@@ -40,6 +40,38 @@ func loadRepoAndCommit(w http.ResponseWriter, repoID, user string) (*repomgr.Rep
 	return repo, head, true
 }
 
+// checkEntryName applies the same name guard the upload path uses before a
+// dirent reaches the tree, replying 400 when the name is rejected. Syncing
+// clients write dirent names straight to disk relative to the library root,
+// so "..", embedded separators, invalid UTF-8 and over-long names must never
+// be stored.
+func checkEntryName(w http.ResponseWriter, name string) bool {
+	if name == "" || name == "." || shouldIgnoreFile(name) {
+		http.Error(w, "Invalid name", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+// movesIntoOwnSubtree reports whether dstDir sits at or beneath srcPath. A
+// move is add-then-delete, so relocating a directory beneath itself would put
+// the copy inside the tree that the delete then removes, destroying it. The
+// trailing separator keeps "/ab" from matching a move into "/abc".
+func movesIntoOwnSubtree(srcPath, dstDir string) bool {
+	src := upath.Clean(srcPath)
+	dst := upath.Clean(dstDir)
+	if dst == src {
+		return true
+	}
+	// Everything is beneath the root. moveHandler cannot reach this (it trims
+	// the trailing slash and rejects the resulting empty src), but src+"/"
+	// below would be "//" and match nothing, so handle it explicitly.
+	if src == "/" {
+		return true
+	}
+	return strings.HasPrefix(dst, src+"/")
+}
+
 func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserEmail(r)
 	repoID := mux.Vars(r)["repoid"]
@@ -82,13 +114,16 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	parentDir := upath.Dir(path)
+	dirName := upath.Base(path)
+	if !checkEntryName(w, dirName) {
+		return
+	}
+
 	repo, head, ok := loadRepoAndCommit(w, repoID, user)
 	if !ok {
 		return
 	}
-
-	parentDir := upath.Dir(path)
-	dirName := upath.Base(path)
 
 	mode := uint32(syscall.S_IFDIR | 0644)
 	dent := fsmgr.NewDirent(fsmgr.EmptySha1, dirName, mode, time.Now().Unix(), "", 0)
@@ -199,6 +234,9 @@ func renameHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path and newname are required", http.StatusBadRequest)
 		return
 	}
+	if !checkEntryName(w, newName) {
+		return
+	}
 
 	repo, head, ok := loadRepoAndCommit(w, repoID, user)
 	if !ok {
@@ -261,6 +299,9 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "src and dst are the same", http.StatusBadRequest)
 		return
 	}
+	if !checkEntryName(w, upath.Base(dstPath)) {
+		return
+	}
 
 	repo, head, ok := loadRepoAndCommit(w, repoID, user)
 	if !ok {
@@ -278,6 +319,11 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 	srcName := upath.Base(srcPath)
 	dstDir := upath.Dir(dstPath)
 	dstName := upath.Base(dstPath)
+
+	if fsmgr.IsDir(srcEntry.Mode) && movesIntoOwnSubtree(srcPath, dstDir) {
+		http.Error(w, "Cannot move a directory into itself", http.StatusBadRequest)
+		return
+	}
 
 	// Phase 1: Add to destination
 	newDent := fsmgr.NewDirent(srcEntry.ID, dstName, srcEntry.Mode, time.Now().Unix(), srcEntry.Modifier, srcEntry.Size)

@@ -1,6 +1,7 @@
 package tokenstore
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -79,5 +80,56 @@ func TestDeleteToken(t *testing.T) {
 	info := QueryToken(token)
 	if info != nil {
 		t.Fatal("expected nil after delete")
+	}
+}
+
+// A one-time token exists so that a URL carrying it cannot be replayed.
+// Redeeming it used to be a Load followed by a Delete, so two requests
+// arriving together both saw it before either removed it, and both were
+// served. Exactly one caller may win.
+func TestQueryTokenOneTimeIsRedeemedOnce(t *testing.T) {
+	for attempt := 0; attempt < 50; attempt++ {
+		token := CreateToken("repo-1", "obj-1", "download", "user@test.com", true)
+
+		const racers = 64
+		start := make(chan struct{})
+		results := make(chan *AccessInfo, racers)
+
+		var wg sync.WaitGroup
+		for i := 0; i < racers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				results <- QueryToken(token)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(results)
+
+		var served int
+		for info := range results {
+			if info != nil {
+				served++
+			}
+		}
+		if served != 1 {
+			t.Fatalf("attempt %d: %d of %d racing requests were served a one-time token, want 1",
+				attempt, served, racers)
+		}
+	}
+}
+
+// Redeeming one token must not disturb another.
+func TestQueryTokenOneTimeIsPerToken(t *testing.T) {
+	first := CreateToken("repo-1", "obj-1", "download", "user@test.com", true)
+	second := CreateToken("repo-1", "obj-2", "download", "user@test.com", true)
+
+	if info := QueryToken(first); info == nil {
+		t.Fatal("the first token was not redeemable")
+	}
+	if info := QueryToken(second); info == nil {
+		t.Error("redeeming one one-time token consumed another")
 	}
 }

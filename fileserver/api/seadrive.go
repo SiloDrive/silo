@@ -29,12 +29,18 @@ func SeaDriveAuthTokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !allowLoginAttempt(w, r, username) {
+		return
+	}
+
 	email, err := authmgr.ValidatePassword(username, password)
 	if err != nil {
+		loginFailed(r, username)
 		log.Infof("SeaDrive login failed for %s: %v", username, err)
 		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
 		return
 	}
+	loginSucceeded(username)
 
 	token, err := apitokenstore.Create(email)
 	if err != nil {
@@ -49,6 +55,34 @@ func SeaDriveAuthTokenHandler(w http.ResponseWriter, r *http.Request) {
 // SeaDriveAuthPingHandler handles GET /api2/auth/ping/.
 func SeaDriveAuthPingHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, "pong")
+}
+
+// SeaDriveLogoutHandler handles POST /api2/auth/logout/, revoking the API
+// token that authenticated the request. Tokens are minted per login, so this
+// signs out the calling device only and leaves the user's other devices
+// syncing.
+//
+// This endpoint is Silo-specific: upstream Seahub has no API-token logout, and
+// a client is expected to simply discard the token. It exists so that a token
+// known to be compromised can actually be invalidated server-side, which is
+// otherwise impossible for a credential with a 30-day sliding expiry.
+func SeaDriveLogoutHandler(w http.ResponseWriter, r *http.Request) {
+	token := middleware.GetAPIToken(r)
+	if token == "" {
+		// RequireAPIToken guarantees a token reached the handler, so an empty
+		// one means the middleware and this handler have got out of step.
+		log.Error("Logout handler reached with no API token in context")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := apitokenstore.Delete(token); err != nil {
+		log.Errorf("Failed to revoke API token: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 type serverInfoResponse struct {

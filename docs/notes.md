@@ -142,7 +142,9 @@ Low priority since the TUI won't use these paths.
 
 ## Database
 
-Two MySQL databases (SQLite also supported but not for production):
+Two logical databases (`ccnet` and `seafile`). SQLite is the default and is
+production-ready — embedded, WAL mode, a single serialized write connection and
+a read-only read pool. MySQL is also supported for existing deployments:
 
 ### ccnet DB
 - `EmailUser` - users (id, email, passwd, is_staff, is_active, ctime, reference_id)

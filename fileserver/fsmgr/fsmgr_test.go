@@ -1,18 +1,28 @@
 package fsmgr
 
 import (
+	"bytes"
+	"compress/zlib"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/dkam/silo/fileserver/option"
 )
 
 const (
-	seafileConfPath = "/tmp/conf"
-	seafileDataDir  = "/tmp/conf/seafile-data"
-	repoID          = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
-	blkID           = "0401fc662e3bc87a41f299a907c056aaf8322a26"
-	subDirID        = "0401fc662e3bc87a41f299a907c056aaf8322a27"
+	repoID   = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
+	blkID    = "0401fc662e3bc87a41f299a907c056aaf8322a26"
+	subDirID = "0401fc662e3bc87a41f299a907c056aaf8322a27"
 )
+
+// Set from os.MkdirTemp in TestMain (t.TempDir needs a *testing.T, which
+// TestMain has no access to) so this package's object store is its own and
+// does not collide with the other packages' tests when they run in parallel.
+var seafileConfPath string
+var seafileDataDir string
 
 var dirID string
 var fileID string
@@ -65,8 +75,16 @@ func delFile() error {
 }
 
 func TestMain(m *testing.M) {
+	var err error
+	seafileConfPath, err = os.MkdirTemp("", "silo-fsmgr-test")
+	if err != nil {
+		fmt.Printf("Failed to create test dir : %v.\n", err)
+		os.Exit(1)
+	}
+	seafileDataDir = filepath.Join(seafileConfPath, "seafile-data")
+
 	Init(seafileConfPath, seafileDataDir, 2<<30)
-	err := createFile()
+	err = createFile()
 	if err != nil {
 		fmt.Printf("Failed to create test file : %v.\n", err)
 		os.Exit(1)
@@ -129,4 +147,164 @@ func TestGetSeafdirByPath(t *testing.T) {
 		}
 	}
 
+}
+
+// A few kilobytes of zlib expand to gigabytes, and the fs object they claim to
+// be is only decompressed later — recvFSCB stores the compressed bytes without
+// looking at them. Decompressing into an unbounded buffer let one request from
+// any client with write access to one library OOM-kill the fileserver.
+func TestUncompressRejectsDecompressionBomb(t *testing.T) {
+	var compressed bytes.Buffer
+	w := zlib.NewWriter(&compressed)
+	// Zeroes compress to almost nothing, so the bomb is a few KB on the wire.
+	zeros := make([]byte, 1<<20)
+	for written := 0; written <= MaxObjectSize; written += len(zeros) {
+		if _, err := w.Write(zeros); err != nil {
+			t.Fatalf("failed to build test payload: %v", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("failed to build test payload: %v", err)
+	}
+	if compressed.Len() > MaxObjectSize {
+		t.Fatalf("test payload is %d bytes compressed, which does not test the limit", compressed.Len())
+	}
+
+	if _, err := uncompress(compressed.Bytes(), nil); err == nil {
+		t.Error("uncompress accepted a payload larger than MaxObjectSize, want an error")
+	}
+
+	// The same path with a reused reader, which is how the hot loop calls it.
+	reader, err := zlib.NewReader(bytes.NewReader(compressed.Bytes()))
+	if err != nil {
+		t.Fatalf("failed to create reader: %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	if _, err := uncompress(compressed.Bytes(), reader); err == nil {
+		t.Error("uncompress with a reused reader accepted an oversized payload, want an error")
+	}
+}
+
+// The limit must not reject objects of a legitimate size, including one right
+// at the boundary.
+func TestUncompressAcceptsObjectAtTheLimit(t *testing.T) {
+	payload := make([]byte, MaxObjectSize)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+
+	compressed, err := compress(payload)
+	if err != nil {
+		t.Fatalf("failed to compress: %v", err)
+	}
+	got, err := uncompress(compressed, nil)
+	if err != nil {
+		t.Fatalf("uncompress returned %v for an object exactly at the limit", err)
+	}
+	if len(got) != len(payload) {
+		t.Errorf("uncompress returned %d bytes, want %d", len(got), len(payload))
+	}
+}
+
+// An fs object's id is the SHA-1 of its uncompressed JSON, while the wire and
+// the store both carry the compressed form. recvFSCB stored whatever a client
+// sent under whatever id it named, and SaveSeafile skips an id that already
+// exists — so wrong bytes under a right id are permanent, and served to
+// everyone sharing the store.
+func TestVerifyObjectID(t *testing.T) {
+	seafile, err := NewSeafile(1, 100, []string{blkID, subDirID})
+	if err != nil {
+		t.Fatalf("failed to build test object: %v", err)
+	}
+	compressed, err := compress(seafile.data)
+	if err != nil {
+		t.Fatalf("failed to compress: %v", err)
+	}
+
+	if err := VerifyObjectID(seafile.FileID, compressed, nil); err != nil {
+		t.Errorf("VerifyObjectID rejected an object that matches its id: %v", err)
+	}
+
+	// Same content, someone else's id.
+	other := "0401fc662e3bc87a41f299a907c056aaf8322a27"
+	if other == seafile.FileID {
+		t.Fatal("test ids collided")
+	}
+	if err := VerifyObjectID(other, compressed, nil); err == nil {
+		t.Error("VerifyObjectID accepted content stored under the wrong id")
+	}
+
+	// Content that is not a valid zlib stream at all.
+	if err := VerifyObjectID(seafile.FileID, []byte("not compressed"), nil); err == nil {
+		t.Error("VerifyObjectID accepted data that is not a zlib stream")
+	}
+	if err := VerifyObjectID(seafile.FileID, nil, nil); err == nil {
+		t.Error("VerifyObjectID accepted empty data")
+	}
+}
+
+// The check belongs to the ingest path, not to whichever handler happens to
+// call it: a second raw-fs ingest that forgot the option would otherwise store
+// unverified client data. WriteRawIngested is where that is enforced, so it is
+// what the test holds to it — including that a rejection is reported as bad
+// data, so callers answer 400 rather than 500.
+func TestWriteRawIngestedVerifies(t *testing.T) {
+	seafile, err := NewSeafile(1, 100, []string{blkID, subDirID})
+	if err != nil {
+		t.Fatalf("failed to build test object: %v", err)
+	}
+	compressed, err := compress(seafile.data)
+	if err != nil {
+		t.Fatalf("failed to compress: %v", err)
+	}
+
+	origVerify := option.VerifyFSObjectHashes
+	defer func() { option.VerifyFSObjectHashes = origVerify }()
+	option.VerifyFSObjectHashes = true
+
+	// A pooled reader has to work as well as no reader: the sync path shares
+	// one across a whole pack.
+	reader := GetOneZlibReader()
+	defer ReturnOneZlibReader(reader)
+
+	if err := WriteRawIngested(repoID, seafile.FileID, compressed, reader); err != nil {
+		t.Errorf("WriteRawIngested rejected an object that matches its id: %v", err)
+	}
+
+	err = WriteRawIngested(repoID, subDirID, compressed, reader)
+	if err == nil {
+		t.Fatal("WriteRawIngested stored content under the wrong id")
+	}
+	if !errors.Is(err, ErrVerification) {
+		t.Errorf("rejection is %v, want an ErrVerification the caller can map to 400", err)
+	}
+	if exists, _ := Exists(repoID, subDirID); exists {
+		t.Error("the rejected object was written to the store anyway")
+	}
+
+	// Off, the bytes go in unchecked — that is what the option means.
+	option.VerifyFSObjectHashes = false
+	if err := WriteRawIngested(repoID, subDirID, compressed, reader); err != nil {
+		t.Errorf("WriteRawIngested refused to store with verification off: %v", err)
+	}
+}
+
+// The verification path must not become a way in for the bomb it exists to
+// reject — it decompresses, so it has to use the same bounded reader.
+func TestVerifyObjectIDIsBounded(t *testing.T) {
+	var compressed bytes.Buffer
+	w := zlib.NewWriter(&compressed)
+	zeros := make([]byte, 1<<20)
+	for written := 0; written <= MaxObjectSize; written += len(zeros) {
+		if _, err := w.Write(zeros); err != nil {
+			t.Fatalf("failed to build test payload: %v", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("failed to build test payload: %v", err)
+	}
+
+	if err := VerifyObjectID("0401fc662e3bc87a41f299a907c056aaf8322a27", compressed.Bytes(), nil); err == nil {
+		t.Error("VerifyObjectID expanded a payload past MaxObjectSize")
+	}
 }

@@ -38,6 +38,16 @@ func RequireAPIToken(next http.Handler) http.Handler {
 		}
 
 		ctx := context.WithValue(r.Context(), UserEmailKey, email)
+		// Carry the token itself so a handler can revoke the exact credential
+		// that authenticated the request without re-parsing the header.
+		ctx = context.WithValue(ctx, APITokenKey, parts[1])
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// GetAPIToken returns the API token that authenticated the request, or "" if
+// the request did not come through RequireAPIToken.
+func GetAPIToken(r *http.Request) string {
+	token, _ := r.Context().Value(APITokenKey).(string)
+	return token
 }

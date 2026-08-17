@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/blockmgr"
 	"github.com/dkam/silo/fileserver/commitmgr"
+	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/diff"
 	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/option"
@@ -38,14 +38,64 @@ const (
 )
 
 const (
-	emptySHA1                  = "0000000000000000000000000000000000000000"
-	tokenExpireTime            = 7200
-	permExpireTime             = 7200
+	emptySHA1 = "0000000000000000000000000000000000000000"
+	// The token and permission caches are bounded by option.AuthCacheTTL,
+	// which is a security window and configurable. This one is not: a repo's
+	// store id never changes while the repo exists, and repo deletion evicts
+	// the entry outright.
 	virtualRepoExpireTime      = 7200
 	syncAPICleaningIntervalSec = 300
 	maxObjectPackSize          = 1 << 20 // 1MB
 	fsIdWorkers                = 10
 )
+
+// Body limits for the sync endpoints. server.go caps only MaxHeaderBytes, and
+// the 1MB MaxBytesReader it installs covers the /api/silo/v1 JSON routes
+// only — /seafhttp had no limit at all, so one request from any client with
+// write access to one library could make the server allocate until it was
+// OOM-killed.
+//
+// The limits are set well above what the protocol produces rather than tight
+// to it, because the cost of being wrong is a client that cannot sync.
+const (
+	// A commit is a small JSON object: ids, timestamps and a description.
+	maxCommitBodySize = 1 << 20 // 1MB
+	// Lists of 40-char object or repo ids. 16MB is roughly 380k ids.
+	maxIDListBodySize = 16 << 20 // 16MB
+	// A pack of fs objects. The server builds its own packs to
+	// maxObjectPackSize (1MB) and clients do the same, except that a single
+	// object larger than that is sent alone — so the real bound is one
+	// maximum-size fs object, well inside this.
+	maxFSPackBodySize = 16 << 20 // 16MB
+)
+
+// readLimitedBody reads an entire request body, refusing anything past limit.
+func readLimitedBody(rsp http.ResponseWriter, r *http.Request, limit int64) ([]byte, *appError) {
+	data, err := io.ReadAll(http.MaxBytesReader(rsp, r.Body, limit))
+	if err != nil {
+		return nil, bodyLimitError(err)
+	}
+	return data, nil
+}
+
+// decodeLimitedJSON decodes a JSON request body into v, refusing anything past
+// limit. The decoder streams, so the limit bounds the allocation rather than
+// only rejecting it after the fact.
+func decodeLimitedJSON(rsp http.ResponseWriter, r *http.Request, limit int64, v any) *appError {
+	if err := json.NewDecoder(http.MaxBytesReader(rsp, r.Body, limit)).Decode(v); err != nil {
+		return bodyLimitError(err)
+	}
+	return nil
+}
+
+func bodyLimitError(err error) *appError {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		msg := fmt.Sprintf("Request body exceeds %d bytes", maxErr.Limit)
+		return &appError{nil, msg, http.StatusRequestEntityTooLarge}
+	}
+	return &appError{nil, err.Error(), http.StatusBadRequest}
+}
 
 var (
 	tokenCache           sync.Map
@@ -60,8 +110,10 @@ type tokenInfo struct {
 	expireTime int64
 }
 
+// permInfo is a cached "this check passed", nothing more. The permission
+// string itself is not kept: the cache key already carries the operation it
+// was checked for, so a hit is only ever asked whether it is still fresh.
 type permInfo struct {
-	perm       string
 	expireTime int64
 }
 
@@ -239,12 +291,11 @@ func permissionCheckCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	if err != nil {
 		return err
 	}
-	ip := getClientIPAddr(r)
-	if ip == "" {
-		token := r.Header.Get("Seafile-Repo-Token")
-		err := fmt.Errorf("%s failed to get client ip", token)
-		return &appError{err, "", http.StatusInternalServerError}
-	}
+	// Same resolver, and so the same proxy-trust policy, as the login limiter:
+	// this address is stored as the token's peer and reported in the sync
+	// event, so an unconditionally trusted X-Forwarded-For would let any
+	// client with a sync token forge both.
+	ip := utils.ClientIP(r, option.TrustProxyHeaders)
 
 	if op == "download" {
 		onRepoOper("repo-download-sync", repoID, user, ip, clientName)
@@ -253,7 +304,7 @@ func permissionCheckCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		token := r.Header.Get("Seafile-Repo-Token")
 		exists, err := repomgr.TokenPeerInfoExists(token)
 		if err != nil {
-			err := fmt.Errorf("failed to check whether token %s peer info exist: %v", token, err)
+			err := fmt.Errorf("failed to check token peer info for repo %s: %v", repoID, err)
 			return &appError{err, "", http.StatusInternalServerError}
 		}
 		if !exists {
@@ -296,7 +347,7 @@ func getBlockMapCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{nil, msg, http.StatusNotFound}
 	}
 
-	var blockSizes []int64
+	blockSizes := []int64{}
 	for _, blockID := range seafile.BlkIDs {
 		blockSize, err := blockmgr.Stat(storeID, blockID)
 		if err != nil {
@@ -306,22 +357,7 @@ func getBlockMapCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		blockSizes = append(blockSizes, blockSize)
 	}
 
-	var data []byte
-	if blockSizes != nil {
-		data, err = json.Marshal(blockSizes)
-		if err != nil {
-			err := fmt.Errorf("failed to marshal json: %v", err)
-			return &appError{err, "", http.StatusInternalServerError}
-		}
-	} else {
-		data = []byte{'[', ']'}
-	}
-
-	rsp.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	rsp.WriteHeader(http.StatusOK)
-	_, _ = rsp.Write(data)
-
-	return nil
+	return writeJSON(rsp, blockSizes)
 }
 
 func getAccessibleRepoListCB(rsp http.ResponseWriter, r *http.Request) *appError {
@@ -346,7 +382,7 @@ func getAccessibleRepoListCB(rsp http.ResponseWriter, r *http.Request) *appError
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 
-	var repoObjects []*share.SharedRepo
+	repoObjects := []*share.SharedRepo{}
 	for _, repo := range repos {
 		if repo.RepoType != "" {
 			continue
@@ -413,20 +449,7 @@ func getAccessibleRepoListCB(rsp http.ResponseWriter, r *http.Request) *appError
 		repoObjects = append(repoObjects, sRepo)
 	}
 
-	var data []byte
-	if repoObjects != nil {
-		data, err = json.Marshal(repoObjects)
-		if err != nil {
-			err := fmt.Errorf("failed to marshal json: %v", err)
-			return &appError{err, "", http.StatusInternalServerError}
-		}
-	} else {
-		data = []byte{'[', ']'}
-	}
-	rsp.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	rsp.WriteHeader(http.StatusOK)
-	_, _ = rsp.Write(data)
-	return nil
+	return writeJSON(rsp, repoObjects)
 }
 
 func filterGroupRepos(repos []*share.SharedRepo) map[string]*share.SharedRepo {
@@ -467,10 +490,17 @@ func recvFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		err := fmt.Errorf("failed to get repo store id by repo id %s: %v", repoID, err)
 		return &appError{err, "", http.StatusInternalServerError}
 	}
-	fsBuf, err := io.ReadAll(r.Body)
-	if err != nil {
-		return &appError{nil, err.Error(), http.StatusBadRequest}
+	fsBuf, appErr := readLimitedBody(rsp, r, maxFSPackBodySize)
+	if appErr != nil {
+		return appErr
 	}
+
+	// One inflate window for the whole pack. A pack holds up to
+	// maxFSPackBodySize of small objects, so taking a reader per object would
+	// allocate one window each — thousands per request on a path that
+	// verifies by default.
+	zlibReader := fsmgr.GetOneZlibReader()
+	defer fsmgr.ReturnOneZlibReader(zlibReader)
 
 	for len(fsBuf) > 44 {
 		objID := string(fsBuf[:40])
@@ -491,8 +521,12 @@ func recvFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 			return &appError{nil, msg, http.StatusBadRequest}
 		}
 
-		objBuffer := bytes.NewBuffer(fsBuf[44 : 44+objSize])
-		if err := fsmgr.WriteRaw(storeID, objID, objBuffer); err != nil {
+		objData := fsBuf[44 : 44+objSize]
+		if err := fsmgr.WriteRawIngested(storeID, objID, objData, zlibReader); err != nil {
+			if errors.Is(err, fsmgr.ErrVerification) {
+				log.Warnf("rejecting fs object for repo %s: %v", repoID, err)
+				return &appError{nil, "Fs object does not match its id", http.StatusBadRequest}
+			}
 			err := fmt.Errorf("failed to write fs obj %s:%s : %v", storeID, objID, err)
 			return &appError{err, "", http.StatusInternalServerError}
 		}
@@ -534,11 +568,11 @@ func postCheckExistCB(rsp http.ResponseWriter, r *http.Request, existType checkE
 	}
 
 	var objIDList []string
-	if err := json.NewDecoder(r.Body).Decode(&objIDList); err != nil {
-		return &appError{nil, err.Error(), http.StatusBadRequest}
+	if appErr := decodeLimitedJSON(rsp, r, maxIDListBodySize, &objIDList); appErr != nil {
+		return appErr
 	}
 
-	var neededObjs []string
+	neededObjs := []string{}
 	var ret bool
 	for i := 0; i < len(objIDList); i++ {
 		if !utils.IsObjectIDValid(objIDList[i]) {
@@ -555,21 +589,7 @@ func postCheckExistCB(rsp http.ResponseWriter, r *http.Request, existType checkE
 		}
 	}
 
-	var data []byte
-	if neededObjs != nil {
-		data, err = json.Marshal(neededObjs)
-		if err != nil {
-			err := fmt.Errorf("failed to marshal json: %v", err)
-			return &appError{err, "", http.StatusInternalServerError}
-		}
-	} else {
-		data = []byte{'[', ']'}
-	}
-	rsp.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	rsp.WriteHeader(http.StatusOK)
-	_, _ = rsp.Write(data)
-
-	return nil
+	return writeJSON(rsp, neededObjs)
 }
 
 func packFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
@@ -592,8 +612,8 @@ func packFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	}
 
 	var fsIDList []string
-	if err := json.NewDecoder(r.Body).Decode(&fsIDList); err != nil {
-		return &appError{nil, err.Error(), http.StatusBadRequest}
+	if appErr := decodeLimitedJSON(rsp, r, maxIDListBodySize, &fsIDList); appErr != nil {
+		return appErr
 	}
 
 	var totalSize int
@@ -626,31 +646,73 @@ func packFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	return nil
 }
 
+// headCommitsMultiCB answers the batched head poll: given a list of repo ids,
+// return each one's head commit.
+//
+// It answers only for the repos the caller can actually read. Unauthenticated
+// — which is how upstream ships it, and how this did — it is an oracle:
+// anyone who can reach the port and knows a repo's id learns whether that
+// library exists and watches its head move, which is its activity, without
+// ever holding a credential. It is also an unauthenticated way to make the
+// server run a large IN query.
+//
+// The caller is identified from a sync token by value rather than against a
+// named repo, because the whole point of the endpoint is that many repos come
+// in one request. Each repo is then permission-checked individually, so
+// holding a token for one library does not reveal anything about another.
 func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
+	token := r.Header.Get("Seafile-Repo-Token")
+	if token == "" {
+		token = utils.GetAuthorizationToken(r.Header)
+	}
+	if token == "" {
+		return &appError{nil, "token is null", http.StatusBadRequest}
+	}
+	user, err := repomgr.GetEmailForToken(token)
+	if err != nil {
+		log.Errorf("Failed to resolve token for head-commits-multi: %v", err)
+		return &appError{err, "", http.StatusInternalServerError}
+	}
+	if user == "" {
+		return &appError{nil, "Invalid token", http.StatusForbidden}
+	}
+
 	var repoIDList []string
-	if err := json.NewDecoder(r.Body).Decode(&repoIDList); err != nil {
-		return &appError{err, "", http.StatusBadRequest}
+	if appErr := decodeLimitedJSON(rsp, r, maxIDListBodySize, &repoIDList); appErr != nil {
+		return appErr
 	}
 	if len(repoIDList) == 0 {
 		return &appError{nil, "", http.StatusBadRequest}
 	}
 
 	var repoIDs strings.Builder
+	var allowed int
 	for i := 0; i < len(repoIDList); i++ {
 		if !utils.IsValidUUID(repoIDList[i]) {
 			return &appError{nil, "", http.StatusBadRequest}
 		}
-		if i == 0 {
-			fmt.Fprintf(&repoIDs, "'%s'", repoIDList[i])
-		} else {
-			fmt.Fprintf(&repoIDs, ",'%s'", repoIDList[i])
+		// Filtered before the query rather than after, so an unreadable repo
+		// is not even looked up.
+		if checkPermission(repoIDList[i], user, "download", false) != nil {
+			continue
 		}
+		if allowed > 0 {
+			repoIDs.WriteString(",")
+		}
+		fmt.Fprintf(&repoIDs, "'%s'", repoIDList[i])
+		allowed++
+	}
+
+	// Nothing the caller may read. An empty map rather than an error: which
+	// of the ids were rejected is itself the thing not to disclose.
+	if allowed == 0 {
+		return writeJSON(rsp, map[string]string{})
 	}
 
 	sqlStr := fmt.Sprintf(
 		"SELECT repo_id, commit_id FROM Branch WHERE name='master' AND "+
-			"repo_id IN (%s) LOCK IN SHARE MODE",
-		repoIDs.String())
+			"repo_id IN (%s)%s",
+		repoIDs.String(), dbutil.SharedLockSuffix())
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
@@ -676,7 +738,17 @@ func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 
-	data, err := json.Marshal(commitIDMap)
+	return writeJSON(rsp, commitIDMap)
+}
+
+// writeJSON sends v as the whole 200 response.
+//
+// Slices reaching here must be non-nil: a nil slice marshals to "null", and
+// the sync clients expect "[]". Declaring them empty rather than nil is what
+// keeps that true, and is why this takes any value rather than each handler
+// special-casing the empty case on its way out.
+func writeJSON(rsp http.ResponseWriter, v any) *appError {
+	data, err := json.Marshal(v)
 	if err != nil {
 		err := fmt.Errorf("failed to marshal json: %v", err)
 		return &appError{err, "", http.StatusInternalServerError}
@@ -685,7 +757,6 @@ func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	rsp.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	rsp.WriteHeader(http.StatusOK)
 	_, _ = rsp.Write(data)
-
 	return nil
 }
 
@@ -941,9 +1012,9 @@ func putCommitCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return appErr
 	}
 
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		return &appError{nil, err.Error(), http.StatusBadRequest}
+	data, appErr := readLimitedBody(rsp, r, maxCommitBodySize)
+	if appErr != nil {
+		return appErr
 	}
 
 	commit := new(commitmgr.Commit)
@@ -953,6 +1024,15 @@ func putCommitCB(rsp http.ResponseWriter, r *http.Request) *appError {
 
 	if commit.RepoID != repoID {
 		msg := "The repo id in commit does not match current repo id"
+		return &appError{nil, msg, http.StatusBadRequest}
+	}
+
+	// The commit is stored under the id in the URL while everything that
+	// reads it goes by the id in the body. Letting the two disagree files a
+	// commit under a name that does not describe it, permanently: the branch
+	// head can then point at an id whose object says it is something else.
+	if commit.CommitID != commitID {
+		msg := "The commit id in the request does not match the commit"
 		return &appError{nil, msg, http.StatusBadRequest}
 	}
 
@@ -1206,6 +1286,21 @@ func includeInvalidPath(baseCommit, newCommit *commitmgr.Commit) bool {
 	return false
 }
 
+// getHeadCommit returns a repo's head commit, or the deleted status if the
+// repo is gone.
+//
+// The existence check deliberately runs before the token check, which does
+// mean anyone holding a repo id learns whether that library still exists.
+// That cannot be closed by reordering: DeleteRepo removes the repo's
+// RepoUserToken rows along with everything else, so after a deletion there is
+// no credential left to authenticate with. Requiring one first would turn
+// every deleted library into a 403, and a client that cannot tell "deleted"
+// from "not yours" never removes it — the library would sit in the client
+// forever, retrying.
+//
+// What is not disclosed is the head itself, which is behind validateToken
+// below. Existence alone, to someone who already knows a 122-bit id, is the
+// price of the client being able to clean up.
 func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
@@ -1255,17 +1350,21 @@ func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 }
 
 func checkPermission(repoID, user, op string, skipCache bool) *appError {
-	var info *permInfo
+	key := fmt.Sprintf("%s:%s:%s", repoID, user, op)
 	if !skipCache {
-		if value, ok := permCache.Load(fmt.Sprintf("%s:%s:%s", repoID, user, op)); ok {
-			info = value.(*permInfo)
+		if value, ok := permCache.Load(key); ok {
+			// The expiry is checked here, not only by the sweeper. A hit used
+			// to be served without looking at it, so an entry stayed
+			// authoritative for its whole life plus however long until the
+			// next sweep — a permission withdrawn, or a library deleted, kept
+			// authorising uploads for that entire window.
+			if info, ok := value.(*permInfo); ok && info.expireTime > time.Now().Unix() {
+				return nil
+			}
 		}
 	}
-	if info != nil {
-		return nil
-	}
 
-	permCache.Delete(fmt.Sprintf("%s:%s:%s", repoID, user, op))
+	permCache.Delete(key)
 
 	if op == "upload" {
 		status, err := repomgr.GetRepoStatus(repoID)
@@ -1283,10 +1382,9 @@ func checkPermission(repoID, user, op string, skipCache bool) *appError {
 		if perm == "r" && op == "upload" {
 			return &appError{nil, "", http.StatusForbidden}
 		}
-		info = new(permInfo)
-		info.perm = perm
-		info.expireTime = time.Now().Unix() + permExpireTime
-		permCache.Store(fmt.Sprintf("%s:%s:%s", repoID, user, op), info)
+		if expireTime, caching := authCacheExpiry(); caching {
+			permCache.Store(key, &permInfo{expireTime: expireTime})
+		}
 		return nil
 	}
 
@@ -1305,7 +1403,7 @@ func validateToken(r *http.Request, repoID string, skipCache bool) (string, *app
 
 	if !skipCache {
 		if value, ok := tokenCache.Load(token); ok {
-			if info, ok := value.(*tokenInfo); ok {
+			if info, ok := value.(*tokenInfo); ok && info.expireTime > time.Now().Unix() {
 				if info.repoID != repoID {
 					msg := "Invalid token"
 					return "", &appError{nil, msg, http.StatusForbidden}
@@ -1317,23 +1415,67 @@ func validateToken(r *http.Request, repoID string, skipCache bool) (string, *app
 
 	email, err := repomgr.GetEmailByToken(repoID, token)
 	if err != nil {
-		log.Errorf("Failed to get email by token %s: %v", token, err)
+		// The token is a bearer credential — log the repo instead, which is
+		// the useful correlation key and not a secret.
+		log.Errorf("Failed to get email by token for repo %s: %v", repoID, err)
 		tokenCache.Delete(token)
 		return email, &appError{err, "", http.StatusInternalServerError}
 	}
 	if email == "" {
 		tokenCache.Delete(token)
-		msg := fmt.Sprintf("Failed to get email by token %s", token)
+		msg := "Invalid token"
 		return email, &appError{nil, msg, http.StatusForbidden}
 	}
 
-	info := new(tokenInfo)
-	info.email = email
-	info.expireTime = time.Now().Unix() + tokenExpireTime
-	info.repoID = repoID
-	tokenCache.Store(token, info)
+	if expireTime, caching := authCacheExpiry(); caching {
+		tokenCache.Store(token, &tokenInfo{email: email, expireTime: expireTime, repoID: repoID})
+	}
 
 	return email, nil
+}
+
+// authCacheExpiry returns the expiry stamp for a new auth cache entry, and
+// whether caching is on at all. option.AuthCacheTTL of zero means every
+// request re-checks the database, which is the only way to make a revocation
+// made outside this process take effect instantly.
+func authCacheExpiry() (int64, bool) {
+	if option.AuthCacheTTL <= 0 {
+		return 0, false
+	}
+	return time.Now().Add(option.AuthCacheTTL).Unix(), true
+}
+
+// invalidateRepoAuth drops every cached authorisation for a repository. It
+// runs when the repo is deleted: a cached permission outlives the rows it was
+// derived from, and would keep authorising uploads to a library that no
+// longer exists — recreating the storage directories `silo gc -delete` had
+// just reclaimed.
+func invalidateRepoAuth(repoID string) {
+	deleteCachedTokens(func(info *tokenInfo) bool { return info.repoID == repoID })
+	permCache.Range(func(key, value interface{}) bool {
+		if k, ok := key.(string); ok && strings.HasPrefix(k, repoID+":") {
+			permCache.Delete(key)
+		}
+		return true
+	})
+	virtualRepoInfoCache.Delete(repoID)
+}
+
+// invalidateUserAuth drops every cached token belonging to a user, so a
+// revocation this process performs takes effect on the next request rather
+// than at the next cache expiry.
+func invalidateUserAuth(email string) {
+	deleteCachedTokens(func(info *tokenInfo) bool { return info.email == email })
+}
+
+// deleteCachedTokens drops every cached token entry that match selects.
+func deleteCachedTokens(match func(*tokenInfo) bool) {
+	tokenCache.Range(func(key, value interface{}) bool {
+		if info, ok := value.(*tokenInfo); ok && match(info) {
+			tokenCache.Delete(key)
+		}
+		return true
+	})
 }
 
 func validateClientVer(clientVer string) int {
@@ -1352,30 +1494,6 @@ func validateClientVer(clientVer string) int {
 	}
 
 	return http.StatusOK
-}
-
-func getClientIPAddr(r *http.Request) string {
-	xForwardedFor := r.Header.Get("X-Forwarded-For")
-	addr := strings.TrimSpace(strings.Split(xForwardedFor, ",")[0])
-	ip := net.ParseIP(addr)
-	if ip != nil {
-		return ip.String()
-	}
-
-	addr = strings.TrimSpace(r.Header.Get("X-Real-Ip"))
-	ip = net.ParseIP(addr)
-	if ip != nil {
-		return ip.String()
-	}
-
-	if addr, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr)); err == nil {
-		ip = net.ParseIP(addr)
-		if ip != nil {
-			return ip.String()
-		}
-	}
-
-	return ""
 }
 
 func onRepoOper(eType, repoID, user, ip, clientName string) {

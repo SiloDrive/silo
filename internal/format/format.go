@@ -4,16 +4,20 @@ package format
 import "fmt"
 
 // Bytes renders a byte count as a short human-readable string
-// (B / KB / MB / GB).
+// (B / KB / MB / GB / TB / PB), scaling by 1024.
+//
+// This is the one byte formatter in the tree: the CLI listings, the TUI and
+// the gc and backup commands all report sizes through it, so a whole-store
+// total and a single file are always in the same units.
 func Bytes(size int64) string {
-	switch {
-	case size >= 1<<30:
-		return fmt.Sprintf("%.1f GB", float64(size)/float64(1<<30))
-	case size >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(size)/float64(1<<20))
-	case size >= 1<<10:
-		return fmt.Sprintf("%.1f KB", float64(size)/float64(1<<10))
-	default:
+	const unit = 1024
+	if size < unit {
 		return fmt.Sprintf("%d B", size)
 	}
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit && exp < len("KMGTP")-1; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(size)/float64(div), "KMGTP"[exp])
 }

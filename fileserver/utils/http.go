@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +18,41 @@ func GetAuthorizationToken(h http.Header) string {
 		return splitResult[1]
 	}
 	return ""
+}
+
+// ClientIP returns the address to attribute a request to.
+//
+// X-Forwarded-For and X-Real-Ip are honoured only when trustProxyHeaders is
+// set, because anyone can send them. For logging that hardly matters; for
+// anything that counts attempts per address it matters completely, since a
+// forged header would give an attacker a fresh identity on every request and
+// defeat the count entirely.
+//
+// The trade runs both ways: behind a reverse proxy with trustProxyHeaders
+// off, every client arrives as the proxy's address and shares one bucket, so
+// a deployment behind a proxy has to turn it on.
+func ClientIP(r *http.Request, trustProxyHeaders bool) string {
+	if trustProxyHeaders {
+		if addr := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); addr != "" {
+			if ip := net.ParseIP(addr); ip != nil {
+				return ip.String()
+			}
+		}
+		if addr := strings.TrimSpace(r.Header.Get("X-Real-Ip")); addr != "" {
+			if ip := net.ParseIP(addr); ip != nil {
+				return ip.String()
+			}
+		}
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// No port to strip, or an address shape we do not recognise. Using it
+		// verbatim keeps requests from one peer on one key, which is all a
+		// rate limiter needs.
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func HttpCommon(method, url string, header map[string][]string, reader io.Reader) (int, []byte, error) {
