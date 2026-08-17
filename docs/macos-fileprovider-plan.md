@@ -288,7 +288,7 @@ loops, or Finder showing stale state forever.
 | 403 | `.cannotSynchronize` | surface; do not retry |
 | 404 | `.noSuchItem` | treat as deleted; reconcile |
 | 409 | `.filenameCollision` | return the existing item so the system renames |
-| 412 / version mismatch | `.versionOutOfDate` | re-fetch item, let system re-drive — **not implemented server-side; `If-Match` is ignored and writes are last-writer-wins** |
+| 412 / version mismatch | `.versionOutOfDate` | re-fetch item, let system re-drive. Implemented: send `If-Match` with the version you hold on every write |
 | 413 / 507 | `.insufficientQuota` | surface to user |
 | 429 | `.serverUnreachable` | honour `Retry-After`, back off |
 | 5xx | `.serverUnreachable` | exponential backoff, retriable |
@@ -321,9 +321,8 @@ support the brief describes. M0–M3 need no further server work.
 
 Remaining, in order of value, none blocking:
 
-4. `If-Match` → 412 for optimistic concurrency, which is what makes the
-   `.versionOutOfDate` row in the error table above real rather than
-   aspirational.
+4. ~~`If-Match` → 412 for optimistic concurrency~~ — built, on PUT, DELETE and
+   move, which makes the `.versionOutOfDate` row in the error table above real.
 5. Resumable upload. A `PUT` that dies partway starts over.
 
 ## macOS-side work

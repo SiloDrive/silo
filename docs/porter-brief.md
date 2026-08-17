@@ -55,14 +55,16 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.0"}
+{"version":"0.4.1"}
 ```
 
 Check it at domain setup. **This surface changed materially in 0.4.0** — reads
-stopped redirecting, `PUT` started accepting file content — so a client built
-against this document talking to an older server will fail in confusing ways.
-Refuse to set up against a server older than 0.4.0 and say why, rather than
-discovering it one broken callback at a time.
+stopped redirecting, `PUT` started accepting file content — and **0.4.1** added
+conditional writes. A client built against this document talking to an older
+server will fail in confusing ways: against 0.3.x the reads and writes break
+outright, and against 0.4.0 the `If-Match` headers are silently ignored, which
+is worse, because losing an edit looks like success. Require **0.4.1** and say
+why, rather than discovering it one broken callback at a time.
 
 There is no capability list yet, only a version. If you would rather
 feature-detect than compare version strings, ask — it is a small addition and
@@ -259,15 +261,46 @@ the parameter creates an empty file where a directory was meant.
 The library root cannot be moved (**400**) or deleted (**400**), and creating it
 is a **409**.
 
+## Conditional writes
+
+Every mutating request honours `If-Match` and `If-None-Match`, so a client can
+write without losing someone else's edit. This is the same pair S3 added in
+2024, and it maps onto `NSFileProviderError.versionOutOfDate`.
+
+| Header | Means | On failure |
+|---|---|---|
+| `If-Match: "v1-<id>"` | replace only if this is still the content I read | **412** |
+| `If-None-Match: *` | create only if nothing is there | **412** |
+
+Applies to `PUT` (file and `?type=dir`), `DELETE`, and `POST` move — where the
+precondition is about the **source**, the thing you looked at before deciding to
+move it.
+
+The lost-update race, run against a real server:
+
+```
+A and B both read race.txt   ETag "v1-02294300…"
+A: PUT If-Match "v1-02294300…"  → 201
+B: PUT If-Match "v1-02294300…"  → 412     ← B's stale write is refused
+content is "A edit"                        ← A's edit survived
+```
+
+On a 412: re-read the entry, reapply your change, and write again. That is the
+`.versionOutOfDate` recovery — hand it back to the system and let it re-drive.
+
+**Both are opt-in.** A request with neither header behaves exactly as before, so
+last-writer-wins is still available — it just has to be chosen now rather than
+arrived at by accident. For a File Provider extension, send `If-Match` on every
+`modifyItem`: the version you were handed is precisely the tag to send.
+
+Note the header changes meaning with the method. On `GET`, `If-None-Match` asks
+"skip the body if unchanged" and yields **304**. On a write it asks "fail if it
+exists" and yields **412**. Same header, different question, as RFC 9110
+specifies.
+
 ## Gaps — read this before planning M4
 
 Short list, and shorter than it was.
-
-**Conditional writes are not implemented.** `If-Match` is ignored — nothing
-returns **412** today, and writes are last-writer-wins. The error table in the
-plan lists `412 → .versionOutOfDate`; that row is aspirational. If Porter needs
-optimistic concurrency, say so and it goes in server-side: the machinery is
-already there, since the write path resolves the same id that would be compared.
 
 **No resumable upload.** A PUT that dies partway has to start over. Whole-file
 uploads only; there is no chunk/offset protocol on this endpoint.
@@ -485,13 +518,12 @@ not the one to copy.
 
 ## Asking for server changes
 
-The server is ours and additive endpoints are cheap. The two biggest asks from
-the first draft of this document — ranged reads without a capability URL, and
-`PUT` accepting file content — have both been built. What is left:
+The server is ours and additive endpoints are cheap. Every ask from the first draft of this
+document — ranged reads without a capability URL, `PUT` accepting file content,
+and conditional writes — has been built. What is left:
 
-1. `If-Match` → 412 for optimistic concurrency
-2. Resumable upload, if whole-file PUT turns out to be painful over flaky links
-3. A batch block fetch (`pack-blocks`), if per-object round trips dominate
+1. Resumable upload, if whole-file PUT turns out to be painful over flaky links
+2. A batch block fetch (`pack-blocks`), if per-object round trips dominate
 
 If Porter wants something else, ask rather than working around it in Swift.
 Reimplementing server logic client-side is what makes sync clients enormous —

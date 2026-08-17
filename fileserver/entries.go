@@ -220,13 +220,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileI
 	}
 }
 
-// putEntry creates a directory.
-//
-// File content is not accepted yet: the upload path indexes blocks straight
-// out of a multipart part (indexBlocks takes a *multipart.FileHeader), so a
-// raw body needs a reader-shaped variant of it before this can be honest about
-// storing bytes. Returning 501 says which half is missing; pretending to
-// accept an upload and dropping it would be worse than not offering it.
+// putEntry stores a file, or creates a directory with ?type=dir.
 func putEntry(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	path := entryPath(vars["path"])
@@ -241,8 +235,79 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !preconditionsHold(w, r, vars["repoid"], path) {
+		return
+	}
 	setQuery(r, url.Values{"path": {path}})
 	mkdirHandler(w, r)
+}
+
+// preconditionsHold evaluates If-Match and If-None-Match on a mutating request,
+// answering 412 and returning false when the caller's assumption about the
+// current state is wrong.
+//
+// This is optimistic concurrency, and it is the difference between two clients
+// racing on a file and one of them silently losing an edit. Without it every
+// write is last-writer-wins: read a file, edit it, PUT it, and whatever someone
+// else committed in between is gone with no error anywhere. S3 added the same
+// two preconditions in 2024 for the same reason.
+//
+//	If-Match: "v1-<id>"   replace only if this is still the content I read
+//	If-None-Match: *      create only if nothing is there
+//
+// Both are opt-in: a request carrying neither header behaves exactly as before.
+// A client that wants last-writer-wins can still have it, but now it has to
+// choose it rather than get it by default.
+//
+// On the read path If-None-Match means "skip the body if unchanged" and yields
+// 304. Here it means "fail if it exists". Same header, different question,
+// because the method is different — that is what RFC 9110 specifies.
+func preconditionsHold(w http.ResponseWriter, r *http.Request, repoID, path string) bool {
+	ifMatch := r.Header.Get("If-Match")
+	ifNoneMatch := r.Header.Get("If-None-Match")
+	if ifMatch == "" && ifNoneMatch == "" {
+		return true
+	}
+
+	repo := repomgr.Get(repoID)
+	if repo == nil {
+		http.Error(w, "Repo not found", http.StatusNotFound)
+		return false
+	}
+
+	// An empty tag means the path holds nothing right now. That is a state a
+	// precondition can legitimately be asserted about, so it is not an error.
+	var etag string
+	if entry, err := resolve(repo, path); err == nil {
+		etag = `"` + etagPrefix + entry.id + `"`
+	}
+
+	if !preconditionResult(etag, ifMatch, ifNoneMatch) {
+		http.Error(w,
+			"Precondition failed: the entry is not in the state the request asserted. "+
+				"Re-read it and reapply your change.",
+			http.StatusPreconditionFailed)
+		return false
+	}
+	return true
+}
+
+// preconditionResult is the comparison itself, split out so the decision table
+// can be tested without a repository behind it. etag is what is at the path
+// now, or "" when nothing is.
+func preconditionResult(etag, ifMatch, ifNoneMatch string) bool {
+	// If-Match fails against an absent entry: there is nothing that could be
+	// the content the caller claims to be replacing. "*" is the same question
+	// asked loosely — does anything exist here at all.
+	if ifMatch != "" && (etag == "" || !matchesETag(ifMatch, etag)) {
+		return false
+	}
+	// If-None-Match fails when the entry is there and matches, which for the
+	// usual "*" means simply: something is already here.
+	if ifNoneMatch != "" && etag != "" && matchesETag(ifNoneMatch, etag) {
+		return false
+	}
+	return true
 }
 
 // putFile stores a request body as a file, replacing whatever was there.
@@ -268,6 +333,12 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 	repo := repomgr.Get(repoID)
 	if repo == nil {
 		http.Error(w, "Repo not found", http.StatusNotFound)
+		return
+	}
+
+	// Checked before the body is spooled: a doomed upload should be refused
+	// before it is transferred, not after.
+	if !preconditionsHold(w, r, repoID, path) {
 		return
 	}
 
@@ -406,9 +477,15 @@ func wantsDirectory(r *http.Request) bool {
 }
 
 func deleteEntry(w http.ResponseWriter, r *http.Request) {
-	path := entryPath(mux.Vars(r)["path"])
+	vars := mux.Vars(r)
+	path := entryPath(vars["path"])
 	if path == "/" {
 		http.Error(w, "The library root cannot be deleted; delete the library instead", http.StatusBadRequest)
+		return
+	}
+	// If-Match on a delete means "only if this is still what I think it is",
+	// which is how a client avoids deleting an edit it never saw.
+	if !preconditionsHold(w, r, vars["repoid"], path) {
 		return
 	}
 	setQuery(r, url.Values{"path": {path}})
@@ -418,7 +495,8 @@ func deleteEntry(w http.ResponseWriter, r *http.Request) {
 // postEntry performs an operation on an existing entry. Only "move" so far,
 // which covers renaming.
 func postEntry(w http.ResponseWriter, r *http.Request) {
-	path := entryPath(mux.Vars(r)["path"])
+	vars := mux.Vars(r)
+	path := entryPath(vars["path"])
 
 	var body struct {
 		Op string `json:"op"`
@@ -439,6 +517,12 @@ func postEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == "/" {
 		http.Error(w, "The library root cannot be moved", http.StatusBadRequest)
+		return
+	}
+
+	// The precondition is about the source — what is being moved — because that
+	// is the thing the caller looked at before deciding to move it.
+	if !preconditionsHold(w, r, vars["repoid"], path) {
 		return
 	}
 

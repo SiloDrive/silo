@@ -210,6 +210,48 @@ func TestSpoolBodyRejectsOversizeWhenLengthIsUnknown(t *testing.T) {
 	}
 }
 
+// TestPreconditionOutcomes covers the decision table without a database, by
+// exercising the comparison directly: given what is at the path now (or
+// nothing) and what the caller asserted, does the write proceed?
+//
+// The live behaviour is covered end-to-end against a real server; this pins the
+// logic, including the case that makes the feature worth having — an If-Match
+// naming content that has since been replaced.
+func TestPreconditionOutcomes(t *testing.T) {
+	const current = `"v1-aaa"`
+
+	cases := []struct {
+		name        string
+		etag        string // what is at the path now; "" means nothing is
+		ifMatch     string
+		ifNoneMatch string
+		wantOK      bool
+	}{
+		{name: "no preconditions, existing entry", etag: current, wantOK: true},
+		{name: "no preconditions, absent entry", wantOK: true},
+
+		// If-Match: replace only if this is still what I read.
+		{name: "If-Match on unchanged content", etag: current, ifMatch: current, wantOK: true},
+		{name: "If-Match on changed content", etag: `"v1-bbb"`, ifMatch: current, wantOK: false},
+		{name: "If-Match on an absent entry", ifMatch: current, wantOK: false},
+		{name: "If-Match * on an existing entry", etag: current, ifMatch: "*", wantOK: true},
+		{name: "If-Match * on an absent entry", ifMatch: "*", wantOK: false},
+
+		// If-None-Match: create only if nothing is there.
+		{name: "If-None-Match * on an absent entry", ifNoneMatch: "*", wantOK: true},
+		{name: "If-None-Match * on an existing entry", etag: current, ifNoneMatch: "*", wantOK: false},
+		{name: "If-None-Match a different tag", etag: current, ifNoneMatch: `"v1-bbb"`, wantOK: true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := preconditionResult(c.etag, c.ifMatch, c.ifNoneMatch); got != c.wantOK {
+				t.Errorf("got ok=%v, want %v", got, c.wantOK)
+			}
+		})
+	}
+}
+
 func TestRootCannotBeDeleted(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := mux.SetURLVars(httptest.NewRequest("DELETE", "/entries/", nil), map[string]string{"path": ""})
