@@ -160,6 +160,39 @@ No charset is declared on text files. The server does not know how a file it is
 handing back is encoded, and the Seafile lane's inherited `charset=gbk` is a
 guess that mangles anything else. Do not trust a charset you did not put there.
 
+### HEAD, and how to get attributes cheaply
+
+`HEAD entries/{path}` on a **file** gives you everything `getattr` needs:
+
+```
+Content-Length: 240000                          size
+Last-Modified:  Mon, 17 Aug 2026 11:38:51 GMT   mtime
+Etag:           "v1-bfa1b1a4…"                  content hash
+Accept-Ranges:  bytes
+```
+
+On a **directory** it gives a correct `ETag` and `Last-Modified` — but
+**`Content-Length` is the size of the listing JSON, not of the directory**:
+
+```
+HEAD entries/adir  →  Content-Length: 3     ← that is "[]\n"
+HEAD entries/      →  Content-Length: 653   ← the root's listing
+```
+
+Never take a size from a directory HEAD. The library root has no dirent of its
+own, so it carries an ETag but no `Last-Modified`.
+
+Two things that matter more than HEAD itself:
+
+- **HEAD on a directory is not cheaper than GET.** The listing is still built;
+  the body is just discarded. What makes it cheap is `If-None-Match`, which
+  answers 304 before any of that work happens.
+- **Do not HEAD each child to populate attributes.** The parent's listing
+  already carries `name`, `type`, `id`, `size` and `mtime` for every entry, so
+  one readdir fills the whole attribute cache. Revalidate the parent with
+  `If-None-Match` and N HEADs collapse into one conditional GET that usually
+  304s.
+
 ### ETags — the part worth building around
 
 Every GET and HEAD sets `ETag: "v1-{id}"`, where `{id}` is the object's content
