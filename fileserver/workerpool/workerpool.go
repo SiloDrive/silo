@@ -1,9 +1,10 @@
 package workerpool
 
 import (
-	"runtime/debug"
+	"context"
 
 	"github.com/dgraph-io/ristretto/z"
+	"github.com/dkam/silo/internal/observability"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -40,7 +41,7 @@ func (pool *WorkPool) AddTask(args ...interface{}) {
 func (pool *WorkPool) run(jobs chan Job) {
 	defer func() {
 		if err := recover(); err != nil {
-			log.Errorf("panic: %v\n%s", err, debug.Stack())
+			observability.Panic(context.Background(), "workerpool", err)
 		}
 	}()
 	defer pool.closer.Done()

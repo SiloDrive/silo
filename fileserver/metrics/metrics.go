@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/dgraph-io/ristretto/z"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/internal/observability"
 	"github.com/go-redis/redis/v8"
 
 	log "github.com/sirupsen/logrus"
@@ -83,7 +83,7 @@ func metricsHandler() {
 	defer closer.Done()
 	defer func() {
 		if err := recover(); err != nil {
-			log.Errorf("panic: %v\n%s", err, debug.Stack())
+			observability.Panic(context.Background(), "metricsHandler", err)
 		}
 	}()
 

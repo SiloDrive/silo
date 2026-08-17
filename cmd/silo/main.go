@@ -18,7 +18,7 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.3.33"
+var Version = "0.3.34"
 
 func main() {
 	args := os.Args[1:]
@@ -119,6 +119,8 @@ Server environment:
   SILO_ADMIN_PASSWORD    Bootstrap admin password (first run)
   SILO_JWT_SECRET        JWT signing key (auto-generated if unset)
   SILO_LOG_LEVEL         Log level: debug, info, warn, error
+  SILO_SENTRY_DSN        Send errors, panics and request timings here
+                         (SENTRY_DSN also works; unset means send nothing)
 
 Client environment:
   SILO_URL               Server base URL (default: http://localhost:8082)

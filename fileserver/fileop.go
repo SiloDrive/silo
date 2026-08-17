@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +36,7 @@ import (
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/tokenstore"
 	"github.com/dkam/silo/fileserver/workerpool"
+	"github.com/dkam/silo/internal/observability"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/text/unicode/norm"
 )
@@ -2557,7 +2557,7 @@ type chunkingResult struct {
 func createChunkPool(ctx context.Context, n int, chunkJobs chan chunkingData, res chan chunkingResult) {
 	defer func() {
 		if err := recover(); err != nil {
-			log.Errorf("createChunkPool panic: %v\n%s", err, debug.Stack())
+			observability.Panic(ctx, "createChunkPool", err)
 		}
 	}()
 	var wg sync.WaitGroup
@@ -2572,7 +2572,7 @@ func createChunkPool(ctx context.Context, n int, chunkJobs chan chunkingData, re
 func chunkingWorker(ctx context.Context, wg *sync.WaitGroup, chunkJobs chan chunkingData, res chan chunkingResult) {
 	defer func() {
 		if err := recover(); err != nil {
-			log.Errorf("chunkingWorker panic: %v\n%s", err, debug.Stack())
+			observability.Panic(ctx, "chunkingWorker", err)
 		}
 	}()
 	for job := range chunkJobs {

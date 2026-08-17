@@ -196,6 +196,11 @@ silo repo rm <repo-id>
 | `SILO_AUTH_CACHE_TTL` | How long token/permission lookups are cached (`0` disables) | `5m` |
 | `SILO_LOGIN_RATE_LIMIT` | Throttle failed logins per address and per account | `true` |
 | `SILO_TRUST_PROXY_HEADERS` | Believe `X-Forwarded-For` / `X-Real-Ip` — **set this behind a reverse proxy** | `false` |
+| `SILO_SENTRY_DSN` | Send errors, panics and request timings to Sentry, [Splat](https://github.com/dkam/splat) or GlitchTip (`SENTRY_DSN` also works) | — (send nothing) |
+| `SILO_SENTRY_ENVIRONMENT` | Environment name on reported events | `production` |
+| `SILO_SENTRY_RELEASE` | Release name on reported events | `silo@<version>` |
+| `SILO_SENTRY_TRACES_SAMPLE_RATE` | Share of requests timed as performance transactions, `0` to `1` | `0.1` |
+| `SILO_SENTRY_SERVER_NAME` | Name distinguishing this instance from others reporting to the same project | hostname |
 | `SILO_URL` | Server base URL (client/TUI) | `http://localhost:8082` |
 | `SILO_EMAIL` | Account email (client/TUI) | — |
 | `SILO_PASSWORD` | Account password (client/TUI) | — |
@@ -230,6 +235,23 @@ rsync -a "$SILO_DATA_DIR"/storage/ /backup/silo/$(date +%F)/storage/   # objects
 Both steps are safe with the server running, and the order matters. See
 [`docs/backup.md`](docs/backup.md) for why, plus cold backup, restore and
 verification.
+
+## Error reporting
+
+The server can report its own errors, panics and request timings to any
+Sentry-compatible receiver — [Splat](https://github.com/dkam/splat), GlitchTip,
+or sentry.io:
+
+```sh
+SILO_SENTRY_DSN=https://<public-key>@splat.example.com/1 silo serve
+```
+
+Nothing is sent without a DSN, and nothing is added to the request path either:
+with the variable unset there is no client, no logging hook and no middleware.
+The TUI and CLI never report — they fail in front of the person who ran them.
+
+See [`docs/error-reporting.md`](docs/error-reporting.md) for what gets sent, how
+issues are grouped, and how to change the tracing sample rate.
 
 ## Exposing the server
 
@@ -333,7 +355,7 @@ fileserver/        Active Go server
   ├── keycache/    In-memory decrypt key cache
   └── ...
 cmd/silo/          Bubble Tea TUI client
-docs/              Architecture notes, migration plan, future features
+docs/              Architecture notes, error reporting, backups, future features
 server/            Legacy C seaf-server code — not built, kept for reference
 python/            Legacy Seahub code — not used
 ```

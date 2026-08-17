@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,6 +35,7 @@ import (
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/tokenstore"
 	"github.com/dkam/silo/fileserver/utils"
+	"github.com/dkam/silo/internal/observability"
 	"github.com/dkam/silo/internal/xdg"
 	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
@@ -379,6 +379,13 @@ func Run(args []string) error {
 		logToStdout = true
 	}
 
+	// After the log destination is settled, so the "reporting to" line lands
+	// in the same place as everything else, and before the rest of startup, so
+	// a failure to load config, open a database or create the admin is a
+	// failure that gets reported rather than one that only exists in a log
+	// nobody is reading.
+	defer observability.Init("fileserver", option.Version)()
+
 	if err := option.LoadJWTConfig(); err != nil {
 		log.Fatalf("Failed to load JWT config: %v", err)
 	}
@@ -458,6 +465,10 @@ func Run(args []string) error {
 	if debugLog {
 		handler = middleware.DebugLogger(handler)
 	}
+	// Outermost, so a panic in any of the above is still reported and every
+	// request is timed from the moment it arrives rather than from after the
+	// prefix rewrite.
+	handler = observability.Middleware(handler)
 	httpServer.Handler = handler
 	httpServer.ReadHeaderTimeout = readHeaderTimeout
 	httpServer.IdleTimeout = idleTimeout
@@ -614,6 +625,12 @@ func logRotate() {
 
 func newHTTPRouter() *mux.Router {
 	r := mux.NewRouter()
+	// Registered only when there is somewhere to report to, so that with no
+	// DSN configured there is no extra middleware in the chain at all rather
+	// than one that returns early.
+	if observability.Enabled() {
+		r.Use(middleware.NameTransaction)
+	}
 	r.HandleFunc("/protocol-version{slash:\\/?}", handleProtocolVersion)
 	r.Handle("/files/{.*}/{.*}", appHandler(accessCB))
 	r.Handle("/blks/{.*}/{.*}", appHandler(accessBlksCB))
@@ -737,7 +754,10 @@ type appHandler func(http.ResponseWriter, *http.Request) *appError
 func (fn appHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if e := fn(w, r); e != nil {
 		if e.Error != nil && e.Code == http.StatusInternalServerError {
-			log.Errorf("path %s internal server error: %v\n", r.URL.Path, e.Error)
+			// WithContext so the report carries the request that caused it —
+			// the URL alone doesn't say which account or which client.
+			log.WithContext(r.Context()).WithError(e.Error).
+				Errorf("path %s internal server error: %v\n", r.URL.Path, e.Error)
 		}
 		http.Error(w, e.Message, e.Code)
 	}
@@ -746,7 +766,7 @@ func (fn appHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func RecoverWrapper(f func()) {
 	defer func() {
 		if err := recover(); err != nil {
-			log.Errorf("panic: %v\n%s", err, debug.Stack())
+			observability.Panic(context.Background(), "RecoverWrapper", err)
 		}
 	}()
 

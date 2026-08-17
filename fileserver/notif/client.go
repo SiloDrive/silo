@@ -1,9 +1,9 @@
 package notif
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/utils"
+	"github.com/dkam/silo/internal/observability"
 )
 
 const (
@@ -111,7 +112,7 @@ func NewClient(conn *websocket.Conn) {
 func (c *Client) recover(fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Errorf("notif: client %d panic: %v\n%s", c.ID, r, debug.Stack())
+			observability.Panic(context.Background(), fmt.Sprintf("notif client %d", c.ID), r)
 		}
 		c.wg.Done()
 	}()
