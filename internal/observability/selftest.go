@@ -59,8 +59,8 @@ func SelfTest(version string, out io.Writer) error {
 	}
 	defer sentry.Flush(flushTimeout)
 
-	fmt.Fprintf(out, "Reporting to %s\n", endpointOf(dsn))
-	fmt.Fprintf(out, "  environment %s, release %s\n\n", environment, orNone(rel))
+	_, _ = fmt.Fprintf(out, "Reporting to %s\n", endpointOf(dsn))
+	_, _ = fmt.Fprintf(out, "  environment %s, release %s\n\n", environment, orNone(rel))
 
 	hub := sentry.CurrentHub()
 	hub.WithScope(func(scope *sentry.Scope) {
@@ -73,7 +73,7 @@ func SelfTest(version string, out io.Writer) error {
 	tx.Finish()
 
 	if !sentry.Flush(flushTimeout) {
-		fmt.Fprintf(out, "Timed out after %s waiting for delivery.\n", flushTimeout)
+		_, _ = fmt.Fprintf(out, "Timed out after %s waiting for delivery.\n", flushTimeout)
 	}
 
 	return report(out, rec.attempts())
@@ -94,25 +94,25 @@ func report(out io.Writer, attempts []attempt) error {
 		switch {
 		case a.err != nil:
 			failures++
-			fmt.Fprintf(out, "  %-12s could not reach the server: %v\n", a.kind, unwrapURLError(a.err))
+			_, _ = fmt.Fprintf(out, "  %-12s could not reach the server: %v\n", a.kind, unwrapURLError(a.err))
 		case a.status >= 200 && a.status < 300:
-			fmt.Fprintf(out, "  %-12s accepted (HTTP %d)\n", a.kind, a.status)
+			_, _ = fmt.Fprintf(out, "  %-12s accepted (HTTP %d)\n", a.kind, a.status)
 		case a.status == http.StatusUnauthorized || a.status == http.StatusForbidden:
 			failures++
-			fmt.Fprintf(out, "  %-12s rejected (HTTP %d): the key in the DSN is not the one this project expects\n", a.kind, a.status)
+			_, _ = fmt.Fprintf(out, "  %-12s rejected (HTTP %d): the key in the DSN is not the one this project expects\n", a.kind, a.status)
 		case a.status == http.StatusNotFound:
 			failures++
-			fmt.Fprintf(out, "  %-12s rejected (HTTP %d): no project by that name — check the last path segment of the DSN\n", a.kind, a.status)
+			_, _ = fmt.Fprintf(out, "  %-12s rejected (HTTP %d): no project by that name — check the last path segment of the DSN\n", a.kind, a.status)
 		default:
 			failures++
-			fmt.Fprintf(out, "  %-12s rejected (HTTP %d)\n", a.kind, a.status)
+			_, _ = fmt.Fprintf(out, "  %-12s rejected (HTTP %d)\n", a.kind, a.status)
 		}
 	}
 
 	if failures > 0 {
 		return fmt.Errorf("%d of %d deliveries failed", failures, len(attempts))
 	}
-	fmt.Fprint(out, "\nDelivered. Look for the issue \"Silo test event — reporting is configured correctly\"\n"+
+	_, _ = fmt.Fprint(out, "\nDelivered. Look for the issue \"Silo test event — reporting is configured correctly\"\n"+
 		"and the transaction \"GET /silo-sentry-test\"; both are safe to delete.\n")
 	return nil
 }
