@@ -160,8 +160,31 @@ plan lists `412 → .versionOutOfDate`; that row is aspirational. If Porter need
 optimistic concurrency, say so and it goes in server-side: the machinery is
 already there, since `getEntry` resolves the same id that would be compared.
 
-**Range GETs** on file download are not implemented either, so a large-file
-transfer that drops has to start over.
+**Range requests work, but the URL they work on is single-use.** This is the
+sharp edge in the whole contract, and it bites sequential-read clients hardest.
+
+`/files/{token}/{name}` honours `Range` on unencrypted libraries — verified,
+byte-for-byte against the source file:
+
+```
+Range: bytes=100-149  →  206 Partial Content
+                         Accept-Ranges: bytes
+                         Content-Range: bytes 100-149/240000
+```
+
+But the token in that URL is minted one-time (`api_handlers.go`, `CreateToken(…,
+true)`), so the *second* request against the same URL is a **403 "Access token
+not found"**. Resuming or seeking therefore costs a fresh
+`GET entries/{path}` → 302 → ranged GET: **two round trips per read**.
+
+That is deliberate, not an oversight: `/files/{token}/{name}` takes no auth
+header, so the URL *is* the capability, and spending it once bounds what a
+leaked one can do. The fix is not to loosen the token but to serve ranges from
+the authenticated endpoint instead — see below.
+
+For whole-file fetches that is one extra round trip and nobody notices. For a
+client that reads at offsets it is the difference between a usable filesystem
+and an unusable one — see "If you are building a FUSE client" below.
 
 ## The delta endpoint
 
@@ -288,14 +311,68 @@ than fragmenting per file. Client-side Sentry in an appex is unreliable for
 crashes; lean on breadcrumbs and explicit `captureMessage` on the error
 branches.
 
+## If you are building a FUSE client
+
+The File Provider model and the FUSE model want different things from this
+server, and the difference is not cosmetic.
+
+File Provider fetches **whole files** — `fetchContents` hands back a complete
+file and macOS owns the local replica. One request per file, redirect included,
+and the single-use token costs nothing.
+
+FUSE serves **`read(fd, buf, len, offset)`**. If each of those becomes
+`GET entries/` → 302 → ranged GET, every read is two round trips and a
+sequential scan of a large file is thousands of them. Do not build that.
+
+Three options, in the order I would try them:
+
+1. **Use the block lane for content.** This is what `seadrive-fuse` does, and
+   it is the reason the block API exists. Blocks are content-addressed, so they
+   are immutable and cacheable forever, fetched by id:
+
+   ```
+   GET /repo/{repoid}/block/{blockid}      Seafile-Repo-Token
+   GET /repo/{repoid}/block-map/{fileid}   block boundaries for offset → block
+   ```
+
+   The repo token is long-lived, so there is no per-read token dance. You need
+   the file's block list, which means reading its `Seafile` fs object — that is
+   the cost of this route, and it is a real one: you are partway to replicating
+   the object store. Blocks also default to 8MB, so a 4KB read pulls a whole
+   block unless block fetches themselves accept `Range` (I have not verified
+   that they do — check before relying on it).
+
+2. **Cache whole files locally** and serve reads from the cache, fetching once
+   via `entries/`. Simplest correct thing; fine if libraries are documents and
+   not 10GB videos. `entries/` + ETags gives you cheap revalidation, which is
+   most of what a cache needs.
+
+3. **Ask for the server change.** Honouring `Range` directly on
+   `GET entries/{path}` — streaming rather than redirecting when a `Range`
+   header is present — collapses this to one round trip per read with no token
+   involved. The machinery already exists (`doFileRange` in `fileop.go`); it is
+   not wired to this endpoint. This is a small, additive change and it is the
+   right one if a FUSE client is going to exist. **Ask for it rather than
+   working around it.**
+
+Everything else in this document applies unchanged: `entries/` for metadata and
+enumeration, `/changes` for invalidation, ETags for revalidating cached attrs,
+and the two-step flow for writes.
+
+Note also that a FUSE client on Linux has the `Seafile-Repo-Token` lane fully
+available to it — that is the lane unmodified Seafile clients use, and it is
+frozen, which means it is stable. `../seafile/seadrive-fuse` is a working
+reference for it.
+
 ## Asking for server changes
 
 The server is ours and additive endpoints are cheap. Three are already
 identified and none are blocking M0–M3:
 
-1. `PUT entries/{path}` accepting file content (removes the two-step upload)
-2. `If-Match` → 412 for optimistic concurrency
-3. Range GETs for large-file resume
+1. `Range` honoured directly on `GET entries/{path}`, so a ranged read is one
+   round trip and needs no single-use token (see the FUSE section)
+2. `PUT entries/{path}` accepting file content (removes the two-step upload)
+3. `If-Match` → 412 for optimistic concurrency
 
 If Porter wants something else, ask rather than working around it in Swift.
 Reimplementing server logic client-side is what makes sync clients enormous —
