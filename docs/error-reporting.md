@@ -13,6 +13,43 @@ SILO_SENTRY_DSN=https://<public-key>@splat.example.com/1 silo serve
 `SENTRY_DSN` works too, so a deployment that already sets one for its other
 services does not need a Silo-specific variable.
 
+## Checking that it works
+
+```sh
+silo sentry-test
+```
+
+Sends one error and one transaction through the same client the server uses,
+and says what the receiver made of them:
+
+```
+Reporting to http://splat.example.com:3304/silo
+  environment production, release silo@v0.3.35
+
+  envelope     accepted (HTTP 200)
+  envelope     accepted (HTTP 200)
+
+Delivered. Look for the issue "Silo test event — reporting is configured
+correctly" and the transaction "GET /silo-sentry-test"; both are safe to delete.
+```
+
+This exists because the honest answer to "why is nothing showing up" is usually
+"nothing has gone wrong yet" — the server reports failures, and a healthy
+server produces none. That is indistinguishable from a DSN pointing at a closed
+port, because the transport is asynchronous and silently drops what it cannot
+deliver. `sentry-test` keeps the HTTP response the transport throws away, so
+the two cases read differently:
+
+```
+  envelope     could not reach the server: dial tcp 10.0.0.5:3030: connect: connection refused
+  envelope     rejected (HTTP 401): the key in the DSN is not the one this project expects
+  envelope     rejected (HTTP 404): no project by that name — check the last path segment of the DSN
+```
+
+It exits non-zero on any failure, so it works in a health check. The one thing
+it cannot tell you is whether the *receiver* stored what it accepted; a
+Sentry-compatible endpoint answers 200 and ingests asynchronously.
+
 ## What gets sent
 
 **Errors.** Silo reports failure by logging it, so a logrus hook is what makes
@@ -45,6 +82,12 @@ with its variable parts replaced — ids, hashes, numbers, addresses and quoted
 strings. `failed to read block a94a8f…` and `failed to read block da39a3…`
 become one issue that has happened twice, which is the thing you actually want
 to know.
+
+Transactions also carry the response status at `contexts.response.status_code`,
+which is where the protocol puts it and where a receiver reads it. The Go SDK
+records the status only as span data under `contexts.trace`, so Silo sets the
+response context itself — without it every transaction arrives with a blank
+status and a page of 500s is indistinguishable from a page of 200s.
 
 Transactions get the same treatment from the other direction. Named by URL,
 `/repo/{repoid}/block/{id}` would arrive as hundreds of thousands of distinct

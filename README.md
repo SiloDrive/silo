@@ -250,6 +250,16 @@ Nothing is sent without a DSN, and nothing is added to the request path either:
 with the variable unset there is no client, no logging hook and no middleware.
 The TUI and CLI never report — they fail in front of the person who ran them.
 
+`silo sentry-test` sends a test error and transaction and reports what the
+receiver said about them, which is how you tell "nothing has gone wrong yet"
+apart from a DSN pointing somewhere unreachable:
+
+```
+$ silo sentry-test
+Reporting to http://splat.example.com:3304/silo
+  envelope     accepted (HTTP 200)
+```
+
 See [`docs/error-reporting.md`](docs/error-reporting.md) for what gets sent, how
 issues are grouped, and how to change the tracing sample rate.
 

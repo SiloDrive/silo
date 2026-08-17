@@ -451,6 +451,45 @@ func TestRequestBecomesNamedTransaction(t *testing.T) {
 	if payload["start_timestamp"] == nil || payload["timestamp"] == nil {
 		t.Errorf("transaction has no timing: %v", payload)
 	}
+
+	// contexts.response.status_code is where the protocol puts the status and
+	// where a receiver reads it; the Go SDK records it only as span data, so
+	// this is ours to set. Without it every transaction lands with a blank
+	// status and a page of 500s looks like a page of 200s.
+	contexts, _ := payload["contexts"].(map[string]any)
+	response, _ := contexts["response"].(map[string]any)
+	if response == nil {
+		t.Fatalf("transaction carries no response context: %v", contexts)
+	}
+	if got, want := response["status_code"], float64(http.StatusOK); got != want {
+		t.Errorf("contexts.response.status_code = %v, want %v", got, want)
+	}
+}
+
+// The status has to be the one the handler actually wrote, not the default.
+func TestTransactionCarriesRealStatus(t *testing.T) {
+	stub := newSentryStub(t)
+	t.Setenv("SILO_SENTRY_TRACES_SAMPLE_RATE", "1")
+	enable(t, stub)
+
+	handler := observability.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/repo/abc/block/def", nil))
+	observability.Flush()
+
+	envs := stub.envelopes()
+	if len(envs) != 1 {
+		t.Fatalf("stub received %d envelopes, want 1", len(envs))
+	}
+	contexts, _ := envs[0].payload[0]["contexts"].(map[string]any)
+	response, _ := contexts["response"].(map[string]any)
+	if response == nil {
+		t.Fatalf("transaction carries no response context: %v", contexts)
+	}
+	if got, want := response["status_code"], float64(http.StatusInternalServerError); got != want {
+		t.Errorf("contexts.response.status_code = %v, want %v", got, want)
+	}
 }
 
 // The endpoints excluded from tracing stay excluded — /notification above all,

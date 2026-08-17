@@ -181,7 +181,36 @@ func Middleware(h http.Handler) http.Handler {
 		// connection down. Sentry is here to watch what the server does, not
 		// to change it.
 		Repanic: true,
-	}).Handle(h)
+	}).Handle(recordResponseStatus(h))
+}
+
+// recordResponseStatus copies the response status onto the transaction as the
+// standard response context.
+//
+// The Go SDK records the status only as span data under contexts.trace, but
+// the response context at contexts.response.status_code is where the protocol
+// puts it and where a receiver looks — Splat reads exactly that, and without
+// it every transaction arrives with a blank status, so nothing can tell a page
+// of 200s from a page of 500s.
+//
+// It runs inside the Sentry handler, so its deferred write lands before that
+// handler finishes the transaction. The status comes from the SDK's own
+// ResponseWriter wrapper rather than another one of ours: that wrapper already
+// implements Flusher, Hijacker and ReaderFrom, and adding a layer that missed
+// ReaderFrom would quietly cost every file download its sendfile path.
+func recordResponseStatus(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			status, ok := w.(interface{ Status() int })
+			if !ok {
+				return
+			}
+			if tx := sentry.TransactionFromContext(r.Context()); tx != nil {
+				tx.SetContext("response", sentry.Context{"status_code": status.Status()})
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // NameTransaction replaces the URL-derived name of the request's transaction
