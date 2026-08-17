@@ -3,8 +3,12 @@ package silod
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/gorilla/mux"
 )
 
@@ -109,19 +113,100 @@ func TestUnsupportedMethodSaysWhatIsAllowed(t *testing.T) {
 	}
 }
 
-// TestPutOfFileContentIsNotImplemented documents the one real gap in the
-// surface. When PUT starts storing bytes this test should fail, which is the
-// point: the 501 is a promise to be broken deliberately.
-func TestPutOfFileContentIsNotImplemented(t *testing.T) {
-	w := httptest.NewRecorder()
-	putEntry(w, requestWithPath("/entries/a.txt", "a.txt"))
-
-	if w.Code != http.StatusNotImplemented {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusNotImplemented)
+// spoolTo points the upload temp directory at a scratch dir for one test and
+// sets the upload limit, restoring both afterwards.
+//
+// It returns an error rather than calling t.Fatalf itself. That is not style:
+// a test helper that calls t.Fatalf and can also return normally defeats
+// staticcheck's inference about which calls terminate, and the symptom is
+// SA5011 false positives in *other* files in the package.
+func spoolTo(t *testing.T, maxUpload uint64) error {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "httptemp", "cluster-shared"), 0o755); err != nil {
+		return err
 	}
-	// A 501 that doesn't say what to do instead is a dead end.
-	if body := w.Body.String(); body == "" {
-		t.Error("501 with no explanation of the alternative")
+	oldDir, oldMax := absDataDir, option.MaxUploadSize
+	absDataDir, option.MaxUploadSize = dir, maxUpload
+	t.Cleanup(func() { absDataDir, option.MaxUploadSize = oldDir, oldMax })
+	return nil
+}
+
+// putRequest builds a PUT carrying a body. contentLength is set explicitly so
+// a test can describe a chunked upload, where the length is not known up front,
+// by passing -1.
+func putRequest(body string, contentLength int64) *http.Request {
+	r := httptest.NewRequest("PUT", "/entries/a.txt", strings.NewReader(body))
+	r.ContentLength = contentLength
+	return r
+}
+
+func TestSpoolBodyWritesTheBody(t *testing.T) {
+	if err := spoolTo(t, 0); err != nil { // 0 = no limit
+		t.Fatalf("failed to set up temp upload dir: %v", err)
+	}
+	const body = "the quick brown fox"
+
+	w := httptest.NewRecorder()
+	tmpPath, size, err := spoolBody(w, putRequest(body, int64(len(body))), "a.txt")
+	if err != nil {
+		t.Fatalf("spoolBody failed: %v", err)
+	}
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if size != int64(len(body)) {
+		t.Errorf("size = %d, want %d", size, len(body))
+	}
+	got, err := os.ReadFile(tmpPath)
+	if err != nil {
+		t.Fatalf("failed to read spooled file: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("spooled %q, want %q", got, body)
+	}
+}
+
+// TestSpoolBodyRejectsOversizeUpFront: when the client declares a length over
+// the limit, refuse before reading the body rather than after.
+func TestSpoolBodyRejectsOversizeUpFront(t *testing.T) {
+	if err := spoolTo(t, 10); err != nil {
+		t.Fatalf("failed to set up temp upload dir: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	_, _, err := spoolBody(w, putRequest("this is definitely more than ten bytes", 38), "a.txt")
+	if err == nil {
+		t.Fatal("spoolBody accepted a body larger than the limit")
+	}
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+// TestSpoolBodyRejectsOversizeWhenLengthIsUnknown covers the chunked case,
+// where there is no Content-Length to check and the limit has to be enforced on
+// the way through. The partial file must not be left behind.
+func TestSpoolBodyRejectsOversizeWhenLengthIsUnknown(t *testing.T) {
+	if err := spoolTo(t, 10); err != nil {
+		t.Fatalf("failed to set up temp upload dir: %v", err)
+	}
+	scratch := filepath.Join(absDataDir, "httptemp", "cluster-shared")
+
+	w := httptest.NewRecorder()
+	_, _, err := spoolBody(w, putRequest("this is definitely more than ten bytes", -1), "a.txt")
+	if err == nil {
+		t.Fatal("spoolBody accepted an oversize chunked body")
+	}
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusRequestEntityTooLarge)
+	}
+
+	left, err := os.ReadDir(scratch)
+	if err != nil {
+		t.Fatalf("failed to read temp dir: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("%d temp file(s) left behind after a rejected upload", len(left))
 	}
 }
 

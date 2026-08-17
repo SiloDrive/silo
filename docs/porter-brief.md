@@ -1,6 +1,8 @@
 # Porter — the Silo server contract
 
-Brief for the macOS File Provider client. The design lives in
+Brief for the native clients — the macOS File Provider extension and the FUSE
+client. Both talk to the same surface; where they need different things, it is
+called out. The macOS design lives in
 [`macos-fileprovider-plan.md`](macos-fileprovider-plan.md) and the reasoning
 behind the storage model in [`sync-design.md`](sync-design.md); this is the
 *wire contract* — what to call, what comes back, and where the gaps are.
@@ -43,7 +45,7 @@ Missing or bad token → **401**. No permission on the library → **403**.
 ```
 GET    /api/silo/v1/repos/{repo}/entries/{path}   dir → listing, file → bytes
 HEAD   /api/silo/v1/repos/{repo}/entries/{path}   headers only
-PUT    /api/silo/v1/repos/{repo}/entries/{path}   create a directory (?type=dir)
+PUT    /api/silo/v1/repos/{repo}/entries/{path}   body → file, or ?type=dir
 DELETE /api/silo/v1/repos/{repo}/entries/{path}
 POST   /api/silo/v1/repos/{repo}/entries/{path}   {"op":"move","to":"/x/y"}
 ```
@@ -86,15 +88,36 @@ The all-zeros id is the empty-directory sentinel, not an error.
 
 ### Reading a file
 
-`GET entries/{path}` on a file answers **302** to `/files/{token}/{name}`, which
-needs no auth and streams the bytes. `URLSession` follows this automatically.
+`GET entries/{path}` on a file streams the bytes back on that response. One
+request, authenticated by the bearer header on it. No redirect.
 
 ```
-HTTP/1.1 302 Found
-Etag: "v1-164d2dec219b7dad29247649cf8d20aff5d7e225"
-Last-Modified: Mon, 17 Aug 2026 11:14:52 GMT
-Location: /files/b2cce1e9-76a9-4b7c-a9d0-b24b326312da/a.txt
+HTTP/1.1 200 OK
+Accept-Ranges: bytes
+Content-Length: 14
+Content-Type: text/plain
+Etag: "v1-b8d0fa06b4d2412e9695f1f3561ecee173a5ae4b"
+Last-Modified: Mon, 17 Aug 2026 11:38:12 GMT
 ```
+
+**`Range` is supported, on this URL, as many times as you like.** Verified
+byte-for-byte against the source across five sequential ranged reads at
+different offsets on one URL:
+
+```
+Range: bytes=200000-200049  →  206 Partial Content
+                               Content-Range: bytes 200000-200049/240000
+```
+
+This used to be a **302** to `/files/{token}/{name}`, whose token was spent on
+first use — so a second ranged read against the same URL was a 403 and seeking
+cost two round trips. That is gone from this lane. See
+[`capability-urls.md`](capability-urls.md) for why the redirect existed and why
+it does not belong here.
+
+No charset is declared on text files. The server does not know how a file it is
+handing back is encoded, and the Seafile lane's inherited `charset=gbk` is a
+guess that mangles anything else. Do not trust a charset you did not put there.
 
 ### ETags — the part worth building around
 
@@ -124,67 +147,60 @@ useless for identity.
 
 | | |
 |---|---|
+| upload a file | `PUT entries/{path}` — the body **is** the file → **201** |
 | create a directory | `PUT entries/{path}?type=dir` → **201** |
 | move or rename | `POST entries/{path}` with `{"op":"move","to":"/new/path"}` |
 | delete | `DELETE entries/{path}` |
-| **upload a file** | **not on this endpoint yet — see below** |
 
-A trailing slash on the path also means "directory", but prefer the explicit
-`?type=dir`: a bare `PUT` is a file upload, and that is the request that fails.
+**`PUT` replaces.** That is what PUT means, and it is deliberately unlike the
+Seafile lane's upload, which is modelled on a person dragging files into a
+folder and so renames a collision to `notes (1).txt`. PUT the same path three
+times here and you get one file with the last body:
+
+```
+put #1 → 201    put #2 → 201    put #3 → 201
+GET → "version 3";  the listing has one notes.txt
+```
+
+Set `Content-Length` if you can. It is checked against the server's upload limit
+before the body is read, so an oversize upload is refused up front rather than
+after you have pushed it. A chunked body works too — the limit is then enforced
+on the way through.
+
+The response carries the new content's `ETag`, so a client can record the
+version without a follow-up GET:
+
+```json
+{"id":"b8d0fa06…","name":"greeting.txt","size":14,"type":"file"}
+```
+
+**The parent directory must exist** — a PUT into a missing directory is a
+**404**, not an implicit `mkdir -p`. A typo in a path should not silently build
+a directory tree.
+
+A trailing slash also means "directory", but prefer the explicit `?type=dir`.
+The distinction is load-bearing now: a bare `PUT` stores the body, so dropping
+the parameter creates an empty file where a directory was meant.
 
 The library root cannot be moved (**400**) or deleted (**400**), and creating it
 is a **409**.
 
 ## Gaps — read this before planning M4
 
-**`PUT` of file content returns 501.** Uploads index blocks straight out of a
-multipart part (`indexBlocks` takes a `*multipart.FileHeader`), so a raw request
-body needs a reader-shaped variant of that function before the endpoint can
-honestly claim to store bytes. Returning 501 with the alternative in the body
-beats accepting an upload and dropping it.
-
-Until it lands, **writes use the existing two-step flow**, which is unchanged
-and fully working:
-
-1. `POST /api/silo/v1/access-tokens` with `{"repo_id":…, "op":"upload",
-   "obj_id":"{\"parent_dir\":\"/some/dir\"}"}` → `{"token":…}`
-2. `POST /upload-api/{token}` as multipart form data
-
-`op` is `update` rather than `upload` when replacing an existing file. The
-access token authorizes the upload on its own, so step 2 carries no bearer
-token.
+Short list, and shorter than it was.
 
 **Conditional writes are not implemented.** `If-Match` is ignored — nothing
 returns **412** today, and writes are last-writer-wins. The error table in the
 plan lists `412 → .versionOutOfDate`; that row is aspirational. If Porter needs
 optimistic concurrency, say so and it goes in server-side: the machinery is
-already there, since `getEntry` resolves the same id that would be compared.
+already there, since the write path resolves the same id that would be compared.
 
-**Range requests work, but the URL they work on is single-use.** This is the
-sharp edge in the whole contract, and it bites sequential-read clients hardest.
+**No resumable upload.** A PUT that dies partway has to start over. Whole-file
+uploads only; there is no chunk/offset protocol on this endpoint.
 
-`/files/{token}/{name}` honours `Range` on unencrypted libraries — verified,
-byte-for-byte against the source file:
-
-```
-Range: bytes=100-149  →  206 Partial Content
-                         Accept-Ranges: bytes
-                         Content-Range: bytes 100-149/240000
-```
-
-But the token in that URL is minted one-time (`api_handlers.go`, `CreateToken(…,
-true)`), so the *second* request against the same URL is a **403 "Access token
-not found"**. Resuming or seeking therefore costs a fresh
-`GET entries/{path}` → 302 → ranged GET: **two round trips per read**.
-
-That is deliberate, not an oversight: `/files/{token}/{name}` takes no auth
-header, so the URL *is* the capability, and spending it once bounds what a
-leaked one can do. The fix is not to loosen the token but to serve ranges from
-the authenticated endpoint instead — see below.
-
-For whole-file fetches that is one extra round trip and nobody notices. For a
-client that reads at offsets it is the difference between a usable filesystem
-and an unusable one — see "If you are building a FUSE client" below.
+**Encrypted libraries** serve whole files but not ranges — the stored blocks are
+ciphertext, so a byte range of the plaintext is not a byte range of what is
+stored. Out of scope for a v1 client either way.
 
 ## The delta endpoint
 
@@ -274,11 +290,12 @@ exercised against a running server.
 | `currentSyncAnchor` | `head_commit_id` from `GET /api/silo/v1/repos` |
 | `enumerateChanges` | `GET /api/silo/v1/repos/{id}/changes?since={commit}` |
 | `item(for:)` | *none* — local `IdMap` ⋈ `WorkingSet` |
-| `fetchContents` | `GET /api/silo/v1/repos/{id}/entries/{path}` → 302 → `/files/{token}/{name}` |
+| `fetchContents` | `GET /api/silo/v1/repos/{id}/entries/{path}` — bytes on the response |
 | revalidate a cached item | the same GET with `If-None-Match` → 304 |
+| read at an offset | the same GET with `Range` → 206, repeatable |
 | `createItem` (dir) | `PUT /api/silo/v1/repos/{id}/entries/{path}?type=dir` |
-| `createItem` (file) | `POST /api/silo/v1/access-tokens` then `POST /upload-api/{token}` |
-| `modifyItem` (contents) | access token with `op=update`, then `POST /update-api/{token}` |
+| `createItem` (file) | `PUT /api/silo/v1/repos/{id}/entries/{path}` — body is the file |
+| `modifyItem` (contents) | the same `PUT` — it replaces |
 | `modifyItem` (rename) | `POST /api/silo/v1/repos/{id}/entries/{path}` `{"op":"move",…}` |
 | `modifyItem` (reparent) | the same call — a move is a move |
 | `deleteItem` | `DELETE /api/silo/v1/repos/{id}/entries/{path}` |
@@ -298,6 +315,8 @@ can diff against — `client/client.go` is ~100 lines of it.
 export SILO_URL=http://server:8082 SILO_EMAIL=… SILO_PASSWORD=…
 silo repos --json                      # libraries, with head_commit_id
 silo ls   <repo> /some/dir             # GET entries/
+silo put  <repo> ./local.txt /dir      # PUT entries/… (body is the file)
+silo get  <repo> /dir/local.txt out    # GET entries/…
 silo mkdir <repo> /new                 # PUT entries/…?type=dir
 silo mv   <repo> /a.txt /sub/a.txt     # POST entries/… {"op":"move"}
 silo rm   <repo> /sub/a.txt            # DELETE entries/…
@@ -313,66 +332,51 @@ branches.
 
 ## If you are building a FUSE client
 
-The File Provider model and the FUSE model want different things from this
-server, and the difference is not cosmetic.
+FUSE serves **`read(fd, buf, len, offset)`**, which is the access pattern this
+lane was just changed to support. **`GET entries/{path}` with a `Range` header
+is one authenticated round trip, repeatable on the same URL.** Build the read
+path directly on it.
 
-File Provider fetches **whole files** — `fetchContents` hands back a complete
-file and macOS owns the local replica. One request per file, redirect included,
-and the single-use token costs nothing.
+That is worth stating plainly because it was not true a day ago, and the
+workarounds it used to require are no longer worth their cost:
 
-FUSE serves **`read(fd, buf, len, offset)`**. If each of those becomes
-`GET entries/` → 302 → ranged GET, every read is two round trips and a
-sequential scan of a large file is thousands of them. Do not build that.
+- **You do not need the block lane** (`/repo/{id}/block/{id}` with a
+  `Seafile-Repo-Token`). That is what `seadrive-fuse` does, and the reason is
+  that it had no better option: reaching bytes at an offset meant fetching the
+  file's `Seafile` fs object for its block list and reassembling. It works, but
+  it puts you partway to replicating the object store, and blocks default to
+  8MB, so a 4KB read pulls a whole block. Use it only if you find a reason
+  `entries/` cannot serve.
+- **You do not need a whole-file local cache to be correct** — though you may
+  still want one for latency. `entries/` plus ETags gives cheap revalidation,
+  which is most of what a cache needs anyway.
 
-Three options, in the order I would try them:
+What is worth doing:
 
-1. **Use the block lane for content.** This is what `seadrive-fuse` does, and
-   it is the reason the block API exists. Blocks are content-addressed, so they
-   are immutable and cacheable forever, fetched by id:
+1. **Cache attributes**, keyed by path, revalidated with `If-None-Match`. A 304
+   reads no blocks, so `getattr` storms are nearly free.
+2. **Invalidate from `/changes`** rather than by polling paths. One request tells
+   you everything that moved since your last anchor.
+3. **Read through to `entries/` with `Range`**, and cache block-aligned chunks
+   locally if the workload rereads. The server does not care how you align; it
+   will serve any range.
 
-   ```
-   GET /repo/{repoid}/block/{blockid}      Seafile-Repo-Token
-   GET /repo/{repoid}/block-map/{fileid}   block boundaries for offset → block
-   ```
+Encrypted libraries are the exception — they serve whole files but not ranges,
+because the stored blocks are ciphertext. Out of scope for a v1 client.
 
-   The repo token is long-lived, so there is no per-read token dance. You need
-   the file's block list, which means reading its `Seafile` fs object — that is
-   the cost of this route, and it is a real one: you are partway to replicating
-   the object store. Blocks also default to 8MB, so a 4KB read pulls a whole
-   block unless block fetches themselves accept `Range` (I have not verified
-   that they do — check before relying on it).
-
-2. **Cache whole files locally** and serve reads from the cache, fetching once
-   via `entries/`. Simplest correct thing; fine if libraries are documents and
-   not 10GB videos. `entries/` + ETags gives you cheap revalidation, which is
-   most of what a cache needs.
-
-3. **Ask for the server change.** Honouring `Range` directly on
-   `GET entries/{path}` — streaming rather than redirecting when a `Range`
-   header is present — collapses this to one round trip per read with no token
-   involved. The machinery already exists (`doFileRange` in `fileop.go`); it is
-   not wired to this endpoint. This is a small, additive change and it is the
-   right one if a FUSE client is going to exist. **Ask for it rather than
-   working around it.**
-
-Everything else in this document applies unchanged: `entries/` for metadata and
-enumeration, `/changes` for invalidation, ETags for revalidating cached attrs,
-and the two-step flow for writes.
-
-Note also that a FUSE client on Linux has the `Seafile-Repo-Token` lane fully
-available to it — that is the lane unmodified Seafile clients use, and it is
-frozen, which means it is stable. `../seafile/seadrive-fuse` is a working
-reference for it.
+`../seafile/seadrive-fuse` remains a useful reference for FUSE mechanics —
+inode allocation, handle lifetime, writeback — even though its network layer is
+not the one to copy.
 
 ## Asking for server changes
 
-The server is ours and additive endpoints are cheap. Three are already
-identified and none are blocking M0–M3:
+The server is ours and additive endpoints are cheap. The two biggest asks from
+the first draft of this document — ranged reads without a capability URL, and
+`PUT` accepting file content — have both been built. What is left:
 
-1. `Range` honoured directly on `GET entries/{path}`, so a ranged read is one
-   round trip and needs no single-use token (see the FUSE section)
-2. `PUT entries/{path}` accepting file content (removes the two-step upload)
-3. `If-Match` → 412 for optimistic concurrency
+1. `If-Match` → 412 for optimistic concurrency
+2. Resumable upload, if whole-file PUT turns out to be painful over flaky links
+3. A batch block fetch (`pack-blocks`), if per-object round trips dominate
 
 If Porter wants something else, ask rather than working around it in Swift.
 Reimplementing server logic client-side is what makes sync clients enormous —

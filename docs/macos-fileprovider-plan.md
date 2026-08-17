@@ -251,11 +251,11 @@ the request it makes.
 | `currentSyncAnchor` | `GET /repo/{id}/commit/HEAD` | superseded — `head_commit_id` |
 | `enumerateChanges` | `GET /api/silo/v1/repos/{id}/changes?since={commit}` | **built** |
 | `item(for:)` | *none* — local `IdMap` ⋈ `WorkingSet` | — |
-| `fetchContents` | `GET /api/silo/v1/repos/{id}/file?p={path}` → redirect | superseded — `entries/{path}` |
+| `fetchContents` | `GET /api/silo/v1/repos/{id}/file?p={path}` → redirect | superseded — `entries/{path}`, no redirect |
 | — | `GET /files/{token}/{name}` | exists |
-| `createItem` (file) | `GET .../upload-link` then `POST /upload-api/{token}` | exists — still the only upload path |
+| `createItem` (file) | `GET .../upload-link` then `POST /upload-api/{token}` | superseded — `PUT entries/{path}` |
 | `createItem` (dir) | `POST /api/silo/v1/repos/{id}/mkdir` | superseded — `PUT entries/{path}?type=dir` |
-| `modifyItem` (contents) | `POST /update-api/{token}` | exists |
+| `modifyItem` (contents) | `POST /update-api/{token}` | superseded — the same `PUT` |
 | `modifyItem` (rename) | `POST /api/silo/v1/repos/{id}/rename` | superseded — `POST entries/…` `{"op":"move"}` |
 | `modifyItem` (reparent) | `POST /api/silo/v1/repos/{id}/move` | superseded — the same move call |
 | `deleteItem` | `DELETE /api/silo/v1/repos/{id}/file?p={path}` | superseded — `DELETE entries/{path}` |
@@ -313,15 +313,18 @@ support the brief describes. M0–M3 need no further server work.
    returns `id` (the content hash) rather than `content_hash`, and no `mtime` —
    the hash is what versioning needs, and mtime comes from the listing.
 
+2. ~~`PUT entries/{path}` accepting file content~~ — built. One request, body is
+   the file, and it replaces rather than renaming the collision.
+3. ~~Range GETs on file download~~ — built, and without the single-use
+   capability URL, so a ranged read is one authenticated round trip and repeats
+   on the same URL.
+
 Remaining, in order of value, none blocking:
 
-2. `PUT entries/{path}` accepting file content, which would collapse the
-   two-step access-token upload into one request. Currently **501**.
-3. `If-Match` → 412 for optimistic concurrency, which is what makes the
+4. `If-Match` → 412 for optimistic concurrency, which is what makes the
    `.versionOutOfDate` row in the error table above real rather than
    aspirational.
-4. Range GETs on file download for large-file resume. `/repo/{id}/block-map/{id}`
-   already exposes block boundaries.
+5. Resumable upload. A `PUT` that dies partway starts over.
 
 ## macOS-side work
 

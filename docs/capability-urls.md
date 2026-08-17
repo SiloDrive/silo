@@ -1,21 +1,26 @@
 # Capability URLs: what to drop from the Silo lane, and what to build if we ever want signed URLs
 
-A note, not a plan. Records why `/files/{token}/{name}` exists, why the new API
-should not use it, and what "signed URLs" should mean if we ever want them —
-so the answer isn't re-derived, and so nobody resurrects the current mechanism
-by mistake.
+Records why `/files/{token}/{name}` exists, why the Silo lane no longer uses it,
+and what "signed URLs" should mean if we ever want them — so the answer isn't
+re-derived, and so nobody resurrects the current mechanism by mistake.
 
-## What it is today
+**Status: done.** The Silo lane serves file bytes on the authenticated request
+and accepts them on a `PUT`. What follows is the reasoning, kept because the
+same question will come up again the first time someone wants a browser to
+fetch a file.
 
-Downloading a file through `/api/silo/v1` currently takes two requests:
+## What it was
+
+Downloading a file through `/api/silo/v1` used to take two requests:
 
 1. `GET /api/silo/v1/repos/{id}/entries/{path}` — bearer auth → **302**
 2. `GET /files/{token}/{name}` — **no auth header**; the token *is* the credential
 
 The token is a UUID in a `sync.Map` (`fileserver/tokenstore`), created with
 `oneTime=true` at `api_handlers.go`, and redeemed by `QueryToken` with a
-`LoadAndDelete`. Uploads mirror it: `POST /api/silo/v1/access-tokens` then
-`POST /upload-api/{token}`.
+`LoadAndDelete`. Uploads mirrored it: `POST /api/silo/v1/access-tokens` then
+`POST /upload-api/{token}`. Both remain exactly as they are for the Seafile
+lane, which is the lane that needs them.
 
 ## Why it exists — and it is a good design, for something else
 
@@ -64,41 +69,43 @@ now. For them the capability URL is pure overhead — and for a FUSE client it i
 worse than overhead, because the one-time token means every `read()` at an
 offset costs a redirect plus a ranged GET. Two round trips per read.
 
-## What to do instead
+## What was done instead
 
 Both changes are additive and neither touches the Seafile lane.
 
-**Reads — serve bytes directly from `entries/`.** `GET entries/{path}` on a file
-should stream the content itself, honouring `Range`, instead of redirecting. It
-is already bearer-authenticated, so no capability is minted and nothing is
-one-time. The machinery exists and takes no token:
+**Reads — bytes come from `entries/`.** `serveFile` in `fileserver/entries.go`
+streams the content on the authenticated request, honouring `Range`, instead of
+redirecting. No capability is minted and nothing is one-time, so a client can
+issue as many ranged reads against one URL as it likes. It reuses the existing
+machinery, which never needed a token in the first place:
 
 ```go
-doFileRange(rsp, r, repo, fileID, fileName, op, byteRanges, user)  // fileop.go
-doFile(rsp, r, repo, fileID, fileName, op, cryptKey, user)
+doFileRange(rsp, r, repo, fileID, fileName, op, byteRanges, user, textCharset)
+doFile(rsp, r, repo, fileID, fileName, op, cryptKey, user, textCharset)
 ```
 
-`accessCB` shows the dispatch to copy: range when `!repo.IsEncrypted &&
+`accessCB` was the dispatch to copy: range when `!repo.IsEncrypted &&
 len(byteRanges) != 0`, otherwise whole-file with the crypt key.
 
-**Writes — accept a body on `PUT entries/{path}`.** Currently 501. Note that
-`indexFileWorker` and `chunkFile` *already* handle a `filePath` with a nil
-multipart handler, so the cheap route is to spool the request body to a temp
-file and pass that — no rewrite of the chunking path. `chunkFile` seeks per
-block, so the source has to be seekable either way; spooling is not a
-workaround, it is the requirement.
+**Writes — `PUT entries/{path}` takes the body.** It replaces, which is what
+PUT means and is deliberately unlike the Seafile upload's "rename the
+collision" behaviour. The body is spooled to a temp file before indexing:
+`chunkFile` seeks to each block boundary, so the source has to be seekable, and
+`indexFileWorker` already accepted a `filePath` with a nil multipart handler for
+exactly that reason. Spooling is the requirement, not a shortcut around it.
 
-Then `/api/silo/v1/access-tokens` has no callers in the new lane, and the
-redirect, the token map and the two-step upload are all gone from it.
+`/api/silo/v1/access-tokens` now has no callers in this lane, and the redirect,
+the token map and the two-step upload are all gone from it.
 
-### One wart to know about
+### The charset wart, also fixed
 
-`setCommonHeaders` labels any `text/*` file `charset=gbk`, which is a Seafile
-inheritance and simply wrong for UTF-8 content. It sits in the shared streaming
-path, so fixing it for the new lane means either parameterising
-`setCommonHeaders` or duplicating `doFile` — and duplicating the streaming path
-is exactly the kind of drift worth avoiding. Left alone for now; a client that
-honours the declared charset will mangle text.
+`setCommonHeaders` labelled every `text/*` file `charset=gbk` — a Seafile
+inheritance, and wrong for anything not actually GBK. It sits in the shared
+streaming path, so rather than duplicate `doFile` (the drift worth avoiding) it
+now takes the charset as a parameter. The Seafile lane passes `"gbk"` and is
+byte-identical to before; the Silo lane passes `""` and declares no charset at
+all, because the server does not know how a file it is handing back is encoded.
+Guessing wrong is worse than not saying.
 
 ## If we ever want signed URLs
 

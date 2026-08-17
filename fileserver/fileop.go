@@ -209,10 +209,10 @@ func accessCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	}
 
 	if !repo.IsEncrypted && len(byteRanges) != 0 {
-		if err := doFileRange(rsp, r, repo, objID, fileName, op, byteRanges, user); err != nil {
+		if err := doFileRange(rsp, r, repo, objID, fileName, op, byteRanges, user, "gbk"); err != nil {
 			return err
 		}
-	} else if err := doFile(rsp, r, repo, objID, fileName, op, cryptKey, user); err != nil {
+	} else if err := doFile(rsp, r, repo, objID, fileName, op, cryptKey, user, "gbk"); err != nil {
 		return err
 	}
 
@@ -236,7 +236,7 @@ func parseCryptKey(rsp http.ResponseWriter, repoID string, user string, version 
 }
 
 func doFile(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID string,
-	fileName string, operation string, cryptKey *seafileCrypt, user string) *appError {
+	fileName string, operation string, cryptKey *seafileCrypt, user, textCharset string) *appError {
 	file, err := fsmgr.GetSeafile(repo.StoreID, fileID)
 	if err != nil {
 		msg := "Failed to get seafile"
@@ -250,7 +250,7 @@ func doFile(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID
 		rsp.Header().Set("Content-Security-Policy", "sandbox")
 	}
 
-	setCommonHeaders(rsp, r, operation, fileName)
+	setCommonHeaders(rsp, r, operation, fileName, textCharset)
 
 	//filesize string
 	fileSize := fmt.Sprintf("%d", file.FileSize)
@@ -314,7 +314,7 @@ type blockMap struct {
 }
 
 func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID string,
-	fileName string, operation string, byteRanges string, user string) *appError {
+	fileName string, operation string, byteRanges string, user, textCharset string) *appError {
 
 	file, err := fsmgr.GetSeafile(repo.StoreID, fileID)
 	if err != nil {
@@ -341,7 +341,7 @@ func doFileRange(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, f
 		rsp.Header().Set("Content-Security-Policy", "sandbox")
 	}
 
-	setCommonHeaders(rsp, r, operation, fileName)
+	setCommonHeaders(rsp, r, operation, fileName, textCharset)
 
 	//filesize string
 	conLen := fmt.Sprintf("%d", end-start+1)
@@ -521,14 +521,20 @@ func parseRange(byteRanges string, fileSize uint64) (uint64, uint64, bool) {
 	return startByte, endByte, true
 }
 
-func setCommonHeaders(rsp http.ResponseWriter, r *http.Request, operation, fileName string) {
+// setCommonHeaders sets the content type and disposition for a file response.
+//
+// textCharset is appended to a text/* content type. The Seafile lane passes
+// "gbk", which is what upstream has always sent and is therefore what its
+// clients expect; the Silo lane passes "" and sends no charset at all, because
+// the server does not know the encoding of a file it is handing back. Guessing
+// wrong is worse than not saying: a client that trusts the declaration will
+// mangle text that was fine.
+func setCommonHeaders(rsp http.ResponseWriter, r *http.Request, operation, fileName, textCharset string) {
 	fileType := parseContentType(fileName)
 	if fileType != "" {
-		var contentType string
-		if strings.Contains(fileType, "text") {
-			contentType = fileType + "; " + "charset=gbk"
-		} else {
-			contentType = fileType
+		contentType := fileType
+		if textCharset != "" && strings.Contains(fileType, "text") {
+			contentType = fileType + "; charset=" + textCharset
 		}
 		rsp.Header().Set("Content-Type", contentType)
 	} else {
@@ -628,7 +634,7 @@ func doBlock(rsp http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileI
 	}
 
 	rsp.Header().Set("Access-Control-Allow-Origin", "*")
-	setCommonHeaders(rsp, r, "downloadblks", blkID)
+	setCommonHeaders(rsp, r, "downloadblks", blkID, "gbk")
 
 	size, err := blockmgr.Stat(repo.StoreID, blkID)
 	if err != nil {
@@ -734,7 +740,7 @@ func downloadZipFile(rsp http.ResponseWriter, r *http.Request, data, repoID, use
 		}
 
 		zipName := dirName + ".zip"
-		setCommonHeaders(rsp, r, "download", zipName)
+		setCommonHeaders(rsp, r, "download", zipName, "gbk")
 
 		// The zip name downloaded by safari will be garbled if we encode the zip name,
 		// because we download zip file using chunk encoding.
@@ -756,7 +762,7 @@ func downloadZipFile(rsp http.ResponseWriter, r *http.Request, data, repoID, use
 		now := time.Now()
 		zipName := fmt.Sprintf("documents-export-%d-%d-%d.zip", now.Year(), now.Month(), now.Day())
 
-		setCommonHeaders(rsp, r, "download", zipName)
+		setCommonHeaders(rsp, r, "download", zipName, "gbk")
 		contFileName := fmt.Sprintf("attachment;filename=\"%s\";filename*=utf8''%s", zipName, url.PathEscape(zipName))
 		rsp.Header().Set("Content-Disposition", contFileName)
 		rsp.Header().Set("Content-Type", "application/octet-stream")

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -225,9 +224,9 @@ func (c *APIClient) DeleteRepo(repoID string) error {
 	return c.doRequest("DELETE", "/api/silo/v1/repos/"+repoID, nil, nil)
 }
 
-// Mkdir asks for a directory explicitly. A PUT with no ?type is a file upload,
-// which the server does not accept yet, so the parameter is not optional here
-// even though a trailing slash would also do.
+// Mkdir asks for a directory explicitly. A PUT with no ?type stores the request
+// body as a file, so the parameter is load-bearing rather than decorative: drop
+// it and this creates an empty file where a directory was meant.
 func (c *APIClient) Mkdir(repoID, path string) error {
 	return c.doRequest("PUT", entriesURL(repoID, path)+"?type=dir", nil, nil)
 }
@@ -279,6 +278,12 @@ func (c *APIClient) Changes(repoID, since string) (*ChangesResponse, error) {
 	return &resp, nil
 }
 
+// DownloadFile writes a file from the repo to localPath.
+//
+// The bytes arrive on this response. There used to be a redirect here, to a
+// /files/{token}/{name} URL carrying a one-time credential, and following it
+// took a second unauthenticated request — see docs/capability-urls.md for why
+// that shape existed and why this lane does not need it.
 func (c *APIClient) DownloadFile(repoID, repoPath, localPath string) error {
 	req, err := http.NewRequest("GET", c.BaseURL+entriesURL(repoID, repoPath), nil)
 	if err != nil {
@@ -286,113 +291,60 @@ func (c *APIClient) DownloadFile(repoID, repoPath, localPath string) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+c.getToken())
 
-	// Don't follow redirects — we need to follow with auth-less request to /files/
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusFound {
-		// Follow the redirect to /files/{token}/filename
-		loc := resp.Header.Get("Location")
-		if loc == "" {
-			return fmt.Errorf("redirect with no location")
-		}
-		// Build absolute URL if relative
-		if loc[0] == '/' {
-			loc = c.BaseURL + loc
-		}
-		fileResp, err := http.Get(loc)
-		if err != nil {
-			return fmt.Errorf("download failed: %v", err)
-		}
-		defer func() { _ = fileResp.Body.Close() }()
-
-		if fileResp.StatusCode >= 400 {
-			msg, _ := io.ReadAll(fileResp.Body)
-			return fmt.Errorf("download failed: %s", string(msg))
-		}
-
-		out, err := os.Create(localPath)
-		if err != nil {
-			return fmt.Errorf("failed to create local file: %v", err)
-		}
-		defer func() { _ = out.Close() }()
-
-		if _, err := io.Copy(out, fileResp.Body); err != nil {
-			return fmt.Errorf("failed to write file: %v", err)
-		}
-		return nil
-	}
 
 	if resp.StatusCode >= 400 {
 		msg, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("download failed: %s: %s", resp.Status, string(msg))
 	}
 
-	return fmt.Errorf("unexpected response: %d", resp.StatusCode)
+	out, err := os.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to create local file: %v", err)
+	}
+	defer func() { _ = out.Close() }()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return fmt.Errorf("failed to write file: %v", err)
+	}
+	return nil
 }
 
-// UploadFile uploads a local file to a repo directory.
-// It creates an access token, then POSTs a multipart form to /upload-api/.
+// UploadFile writes a local file into a repo directory.
+//
+// One request: the body is the file. This used to be three — mint an access
+// token, build a multipart form, POST it to /upload-api/{token} — which is the
+// shape a browser needs, because an HTML form cannot set an Authorization
+// header either. See docs/capability-urls.md.
+//
+// The file is streamed from disk rather than buffered, so uploading something
+// large does not mean holding it in memory. ContentLength is set explicitly
+// because a *os.File body would otherwise be sent chunked, and the server
+// checks the declared length against its upload limit before reading anything.
 func (c *APIClient) UploadFile(repoID, parentDir, localPath string) error {
-	// Step 1: Create access token with op=upload
-	objID, err := json.Marshal(map[string]string{"parent_dir": parentDir})
-	if err != nil {
-		return fmt.Errorf("failed to marshal upload obj_id: %v", err)
-	}
-	var tokenResp struct {
-		Token string `json:"token"`
-	}
-	if err := c.doRequest("POST", "/api/silo/v1/access-tokens", map[string]interface{}{
-		"repo_id": repoID,
-		"obj_id":  string(objID),
-		"op":      "upload",
-	}, &tokenResp); err != nil {
-		return fmt.Errorf("failed to get upload token: %v", err)
-	}
-
-	// Step 2: Build multipart form
 	file, err := os.Open(localPath)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %v", err)
 	}
 	defer func() { _ = file.Close() }()
 
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-
-	if err := writer.WriteField("parent_dir", parentDir); err != nil {
-		return fmt.Errorf("failed to write parent_dir field: %v", err)
-	}
-	if err := writer.WriteField("ret-json", "1"); err != nil {
-		return fmt.Errorf("failed to write ret-json field: %v", err)
-	}
-
-	part, err := writer.CreateFormFile("file", filepath.Base(localPath))
+	info, err := file.Stat()
 	if err != nil {
-		return fmt.Errorf("failed to create form file: %v", err)
-	}
-	if _, err := io.Copy(part, file); err != nil {
-		return fmt.Errorf("failed to copy file content: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		return fmt.Errorf("failed to close multipart writer: %v", err)
+		return fmt.Errorf("failed to stat file: %v", err)
 	}
 
-	// Step 3: POST to /upload-api/{token}
-	uploadURL := fmt.Sprintf("%s/upload-api/%s", c.BaseURL, tokenResp.Token)
-	req, err := http.NewRequest("POST", uploadURL, &buf)
+	remote := path.Join("/", parentDir, filepath.Base(localPath))
+	req, err := http.NewRequest("PUT", c.BaseURL+entriesURL(repoID, remote), file)
 	if err != nil {
 		return fmt.Errorf("failed to create upload request: %v", err)
 	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+c.getToken())
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = info.Size()
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -404,7 +356,6 @@ func (c *APIClient) UploadFile(repoID, parentDir, localPath string) error {
 		msg, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("upload failed: %s: %s", resp.Status, string(msg))
 	}
-
 	return nil
 }
 
