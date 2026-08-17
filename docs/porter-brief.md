@@ -360,9 +360,23 @@ Short list, and shorter than it was.
 **No resumable upload.** A PUT that dies partway has to start over. Whole-file
 uploads only; there is no chunk/offset protocol on this endpoint.
 
-**Encrypted libraries** serve whole files but not ranges — the stored blocks are
-ciphertext, so a byte range of the plaintext is not a byte range of what is
-stored. Out of scope for a v1 client either way.
+**Encrypted libraries are not readable over this API, at all.** An earlier draft
+said they serve whole files but not ranges. That was wrong: every read reaches a
+server-side key cache that nothing ever populates, so the honest answer for any
+file in an encrypted library is
+
+```
+400  Repo is encrypted. Please provide password to view it.
+```
+
+and no endpoint accepts one. Silo cannot create such a library either — the only
+way to have one is to import it from an upstream Seafile install, and Seafile's
+format will not be supported going forward (`docs/encryption.md` has the audit).
+A future Silo-native scheme is sketched there and would serve ranges normally,
+since the server would not be decrypting anything.
+
+For Porter: `encrypted: true` in the library listing means unusable. Grey it out
+at enumeration rather than discovering it one 400 per file.
 
 ## The delta endpoint
 
@@ -564,8 +578,8 @@ What is worth doing:
    locally if the workload rereads. The server does not care how you align; it
    will serve any range.
 
-Encrypted libraries are the exception — they serve whole files but not ranges,
-because the stored blocks are ciphertext. Out of scope for a v1 client.
+Encrypted libraries are the exception, and a harder one than "no ranges": they
+are unreadable over this API entirely. See the gaps section above.
 
 `../seafile/seadrive-fuse` remains a useful reference for FUSE mechanics —
 inode allocation, handle lifetime, writeback — even though its network layer is

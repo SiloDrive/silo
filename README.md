@@ -349,7 +349,9 @@ Silo is a lean rewrite focused on the sync path and a minimal management API. Th
 - No `is_staff` / admin privilege check in the API layer — all authenticated users have equal permissions
 - No web UI — use the TUI or a Seafile client
 - No trash / restore or history / revision endpoints
-- No encrypted-repo support in the TUI (sync clients can still use encrypted repos)
+- No encrypted libraries — Silo cannot create them, and Seafile's format will not
+  be supported. See [`docs/encryption.md`](docs/encryption.md) for why, and for
+  the sketch of what replaces it
 
 See [`docs/future-features.md`](docs/future-features.md) for the rough roadmap.
 

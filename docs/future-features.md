@@ -208,16 +208,23 @@ enforced on the upload path today, and there's no API to set a user's cap.
   any further writes outright. A soft-limit / hard-limit split would be
   friendlier but is more work.
 
-## Encrypted Repos In The TUI
+## Encrypted Libraries
 
-Sync clients can already use encrypted repos — the server-side decrypt-key
-cache (`keycache/`) supports them. The TUI doesn't prompt for a password or
-decrypt blocks locally, so browsing an encrypted repo in `silo tui` just
-shows garbage. Needs:
+Dropped as written. This section used to propose teaching the TUI Seafile's
+key derivation so it could browse encrypted repos. We are not adopting that
+format: 1000 PBKDF2 iterations, a published offline-crackable password
+verifier, one key and IV for the whole library forever, and no authentication
+on the ciphertext.
 
-- Password prompt on `enter` when `repo.encrypted = 1`.
-- Client-side key derivation (match upstream's PBKDF2 params).
-- Decrypt blocks on download, encrypt on upload.
+Silo has never been able to create an encrypted library, so there is no
+installed base to stay compatible with. The replacement — X25519 identity keys,
+a per-library content key wrapped per member, chunked AEAD — is sketched in
+[`docs/encryption.md`](encryption.md), along with the list of things not to
+build if we want to keep it reachable.
+
+Note the server-side decrypt-key cache (`keycache/`) is **not** working
+support: nothing ever calls `SetKey`, so `parseCryptKey` can only return its
+400. It reads as a feature and is dead code.
 
 ## Web UI
 

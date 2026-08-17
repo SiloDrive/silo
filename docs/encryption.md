@@ -1,396 +1,240 @@
-# Plan: Create encrypted libraries from the Silo TUI
+# Encryption
 
-## Context
+**Decision, 2026-08-18: Silo will not support Seafile's encrypted libraries.**
 
-Silo is a Go rewrite of Seafile's server. Its sync protocol, object store, and
-database schema are wire-compatible with the upstream Seafile desktop and
-SeaDrive clients. Encrypted-library *reading* is already plumbed through
-(`fileserver/crypt.go`, `fileserver/keycache/`, `SeaDriveDownloadInfoHandler`
-already surfaces `magic`/`random_key`/`salt`/`enc_version`, and
-`repomgr.RepoToCommit` already knows how to serialize encryption fields into a
-commit), but **creation is not implemented anywhere**:
+We will build our own end-to-end scheme instead. Nothing below is implemented.
+This document exists to record why we walked away, to sketch the replacement,
+and — the part that matters day to day — to list the things we must not build,
+because each of them would quietly make the replacement impossible.
 
-- `repomgr.CreateRepo` (`fileserver/repomgr/repomgr.go:879`) hardcodes
-  `is_encrypted=0` and has no password parameter.
-- Neither `/api/silo/v1/repos` nor `/api2/repos/` accepts a password.
-- Upstream Seafile only ever created encrypted libraries through **Seahub**
-  (the Python/Django web UI), which does the crypto in JavaScript in the
-  browser. Silo has no Seahub and no web UI, so there is no path at all today
-  to get an encrypted repo into a fresh Silo install.
-- The native Seafile desktop client and SeaDrive do **not** offer a
-  "create encrypted library" flow — they only sync or unlock existing ones.
+This file previously held a plan for *creating* Seafile-format encrypted
+libraries from the TUI. That plan is withdrawn. It was also wrong on a load-
+bearing detail: it claimed `enc_version=4` was AES-128-ECB and "crypto-identical
+to v3". v4 is AES-256-CBC. Implementing it as written would have produced
+libraries no Seafile client could open. Do not resurrect it from git history.
 
-The natural place to add creation is the Silo TUI (`internal/tui/tui.go`),
-which already owns the "press `n` to make a library" flow. We will do the
-key-derivation client-side in the TUI (the password never leaves that
-process), POST the derived fields to a new server endpoint, and have the
-server write an `enc_version=4` encrypted repo into the DB + initial commit in
-the exact format upstream Seafile desktop/SeaDrive expect. Sync clients will
-then be able to pull, unlock, and sync the library the same way they would
-against an upstream server.
+## Why not Seafile's scheme
 
-Scope explicitly excluded: browsing/unlocking encrypted repos from the TUI
-itself (the README already calls this out as a gap and it isn't what was
-asked for), password-change, and the `set-password` endpoint. Those are
-follow-ups — see "Out of scope / follow-ups" at the bottom.
+Audited against `../seafile/seafile-server/common/seafile-crypt.c`, not from
+memory or documentation.
 
-## Wire format we must match (enc_version=4)
+| ver | cipher | KDF | salt |
+|---|---|---|---|
+| 1 | AES-128-CBC | `EVP_BytesToKey`/SHA1, 2¹⁹ iters | hardcoded, 8 bytes |
+| 2 | AES-256-CBC | PBKDF2-HMAC-SHA256, **1000** iters | hardcoded, 8 bytes |
+| 3 | AES-128-**ECB** | PBKDF2-HMAC-SHA256, 1000 iters | per-repo, 32 bytes |
+| 4 | AES-256-CBC | PBKDF2-HMAC-SHA256, 1000 iters | per-repo, 32 bytes |
 
-Authoritative reference: `server/common/seafile-crypt.c` (upstream C, still in
-the tree for reference). Values below are for `enc_version=4`, the current
-default used by Seafile 7.0+:
+The hardcoded salt for v1 and v2 is eight bytes shared by every Seafile
+installation in existence. The comment directly above its declaration reads
+`/* Should generate random salt for each repo. */`.
 
-| Field        | How it's computed                                                                                              | Encoding         |
-|--------------|----------------------------------------------------------------------------------------------------------------|------------------|
-| `salt`       | 32 random bytes from a CSPRNG                                                                                  | 64 hex chars     |
-| `key` (32B)  | `PBKDF2-HMAC-SHA256(password, salt_bin, iter=1000, dkLen=32)`                                                  | raw, not stored  |
-| `iv`  (16B)  | `PBKDF2-HMAC-SHA256(key, salt_bin, iter=10, dkLen=16)`                                                         | raw, not stored  |
-| `random_key` | 32 random bytes (the real file key), encrypted with `AES-128-ECB` using `key[:16]` + PKCS#7 pad → 48 bytes     | 96 hex chars     |
-| `magic`      | `PBKDF2` exactly as above but over the string `repo_id + password` → 32 byte `key`                             | 64 hex chars     |
-| `enc_version`| `4`                                                                                                            | integer          |
-| `encrypted`  | `"true"` (string, in the commit JSON)                                                                          | string           |
+Four problems, worst first. Any one is arguable; together they are a scheme
+from a different decade.
 
-Notes / gotchas, all verified from `common/seafile-crypt.c` and confirmed
-against the existing Go decrypt path in `fileserver/crypt.go`:
+**1000 PBKDF2 iterations.** OWASP's figure for PBKDF2-HMAC-SHA256 is 600,000.
+Silo's own account passwords already use `authmgr.PBKDF2Iterations = 600000`
+with rehash-on-login, so the same binary would hash a login password 600× harder
+than the password protecting a user's encrypted files.
 
-- v4 cipher is **AES-128-ECB**. The PBKDF2 output is 32 bytes but only the
-  first 16 are used as the AES key — this is the `to16Bytes` slice already
-  present at `fileserver/crypt.go:82`. The existing `seafileCrypt.encrypt`
-  with `version=3` handles ECB + PKCS#7 pad and can be reused verbatim for v4
-  (v3 and v4 are crypto-identical; v4 is just a newer labelling).
-- `magic`'s derivation re-runs the same PBKDF2 over `repo_id + password` (not
-  just `password`). Client must know the repo UUID *before* computing magic,
-  so the TUI generates the UUID locally and sends it.
-- `random_key` is stored in the commit JSON under the key `"key"` (already
-  wired in `commitmgr.Commit.RandomKey` at `fileserver/commitmgr/commitmgr.go:37`).
-- `is_encrypted` in `RepoInfo` is an integer `0`/`1`, but the commit JSON
-  stores `encrypted` as the **string** `"true"`. `RepoToCommit`
-  (`fileserver/repomgr/repomgr.go:173`) already handles that.
+**`magic` is a published offline-cracking oracle.** It is
+`PBKDF2(repo_id + password, salt, 1000)`, stored in plaintext in the commit JSON
+and served to any authenticated client by `SeaDriveDownloadInfoHandler`. Anyone
+with a database copy — or any account that can call download-info — gets an
+offline verifier at a work factor a single GPU chews through at millions of
+guesses per second.
 
-## Design overview
+**One key and one IV for the entire library, forever.** After unwrapping
+`random_key`, both the file key and the IV come from `seafile_derive_key` over
+that same value and the repo salt. They never vary. Every block is AES-256-CBC
+under an identical (key, IV) pair, which makes the encryption deterministic:
+identical blocks produce identical ciphertext, and two files sharing a prefix
+share a ciphertext prefix up to the byte they diverge. That is most of ECB's
+leakage, from the mode chosen to avoid it.
+
+**No authentication.** No MAC, no AEAD. Ciphertext is malleable and a hostile
+server can flip bits that the client will decrypt without complaint. For a
+scheme whose whole premise is not trusting the server, this is the one that
+matters most in principle.
+
+Metadata is not protected at all. `fsmgr` imports `crypto/sha1` and nothing
+else: filenames, directory structure, file sizes and block boundaries are all
+plaintext. Only content is encrypted.
+
+Upstream knows. `pwd_hash` / `pwd_hash_algo` / `pwd_hash_params` in the commit
+format are their replacement for `magic`, backed by argon2id in
+`common/password-hash.c`. It is a serious fix to one of the four. Silo carries
+those fields through `CommitToRepo` / `RepoToCommit` but computes and verifies
+none of them.
+
+## Why we can walk away
+
+Silo has never been able to create an encrypted library — `repomgr.CreateRepo`
+hardcodes `is_encrypted=0` and no endpoint accepts a password. Upstream only
+ever created them through Seahub's browser JavaScript, and we have no Seahub.
+
+So there is no installed base. No Silo user has an encrypted library that Silo
+made, and the only way to have one at all is to import it from an upstream
+Seafile install. Refusing the format costs us nothing we currently offer, and
+buys a free hand.
+
+## What we would build instead
+
+A sketch, not a specification. Everything here is open to revision until
+someone writes the code — the point is to establish that a modern scheme is
+reachable, and what it needs from the rest of Silo.
+
+### Keys
+
+- **Identity keypair per user**, X25519. The private key is wrapped under the
+  user's passphrase with argon2id and stored server-side as an opaque blob, so a
+  new device can bootstrap from the passphrase alone. The public key is
+  published.
+- **Content key per library** (CK), 32 random bytes generated client-side at
+  creation, never derived from a password.
+- CK is **wrapped to each member's public key** — one sealed blob per member.
+
+The indirection is what buys everything else. Seafile binds the library to a
+password, so sharing means telling someone the password and revocation is
+impossible. Wrapping to identities means sharing is "wrap CK for one more
+public key", and a password change re-wraps only the user's *own private key* —
+CK is untouched and not one byte of content is re-encrypted.
+
+### Content
+
+- Fixed **1 MiB chunks**, not content-defined boundaries: CDC cut points are a
+  function of the plaintext and leak its structure.
+- Per-file key `FK = HKDF-SHA256(CK, file_nonce)`, where `file_nonce` is 16
+  random bytes kept in the file's metadata.
+- Chunk *i* sealed with **XChaCha20-Poly1305**, nonce `file_nonce || i`,
+  additional data binding the file id, chunk index and chunk count so chunks
+  cannot be reordered, duplicated, or moved between files.
+- The AEAD tag gives integrity per chunk, and localises tampering to the chunk
+  it touched rather than the whole file.
+
+Ranged reads fall out for free, and this is worth being explicit about: the
+server is not decrypting anything, so a range request is a plain byte range over
+stored bytes. The client maps a plaintext range onto chunk indices, asks for the
+ciphertext range covering them, decrypts, and trims. **The new scheme should
+serve ranges on encrypted libraries, where Seafile's cannot.**
+
+### Names and metadata — the open question
+
+This one decides the shape of the API, so it should be settled before code.
+
+**Option A — deterministic name encryption.** Each path segment encrypted with
+AES-SIV under `HKDF(CK, "names")`, encoded base64url. `entries/{path}` keeps
+working exactly as built; the server routes on ciphertext without knowing it.
+Leaks name equality within a library, approximate name length, directory shape,
+and file sizes.
+
+**Option B — encrypted directory objects.** The server stores fs objects as
+opaque blobs and the client walks the tree by id. Leaks the shape of the tree
+and nothing else. Costs a second access pattern: `entries/{path}` is
+path-addressed and simply does not apply, so encrypted libraries would need an
+id-addressed surface alongside it.
+
+A is cheap and compatible with everything we have just built. B is the one that
+actually delivers "the server knows nothing". Recommendation is A first with B
+kept reachable, which is mostly a matter of not hard-wiring path-addressing into
+places that could take an id.
+
+### What it costs
+
+- **Cross-user dedup ends.** Random per-file nonces mean identical files
+  encrypt differently for different libraries. Within one library, deriving
+  `FK` from a plaintext hash instead of a random nonce (convergent encryption)
+  restores dedup at the cost of a confirmation-of-file oracle to anyone holding
+  CK — which is the library's own members, so it may be an acceptable trade.
+  Decide deliberately.
+- **No server-side anything**: no thumbnails, no preview, no full-text search,
+  no server-side zip of a folder, no charset guessing. We are removing that
+  machinery anyway.
+- **Compression must happen client-side, before encryption.** Ciphertext does
+  not compress. `docs/compression.md` describes a server-side story that cannot
+  apply to encrypted libraries.
+- **Revocation is not retroactive.** Rotating CK and re-wrapping for the
+  remaining members stops future reads; a departing member keeps whatever
+  ciphertext and old CK they already had. Only re-encrypting the library fixes
+  that, and that is O(library). Say so plainly rather than implying otherwise.
+
+## Guardrails — what not to build
+
+The replacement is a long way off. The way it dies is not a decision to abandon
+it; it is a series of small, individually reasonable features that each assume
+the server can read content, until the assumption is load-bearing and removing
+it means breaking things people use.
+
+**Never add a server-side key cache or a `set-password` endpoint.**
+`fileserver/keycache/` and `parseCryptKey` exist, are wired into both the
+Seafile lane and `entries/`, and are dead: nothing in the tree calls
+`keycache.SetKey`, so `parseCryptKey` can only ever return its 400. The obvious
+tidy-up is to add the missing endpoint and make the feature work. Do not. That
+endpoint's whole purpose is to hand the server a key, which is the assumption we
+are deleting. Delete the cache instead.
+
+**Object ids stay hashes of stored bytes, never plaintext.** `ETag: "v1-{id}"`
+works over ciphertext precisely because the server hashes what it stores. If
+anything ever computes an id from plaintext server-side, end-to-end is over that
+same day.
+
+**Names stay opaque to the server.** No case folding, no Unicode
+normalisation, no behaviour derived from a file extension anywhere on the
+`entries/` path. `parseContentType` guessing a MIME type from the suffix
+(`fileop.go:88`) is exactly the pattern to keep out; the new lane already passes
+`siloTextCharset = ""` rather than inheriting the Seafile lane's `charset=gbk`
+guess, and that instinct is the right one.
+
+**Mind the name budget.** `shouldIgnoreFile` rejects names that are not valid
+UTF-8 or are 256 bytes or longer. Encrypted names must therefore be encoded, not
+raw bytes, and base64url inflates by about 1.4× — which caps plaintext names
+around 180 characters. Either accept that or raise the limit deliberately, but
+know it is there.
+
+**Range support must never depend on the server understanding content.**
+`serveFile` currently refuses ranges on encrypted libraries because the *server*
+is doing the decryption. Under the new scheme that branch should disappear
+rather than grow. Anything that makes ranged reads smarter about file contents
+takes us the wrong way.
+
+**Leave room for per-user key material.** There is nowhere today to publish a
+user's public key or store their wrapped private key. Whatever shape it takes,
+do not design account management such that a user is permanently just a row with
+a password hash.
+
+**Keep client-supplied library ids possible.** Key wrapping may bind to the
+library id, so the client has to be able to create a library with a UUID it
+chose. Seafile's `magic` had the same constraint for worse reasons; the
+constraint is worth preserving even though `magic` is not.
+
+**Do not ship features that require plaintext.** Full-text search, thumbnails,
+office preview, virus scanning, server-side folder zip. Each is defensible on
+its own and each becomes a reason not to do this. If one is genuinely wanted,
+scope it explicitly to unencrypted libraries so the boundary is visible in the
+code rather than discovered later.
+
+## What happens to Seafile encrypted libraries now
+
+Today an encrypted library that arrived by import is readable only by sync
+clients, which do their own crypto. Any read through `entries/` or the file
+server hits `parseCryptKey` and gets:
 
 ```
-TUI (cmd 'n' on repo list)
-  │  name, password, encrypted? toggle
-  │  locally: uuid.New() → repo_id
-  │            PBKDF2/AES-ECB → salt, random_key, magic
-  ▼
-client.APIClient.CreateEncryptedRepo(name, repoID, encVersion, magic, randomKey, salt)
-  │  POST /api/silo/v1/repos  {name, repo_id, enc_version, magic, random_key, salt}
-  ▼
-api.CreateRepoHandler
-  │  if enc fields present → repomgr.CreateEncryptedRepo(...)
-  │  else                   → repomgr.CreateRepo(...)   (existing path)
-  ▼
-repomgr.CreateEncryptedRepo
-  │  build *Repo with IsEncrypted=true + enc fields
-  │  commitmgr.NewCommit(...) ; RepoToCommit(repo, commit)  ← already exists
-  │  commitmgr.Save(commit)
-  │  INSERT INTO Repo / Branch / RepoHead / RepoOwner
-  │  INSERT INTO RepoInfo (..., is_encrypted=1, ...)
-  ▼
-repoID returned
+400  Repo is encrypted. Please provide password to view it.
 ```
 
-No schema changes: `RepoInfo.is_encrypted` and the commit-JSON fields are
-already sufficient, because `SeaDriveDownloadInfoHandler`
-(`fileserver/api/seadrive.go:216`) already reads `magic`/`random_key`/`salt`
-/`enc_version` off the `*Repo` returned by `repomgr.Get`, and `Get`
-reconstitutes them from the commit via `CommitToRepo`
-(`fileserver/repomgr/repomgr.go:140`).
+That message is misleading — no endpoint accepts one, and none will. The honest
+behaviour is to refuse explicitly, with a message that says the format is
+unsupported, and to mark such libraries in the listing so a client can grey them
+out rather than discovering it per file. Small change; not made yet.
 
-## Changes, file by file
+## Before implementing
 
-### 1. New file: `fileserver/repomgr/enc.go`
-
-Self-contained helpers for generating the encryption parameters for a new
-repo. Keeping them in `repomgr` (not `fileserver/crypt.go`, which is inside
-`package silod`) avoids an import cycle — the TUI/client cannot import
-`silod` but can import `repomgr` or a new leaf package.
-
-Actually, to keep both the server and the TUI honest about the wire format,
-put these in a **new leaf package** `internal/seafilecrypt` that both the
-server (`repomgr`) and the TUI (`internal/tui`) can import. This is the
-single source of truth for the magic/random_key/salt derivation. It must have
-zero non-stdlib deps beyond `crypto/*` and `golang.org/x/crypto/pbkdf2` (add
-to `go.mod` if not already present).
-
-New file: `internal/seafilecrypt/seafilecrypt.go`
-
-```go
-package seafilecrypt
-
-// EncParams is the set of values a newly-created encrypted repo must publish
-// to clients (server DB / commit JSON / /api2 download-info response).
-// All string fields are lowercase hex.
-type EncParams struct {
-    EncVersion int    // 4
-    Salt       string // 64 hex chars (32 bytes)
-    Magic      string // 64 hex chars (32 bytes)
-    RandomKey  string // 96 hex chars (48 bytes, encrypted 32-byte file key)
-}
-
-// DeriveV4 runs PBKDF2-HMAC-SHA256(in, salt, 1000, 32) and returns the 32-byte
-// key plus a 16-byte IV derived by rerunning PBKDF2 over the key itself with
-// 10 iterations. Matches seafile_derive_key() for enc_version 3/4.
-func deriveV4(in []byte, salt []byte) (key [32]byte, iv [16]byte) { ... }
-
-// GenerateV4 creates a fresh set of EncParams for a repo with the given
-// (already-allocated) repoID and user password. The repoID is needed because
-// upstream's magic is PBKDF2(repo_id+password, salt), not PBKDF2(password, salt).
-func GenerateV4(repoID, password string) (*EncParams, error) {
-    // 1. salt_bin = 32 random bytes
-    // 2. key/iv   = deriveV4([]byte(password), salt_bin)
-    // 3. fileKey  = 32 random bytes              ← the "real" file key
-    // 4. random_key = AES-128-ECB encrypt(fileKey, key[:16]) + PKCS#7 pad  → 48 bytes
-    // 5. magicKey, _ = deriveV4([]byte(repoID+password), salt_bin)
-    // 6. magic = hex(magicKey[:])
-    // return EncParams{4, hex(salt_bin), magic, hex(random_key)}
-}
-```
-
-Reference implementations to borrow from:
-- `common/seafile-crypt.c:40-89` — `seafile_derive_key`
-- `common/seafile-crypt.c:91-105` — `seafile_generate_repo_salt`
-- `common/seafile-crypt.c:107-137` — `seafile_generate_random_key`
-- `common/seafile-crypt.c:139-158` — `seafile_generate_magic`
-- `fileserver/crypt.go:15-40` — Go AES-ECB PKCS#7 encrypt (reuse the algorithm,
-  not the `seafileCrypt` type, which is in `package silod`)
-
-Unit tests (`internal/seafilecrypt/seafilecrypt_test.go`) should include a
-**known-answer vector** captured from a real upstream Seafile run against a
-fixed salt + password + repo_id. This is the cheapest way to prove we haven't
-silently diverged from the wire format. One test per primitive
-(`deriveV4`, `GenerateV4`) and one round-trip test that decrypts the generated
-`random_key` back to the original 32 random bytes using
-`fileserver/crypt.go`'s existing decrypt path.
-
-### 2. `fileserver/repomgr/repomgr.go`
-
-Add, next to the existing `CreateRepo` at line 879:
-
-```go
-// CreateEncryptedRepo creates a new encrypted repository with the given
-// pre-computed encryption parameters. The caller (API handler) is responsible
-// for generating repoID, salt, magic, and random_key — typically by calling
-// internal/seafilecrypt.GenerateV4. The password itself is never sent to or
-// stored by the server.
-func CreateEncryptedRepo(repoID, name, owner string, enc *EncFields) error { ... }
-```
-
-where `EncFields` is a small struct `{EncVersion int; Magic, RandomKey, Salt string}`
-defined in the same file. Implementation mirrors `CreateRepo` but:
-
-1. Builds `*Repo` with `IsEncrypted=true`, `EncVersion=enc.EncVersion`,
-   `Magic/RandomKey/Salt` set, `Version=1`.
-2. Calls `commitmgr.NewCommit(...)` then `RepoToCommit(repo, commit)` (the
-   existing function at `repomgr.go:173` already does the right thing for
-   v4 because of the `EncVersion == 4` branch at lines 187–190 — **verify
-   that this branch also sets `commit.Encrypted = "true"`, which it does
-   via the earlier `commit.Encrypted = "true"` at the top of the `if
-   repo.IsEncrypted {` block**).
-3. `commitmgr.Save(commit)`.
-4. Inserts `Repo`, `Branch`, `RepoHead`, `RepoOwner` rows (identical to
-   `CreateRepo`).
-5. Inserts `RepoInfo` with `is_encrypted=1` (the one line that differs from
-   `CreateRepo` at `repomgr.go:912`).
-
-Accepting a caller-supplied `repoID` is necessary because `magic` binds the
-password to that exact UUID — the UUID must exist before the crypto runs.
-`CreateRepo` should be refactored to accept an optional repoID too (or a
-small private helper `createRepoWithID` can back both). Prefer the helper to
-avoid changing `CreateRepo`'s public signature.
-
-### 3. `fileserver/api/api.go`
-
-Extend `createRepoRequest` (currently at line 204) to include the encryption
-fields as **optional** strings:
-
-```go
-type createRepoRequest struct {
-    Name       string `json:"name"`
-    RepoID     string `json:"repo_id,omitempty"`      // required iff encrypted
-    EncVersion int    `json:"enc_version,omitempty"`
-    Magic      string `json:"magic,omitempty"`
-    RandomKey  string `json:"random_key,omitempty"`
-    Salt       string `json:"salt,omitempty"`
-}
-```
-
-In `CreateRepoHandler` (line 213): if `req.EncVersion != 0` (or if any of
-`magic/random_key/salt` are non-empty), validate that:
-
-- `req.EncVersion == 4` — only v4 accepted for now; reject others with 400.
-- `req.RepoID` is a valid UUID.
-- `req.Magic` is 64 hex chars, `req.Salt` is 64 hex chars,
-  `req.RandomKey` is 96 hex chars.
-- `req.Name != ""`.
-
-On success call `repomgr.CreateEncryptedRepo(...)`; on the unencrypted path
-fall through to the existing `repomgr.CreateRepo(req.Name, user)`. Response
-shape is unchanged — still `createRepoResponse{ID, Name}`, and the client
-already knows the repo ID it generated.
-
-### 4. `client/client.go`
-
-Add a second entry point next to `CreateRepo` at line 178:
-
-```go
-func (c *APIClient) CreateEncryptedRepo(
-    repoID, name string, enc seafilecrypt.EncParams,
-) (*Repo, error) {
-    body := map[string]any{
-        "name":        name,
-        "repo_id":     repoID,
-        "enc_version": enc.EncVersion,
-        "magic":       enc.Magic,
-        "random_key":  enc.RandomKey,
-        "salt":        enc.Salt,
-    }
-    var repo Repo
-    err := c.doRequest("POST", "/api/silo/v1/repos", body, &repo)
-    ...
-}
-```
-
-`CreateRepo` (unencrypted) stays as-is for backwards compatibility with
-everything else that calls it.
-
-### 5. `internal/tui/tui.go`
-
-Changes, all localised to the `viewNewRepo` screen (keybinding at line 308,
-update at 390–423, render at 425–435). The login view's two-field pattern is
-the template to copy — it already toggles focus between `emailInput` and
-`passwordInput` (an `EchoMode = textinput.EchoPassword` field) with Tab/Shift-
-Tab, and it's the simplest existing example.
-
-Model additions (around lines 66–115):
-
-```go
-newRepoPasswordInput textinput.Model   // masked
-newRepoEncrypted     bool              // toggle with 'e' or space
-newRepoFocus         int               // 0=name, 1=password
-```
-
-`initialModel()` (around line 128) creates the masked input exactly like the
-login password.
-
-`updateNewRepo`:
-
-- `tab` / `shift+tab`: toggle `newRepoFocus` between 0 and 1, but only when
-  `newRepoEncrypted` is true (otherwise there's no password field to focus).
-- `ctrl+e` (or another unused key — **not** `e`, which users will type into
-  the name field): toggle `newRepoEncrypted`. When toggled on, focus the
-  password input; when off, clear and unfocus it.
-- `enter`:
-  - If `!newRepoEncrypted`: unchanged — call `m.api.CreateRepo(name)`.
-  - If `newRepoEncrypted`:
-    1. Validate name and password are non-empty.
-    2. `repoID := uuid.New().String()`
-    3. `enc, err := seafilecrypt.GenerateV4(repoID, password)` — local, fast.
-    4. Return a `tea.Cmd` that calls
-       `m.api.CreateEncryptedRepo(repoID, name, *enc)`.
-    5. Wipe the password input immediately after kicking off the command so
-       it doesn't linger in the model beyond the time it takes to derive the
-       params. (The password never touches the network.)
-
-Reuse the existing `repoCreatedMsg` (line 49) for the completion path. Reuse
-the existing `errorStyle` / `successStyle` / `m.message` pattern for
-feedback.
-
-`renderNewRepo`: show "Create Library", the name input, a line
-`[ ] encrypted  (ctrl+e to toggle)` / `[x] encrypted`, and — when encrypted is
-on — the masked password input below. Help text becomes
-`enter: create  tab: switch field  ctrl+e: toggle encryption  esc: cancel`.
-
-After a successful encrypted create, the TUI returns to the repo list the
-same way it does today. The new repo appears with the existing
-`[encrypted]` dim label (already handled at `tui.go:372`). The TUI
-**cannot** open/browse it — attempting to press `enter` on it should show a
-clear error message "encrypted libraries can only be synced by a desktop
-client" rather than failing somewhere deeper. Check `updateRepos`' enter
-handler to add this guard.
-
-## Critical files
-
-- `internal/seafilecrypt/seafilecrypt.go` (new) + test
-- `fileserver/repomgr/repomgr.go` — add `CreateEncryptedRepo`, reuse `RepoToCommit`
-- `fileserver/api/api.go` — extend `createRepoRequest` + `CreateRepoHandler`
-- `client/client.go` — add `CreateEncryptedRepo`
-- `internal/tui/tui.go` — new input, focus toggle, encryption toggle, enter handler, browse guard
-
-Reference-only (do not edit, but consult):
-- `fileserver/commitmgr/commitmgr.go:19-46` — `Commit` struct (encryption fields)
-- `fileserver/repomgr/repomgr.go:140-199` — `CommitToRepo` / `RepoToCommit` (already enc-aware)
-- `fileserver/crypt.go:15-68` — existing v3/v4 ECB encrypt/decrypt (source of the round-trip test vector)
-- `fileserver/api/seadrive.go:195-259` — `SeaDriveDownloadInfoHandler` (already returns the enc fields, no change needed)
-- `server/common/seafile-crypt.c:40-158` — authoritative C implementation
-
-## Verification
-
-### Unit level
-
-1. `go test ./internal/seafilecrypt/...` — PBKDF2 + AES-ECB known-answer
-   vectors and a round-trip test that takes the output of `GenerateV4` and
-   decrypts `random_key` back to the original file key using the existing
-   `fileserver/crypt.go` decrypt (version=4).
-2. `go test ./fileserver/repomgr/...` — a test that calls
-   `CreateEncryptedRepo`, then `repomgr.Get(repoID)`, and asserts
-   `IsEncrypted`, `EncVersion==4`, and non-empty `Magic`/`RandomKey`/`Salt`
-   match what went in.
-3. `go test ./fileserver/api/...` — a handler test that POSTs a valid
-   encrypted-create request and one that POSTs `enc_version=2` (rejected).
-
-### End-to-end with a real Seafile desktop client
-
-This is the only test that actually proves wire compatibility. Steps, run
-against a scratch data dir:
-
-1. `go build ./cmd/silo && ./silo serve -F /tmp/silo-conf -d /tmp/silo-data`
-2. `./silo tui http://localhost:8082` → log in with
-   `SEAFILE_ADMIN_EMAIL/PASSWORD`.
-3. Press `n`, enter name `enc-test`, press `ctrl+e`, enter password
-   `hunter2`, press enter. Expect success and to see
-   `enc-test [encrypted]` in the list.
-4. In the DB: `sqlite3 /tmp/silo-data/seafile.db 'select repo_id, name, is_encrypted from RepoInfo where name="enc-test"'` —
-   expect `is_encrypted=1`.
-5. Inspect the initial commit on disk under
-   `/tmp/silo-data/storage/commits/<repo-id>/...` and confirm the JSON has
-   `"encrypted":"true","enc_version":4,"magic":"...","key":"...","salt":"..."`.
-6. Point an upstream **Seafile Desktop** client at `http://localhost:8082`,
-   log in as the same admin, sync the `enc-test` library, enter password
-   `hunter2` when prompted. Drop a file in the synced folder, wait for
-   upload, then confirm the block file under
-   `/tmp/silo-data/storage/blocks/` is ciphertext (not the plaintext).
-7. Stop the desktop client, delete its local cache, re-sync, re-enter the
-   password, and confirm the file comes back with correct contents — this
-   proves both the magic verification and the random_key unwrap work against
-   our generated parameters.
-8. Repeat step 6 with **SeaDrive** 3.0.21 as a second client to cover the
-   `/api2/` path.
-
-If step 6 fails at "wrong password", the bug is in either `magic` (double-
-check the `repo_id+password` concat) or the PBKDF2 parameters. If it fails at
-"cannot decrypt file", the bug is in the `random_key` wrap (double-check AES-
-128-ECB + PKCS#7 + the `key[:16]` slice).
-
-## Out of scope / follow-ups
-
-These are deliberately not in this plan — they are separate, smaller changes
-that can land later without blocking the creation path:
-
-- **`/api2/repos/{id}/set-password/` handler.** Required for *server-side*
-  features like web preview, thumbnails, and `parseCryptKey`
-  (`fileserver/fileop.go:223`) on encrypted repos. Sync itself does not
-  strictly need it, but some clients call it during the download flow —
-  worth adding as the next step so both clients light up cleanly.
-- **Password change.** `seaf_passwd_manager_set_passwd` in the C code does an
-  unwrap/rewrap of `random_key` with the new password; porting that is
-  straightforward once `set-password` exists.
-- **TUI browse of encrypted repos.** Would require keeping the derived file
-  key in memory in the TUI process and doing client-side block decryption
-  during `silo get`. Bigger change, not needed for this task.
-- **enc_version < 4 support.** We only create v4. Older repos imported from
-  an upstream Seafile install will still read correctly (the decrypt path in
-  `fileserver/crypt.go` already handles v2 and v3), but Silo will never
-  produce them.
+1. Settle names and metadata — Option A or B above. It decides whether
+   `entries/{path}` covers encrypted libraries or they need their own surface.
+2. Decide dedup: random per-file nonces, or convergent within a library.
+3. Decide where key material lives on the wire, and what a user's published
+   public key looks like as a resource.
+4. Delete `fileserver/keycache/`, `parseCryptKey`, and the `IsEncrypted`
+   branches in `serveFile` and `putEntryFile` — the server-side decryption path
+   is dead code that currently reads as a feature.

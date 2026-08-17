@@ -87,8 +87,10 @@ whole protocol. A re-run over a mostly-unchanged tree sends almost nothing.
   only. If tier 2 is built, add it there.
 - **Encrypted repos need the repo key.** `writeChunk` encrypts and then hashes
   (`fileop.go:2645`), so the block id is the SHA-1 of the ciphertext. Without
-  the key a client cannot compute matching ids. The TUI does not support
-  encrypted repos either; see the note in `future-features.md`.
+  the key a client cannot compute matching ids. Moot in practice: Silo cannot
+  create encrypted repos and will not support Seafile's format — see
+  `docs/encryption.md`. Worth noting that hashing *after* encrypting is the
+  right order and a constraint any future scheme keeps.
 - **Fixed chunking is weak against insertions.** Insert one byte at the front
   of a file and every subsequent boundary shifts, so nothing dedups. Fixed
   wins on unchanged and append-only files, loses on edits in the middle. This
