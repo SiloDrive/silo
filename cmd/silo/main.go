@@ -114,6 +114,7 @@ Usage:
   silo rm <repo-id> <path>
   silo mv <repo-id> <src> <dst>
   silo rename <repo-id> <path> <new-name>
+  silo changes <repo-id> <since-commit> [--json]
   silo version                    Print the build version
 
 Server environment:

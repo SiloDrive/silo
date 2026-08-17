@@ -57,6 +57,8 @@ func Run(serverURL, email, password string, args []string) error {
 		return cmdMv(c, rest)
 	case "rename":
 		return cmdRename(c, rest)
+	case "changes":
+		return cmdChanges(c, rest)
 	default:
 		return fmt.Errorf("unknown subcommand: %s", sub)
 	}
@@ -182,4 +184,28 @@ func cmdRename(c *client.APIClient, args []string) error {
 		return fmt.Errorf("usage: silo rename <repo-id> <path> <new-name>")
 	}
 	return c.RenameFile(args[0], args[1], args[2])
+}
+
+// cmdChanges exists mostly so the delta endpoint can be exercised by hand. A
+// sync client is the real consumer, but an endpoint no human can call is an
+// endpoint no human can debug.
+func cmdChanges(c *client.APIClient, args []string) error {
+	fs := newFlagSet("changes")
+	jsonOut := fs.Bool("json", false, "output as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) < 2 {
+		return fmt.Errorf("usage: silo changes [--json] <repo-id> <since-commit>")
+	}
+	resp, err := c.Changes(rest[0], rest[1])
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return printJSON(os.Stdout, resp)
+	}
+	printChangesText(os.Stdout, resp)
+	return nil
 }

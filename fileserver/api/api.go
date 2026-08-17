@@ -166,21 +166,36 @@ type repoInfo struct {
 	Name       string `json:"name"`
 	UpdateTime int64  `json:"update_time"`
 	Encrypted  bool   `json:"encrypted"`
+	// HeadCommitID is where the library is now. It is here because it is the
+	// anchor the changes endpoint needs, and listing libraries is the first
+	// thing a sync client does: without it a client's opening move is to
+	// enumerate a library with no way to name the state it just enumerated,
+	// so its first delta call has nothing to pass as `since`.
+	HeadCommitID string `json:"head_commit_id,omitempty"`
+}
+
+// repoSelect is shared by the owned and shared queries so the two cannot drift
+// into scanning different columns than they select. The join is LEFT because a
+// library with no branch row is broken but should still be listable — a client
+// that can see it can delete it.
+func repoSelect(alias string) string {
+	return "SELECT " + alias + ".repo_id, i.name, i.update_time, i.is_encrypted, b.commit_id "
 }
 
 func scanRepos(rows *sql.Rows) []repoInfo {
 	var repos []repoInfo
 	for rows.Next() {
 		var repo repoInfo
-		var name, isEncrypted sql.NullString
+		var name, isEncrypted, commitID sql.NullString
 		var updateTime sql.NullInt64
-		if err := rows.Scan(&repo.ID, &name, &updateTime, &isEncrypted); err != nil {
+		if err := rows.Scan(&repo.ID, &name, &updateTime, &isEncrypted, &commitID); err != nil {
 			log.Warnf("Failed to scan repo row: %v", err)
 			continue
 		}
 		repo.Name = name.String
 		repo.UpdateTime = updateTime.Int64
 		repo.Encrypted = isEncrypted.String == "1"
+		repo.HeadCommitID = commitID.String
 		repos = append(repos, repo)
 	}
 	return repos
@@ -192,8 +207,9 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	rows, err := seafileDB.QueryContext(ctx,
-		"SELECT o.repo_id, i.name, i.update_time, i.is_encrypted "+
+		repoSelect("o")+
 			"FROM RepoOwner o LEFT JOIN RepoInfo i ON o.repo_id = i.repo_id "+
+			"LEFT JOIN Branch b ON b.repo_id = o.repo_id AND b.name = 'master' "+
 			"WHERE o.owner_id = ?", user)
 	if err != nil {
 		log.Errorf("Failed to query repos: %v", err)
@@ -209,8 +225,9 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sharedRows, err := seafileDB.QueryContext(ctx,
-		"SELECT s.repo_id, i.name, i.update_time, i.is_encrypted "+
+		repoSelect("s")+
 			"FROM SharedRepo s LEFT JOIN RepoInfo i ON s.repo_id = i.repo_id "+
+			"LEFT JOIN Branch b ON b.repo_id = s.repo_id AND b.name = 'master' "+
 			"WHERE s.to_email = ?", user)
 	if err != nil {
 		log.Errorf("Failed to query shared repos: %v", err)

@@ -51,3 +51,21 @@ func printDirText(w io.Writer, entries []client.DirEntry) {
 		_, _ = fmt.Fprintf(w, "%s  %10s  %-16s  %s\n", kind, size, mtime, e.Name)
 	}
 }
+
+// printChangesText prints one change per line, with the anchor last so it is
+// still on screen after a long list — it is the one value the caller has to
+// keep for the next call.
+func printChangesText(w io.Writer, resp *client.ChangesResponse) {
+	for _, ch := range resp.Changes {
+		kind := "f"
+		if ch.IsDir {
+			kind = "d"
+		}
+		path := ch.Path
+		if ch.OldPath != "" {
+			path = ch.OldPath + " -> " + ch.Path
+		}
+		_, _ = fmt.Fprintf(w, "%-6s %s  %s\n", ch.Op, kind, path)
+	}
+	_, _ = fmt.Fprintf(w, "\nanchor: %s (%d change(s))\n", resp.Anchor, len(resp.Changes))
+}
