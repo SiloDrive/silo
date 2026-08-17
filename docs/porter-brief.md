@@ -40,6 +40,47 @@ credentials; do not mix them.
 
 Missing or bad token → **401**. No permission on the library → **403**.
 
+**The session token lasts 24 hours.** There is no refresh endpoint: on a 401,
+log in again with the stored credentials and retry the request once. Keep the
+password in the Keychain, not the token — the token is the short-lived thing.
+
+If several requests are in flight when it expires they will all 401 at once.
+Collapse that into one re-login rather than a stampede; `client/client.go` does
+it by recording which token a caller observed and only re-logging in if it has
+not already been replaced.
+
+## Server info and version
+
+```
+GET /api/silo/v1/server-info        (no auth)
+```
+```json
+{"version":"0.4.0"}
+```
+
+Check it at domain setup. **This surface changed materially in 0.4.0** — reads
+stopped redirecting, `PUT` started accepting file content — so a client built
+against this document talking to an older server will fail in confusing ways.
+Refuse to set up against a server older than 0.4.0 and say why, rather than
+discovering it one broken callback at a time.
+
+There is no capability list yet, only a version. If you would rather
+feature-detect than compare version strings, ask — it is a small addition and
+the argument for it is exactly the paragraph above.
+
+## Libraries
+
+```
+GET    /api/silo/v1/repos              list (see the delta endpoint for head_commit_id)
+POST   /api/silo/v1/repos              {"name":"..."} → the new library
+DELETE /api/silo/v1/repos/{repoid}     delete a library
+```
+
+The container app needs create and delete; the extension itself only enumerates.
+Deleting a library is not a `DELETE entries/` on its root — the root is not
+deletable (**400**), because removing a library is a different operation from
+emptying one.
+
 ## The entries endpoint
 
 ```
@@ -305,6 +346,47 @@ Identifiers never cross the wire: every request is `(repo_id, path)`, resolved
 client-side from `IdMap`. Silo's logs and Sentry traces therefore look like
 SeaDrive's, which makes SeaDrive a working reference for what correct traffic
 looks like.
+
+## Push invalidation
+
+Polling `/changes` is correct but latent. `WS /notification` tells you when a
+library moves, so you can call `/changes` immediately instead of on a timer.
+
+Getting subscribed takes two credentials you do not already have, because this
+endpoint predates the Silo lane and speaks the Seafile lane's auth:
+
+1. `POST /api/silo/v1/repos/{repoid}/sync-token` — **Bearer** → `{"token":…}`
+   A long-lived repo token. Mint one per library and keep it.
+2. `GET /repo/{repoid}/jwt-token` — header `Seafile-Repo-Token: <that token>`
+   → `{"jwt_token":…}`. Valid **72 hours**, and per library.
+3. Connect to `WS /notification` and send one frame:
+
+```json
+{"type":"subscribe","content":{"repos":[{"id":"<repo-id>","jwt_token":"<jwt>"}]}}
+```
+
+`"unsubscribe"` takes the same shape. Events come back in the same envelope:
+
+```json
+{"type":"repo-update","content":{"repo_id":"…","commit_id":"…"}}
+{"type":"jwt-expired","content":{…}}
+```
+
+`commit_id` is exactly the anchor `/changes` wants, so a `repo-update` translates
+directly into `GET /changes?since=<your last anchor>`. Do not treat the pushed
+`commit_id` as your new anchor without fetching — you may have missed events.
+
+On `jwt-expired`, re-mint at step 2 and re-subscribe. The 72-hour lifetime means
+this will happen to any long-running mount, so implement it before you ship
+rather than after the first mysterious silence.
+
+The server pings every **30 seconds** and hangs up if it has not seen a pong in
+**90**. Most WebSocket libraries answer pings automatically — confirm yours
+does, because the failure mode is a connection that looks alive and delivers
+nothing.
+
+If notifications are disabled server-side, step 2 returns **404**. Treat that as
+"fall back to polling", not as an error.
 
 ## Checking your work against the server
 

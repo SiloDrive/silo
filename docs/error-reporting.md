@@ -24,7 +24,7 @@ and says what the receiver made of them:
 
 ```
 Reporting to http://splat.example.com:3304/silo
-  environment production, release silo@v0.3.35
+  environment production, release silo@v0.4.0
 
   envelope     accepted (HTTP 200)
   envelope     accepted (HTTP 200)
