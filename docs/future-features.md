@@ -248,6 +248,43 @@ Track them here as they're discovered:
 - `/api2/repos/{id}/commits/` — richer commit metadata than `/history/`
 - Avatar endpoints (`/api2/avatars/…`) — cosmetic, clients tolerate 404
 
+## Credentials
+
+How passwords and tokens are stored today, why the token columns are the weak
+link rather than the password column, and what has to be issued before any
+per-request-authenticated protocol can work: [`auth.md`](auth.md).
+
+## Additional Protocol Frontends
+
+Separate question from the compat gaps above: not "what does a Seafile client
+expect", but "what *other* protocols could front the same store". WebDAV, S3,
+SFTP and friends, with the architectural constraints that rule each in or out,
+are surveyed in [`protocol-frontends.md`](protocol-frontends.md).
+
+## A Native Silo Client
+
+The CLI and TUI drive the management API one file at a time, which is not
+sync: `silo put` takes a single file, always uploads the whole thing, and has
+no way to ask the server what it already holds. Three tiers close that gap —
+recursive put, dedup-aware upload via `check-blocks`, and a full headless sync
+agent — in [`native-client.md`](native-client.md).
+
+The middle tier is the interesting one, and is much cheaper than it sounds:
+Silo chunks at fixed 8 MiB offsets rather than content-defined boundaries, so
+any client can compute the server's block ids with stdlib SHA-1 and a loop.
+
+## Compression
+
+zlib appears in exactly one package (`fsmgr`) and covers metadata only —
+blocks and commits are stored raw. Because an fs object's id is the SHA-1 of
+its *uncompressed* JSON, the compression format is not part of object
+identity, so it can be changed without rewriting a single id, and mixed
+formats can coexist by sniffing magic bytes on read.
+
+The larger prize is compressing blocks, which is possible for the same reason
+one level down, but pays nothing on media workloads. Measure first.
+Analysis in [`compression.md`](compression.md).
+
 ## Non-Goals
 
 Things we're explicitly *not* going to build, to keep scope honest:
