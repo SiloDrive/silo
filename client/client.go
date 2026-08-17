@@ -97,6 +97,67 @@ func (c *APIClient) doRequest(method, path string, body, result interface{}) err
 	return nil
 }
 
+// doStream performs an authenticated request whose body is streamed rather than
+// buffered, and — like doRequest — re-logs in and retries once on a 401.
+//
+// newBody is a factory rather than a reader because the retry has to send the
+// body again, and a reader that has already been consumed cannot. It returns
+// the length too, so the request can declare Content-Length instead of falling
+// back to chunked encoding; the server checks the declared length against its
+// upload limit before reading anything.
+//
+// The response body is left open for the caller to stream from.
+func (c *APIClient) doStream(method, path, contentType string, newBody func() (io.ReadCloser, int64, error)) (*http.Response, error) {
+	send := func(token string) (*http.Response, error) {
+		var (
+			body   io.ReadCloser
+			length int64
+		)
+		if newBody != nil {
+			b, n, err := newBody()
+			if err != nil {
+				return nil, err
+			}
+			body, length = b, n
+		}
+
+		req, err := http.NewRequest(method, c.BaseURL+path, body)
+		if err != nil {
+			if body != nil {
+				_ = body.Close()
+			}
+			return nil, fmt.Errorf("failed to create request: %v", err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		if newBody != nil {
+			req.ContentLength = length
+		}
+		return http.DefaultClient.Do(req)
+	}
+
+	tokenUsed := c.getToken()
+	resp, err := send(tokenUsed)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %v", err)
+	}
+	if resp.StatusCode == http.StatusUnauthorized && c.hasCreds() {
+		_ = resp.Body.Close()
+		if err := c.reloginIfStale(tokenUsed); err != nil {
+			return nil, fmt.Errorf("re-login failed: %v", err)
+		}
+		resp, err = send(c.getToken())
+		if err != nil {
+			return nil, fmt.Errorf("request failed: %v", err)
+		}
+	}
+	return resp, nil
+}
+
 func (c *APIClient) sendRequest(method, path string, bodyBytes []byte, token string) (*http.Response, error) {
 	var bodyReader io.Reader
 	if bodyBytes != nil {
@@ -285,15 +346,9 @@ func (c *APIClient) Changes(repoID, since string) (*ChangesResponse, error) {
 // took a second unauthenticated request — see docs/capability-urls.md for why
 // that shape existed and why this lane does not need it.
 func (c *APIClient) DownloadFile(repoID, repoPath, localPath string) error {
-	req, err := http.NewRequest("GET", c.BaseURL+entriesURL(repoID, repoPath), nil)
+	resp, err := c.doStream("GET", entriesURL(repoID, repoPath), "", nil)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.getToken())
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %v", err)
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -322,33 +377,26 @@ func (c *APIClient) DownloadFile(repoID, repoPath, localPath string) error {
 // header either. See docs/capability-urls.md.
 //
 // The file is streamed from disk rather than buffered, so uploading something
-// large does not mean holding it in memory. ContentLength is set explicitly
-// because a *os.File body would otherwise be sent chunked, and the server
-// checks the declared length against its upload limit before reading anything.
+// large does not mean holding it in memory. It is opened per attempt, so a
+// retry after a token refresh sends the file from the beginning rather than
+// from wherever the first attempt stopped.
 func (c *APIClient) UploadFile(repoID, parentDir, localPath string) error {
-	file, err := os.Open(localPath)
-	if err != nil {
-		return fmt.Errorf("failed to open file: %v", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("failed to stat file: %v", err)
-	}
-
 	remote := path.Join("/", parentDir, filepath.Base(localPath))
-	req, err := http.NewRequest("PUT", c.BaseURL+entriesURL(repoID, remote), file)
+	resp, err := c.doStream("PUT", entriesURL(repoID, remote), "application/octet-stream",
+		func() (io.ReadCloser, int64, error) {
+			file, err := os.Open(localPath)
+			if err != nil {
+				return nil, 0, fmt.Errorf("failed to open file: %v", err)
+			}
+			info, err := file.Stat()
+			if err != nil {
+				_ = file.Close()
+				return nil, 0, fmt.Errorf("failed to stat file: %v", err)
+			}
+			return file, info.Size(), nil
+		})
 	if err != nil {
-		return fmt.Errorf("failed to create upload request: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.getToken())
-	req.Header.Set("Content-Type", "application/octet-stream")
-	req.ContentLength = info.Size()
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("upload failed: %v", err)
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 

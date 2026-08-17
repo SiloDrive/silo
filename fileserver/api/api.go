@@ -369,6 +369,32 @@ func ListDirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	writeJSON(w, http.StatusOK, dirEntries(dir))
+}
+
+// ListDirByID writes the listing of a directory the caller has already resolved
+// and authorized.
+//
+// It exists so a caller holding the directory's id does not have to go back
+// through ListDirHandler, which would re-check the permission, re-load the
+// repository and walk the path from the root a second time. None of those is
+// cached — CheckPerm is two or more queries, repomgr.Get is a query plus a
+// commit read, and every directory object on the way down is a fresh read and
+// inflate — so on the entries surface, which resolves the path anyway to answer
+// conditional requests, the second walk was pure duplication.
+//
+// The listing itself stays in one place: both entry points end at dirEntries.
+func ListDirByID(w http.ResponseWriter, storeID, dirID string) {
+	dir, err := fsmgr.GetSeafdir(storeID, dirID)
+	if err != nil {
+		log.Errorf("Failed to get directory object %s in store %s: %v", dirID, storeID, err)
+		http.Error(w, "Directory not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, dirEntries(dir))
+}
+
+func dirEntries(dir *fsmgr.SeafDir) []dirEntry {
 	entries := make([]dirEntry, 0, len(dir.Entries))
 	for _, e := range dir.Entries {
 		entryType := "file"
@@ -384,6 +410,5 @@ func ListDirHandler(w http.ResponseWriter, r *http.Request) {
 			Modifier: e.Modifier,
 		})
 	}
-
-	writeJSON(w, http.StatusOK, entries)
+	return entries
 }

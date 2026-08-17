@@ -35,26 +35,16 @@ func SelfTest(version string, out io.Writer) error {
 	}
 	rel := release(version)
 
-	rec := &recordingTransport{base: http.DefaultTransport}
-	// Deliberately the same options as Init, save for three: the recorder, so
-	// the status code survives; full trace sampling, so the transaction is
-	// certain to be sent rather than probably; and a synchronous flush at the
-	// end. A test that exercised a different configuration from the server
-	// would answer a question nobody asked.
-	err := sentry.Init(sentry.ClientOptions{
-		Dsn:                    dsn,
-		Environment:            environment,
-		Release:                rel,
-		ServerName:             serverName(),
-		AttachStacktrace:       true,
-		SendDefaultPII:         true,
-		EnableTracing:          true,
-		TracesSampleRate:       1.0,
-		DisableTelemetryBuffer: true,
-		Debug:                  envBool("SILO_SENTRY_DEBUG"),
-		HTTPClient:             &http.Client{Transport: rec, Timeout: 15 * time.Second},
-	})
-	if err != nil {
+	rec := &recordingTransport{}
+	// The server's own options, with only what this test has to change: a
+	// sample rate of 1, so the transaction is certainly sent rather than
+	// probably, and the recorder, so the status code survives to be reported.
+	// Sharing the options is the point — a test that exercised a different
+	// configuration from the server would answer a question nobody asked.
+	opts := clientOptions(dsn, environment, rel, 1.0)
+	opts.HTTPClient = &http.Client{Transport: rec, Timeout: 15 * time.Second}
+
+	if err := sentry.Init(opts); err != nil {
 		return fmt.Errorf("the DSN was not usable: %w", err)
 	}
 	defer sentry.Flush(flushTimeout)
@@ -94,18 +84,18 @@ func report(out io.Writer, attempts []attempt) error {
 		switch {
 		case a.err != nil:
 			failures++
-			_, _ = fmt.Fprintf(out, "  %-12s could not reach the server: %v\n", a.kind, unwrapURLError(a.err))
+			_, _ = fmt.Fprintf(out, "  envelope     could not reach the server: %v\n", unwrapURLError(a.err))
 		case a.status >= 200 && a.status < 300:
-			_, _ = fmt.Fprintf(out, "  %-12s accepted (HTTP %d)\n", a.kind, a.status)
+			_, _ = fmt.Fprintf(out, "  envelope     accepted (HTTP %d)\n", a.status)
 		case a.status == http.StatusUnauthorized || a.status == http.StatusForbidden:
 			failures++
-			_, _ = fmt.Fprintf(out, "  %-12s rejected (HTTP %d): the key in the DSN is not the one this project expects\n", a.kind, a.status)
+			_, _ = fmt.Fprintf(out, "  envelope     rejected (HTTP %d): the key in the DSN is not the one this project expects\n", a.status)
 		case a.status == http.StatusNotFound:
 			failures++
-			_, _ = fmt.Fprintf(out, "  %-12s rejected (HTTP %d): no project by that name — check the last path segment of the DSN\n", a.kind, a.status)
+			_, _ = fmt.Fprintf(out, "  envelope     rejected (HTTP %d): no project by that name — check the last path segment of the DSN\n", a.status)
 		default:
 			failures++
-			_, _ = fmt.Fprintf(out, "  %-12s rejected (HTTP %d)\n", a.kind, a.status)
+			_, _ = fmt.Fprintf(out, "  envelope     rejected (HTTP %d)\n", a.status)
 		}
 	}
 
@@ -119,7 +109,6 @@ func report(out io.Writer, attempts []attempt) error {
 
 // attempt is one delivery, kept for the verdict.
 type attempt struct {
-	kind   string // what was being sent, as far as the URL reveals
 	status int
 	err    error
 }
@@ -128,16 +117,14 @@ type attempt struct {
 // delivery failures only when Debug is on, and then only to stderr as prose;
 // this is the same information in a form the command can act on.
 type recordingTransport struct {
-	base http.RoundTripper
-
 	mu   sync.Mutex
 	seen []attempt
 }
 
 func (t *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	resp, err := t.base.RoundTrip(r)
+	resp, err := http.DefaultTransport.RoundTrip(r)
 
-	a := attempt{kind: "envelope", err: err}
+	a := attempt{err: err}
 	if resp != nil {
 		a.status = resp.StatusCode
 	}

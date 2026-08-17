@@ -63,16 +63,17 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserEmail(r)
 	repoID := mux.Vars(r)["repoid"]
 
-	if perm := share.CheckPerm(repoID, user); perm == "" {
-		http.Error(w, "Permission denied", http.StatusForbidden)
-		return
-	}
-
 	// Validated before touching the database: a missing parameter is the
-	// caller's mistake either way, and answering it costs nothing.
+	// caller's mistake either way, and answering it costs nothing, whereas the
+	// permission check below is several queries.
 	since := r.URL.Query().Get("since")
 	if since == "" {
 		http.Error(w, "since is required: pass the anchor from a previous call, or enumerate instead", http.StatusBadRequest)
+		return
+	}
+
+	if perm := share.CheckPerm(repoID, user); perm == "" {
+		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
 

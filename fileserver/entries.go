@@ -96,13 +96,34 @@ func entryPath(raw string) string {
 	return raw
 }
 
+// entryRepo checks permission and loads the repository, answering 403 or 404
+// itself and returning nil when it has. write asks for "rw"; otherwise any
+// permission will do, since reading is allowed to anyone who can see the
+// library at all.
+//
+// Both lookups are uncached — CheckPerm is two or more queries and repomgr.Get
+// is a query plus a commit read — so the result is passed down rather than
+// re-derived by each function that needs it.
+func entryRepo(w http.ResponseWriter, repoID, user string, write bool) *repomgr.Repo {
+	perm := share.CheckPerm(repoID, user)
+	if perm == "" || (write && perm != "rw") {
+		http.Error(w, "Permission denied", http.StatusForbidden)
+		return nil
+	}
+	repo := repomgr.Get(repoID)
+	if repo == nil {
+		http.Error(w, "Repo not found", http.StatusNotFound)
+		return nil
+	}
+	return repo
+}
+
 // resolved is what a path points at right now: enough to answer a conditional
 // request without reading any content.
 type resolved struct {
 	id    string
 	isDir bool
 	mtime int64
-	size  int64
 }
 
 // resolve looks up a path in the current head tree. The root has no dirent of
@@ -120,7 +141,6 @@ func resolve(repo *repomgr.Repo, path string) (*resolved, error) {
 		id:    dent.ID,
 		isDir: fsmgr.IsDir(dent.Mode),
 		mtime: dent.Mtime,
-		size:  dent.Size,
 	}, nil
 }
 
@@ -136,16 +156,8 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 	repoID := vars["repoid"]
 	path := entryPath(vars["path"])
 
-	// Read-only access is enough here, unlike the mutating paths which
-	// require "rw", so the permission check is spelled out rather than
-	// borrowed from loadRepoAndCommit.
-	if perm := share.CheckPerm(repoID, user); perm == "" {
-		http.Error(w, "Permission denied", http.StatusForbidden)
-		return
-	}
-	repo := repomgr.Get(repoID)
+	repo := entryRepo(w, repoID, user, false)
 	if repo == nil {
-		http.Error(w, "Repo not found", http.StatusNotFound)
 		return
 	}
 
@@ -165,12 +177,11 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delegated by rewriting the query the older handler reads. It re-checks
-	// the permission and reloads the repo; that is a little wasted work in
-	// exchange for there being exactly one implementation of the listing.
+	// Both branches take the id resolved above rather than the path, so neither
+	// re-walks the tree from the root — the listing and the file body are read
+	// straight from the object the ETag was just computed from.
 	if entry.isDir {
-		setQuery(r, url.Values{"path": {path}})
-		api.ListDirHandler(w, r)
+		api.ListDirByID(w, repo.StoreID, entry.id)
 		return
 	}
 	serveFile(w, r, repo, entry.id, upath.Base(path), user)
@@ -235,7 +246,7 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !preconditionsHold(w, r, vars["repoid"], path) {
+	if !checkPreconditions(w, r, vars["repoid"], middleware.GetUserEmail(r), path) {
 		return
 	}
 	setQuery(r, url.Values{"path": {path}})
@@ -262,17 +273,26 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 // On the read path If-None-Match means "skip the body if unchanged" and yields
 // 304. Here it means "fail if it exists". Same header, different question,
 // because the method is different — that is what RFC 9110 specifies.
-func preconditionsHold(w http.ResponseWriter, r *http.Request, repoID, path string) bool {
+// checkPreconditions is the form for handlers that have not already loaded the
+// repository. It loads one only when a precondition header is actually present,
+// so an unconditional write costs nothing extra — the delegate it is about to
+// call does its own permission check and load anyway.
+func checkPreconditions(w http.ResponseWriter, r *http.Request, repoID, user, path string) bool {
+	if r.Header.Get("If-Match") == "" && r.Header.Get("If-None-Match") == "" {
+		return true
+	}
+	repo := entryRepo(w, repoID, user, true)
+	if repo == nil {
+		return false
+	}
+	return preconditionsHold(w, r, repo, path)
+}
+
+func preconditionsHold(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path string) bool {
 	ifMatch := r.Header.Get("If-Match")
 	ifNoneMatch := r.Header.Get("If-None-Match")
 	if ifMatch == "" && ifNoneMatch == "" {
 		return true
-	}
-
-	repo := repomgr.Get(repoID)
-	if repo == nil {
-		http.Error(w, "Repo not found", http.StatusNotFound)
-		return false
 	}
 
 	// An empty tag means the path holds nothing right now. That is a state a
@@ -325,20 +345,14 @@ func preconditionResult(etag, ifMatch, ifNoneMatch string) bool {
 func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 	user := middleware.GetUserEmail(r)
 
-	// Writing needs "rw"; the read path is content with any permission.
-	if share.CheckPerm(repoID, user) != "rw" {
-		http.Error(w, "Permission denied", http.StatusForbidden)
-		return
-	}
-	repo := repomgr.Get(repoID)
+	repo := entryRepo(w, repoID, user, true)
 	if repo == nil {
-		http.Error(w, "Repo not found", http.StatusNotFound)
 		return
 	}
 
 	// Checked before the body is spooled: a doomed upload should be refused
 	// before it is transferred, not after.
-	if !preconditionsHold(w, r, repoID, path) {
+	if !preconditionsHold(w, r, repo, path) {
 		return
 	}
 
@@ -359,12 +373,10 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 		}
 	}
 
-	tmpPath, size, err := spoolBody(w, r, fileName)
-	if err != nil {
-		return // spoolBody has answered
-	}
-	defer func() { _ = os.Remove(tmpPath) }()
-
+	// Resolved before the body is transferred: this is an in-memory key lookup
+	// that can reject the request outright, and spooling gigabytes to disk only
+	// to discover the library is locked is the case the ordering exists to
+	// avoid.
 	var cryptKey *seafileCrypt
 	if repo.IsEncrypted {
 		key, appErr := parseCryptKey(w, repoID, user, repo.EncVersion)
@@ -374,6 +386,12 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 		}
 		cryptKey = key
 	}
+
+	tmpPath, size, err := spoolBody(w, r, fileName)
+	if err != nil {
+		return // spoolBody has answered
+	}
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	// Read before indexing, so a GC that starts mid-upload is detected as a
 	// conflict rather than racing the blocks this is about to write.
@@ -485,7 +503,7 @@ func deleteEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	// If-Match on a delete means "only if this is still what I think it is",
 	// which is how a client avoids deleting an edit it never saw.
-	if !preconditionsHold(w, r, vars["repoid"], path) {
+	if !checkPreconditions(w, r, vars["repoid"], middleware.GetUserEmail(r), path) {
 		return
 	}
 	setQuery(r, url.Values{"path": {path}})
@@ -502,8 +520,11 @@ func postEntry(w http.ResponseWriter, r *http.Request) {
 		Op string `json:"op"`
 		To string `json:"to"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
-		http.Error(w, `Expected a JSON body such as {"op":"move","to":"/new/path"}`, http.StatusBadRequest)
+	if appErr := decodeLimitedJSON(w, r, 64<<10, &body); appErr != nil {
+		if appErr.Code == http.StatusBadRequest {
+			appErr.Message = `Expected a JSON body such as {"op":"move","to":"/new/path"}`
+		}
+		http.Error(w, appErr.Message, appErr.Code)
 		return
 	}
 	if body.Op != "move" {
@@ -522,7 +543,7 @@ func postEntry(w http.ResponseWriter, r *http.Request) {
 
 	// The precondition is about the source — what is being moved — because that
 	// is the thing the caller looked at before deciding to move it.
-	if !preconditionsHold(w, r, vars["repoid"], path) {
+	if !checkPreconditions(w, r, vars["repoid"], middleware.GetUserEmail(r), path) {
 		return
 	}
 

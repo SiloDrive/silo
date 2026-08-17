@@ -78,33 +78,7 @@ func Init(component, version string) func() {
 		environment = "production"
 	}
 
-	err := sentry.Init(sentry.ClientOptions{
-		Dsn:              dsn,
-		Environment:      environment,
-		Release:          rel,
-		ServerName:       serverName(),
-		AttachStacktrace: true,
-		// A Silo request carries the account behind it in a bearer token and
-		// the library behind it in the path, and the whole point of sending
-		// any of this is to be able to say whose sync broke. Bodies are a
-		// different matter: they are file contents, and the SDK's default of
-		// never reading them is what keeps a crash report from turning into a
-		// copy of someone's document.
-		SendDefaultPII: true,
-		EnableTracing:  rate > 0,
-		TracesSampler:  tracesSampler(rate),
-		// sentry-go 0.48's telemetry buffer can lose an event that Flush has
-		// already reported as sent — measurably, around one in two hundred,
-		// and more than that when the flush follows the capture closely. The
-		// flush that follows a capture closely is the one after log.Fatal, on
-		// the way out of the process, which is exactly the event worth having.
-		// The older transport path has no such race in the same test, so take
-		// it: nothing here batches logs or metrics, which is what the buffer
-		// exists to do.
-		DisableTelemetryBuffer: true,
-		Debug:                  envBool("SILO_SENTRY_DEBUG"),
-	})
-	if err != nil {
+	if err := sentry.Init(clientOptions(dsn, environment, rel, rate)); err != nil {
 		// A bad DSN must not stop the server: reporting is a convenience, and
 		// refusing to start because the error tracker is misconfigured would
 		// make the monitoring a bigger outage than anything it monitors.
@@ -245,6 +219,42 @@ func hubFor(ctx context.Context) *sentry.Hub {
 }
 
 // tracesSampler decides which requests are worth timing.
+// clientOptions is the one description of how this process talks to Sentry.
+//
+// It is shared with SelfTest rather than copied there, because a self-test that
+// exercised a different configuration from the server would answer a question
+// nobody asked — and a comment promising the two stay in step cannot enforce
+// it, while a shared function can. SelfTest overrides only the fields it needs
+// to name.
+func clientOptions(dsn, environment, release string, rate float64) sentry.ClientOptions {
+	return sentry.ClientOptions{
+		Dsn:              dsn,
+		Environment:      environment,
+		Release:          release,
+		ServerName:       serverName(),
+		AttachStacktrace: true,
+		// A Silo request carries the account behind it in a bearer token and
+		// the library behind it in the path, and the whole point of sending
+		// any of this is to be able to say whose sync broke. Bodies are a
+		// different matter: they are file contents, and the SDK's default of
+		// never reading them is what keeps a crash report from turning into a
+		// copy of someone's document.
+		SendDefaultPII: true,
+		EnableTracing:  rate > 0,
+		TracesSampler:  tracesSampler(rate),
+		// sentry-go 0.48's telemetry buffer can lose an event that Flush has
+		// already reported as sent — measurably, around one in two hundred,
+		// and more than that when the flush follows the capture closely. The
+		// flush that follows a capture closely is the one after log.Fatal, on
+		// the way out of the process, which is exactly the event worth having.
+		// The older transport path has no such race in the same test, so take
+		// it: nothing here batches logs or metrics, which is what the buffer
+		// exists to do.
+		DisableTelemetryBuffer: true,
+		Debug:                  envBool("SILO_SENTRY_DEBUG"),
+	}
+}
+
 func tracesSampler(rate float64) sentry.TracesSampler {
 	return func(ctx sentry.SamplingContext) float64 {
 		if ctx.Span != nil && untraced(ctx.Span.Name) {
@@ -320,7 +330,9 @@ func (*logrusHook) Fire(entry *log.Entry) error {
 		event.SetException(err, unwrapDepth)
 	}
 
-	stack := callerStacktrace()
+	// Trimmed so the innermost frame is the code that actually logged, rather
+	// than the hook and logrus frames that carried the message here.
+	stack := trimPlumbing(sentry.NewStacktrace())
 	if len(event.Exception) == 0 && stack != nil {
 		event.Threads = []sentry.Thread{{Stacktrace: stack, Current: true}}
 	}
@@ -348,13 +360,6 @@ func sentryLevel(level log.Level) sentry.Level {
 	default:
 		return sentry.LevelError
 	}
-}
-
-// callerStacktrace captures the stack at the log statement, with this package
-// and logrus's own plumbing trimmed off so the innermost frame is the code
-// that actually logged rather than the machinery that carried the message.
-func callerStacktrace() *sentry.Stacktrace {
-	return trimPlumbing(sentry.NewStacktrace())
 }
 
 // trimPlumbing drops the hook and logrus frames from the innermost end of a
