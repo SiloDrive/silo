@@ -81,7 +81,7 @@ func decodeBody(r *http.Request) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer zr.Close()
+		defer func() { _ = zr.Close() }()
 		return io.ReadAll(zr)
 	}
 	return io.ReadAll(r.Body)
