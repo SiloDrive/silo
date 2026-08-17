@@ -62,6 +62,9 @@ type movePickerLoadedMsg struct {
 	dirs []client.DirEntry
 	err  error
 }
+type serverInfoMsg struct {
+	version string
+}
 
 type model struct {
 	api  *client.APIClient
@@ -110,8 +113,17 @@ type model struct {
 	autoEmail    string
 	autoPassword string
 
+	// Server info
+	serverURL     string
+	serverVersion string
+
 	width  int
 	height int
+}
+
+func (m model) fetchServerInfo() tea.Msg {
+	info, _ := m.api.GetServerInfo()
+	return serverInfoMsg{version: info.Version}
 }
 
 // entryPath builds a full repo path from the current browse path and an entry name.
@@ -157,6 +169,7 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 		renameInput:   renameIn,
 		autoEmail:     autoEmail,
 		autoPassword:  autoPassword,
+		serverURL:     serverURL,
 	}
 
 	if autoEmail != "" {
@@ -260,7 +273,10 @@ func (m model) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.view = viewRepos
 		m.message = ""
-		return m, m.loadRepos
+		return m, tea.Batch(m.loadRepos, m.fetchServerInfo)
+
+	case serverInfoMsg:
+		m.serverVersion = msg.version
 	}
 
 	var cmds []tea.Cmd
@@ -1011,34 +1027,47 @@ func (m model) renderConfirmOverwrite() string {
 	return b.String()
 }
 
+// --- Status bar ---
+
+func (m model) renderStatusBar() string {
+	version := m.serverVersion
+	if version == "" {
+		version = "?"
+	}
+	return dimStyle.Render(fmt.Sprintf("%s (v%s)", m.serverURL, version))
+}
+
 // --- View dispatch ---
 
 func (m model) View() string {
+	var content string
 	switch m.view {
 	case viewLogin:
 		return m.renderLogin()
 	case viewRepos:
-		return m.renderRepos()
+		content = m.renderRepos()
 	case viewNewRepo:
-		return m.renderNewRepo()
+		content = m.renderNewRepo()
 	case viewConfirm:
-		return m.renderConfirm()
+		content = m.renderConfirm()
 	case viewBrowse:
-		return m.renderBrowse()
+		content = m.renderBrowse()
 	case viewUpload:
-		return m.renderUpload()
+		content = m.renderUpload()
 	case viewMkdir:
-		return m.renderMkdir()
+		content = m.renderMkdir()
 	case viewConfirmDelete:
-		return m.renderConfirmDeleteFile()
+		content = m.renderConfirmDeleteFile()
 	case viewConfirmOverwrite:
-		return m.renderConfirmOverwrite()
+		content = m.renderConfirmOverwrite()
 	case viewRename:
-		return m.renderRename()
+		content = m.renderRename()
 	case viewMove:
-		return m.renderMove()
+		content = m.renderMove()
+	default:
+		return ""
 	}
-	return ""
+	return content + "\n" + m.renderStatusBar()
 }
 
 // Run starts the Bubble Tea TUI. The caller supplies the server URL and

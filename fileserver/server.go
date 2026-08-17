@@ -516,6 +516,7 @@ func newHTTPRouter() *mux.Router {
 
 	// Management API
 	r.HandleFunc("/api/silo/v1/auth/login", api.LoginHandler).Methods("POST")
+	r.HandleFunc("/api/silo/v1/server-info", api.ServerInfoHandler).Methods("GET")
 	apiRouter := r.PathPrefix("/api/silo/v1").Subrouter()
 	apiRouter.Use(middleware.RequireAuth)
 	apiRouter.HandleFunc("/access-tokens", api.CreateAccessTokenHandler).Methods("POST")

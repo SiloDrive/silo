@@ -65,6 +65,9 @@ var (
 	RedisMaxConn    uint32
 	RedisTimeout    time.Duration
 
+	// Build version (set by main)
+	Version string
+
 	// Profile password
 	ProfilePassword string
 	EnableProfiling bool

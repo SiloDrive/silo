@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/dkam/silo/fileserver" // package silod
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/internal/cli"
 	"github.com/dkam/silo/internal/tui"
 )
@@ -25,6 +26,8 @@ func main() {
 		printUsage(os.Stderr)
 		os.Exit(2)
 	}
+
+	option.Version = Version
 
 	sub, rest := args[0], args[1:]
 	switch sub {

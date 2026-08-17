@@ -24,6 +24,13 @@ func Init(readDB, _ *sql.DB) {
 	seafileDB = readDB
 }
 
+// ServerInfoHandler handles GET /api/silo/v1/server-info.
+func ServerInfoHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"version": option.Version,
+	})
+}
+
 // writeJSON writes a JSON response with the given status code.
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")

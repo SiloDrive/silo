@@ -347,3 +347,28 @@ func (c *APIClient) UploadFile(repoID, parentDir, localPath string) error {
 
 	return nil
 }
+
+// ServerInfo holds the response from /api/silo/v1/server-info.
+type ServerInfo struct {
+	Version string `json:"version"`
+}
+
+// GetServerInfo fetches version information from the server.
+func (c *APIClient) GetServerInfo() (ServerInfo, error) {
+	resp, err := http.Get(c.BaseURL + "/api/silo/v1/server-info")
+	if err != nil {
+		return ServerInfo{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		msg, _ := io.ReadAll(resp.Body)
+		return ServerInfo{}, fmt.Errorf("%s: %s", resp.Status, string(msg))
+	}
+
+	var info ServerInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return ServerInfo{}, err
+	}
+	return info, nil
+}
