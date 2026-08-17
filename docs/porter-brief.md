@@ -282,7 +282,12 @@ is a **409**.
 
 Every mutating request honours `If-Match` and `If-None-Match`, so a client can
 write without losing someone else's edit. This is the same pair S3 added in
-2024, and it maps onto `NSFileProviderError.versionOutOfDate`.
+2024.
+
+An earlier draft said the 412 "maps onto `NSFileProviderError.versionOutOfDate`".
+There is no such error — the enum runs `-1000…-1007` and `-2001…-2015`, and none
+of them is that. The real answer is better than an error, and is spelled out
+below.
 
 | Header | Means | On failure |
 |---|---|---|
@@ -302,8 +307,41 @@ B: PUT If-Match "v1-02294300…"  → 412     ← B's stale write is refused
 content is "A edit"                        ← A's edit survived
 ```
 
-On a 412: re-read the entry, reapply your change, and write again. That is the
-`.versionOutOfDate` recovery — hand it back to the system and let it re-drive.
+### What a 412 means to a File Provider extension
+
+Not an error. `modifyItem` reports a conflict on the **success** path.
+
+The system hands `modifyItem` a `baseVersion` — the version it believes is on
+disk. Send its `contentVersion` as `If-Match`. On a 412 someone else moved the
+entry underneath you, so re-read it and call the completion handler with the
+**server's** item, carrying the server's new `contentVersion`, and
+`shouldFetchContent: true`. The system sees the content version move, calls
+`fetchContents`, and replaces the local copy. Returning an error instead gets
+the whole modification retried from the top, against the same stale version,
+forever.
+
+That resolution discards the local edit, which is the right default for a
+first cut and the wrong one in general — but *which* version wins is a policy
+decision the extension makes item by item, and the API is built to let it make
+that decision rather than to make it for you.
+
+Two traps in the same completion handler:
+
+- The second argument is `stillPendingFields`, the subset of `changedFields`
+  you did **not** apply. Since macOS 12, returning a set *identical* to the
+  fields you were passed does not mean "try me again later" — the system reads
+  it as "this provider does not support these fields" and stops sending them
+  until the item changes again. Never return the whole set to signal a
+  temporary failure.
+- `NSFileProviderError.localVersionConflictingWithServer` does exist and does
+  mean exactly this conflict, but only under the `failUploadOnConflict` policy,
+  which needs `NSExtensionFileProviderSupportsFailingUploadOnConflict` in the
+  extension's `Info.plist` — and it is macOS 26.0 and later. Under it the
+  provider *does* fail the call and the system merges and re-calls with a fresh
+  `baseVersion`. Below 26.0 the paragraph above is the only route.
+
+Outside `modifyItem` — a conditional write the extension issues on its own
+behalf — a 412 is just a 412: re-read, reapply, write again.
 
 **Both are opt-in.** A request with neither header behaves exactly as before, so
 last-writer-wins is still available — it just has to be chosen now rather than

@@ -105,7 +105,7 @@ content hash is unchanged appearing at a new path is almost certainly a rename.
               │ NSFileProviderReplicatedExtension
               ▼
    ┌──────────────────────┐
-   │ SiloFileProvider     │  Swift .appex, sandboxed
+   │ PorterFileProvider   │  Swift .appex, sandboxed
    │  .appex              │  stateless-ish, HTTP client
    └──────────┬───────────┘
               │ HTTPS
@@ -115,7 +115,7 @@ content hash is unchanged appearing at a new path is almost certainly a rename.
    └──────────────────────┘
 
    ┌──────────────────────┐
-   │ Silo.app             │  container app: login, add/remove domains,
+   │ Porter.app           │  container app: login, add/remove domains,
    │  (menu bar)          │  registers NSFileProviderDomain per account
    └──────────────────────┘
 ```
@@ -176,7 +176,7 @@ Two details worth stealing:
 - `WorkingSet.obj_id` is the content hash, used as `contentVersion`. Confirms
   the versioning approach above.
 - `IdMap.policy`, queried with `path LIKE`, is the "keep downloaded" pin stored
-  per-subtree rather than per-file.
+  per-subtree rather than per-file. **Do not steal this one** — see below.
 
 **This lives entirely in the client.** Silo never sees an item identifier. That
 is why unmodified Silo already works with SeaDrive today.
@@ -190,6 +190,34 @@ IDs are stable UUIDs so a repo's identifier can be its repo ID; root is
 There is no reason to invent something different — this schema has survived
 production contact, and matching it keeps the option of running both clients
 against the same server without surprises.
+
+**Except `policy`. Drop that column.** SeaDrive is a `NSFileProviderExtension`
+of the older generation and had to build pinning itself; a replicated extension
+does not. `NSFileProviderItem.contentPolicy` (macOS 13.0, comfortably under our
+14.0 floor) is a declarative property on the item:
+
+| `NSFileProviderContentPolicy` | Meaning |
+|---|---|
+| `.inherited` | take the parent's policy — the default on everything but the root |
+| `.downloadLazily` | fetch on read, evict under disk pressure — the macOS root default |
+| `.downloadLazilyAndEvictOnRemoteUpdate` | as above, plus drop the local copy when the server's changes |
+| `.downloadEagerlyAndKeepDownloaded` | pre-fetch, keep fetching updates, refuse eviction |
+
+`.inherited` is what makes the `path LIKE` query unnecessary: a pin on a folder
+already applies to everything beneath it, because the system walks the tree for
+us. Moving an `.inherited` item into a `.downloadEagerlyAndKeepDownloaded`
+folder even schedules its download automatically. All we store is the pin the
+user actually set, on the item they set it on — a small set of explicit
+choices, not a policy on every row of `IdMap`.
+
+The counterpart for the other direction is
+`NSFileProviderManager.evictItem(identifier:)`, and the old
+`NSFileProviderItemCapabilities.allowsEvicting` is formally deprecated in
+favour of `contentPolicy` as of macOS 13.
+
+The practical consequence is that the M5 "escape hatch" below gets easier: pins
+are a handful of user choices worth persisting separately, not a column that
+makes dropping and rebuilding `IdMap` dangerous.
 
 ### The real fork: where reconciliation gets its input
 
@@ -288,13 +316,31 @@ loops, or Finder showing stale state forever.
 | 403 | `.cannotSynchronize` | surface; do not retry |
 | 404 | `.noSuchItem` | treat as deleted; reconcile |
 | 409 | `.filenameCollision` | return the existing item so the system renames |
-| 412 / version mismatch | `.versionOutOfDate` | re-fetch item, let system re-drive. Implemented: send `If-Match` with the version you hold on every write |
+| 412 / version mismatch | **no error** — see below | inside `modifyItem`, return the server's item on the success path with `shouldFetchContent: true`. Send `If-Match` built from `baseVersion.contentVersion` on every write |
 | 413 / 507 | `.insufficientQuota` | surface to user |
 | 429 | `.serverUnreachable` | honour `Retry-After`, back off |
 | 5xx | `.serverUnreachable` | exponential backoff, retriable |
 | offline / DNS | `.serverUnreachable` | retriable |
 | anchor too old | `.syncAnchorExpired` | system falls back to full enumeration |
 | page token stale | `.pageExpired` | restart enumeration |
+
+Two corrections to an earlier draft of this table, both verified against the
+macOS 26.5 SDK headers:
+
+**`.versionOutOfDate` does not exist.** The enum is `-1000…-1007` and
+`-2001…-2015`; nothing in it is that. The nearest names are
+`.versionNoLongerAvailable` (-2009, macOS 12.3), which belongs to
+`fetchPartialContents` under `strictVersioning` and not to writes at all, and
+`.localVersionConflictingWithServer` (-2015), which *is* this conflict but is
+macOS 26.0+ and only under the opt-in `failUploadOnConflict` policy. On our
+14.0 deployment target a 412 is reported by *succeeding* with the server's
+item, not by failing. The brief has the full sequence.
+
+**`.pageExpired` and `.syncAnchorExpired` are the same value.** `PageExpired`
+is a literal alias for `SyncAnchorExpired` (-1002) in the header, so the last
+two rows are one row wearing two names. Returning one and expecting the system
+to distinguish it from the other will not work — the fallback is a full
+re-enumeration either way.
 
 Server-side Sentry should show us anything the extension sends that Silo does not
 expect — malformed paths, unescaped `?p=` values, missing auth headers, requests
@@ -322,7 +368,7 @@ support the brief describes. M0–M3 need no further server work.
 Remaining, in order of value, none blocking:
 
 4. ~~`If-Match` → 412 for optimistic concurrency~~ — built, on PUT, DELETE and
-   move, which makes the `.versionOutOfDate` row in the error table above real.
+   move, which makes the 412 row in the error table above real.
 5. Resumable upload. A `PUT` that dies partway starts over.
 
 ## macOS-side work
@@ -332,25 +378,40 @@ Swift; the API is completion-handler-heavy and `async/await` tames it. Linking G
 via `c-archive` is possible but not worth the FFI for a REST client — `URLSession`
 is less trouble.
 
-- `SiloFileProviderExtension: NSFileProviderReplicatedExtension`
-- `SiloEnumerator: NSFileProviderEnumerator`
-- `SiloItem: NSFileProviderItem`
+As built, in the `Porter` repo:
+
+- `FileProviderExtension: NSFileProviderReplicatedExtension`
+- `FileProviderEnumerator: NSFileProviderEnumerator`
+- `FileProviderItem: NSFileProviderItem`
+- `ItemID` — the `identifier ⇄ (repo_id, path)` mapping, ahead of `IdMap`
 - `SiloAPI` — thin `URLSession` client, mirrors `client/client.go`
-- `Silo.app` — menu-bar container: login, keychain, add/remove domains
+- `Porter.app` — container: login, keychain, add/remove domains
 
 Estimate: 2–4k lines. This is where the risk lives.
 
 ## Milestones
 
-**M0 — signing harness.** Empty appex + container app, registers a domain, shows
-in the Finder sidebar. No network. Proves the signing and provisioning story
-before any real code exists. Needs an Apple developer account; a free personal
-team is likely enough for local development, paid for distribution — confirm
-this early, not at the end.
+**M0 — signing harness.** ~~Empty appex + container app, registers a domain,
+shows in the Finder sidebar.~~ **Done.** A free personal team was enough,
+including App Groups and Keychain Sharing. Two things the plan did not
+anticipate: the app group identifier on macOS is `TEAMID.bundle.id` with **no**
+`group.` prefix and must match in both `.entitlements` files *and* the
+extension's `NSExtensionFileProviderDocumentGroup`; and `com.apple.security
+.application-groups` alone does not buy keychain access — sharing an item
+between app and extension needs a matching `keychain-access-groups` entitlement
+on both targets, or `SecItemAdd` fails with `errSecMissingEntitlement`
+(-34018).
 
-**M1 — read-only enumeration.** Root lists repos, directories enumerate. No
-downloads. Every file shows as dataless. First point at which the Sentry request
-inventory can be checked against reality.
+**M1 — read-only enumeration.** ~~Root lists repos, directories enumerate. No
+downloads. Every file shows as dataless.~~ **Done**, against a live 0.4.1
+server. Two more surprises worth recording: `fileproviderd` launches the
+extension the moment the domain is registered, which races the container app
+writing the account — resolve the account lazily and retry, because an
+extension that caches the failure at `init` stays broken with the credentials
+sitting right there. And the system enumerates
+`NSFileProviderTrashContainerItemIdentifier` unprompted; parse it before the
+repo-ID case or it goes to the server as a library name and earns a 403 per
+attempt.
 
 **M2 — `fetchContents`.** On-demand download. This is the milestone where it
 visibly becomes selective sync in Finder.
@@ -361,8 +422,10 @@ Silo work behind it (the `/changes` endpoint). Anchor is the repo HEAD commit ID
 
 **M4 — writes.** create / modify / delete / rename / move. Full error mapping.
 
-**M5 — polish.** Eviction, "keep downloaded" pinning, conflict presentation,
-`NSFileProviderItemDecorating` badges, offline behaviour.
+**M5 — polish.** Eviction and "keep downloaded" pinning — both via
+`contentPolicy` and `evictItem(identifier:)` rather than a policy table, as
+above — conflict presentation, `NSFileProviderItemDecorating` badges, offline
+behaviour.
 
 M0–M2 is the honest go/no-go point: it is where we find out whether the File
 Provider API is going to fight us, and it is reachable in weeks rather than
@@ -374,14 +437,19 @@ months.
   messages, aggressive caching by `fileproviderd`, and a debug loop that often
   requires tearing down and re-registering the domain. Budget for slow iteration.
   This risk is unavoidable — it exists on every route to selective sync on macOS.
-- **Signing / team ID.** Unresolved until M0. Everything else is downstream of it.
+- ~~**Signing / team ID.** Unresolved until M0.~~ **Retired.** A free personal
+  team signs the appex, the App Groups and the Keychain Sharing entitlements
+  Porter needs. Paid membership is still required for distribution, but nothing
+  in M1–M5 is blocked on it.
 - **Rename reconciliation** for commits authored by other clients. Benign failure
   mode, but needs tests with SeaDrive writing concurrently. Mitigated if Silo
   emits `old_path` rather than leaving the client to infer renames from hashes.
 - **`IdMap` is now local state we own**, which means it can drift from the
   server. Needs a rebuild path — dropping the tables and re-enumerating must be
-  safe and must not lose pin (`policy`) settings. Design that escape hatch early;
-  it is also the debug tool we will use constantly during M1–M4.
+  safe. Cheaper than it looks now that pins live in `contentPolicy` rather than
+  in an `IdMap` column: the rebuild only has to preserve the user's explicit
+  pins, which are few and stored apart. Design that escape hatch early; it is
+  also the debug tool we will use constantly during M1–M4.
 - **Large files.** Whole-file fetch in v1; no resume until range GETs land. A
   10 GB file over a flaky link will be unpleasant until then.
 - **Encrypted repos.** Out of scope for v1. Client-side crypto inside a sandboxed
