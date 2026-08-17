@@ -19,7 +19,27 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.4.1"
+var Version = "0.4.2"
+
+// normalizeVersion drops the leading "v" a git tag carries, so the version this
+// binary reports does not depend on how it was built.
+//
+// The source default is a bare "0.4.2"; CI stamps `git describe --tags`, which
+// for the same commit is "v0.4.2". Without this, /api/silo/v1/server-info answers
+// spelling from a development build and the other from a release, and a client
+// comparing versions has to guess which it got. One did, decided the value was
+// uncomparable, and silently fell back to probing behaviour instead — the gate
+// still present, still correct, and no longer deciding anything.
+//
+// Only a "v" immediately before a digit is dropped, so the suffixes describe
+// adds for untagged or dirty trees ("v0.4.1-3-gabc1234", "-dirty") survive
+// intact: they carry real information about what is running.
+func normalizeVersion(v string) string {
+	if len(v) > 1 && (v[0] == 'v' || v[0] == 'V') && v[1] >= '0' && v[1] <= '9' {
+		return v[1:]
+	}
+	return v
+}
 
 func main() {
 	args := os.Args[1:]
@@ -28,6 +48,7 @@ func main() {
 		os.Exit(2)
 	}
 
+	Version = normalizeVersion(Version)
 	option.Version = Version
 
 	sub, rest := args[0], args[1:]

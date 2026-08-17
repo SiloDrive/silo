@@ -55,20 +55,37 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.1"}
+{"version":"0.4.2"}
 ```
+
+**`version` is semver with no leading `v`**, and that is a contract, not an
+artifact of the example. It used to be one: the source default was `0.4.1` while
+CI stamped `git describe --tags`, which is `v0.4.1` for the same commit — so the
+spelling depended on how the binary was built, and a client that met the release
+build after reading a doc captured from a development build got a string its
+parser rejected. The server now normalises before reporting.
+
+A build from an untagged or dirty tree keeps its suffix — `0.4.2-3-gabc1234`,
+`0.4.2-dirty` — because that says what is actually running. Parse the leading
+`major.minor.patch` and ignore the rest.
+
+Strip an optional leading `v` anyway when you parse. It costs one line and it is
+the difference between a clear failure and a silent one if this ever regresses.
 
 Check it at domain setup. **This surface changed materially in 0.4.0** — reads
 stopped redirecting, `PUT` started accepting file content — and **0.4.1** added
 conditional writes. A client built against this document talking to an older
 server will fail in confusing ways: against 0.3.x the reads and writes break
 outright, and against 0.4.0 the `If-Match` headers are silently ignored, which
-is worse, because losing an edit looks like success. Require **0.4.1** and say
-why, rather than discovering it one broken callback at a time.
+is worse, because losing an edit looks like success. Require **0.4.1 or newer**
+and say why, rather than discovering it one broken callback at a time.
 
-There is no capability list yet, only a version. If you would rather
-feature-detect than compare version strings, ask — it is a small addition and
-the argument for it is exactly the paragraph above.
+There is no capability list yet, only a version — so a client that cannot parse
+the version has nothing else to go on, and the tempting fallback is to probe
+behaviour and infer. That fallback is worth resisting: when it works it looks
+like success, while the check you wrote is no longer the thing making the
+decision. If you would rather feature-detect than compare version strings, ask —
+it is a small addition and this is the argument for it.
 
 ## Libraries
 
