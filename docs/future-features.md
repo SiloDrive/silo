@@ -225,6 +225,13 @@ Not planned in the short term. Upstream's Seahub is a Django app and we
 explicitly walked away from that. If a web UI happens, it should be a small
 SPA (HTMX or similar) served from the same Go binary, talking to `/api/silo/v1/`.
 
+A web UI is the one thing that brings back a consumer which cannot set an
+`Authorization` header — a `<video>` src, an `<img>` thumbnail, a download
+link. That is the point at which signed URLs become worth building, and
+[`capability-urls.md`](capability-urls.md) records what they should look like
+(stateless and signed) versus the stateful one-time token the Seafile lane
+still uses.
+
 ## Admin / Ops
 
 - **Structured logs**: switch from stdlib `log` to `slog` with a JSON handler
