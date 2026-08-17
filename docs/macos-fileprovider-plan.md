@@ -6,6 +6,12 @@ repos into Finder, using Apple's File Provider framework.
 Scope: macOS client + the Silo-side endpoints it needs. Nothing about Linux,
 Windows, or the existing SeaDrive GUI beyond what we can reuse.
 
+> The server side of this plan has since been built. For the current wire
+> contract — request shapes, real responses, and the gaps that are still gaps —
+> see [`porter-brief.md`](porter-brief.md). This document remains the design:
+> why the File Provider route, how identity works, and what to build in which
+> order.
+
 ## Why not the alternatives
 
 **WebDAV mounting** — `webdavfs` is a network filesystem, not selective sync.
@@ -226,32 +232,43 @@ enumeration.
 
 ## HTTP request inventory
 
+> **Superseded.** The table below described `/api/silo/v1` as it was when this
+> plan was written. That surface has since been replaced by the `entries`
+> endpoint, and the delta endpoint has been built. The current, verified
+> contract is in [`porter-brief.md`](porter-brief.md) — build against that.
+> This section is kept because the callback-by-callback breakdown is still the
+> right way to think about the work.
+
 This is the contract to verify against Sentry. Every File Provider callback and
 the request it makes.
 
 | Callback | Method + path | Status |
 |---|---|---|
-| domain setup | `POST /api2/auth-token/` | exists |
+| domain setup | `POST /api2/auth-token/` | superseded — use `/api/silo/v1/auth/login` |
 | — | `GET /api/silo/v1/server-info` | exists |
-| `enumerateItems` (root) | `GET /api/silo/v1/repos` | exists |
-| `enumerateItems` (dir) | `GET /api/silo/v1/repos/{id}/dir/?p={path}` | exists |
-| `currentSyncAnchor` | `GET /repo/{id}/commit/HEAD` | exists |
-| `enumerateChanges` | `GET /api/silo/v1/repos/{id}/changes?since={commit}` | **NEW** |
+| `enumerateItems` (root) | `GET /api/silo/v1/repos` | exists, now returns `head_commit_id` |
+| `enumerateItems` (dir) | `GET /api/silo/v1/repos/{id}/dir/?p={path}` | superseded — `entries/{path}` |
+| `currentSyncAnchor` | `GET /repo/{id}/commit/HEAD` | superseded — `head_commit_id` |
+| `enumerateChanges` | `GET /api/silo/v1/repos/{id}/changes?since={commit}` | **built** |
 | `item(for:)` | *none* — local `IdMap` ⋈ `WorkingSet` | — |
-| `fetchContents` | `GET /api/silo/v1/repos/{id}/file?p={path}` → redirect | exists |
+| `fetchContents` | `GET /api/silo/v1/repos/{id}/file?p={path}` → redirect | superseded — `entries/{path}` |
 | — | `GET /files/{token}/{name}` | exists |
-| `createItem` (file) | `GET .../upload-link` then `POST /upload-api/{token}` | exists |
-| `createItem` (dir) | `POST /api/silo/v1/repos/{id}/mkdir` | exists |
+| `createItem` (file) | `GET .../upload-link` then `POST /upload-api/{token}` | exists — still the only upload path |
+| `createItem` (dir) | `POST /api/silo/v1/repos/{id}/mkdir` | superseded — `PUT entries/{path}?type=dir` |
 | `modifyItem` (contents) | `POST /update-api/{token}` | exists |
-| `modifyItem` (rename) | `POST /api/silo/v1/repos/{id}/rename` | exists |
-| `modifyItem` (reparent) | `POST /api/silo/v1/repos/{id}/move` | exists |
-| `deleteItem` | `DELETE /api/silo/v1/repos/{id}/file?p={path}` | exists |
+| `modifyItem` (rename) | `POST /api/silo/v1/repos/{id}/rename` | superseded — `POST entries/…` `{"op":"move"}` |
+| `modifyItem` (reparent) | `POST /api/silo/v1/repos/{id}/move` | superseded — the same move call |
+| `deleteItem` | `DELETE /api/silo/v1/repos/{id}/file?p={path}` | superseded — `DELETE entries/{path}` |
 | push invalidation | `WS /notification` | exists |
 
-Almost the entire surface already exists — `client/client.go` (374 lines) wraps
-`ListDir`, `DownloadFile`, `UploadFile`, `Mkdir`, `RenameFile`, `MoveFile`,
-`DeleteFile`. **One new endpoint**, and it is an optimisation over option A
-rather than a hard requirement.
+The prediction here held: almost the entire surface already existed, and the
+delta endpoint was the only genuinely new one. What changed is its *spelling* —
+the operations are the same, addressed consistently, and `client/client.go` was
+moved onto them without any change to its method signatures.
+
+One capability was added that this plan did not anticipate: **GET carries an
+`ETag` of the content hash and honours `If-None-Match` with a 304**, so
+revalidating a materialised item reads no blocks. See the brief.
 
 Note that identifiers never cross the wire: every request is expressed in
 `(repo_id, path)`, resolved client-side from `IdMap`. Silo's request logs and
@@ -271,7 +288,7 @@ loops, or Finder showing stale state forever.
 | 403 | `.cannotSynchronize` | surface; do not retry |
 | 404 | `.noSuchItem` | treat as deleted; reconcile |
 | 409 | `.filenameCollision` | return the existing item so the system renames |
-| 412 / version mismatch | `.versionOutOfDate` | re-fetch item, let system re-drive |
+| 412 / version mismatch | `.versionOutOfDate` | re-fetch item, let system re-drive — **not implemented server-side; `If-Match` is ignored and writes are last-writer-wins** |
 | 413 / 507 | `.insufficientQuota` | surface to user |
 | 429 | `.serverUnreachable` | honour `Retry-After`, back off |
 | 5xx | `.serverUnreachable` | exponential backoff, retriable |
@@ -287,21 +304,24 @@ extension crash reports are unreliable, so lean on breadcrumbs and explicit
 
 ## Silo-side work
 
-Revised down substantially: **v1 needs nothing.** An unmodified Silo already
-serves SeaDrive, and every endpoint the extension needs for M0–M2 exists today.
+**Done.** Item 1 below shipped, along with the `entries` surface and the ETag
+support the brief describes. M0–M3 need no further server work.
 
-Then, in order of value:
+1. ~~`GET /api/silo/v1/repos/{id}/changes?since={commit}`~~ — built. Returns
+   `{op, path, old_path, id, size, is_dir}` plus the new anchor, `410 Gone` when
+   `since` is unreachable. Renames are emitted server-side, as argued. Note it
+   returns `id` (the content hash) rather than `content_hash`, and no `mtime` —
+   the hash is what versioning needs, and mtime comes from the listing.
 
-1. `GET /api/silo/v1/repos/{id}/changes?since={commit}` — delta since an anchor,
-   returning `{op, path, old_path, content_hash, size, mtime, is_dir}` plus the
-   new anchor. `410 Gone` when `since` is unreachable (GC'd), which maps to
-   `.syncAnchorExpired`. Emitting `old_path` for renames server-side is better
-   than having the client infer them: Silo has both trees in hand.
-2. Range GETs on file download for large-file resume. `/repo/{id}/block-map/{id}`
+Remaining, in order of value, none blocking:
+
+2. `PUT entries/{path}` accepting file content, which would collapse the
+   two-step access-token upload into one request. Currently **501**.
+3. `If-Match` → 412 for optimistic concurrency, which is what makes the
+   `.versionOutOfDate` row in the error table above real rather than
+   aspirational.
+4. Range GETs on file download for large-file resume. `/repo/{id}/block-map/{id}`
    already exposes block boundaries.
-
-Estimate: a few hundred lines of Go, low risk, additive, and deferrable past the
-go/no-go milestone.
 
 ## macOS-side work
 
