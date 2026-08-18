@@ -186,3 +186,111 @@ func TestAddNewEntriesAcceptsValidName(t *testing.T) {
 		t.Errorf("addNewEntries did not add the entry: %v", oldDents)
 	}
 }
+
+func TestDestructiveCollision(t *testing.T) {
+	modeDir := uint32(syscall.S_IFDIR | 0644)
+	modeFile := uint32(syscall.S_IFREG | 0644)
+	dirent := func(mode uint32) *fsmgr.SeafDirent {
+		return fsmgr.NewDirent(fsmgr.EmptySha1, "dst", mode, 0, "", 0)
+	}
+
+	cases := []struct {
+		what    string
+		srcMode uint32
+		dst     *fsmgr.SeafDirent
+		want    bool
+	}{
+		{"nothing at the destination", modeFile, nil, false},
+		{"file onto file replaces, as PUT does", modeFile, dirent(modeFile), false},
+		{"file onto directory unlinks the subtree", modeFile, dirent(modeDir), true},
+		{"directory onto directory unlinks the subtree", modeDir, dirent(modeDir), true},
+		{"directory onto file discards the file", modeDir, dirent(modeFile), true},
+	}
+	for _, c := range cases {
+		if got := destructiveCollision(c.srcMode, c.dst) != ""; got != c.want {
+			t.Errorf("destructiveCollision(%s) = %v, want %v", c.what, got, c.want)
+		}
+	}
+}
+
+// The data loss destructiveCollision exists to prevent, run through the same two
+// phases moveHandler uses. Moving a file onto a directory swaps the directory's
+// dirent for the file's, and every descendant goes with it — on a 200, with no
+// error anywhere for a caller to notice.
+func TestMoveOntoDirectoryWouldDestroyIt(t *testing.T) {
+	confPath := t.TempDir()
+	dataDir := filepath.Join(confPath, "seafile-data")
+	fsmgr.Init(confPath, dataDir, option.FsCacheLimit)
+
+	const storeID = "9c2e4b81-3a5d-4f7e-b6c1-08e7a2d95f34"
+	repo := &repomgr.Repo{ID: storeID, StoreID: storeID, Version: 1}
+
+	modeDir := uint32(syscall.S_IFDIR | 0644)
+	modeFile := uint32(syscall.S_IFREG | 0644)
+
+	// /Precious/keep.txt, plus /junk.txt beside it at the root.
+	keep, err := fsmgr.NewSeafile(1, 4, []string{"4f616f98d6a264f75abffe1bc150019c880be239"})
+	if err != nil {
+		t.Fatalf("failed to create keep.txt: %v", err)
+	}
+	if err := fsmgr.SaveSeafile(storeID, keep); err != nil {
+		t.Fatalf("failed to save keep.txt: %v", err)
+	}
+	precious, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
+		fsmgr.NewDirent(keep.FileID, "keep.txt", modeFile, 0, "", 4),
+	})
+	if err != nil {
+		t.Fatalf("failed to create /Precious: %v", err)
+	}
+	if err := fsmgr.SaveSeafdir(storeID, precious); err != nil {
+		t.Fatalf("failed to save /Precious: %v", err)
+	}
+	junk, err := fsmgr.NewSeafile(1, 5, []string{"da39a3ee5e6b4b0d3255bfef95601890afd80709"})
+	if err != nil {
+		t.Fatalf("failed to create junk.txt: %v", err)
+	}
+	if err := fsmgr.SaveSeafile(storeID, junk); err != nil {
+		t.Fatalf("failed to save junk.txt: %v", err)
+	}
+	root, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
+		fsmgr.NewDirent(precious.DirID, "Precious", modeDir, 0, "", 0),
+		fsmgr.NewDirent(junk.FileID, "junk.txt", modeFile, 0, "", 5),
+	})
+	if err != nil {
+		t.Fatalf("failed to create root: %v", err)
+	}
+	if err := fsmgr.SaveSeafdir(storeID, root); err != nil {
+		t.Fatalf("failed to save root: %v", err)
+	}
+
+	if _, err := fsmgr.GetDirentByPath(storeID, root.DirID, "/Precious/keep.txt"); err != nil {
+		t.Fatalf("test tree is wrong, /Precious/keep.txt missing up front: %v", err)
+	}
+
+	// mv /junk.txt -> /Precious, exactly as moveHandler would run it.
+	srcPath, dstDir, dstName := "/junk.txt", "/", "Precious"
+
+	newDent := fsmgr.NewDirent(junk.FileID, dstName, modeFile, 0, "", 5)
+	var names []string
+	rootAfterAdd, err := DoPostMultiFiles(repo, root.DirID, dstDir, []*fsmgr.SeafDirent{newDent}, "user@example.com", true, &names)
+	if err != nil {
+		t.Fatalf("phase 1 failed: %v", err)
+	}
+	rootAfterDel, err := DelFileFromTree(storeID, rootAfterAdd, upath.Dir(srcPath), upath.Base(srcPath))
+	if err != nil {
+		t.Fatalf("phase 2 failed: %v", err)
+	}
+
+	if _, err := fsmgr.GetDirentByPath(storeID, rootAfterDel, "/Precious/keep.txt"); err == nil {
+		t.Error("expected /Precious/keep.txt to be destroyed by the move, but it survived — has moveHandler's algorithm changed?")
+	}
+
+	// Which is why the guard must reject this move before phase 1 runs.
+	dst, err := fsmgr.GetDirentByPath(storeID, root.DirID, "/Precious")
+	if err != nil {
+		t.Fatalf("failed to look up the destination: %v", err)
+	}
+	if destructiveCollision(modeFile, dst) == "" {
+		t.Error("destructiveCollision permitted the move that destroys /Precious/keep.txt")
+	}
+}

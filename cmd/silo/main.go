@@ -19,13 +19,13 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.4.2"
+var Version = "0.4.3"
 
 // normalizeVersion drops the leading "v" a git tag carries, so the version this
 // binary reports does not depend on how it was built.
 //
-// The source default is a bare "0.4.2"; CI stamps `git describe --tags`, which
-// for the same commit is "v0.4.2". Without this, /api/silo/v1/server-info answers
+// The source default is a bare "0.4.3"; CI stamps `git describe --tags`, which
+// for the same commit is "v0.4.3". Without this, /api/silo/v1/server-info answers
 // spelling from a development build and the other from a release, and a client
 // comparing versions has to guess which it got. One did, decided the value was
 // uncomparable, and silently fell back to probing behaviour instead — the gate

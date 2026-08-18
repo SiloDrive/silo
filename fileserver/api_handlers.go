@@ -72,6 +72,29 @@ func movesIntoOwnSubtree(srcPath, dstDir string) bool {
 	return strings.HasPrefix(dst, src+"/")
 }
 
+// destructiveCollision reports why moving an entry of mode srcMode onto dst
+// would destroy data, or "" when the move is safe. dst is the dirent already at
+// the destination path, or nil when nothing is there.
+//
+// A move replaces its destination, so the type of what is being replaced decides
+// how much is lost. Replacing a directory unlinks its whole subtree; replacing a
+// file with a directory is the same trade in the other direction. Only
+// file-onto-file loses nothing the caller did not name, which is why it is the
+// one collision left to proceed — PUT entries/{path} already replaces rather
+// than renaming, and a move should not be stricter than a write.
+func destructiveCollision(srcMode uint32, dst *fsmgr.SeafDirent) string {
+	if dst == nil {
+		return ""
+	}
+	if fsmgr.IsDir(dst.Mode) {
+		return "Destination exists and is a directory"
+	}
+	if fsmgr.IsDir(srcMode) {
+		return "Destination exists and is a file"
+	}
+	return ""
+}
+
 func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserEmail(r)
 	repoID := mux.Vars(r)["repoid"]
@@ -322,6 +345,24 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 
 	if fsmgr.IsDir(srcEntry.Mode) && movesIntoOwnSubtree(srcPath, dstDir) {
 		http.Error(w, "Cannot move a directory into itself", http.StatusBadRequest)
+		return
+	}
+
+	// Phase 1 replaces whatever already sits at the destination, and until this
+	// guard nothing established what that was. Overwriting a directory swaps its
+	// dirent for the source's, which unreachables every descendant in a single
+	// commit — silent data loss reported as 200. Refuse before phase 1 runs, the
+	// same shape of guard and for the same reason as movesIntoOwnSubtree.
+	//
+	// File-onto-file is deliberately still allowed: it is the one collision that
+	// destroys nothing the caller did not name, and it matches PUT entries/{path},
+	// which replaces rather than renaming the collision.
+	dstEntry, err := fsmgr.GetDirentByPath(repo.StoreID, head.RootID, dstPath)
+	if err != nil {
+		dstEntry = nil // absent, which is the ordinary case
+	}
+	if reason := destructiveCollision(srcEntry.Mode, dstEntry); reason != "" {
+		http.Error(w, reason, http.StatusConflict)
 		return
 	}
 
