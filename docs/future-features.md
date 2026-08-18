@@ -287,6 +287,59 @@ The middle tier is the interesting one, and is much cheaper than it sounds:
 Silo chunks at fixed 8 MiB offsets rather than content-defined boundaries, so
 any client can compute the server's block ids with stdlib SHA-1 and a loop.
 
+## Search (Filename Index)
+
+Motivated by macOS's File Provider search pushdown (`NSFileProviderSearching`,
+macOS 26+ — see [`porter-brief.md`](porter-brief.md) /
+[`macos-fileprovider-plan.md`](macos-fileprovider-plan.md)), but useful on its
+own independent of any one client. Today Silo has **no search of any kind**:
+files live as content-addressed `SeafDirent`/`SeafDir` objects inside per-repo
+commit trees (`fileserver/fsmgr/fsmgr.go`), not rows in a table, so there is
+nothing to `WHERE filename LIKE` against — finding a file means the *client*
+walking the current tree itself. Seafile Pro's answer is an external
+Elasticsearch-backed indexer (`seafevents`); that's commercial-only and not a
+dependency we want to force on a single self-hosted binary.
+
+### Endpoints
+
+- `GET /api/silo/v1/search?q=...` — account-wide, filtered to repos the
+  caller can see (owned + shared).
+- Maybe `GET /api/silo/v1/repos/{id}/search?q=...` for a scoped variant,
+  lower priority.
+
+### Design
+
+- **SQLite FTS5, not Elasticsearch.** Silo already has sqlite via `dbutil`;
+  FTS5 gives prefix/substring matching on filenames with no new operational
+  dependency. Filename-only for v1 — content search means extracting and
+  indexing blob text, a much bigger lift, and not needed to match what
+  Spotlight/Finder actually ask for.
+- **Populating the index is the hard part, not querying it.** There's no
+  existing "list every filename in a repo" call to seed from — needs a full
+  tree walk once, then incremental maintenance per new commit. Reuse the
+  commit-diffing machinery already backing the enumerator's change feed
+  (`fileserver/api/changes.go`, `fileserver/diff/diff.go`) instead of
+  re-walking whole trees on every write.
+- **Permission-filtered at query time**, not via separate per-grantee
+  indexes — join against the same visibility check `CheckPerm` /
+  `ListReposHandler` already do, so a share revoked mid-session can't leak
+  stale results.
+- Ranking: prefix/substring plus maybe recency. No need for real relevance
+  scoring at this scale.
+
+### Open questions
+
+- One FTS table across all repos (join-filtered per query) vs one per repo.
+  All-repo is simpler to query; per-repo is simpler to rebuild in isolation
+  and to scope alongside quota/GC.
+- Whether virtual repos (subdirectory shares) need special-casing the way
+  quota's `checkQuota` does for them.
+- Backfill cost on existing large repos — first build is a full tree walk,
+  should run as a background job (cf. `size_sched.go`'s worker) rather than
+  inline on first query.
+
+Not being built now — parked here until a client actually needs it.
+
 ## Compression
 
 zlib appears in exactly one package (`fsmgr`) and covers metadata only —
