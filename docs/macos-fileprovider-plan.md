@@ -389,6 +389,149 @@ As built, in the `Porter` repo:
 
 Estimate: 2–4k lines. This is where the risk lives.
 
+## Field notes — what the system actually does
+
+Everything below was established by measurement against a live 0.4.2 server on
+macOS 26.5, not read from documentation. Several of these contradict what the
+headers imply, and two of them contradict earlier drafts of this plan.
+
+### Capabilities decide the POSIX flags, and the immutable flag breaks Quick Look
+
+An item whose `capabilities` omit `.allowsWriting` is marked **user-immutable**
+(`uchg`) by the system. This is undocumented — the FileProvider headers never
+mention immutability — and it is not something the provider opts into.
+
+`uchg` breaks Quick Look's video player. Playback restarts every few seconds and
+scrubbing shows frames from the wrong point before snapping back. Quick Look
+writes to files it plays (resume position, cached metadata, extended attributes)
+and every one of those writes fails against an immutable file.
+
+This is **not** a File Provider bug. Two byte-identical copies in an ordinary
+folder, same `0600` mode, differing only in `chflags uchg`, reproduce it exactly:
+the locked one is broken, the plain one is perfect. During playback of a
+materialised file the extension is asked for nothing at all — `fetchContents` is
+never called — so nothing about the sync path is involved.
+
+**There is no way to shed the flag while read-only.** `NSFileProviderFileSystemFlags`
+has no immutability member; its whole vocabulary is `userExecutable`,
+`userReadable`, `userWritable`, `hidden`, and `pathExtensionHidden`. Reporting
+`.userWritable` moves the mode from `0400` to `0600` and leaves `uchg` untouched.
+The flag tracks `capabilities` alone.
+
+The Finder padlock has the same single cause. **M4 clears both for free.** Do not
+add `.allowsWriting` early to dodge it: that lets an edit appear to succeed in
+the Finder and then fail to upload, which is a worse failure than a stuttering
+preview.
+
+The general rule this establishes: `capabilities` and `fileSystemFlags` are
+*not* independent. Capabilities are the stronger statement and win where they
+overlap. `fileSystemFlags` can only decorate within what capabilities already
+permit.
+
+### `reimportItems(below:)` is not a refresh button
+
+It looks like the light half of the escape hatch — re-read every item without
+discarding the replica. It is neither.
+
+`reimportItems` does not ask the provider to re-state its items. It scans the
+**on-disk replica** and pushes what it finds back *up* to the extension as
+`createItem` calls:
+
+```
+create-item(… n:"Music" dir …) why:itemChangedRemotely|diskImport
+```
+
+A read-only extension has no `createItem` to receive them, so the
+`com.apple.fileproviderd.disk-import` background task can never complete. Called
+once, it relaunched under one unchanging UUID every hour for four hours. While it
+was parked `fileproviderd` forwarded **nothing** to the extension — no
+enumeration, no `fetchContents` — so every dataless item became permanently
+unavailable and Quick Look spun forever on all of them. It also discarded every
+existing download on the way in.
+
+Tearing the domain down and re-adding it is the only honest escape hatch before
+M4. Revisit `reimportItems` when `createItem` exists to receive the push.
+
+### Special containers arrive unannounced
+
+The system enumerates `NSFileProviderTrashContainerItemIdentifier` and
+`NSFileProviderWorkingSetContainerItemIdentifier` without being asked, at mount.
+Both must be parsed **before** any repo-ID case, or they reach the server as
+library names and earn a 403 apiece, once per mount. Returning an empty list is
+correct for both today: nothing is deletable before M4, and change tracking
+arrives at M3.
+
+This is the same bug twice. The trash was found at M1 and the working set at M2 —
+worth assuming there is a third.
+
+### Item metadata is frozen at first enumeration until M3
+
+The sync anchor is a constant and `enumerateChanges` reports nothing, so once the
+system has cached an item's metadata it has no reason to ask again. **Any change
+to what an item reports is invisible on everything already enumerated.**
+
+This wastes an enormous amount of debugging time if you do not know it: a fix to
+`capabilities`, `fileSystemFlags`, or dates appears to have no effect, and the
+natural conclusion — that the fix was wrong — is usually false. It was right and
+was never read. Verify such a change against a domain torn down and re-registered
+*after* the change, or you are testing the old build's metadata.
+
+`reimportItems` is the wrong tool for this, per above.
+
+### `fetchContents` — the staged file contract, as built
+
+- Return a **regular file on the replica's volume**, from
+  `NSFileProviderManager.temporaryDirectoryURL()`. The system **clones and
+  unlinks** it; after a successful fetch the staging directory is empty again,
+  as documented.
+- `URLSession` unlinks its own temp file when the completion handler returns, so
+  the move out of it must happen **inside** that handler, not after.
+- A crash strands staged files and **the extension owns deleting them**. Sweep
+  once per launch, and only files older than an hour — a live download is
+  indistinguishable from an orphan.
+- Cancellation must report `NSUserCancelledError`. Any error the system does not
+  recognise is treated as transient and retried.
+- Resolve the item from the server *before* downloading. It 404s if the item is
+  gone, and it is the authority on the version being reported back.
+- `requestedVersion` is always nil in practice.
+- Stream socket→disk rather than buffering. This is about not holding a 10 GB
+  file in a sandboxed appex's memory; the file is still **fully downloaded before
+  handoff**. Porter does not stream to the reader, and should not — buffered
+  local files are the entire point of this class of product.
+
+Measured at M2: 3.9 MB cold in 1.045 s including extension launch and login;
+375 KB warm in 0.68 s. `dataless` clears on completion.
+
+### Diagnostics that earned their keep
+
+- **Log a version digest at every enumeration.** If it changes between two
+  enumerations of an unchanged directory, the system is seeing phantom
+  modifications. Use **FNV-1a, not `Hasher`** — `Hasher` is seeded per process,
+  so it cannot answer "did this change between two runs", which is the only
+  question it exists to answer.
+- **`log show --predicate` against `fileproviderd`** is where the real story is.
+  Our own subsystem going silent for hours was the single strongest signal all
+  session: it proved the extension was not being asked, which relocated the bug
+  entirely.
+- **Never `kill` `qlmanage`.** SIGTERM makes it abort and raise a crash dialog;
+  repeated SIGKILLs wedge Quick Look's agents system-wide, and recovering needs
+  `qlmanage -r`, `qlmanage -r cache`, and restarting `quicklookd`,
+  `QuickLookUIService` and `ThumbnailsAgent`. Drive Quick Look from the Finder
+  and read the logs instead.
+
+### A methodology note
+
+Three plausible theories were pursued and all three were wrong: a `moov`-at-end
+atom layout (a real correlation across four files that dissolved on the fifth),
+backward-seek stalls on the provider volume (measured identical to a local file,
+7 µs median), and a coordination-claim storm (real, but self-inflicted by the
+`reimportItems` call, and gone once the domain was re-registered).
+
+What worked was two byte-identical files in an ordinary directory differing in
+exactly one attribute. When a File Provider bug seems to depend on the domain,
+**try to reproduce it outside the domain first.** It is much cheaper to be
+wrong there.
+
 ## Milestones
 
 **M0 — signing harness.** ~~Empty appex + container app, registers a domain,
@@ -413,23 +556,39 @@ sitting right there. And the system enumerates
 repo-ID case or it goes to the server as a library name and earns a 403 per
 attempt.
 
-**M2 — `fetchContents`.** On-demand download. This is the milestone where it
-visibly becomes selective sync in Finder.
+**M2 — `fetchContents`.** ~~On-demand download. This is the milestone where it
+visibly becomes selective sync in Finder.~~ **Done**, against 0.4.2. It is
+selective sync in the Finder: the cloud-with-arrow badge is `dataless`, a plain
+cloud is materialised, and the flag clears on completion. Three things the plan
+did not anticipate, all in the field notes above — the working set arrives
+unannounced exactly as the trash did; item metadata is frozen at first
+enumeration until M3, which makes a correct fix look like a failed one; and
+read-only `capabilities` force `uchg`, which breaks Quick Look's video player.
+That last one is the first place the read-only posture has cost visible
+functionality rather than just convenience.
 
 **M3 — sync anchor + `enumerateChanges`.** Remote changes appear without a
 restart. First milestone needing `IdMap` reconciliation, and the first with any
 Silo work behind it (the `/changes` endpoint). Anchor is the repo HEAD commit ID.
 
 **M4 — writes.** create / modify / delete / rename / move. Full error mapping.
+Now carries three things beyond its own scope: the Finder padlock, Quick Look
+video playback, and `reimportItems` becoming usable — all of which are blocked
+on `.allowsWriting` and `createItem` existing, not on anything of their own.
 
 **M5 — polish.** Eviction and "keep downloaded" pinning — both via
 `contentPolicy` and `evictItem(identifier:)` rather than a policy table, as
 above — conflict presentation, `NSFileProviderItemDecorating` badges, offline
 behaviour.
 
-M0–M2 is the honest go/no-go point: it is where we find out whether the File
+~~M0–M2 is the honest go/no-go point: it is where we find out whether the File
 Provider API is going to fight us, and it is reachable in weeks rather than
-months.
+months.~~ **Passed.** The API does fight, but on iteration speed rather than on
+capability: nothing in M0–M2 turned out to be impossible or to need a paid
+developer account, and the whole read path works against a real server. The tax
+is real and should be budgeted for — most of the cost is discovering undocumented
+behaviour, and most of *that* cost is not knowing whether a fix failed or was
+simply never read back.
 
 ## Risks
 
@@ -437,6 +596,16 @@ months.
   messages, aggressive caching by `fileproviderd`, and a debug loop that often
   requires tearing down and re-registering the domain. Budget for slow iteration.
   This risk is unavoidable — it exists on every route to selective sync on macOS.
+  Confirmed through M2, with the shape now clearer than "slow": the expensive
+  failure is a *silent* one, where the system stops asking the extension anything
+  at all and every symptom appears in the Finder instead. Check whether the
+  extension is being called before debugging what it returns.
+- **Read-only is not a safe subset.** It looked like a posture that could only
+  cost features; it also costs correctness. Omitting `.allowsWriting` forces
+  `uchg`, which breaks Quick Look video, and the absence of `createItem` is what
+  makes `reimportItems` wedge the domain permanently. Weight M4 accordingly: it
+  is not only the writes milestone, it is where several unrelated-looking defects
+  resolve.
 - ~~**Signing / team ID.** Unresolved until M0.~~ **Retired.** A free personal
   team signs the appex, the App Groups and the Keychain Sharing entitlements
   Porter needs. Paid membership is still required for distribution, but nothing
