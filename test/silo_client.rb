@@ -2,9 +2,10 @@ require "net/http"
 require "json"
 require "uri"
 
-# Lightweight client for the Seafile Go fileserver management API.
-# Used by the test harness — not a general-purpose SDK.
-class SeafileClient
+# Lightweight client for Silo's management API (/api/silo/v1), plus the one
+# sync-protocol call the token tests need. Used by the test harness — not a
+# general-purpose SDK.
+class SiloClient
   attr_reader :base_url, :token
 
   def initialize(base_url)
@@ -79,6 +80,7 @@ class SeafileClient
       req["Authorization"] = "Bearer #{@token}"
     end
 
+    # Wire-protocol header name, fixed by client compatibility — not renamed.
     if sync_token
       req["Seafile-Repo-Token"] = sync_token
     end

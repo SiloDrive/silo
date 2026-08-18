@@ -2,7 +2,7 @@ require_relative "test_helper"
 require "securerandom"
 
 class TokensTest < Minitest::Test
-  include SeafileTestHelper
+  include SiloTestHelper
 
   def test_create_sync_token
     repo_id = create_test_repo

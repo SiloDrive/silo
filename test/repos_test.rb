@@ -2,7 +2,7 @@ require_relative "test_helper"
 require "securerandom"
 
 class ReposTest < Minitest::Test
-  include SeafileTestHelper
+  include SiloTestHelper
 
   def test_create_repo
     resp = client.create_repo("My Test Library")
