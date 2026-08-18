@@ -1,10 +1,7 @@
 package silod
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -12,16 +9,13 @@ import (
 
 	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/fsmgr"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/utils"
 )
 
 type mergeOptions struct {
-	remoteRepoID    string
-	remoteHead      string
-	mergedRoot      string
-	conflict        bool
-	emailToNickname map[string]string
+	remoteRepoID string
+	remoteHead   string
+	mergedRoot   string
+	conflict     bool
 }
 
 func mergeTrees(storeID string, roots []string, opt *mergeOptions) error {
@@ -29,8 +23,6 @@ func mergeTrees(storeID string, roots []string, opt *mergeOptions) error {
 		err := fmt.Errorf("invalid argument")
 		return err
 	}
-
-	opt.emailToNickname = make(map[string]string)
 
 	var trees []*fsmgr.SeafDir
 	for i := 0; i < 3; i++ {
@@ -341,9 +333,7 @@ func mergeConflictFileName(storeID string, opt *mergeOptions, baseDir, fileName 
 		mtime = time.Now().Unix()
 	}
 
-	nickname := getNickNameByModifier(opt.emailToNickname, modifier)
-
-	conflictName := genConflictPath(fileName, nickname, mtime)
+	conflictName := genConflictPath(fileName, modifier, mtime)
 
 	return conflictName, nil
 }
@@ -372,78 +362,6 @@ func genConflictPath(originPath, modifier string, mtime int64) string {
 	}
 
 	return conflictPath
-}
-
-func getNickNameByModifier(emailToNickname map[string]string, modifier string) string {
-	if modifier == "" {
-		return ""
-	}
-	nickname, ok := emailToNickname[modifier]
-	if ok {
-		return nickname
-	}
-	if option.JWTPrivateKey != "" {
-		nickname = postGetNickName(modifier)
-	}
-
-	if nickname == "" {
-		nickname = modifier
-	}
-
-	emailToNickname[modifier] = nickname
-
-	return nickname
-}
-
-func postGetNickName(modifier string) string {
-	tokenString, err := utils.GenSeahubJWTToken()
-	if err != nil {
-		return ""
-	}
-
-	header := map[string][]string{
-		"Authorization": {"Token " + tokenString},
-	}
-
-	data, err := json.Marshal(map[string]interface{}{
-		"user_id_list": []string{modifier},
-	})
-	if err != nil {
-		return ""
-	}
-
-	url := option.SeahubURL + "/user-list/"
-	status, body, err := utils.HttpCommon("POST", url, header, bytes.NewReader(data))
-	if err != nil {
-		return ""
-	}
-	if status != http.StatusOK {
-		return ""
-	}
-
-	results := make(map[string]interface{})
-	err = json.Unmarshal(body, &results)
-	if err != nil {
-		return ""
-	}
-
-	userList, ok := results["user_list"].([]interface{})
-	if !ok {
-		return ""
-	}
-	nickname := ""
-	for _, element := range userList {
-		list, ok := element.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		nickname, _ = list["name"].(string)
-		if nickname != "" {
-			break
-		}
-	}
-
-	return nickname
 }
 
 func getFileModifierMtime(repoID, storeID, head, filePath string) (string, int64, error) {

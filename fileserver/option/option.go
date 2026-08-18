@@ -178,8 +178,6 @@ var (
 	// database — use dbutil.DBEngine for portable SQL helpers
 	DBType string
 
-	// seahub
-	SeahubURL     string
 	JWTPrivateKey string
 
 	// metric
@@ -595,18 +593,6 @@ func LoadJWTConfig() error {
 		}
 		JWTPrivateKey = hex.EncodeToString(buf)
 		log.Info("SILO_JWT_SECRET not set, generated ephemeral key")
-	}
-
-	// SeahubURL now has exactly one caller left: postGetNickName, which looks
-	// up a display name for merge conflict messages. The share-link and web
-	// file-access paths that also used it were removed, since Silo runs no
-	// Seahub and they could only fail. The remaining call degrades quietly —
-	// postGetNickName falls back to the raw modifier string on any error.
-	siteRoot := os.Getenv("SITE_ROOT")
-	if siteRoot != "" {
-		SeahubURL = fmt.Sprintf("http://127.0.0.1:8000%sapi/v2.1/internal", siteRoot)
-	} else {
-		SeahubURL = "http://127.0.0.1:8000/api/v2.1/internal"
 	}
 
 	return nil

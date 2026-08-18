@@ -42,29 +42,6 @@ const (
 // it to jwt.WithValidMethods so a token cannot select its own algorithm.
 const SigningAlg = "HS256"
 
-// SeahubClaims is deliberately left without an audience: unlike the session
-// and notification tokens, this one is consumed by Seahub rather than by Silo,
-// and PyJWT rejects a token carrying an `aud` it wasn't told to expect.
-type SeahubClaims struct {
-	IsInternal bool `json:"is_internal"`
-	jwt.RegisteredClaims
-}
-
-func GenSeahubJWTToken() (string, error) {
-	claims := new(SeahubClaims)
-	claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(time.Second * 300))
-	claims.IsInternal = true
-
-	token := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claims)
-	tokenString, err := token.SignedString([]byte(option.JWTPrivateKey))
-	if err != nil {
-		err := fmt.Errorf("failed to gen seahub jwt token: %w", err)
-		return "", err
-	}
-
-	return tokenString, nil
-}
-
 type MyClaims struct {
 	RepoID   string `json:"repo_id"`
 	UserName string `json:"username"`
