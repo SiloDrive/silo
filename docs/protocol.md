@@ -37,6 +37,10 @@ traps in it, and links here rather than restating.
 
 - **SeaDrive for macOS** — tested against 3.0.21 (via Homebrew cask)
 - **silo** — our own Go TUI (`cmd/silo`)
+- **Porter** — our macOS File Provider client. Speaks `/api/silo/v1` only:
+  `entries`, `changes`, `notify-token` and the notification socket. Since
+  `notify-token` landed in 0.4.4 it never touches the Seafile lane at all.
+- **porter-fuse** — our FUSE client, same lane.
 
 Other Seafile clients (desktop, CLI, mobile) should work in principle since
 they speak the same underlying sync protocol, but have not been verified.
@@ -47,7 +51,7 @@ Three coexisting auth mechanisms, each for a different client surface:
 
 | Scheme | Header | Used by | Validated against |
 |---|---|---|---|
-| JWT Bearer | `Authorization: Bearer <jwt>` | silo (TUI), `/api/silo/v1/*` | `authmgr.ValidateSessionToken` (24h expiry) |
+| JWT Bearer | `Authorization: Bearer <jwt>` | silo (TUI), Porter, porter-fuse, `/api/silo/v1/*` | `authmgr.ValidateSessionToken` (24h expiry) |
 | API Token | `Authorization: Token <40-hex>` | SeaDrive, `/api2/*` | `apitokenstore.Lookup` (persistent in `ApiToken` SQL table) |
 | Repo Token | `Seafile-Repo-Token: <40-hex>` | All sync clients, `/repo/*`, `/accessible-repos` | `repomgr.GetEmailByToken` (persistent in `RepoUserToken` SQL table) |
 
@@ -71,7 +75,7 @@ credential: one to learn what it is talking to, one to get a token.
 | GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.5","features":[…],"block_size":8388608}` — semver with no leading `v`, the capability list a client should branch on instead of the version, and the offset a client must chunk at for its block ids to match the store's |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
 | POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
-| GET | `/api/silo/v1/repos` | List repos owned by authenticated user |
+| GET | `/api/silo/v1/repos` | List repos owned by authenticated user, each with `head_commit_id` — the anchor `changes` starts from. `[]`, never `null`, for an empty account |
 | POST | `/api/silo/v1/repos` | Create a new repo |
 | DELETE | `/api/silo/v1/repos/{repoid}` | Delete a repo |
 | PATCH | `/api/silo/v1/repos/{repoid}` | `{"name":"New name"}` — rename a library. `PATCH` because the body names only what changes |
@@ -253,6 +257,32 @@ front of a file shifts every boundary after it and nothing dedups. Appends and
 unchanged regions are free; edits in the middle are not.
 [`protocol-gaps.md`](protocol-gaps.md) has what that would cost to fix.
 
+#### Reading `changes`
+
+`{"anchor": "<commit>", "changes": [...]}`, where each change is
+`{op, path, old_path?, id?, size, is_dir}` and `op` is `create`, `delete`,
+`modify` or `move`. The anchor comes back even when nothing changed, so a
+polling caller can always advance. `old_path` is set for moves, and a rename is
+a move — compare the parent directories if you need to tell them apart.
+
+It is a **net diff between two trees**, not a replay of what happened. A file
+created and then renamed twice arrives as one create at its final path; a file
+created and deleted between the two anchors does not arrive at all. That is the
+right shape for reconciliation and the wrong shape for an audit log.
+
+The consequence worth designing around: **one batch can carry two operations for
+the same path**, distinguishable only by `is_dir`. Deleting a directory `/Z` and
+creating a file called `Z` between two anchors produces
+
+```json
+{"op": "create", "path": "/Z", "is_dir": false}
+{"op": "delete", "path": "/Z", "is_dir": true}
+```
+
+A client keyed on path alone will apply those in some order and can delete the
+file it just created. Key on `(path, is_dir)`, or carry stable identifiers of
+your own.
+
 #### Removed in 0.4.4
 
 `dir/`, `mkdir`, `file`, `download`, `rename` and `move` were the pre-entries
@@ -280,6 +310,45 @@ The mechanism is untouched. `/files/{token}/{name}` still serves the Seafile
 lane, and `POST /api/silo/v1/access-tokens` with `{"repo_id":…, "obj_id":<file
 id>, "op":"download"}` still mints the same token the redirect used, if a
 browser-usable URL is ever wanted here.
+
+### Change notifications — `WS /notification`
+
+A WebSocket, served in-process when `EnableNotification` is set (it is, by
+default). Clients subscribe per library and receive `repo-update` when a commit
+lands, which is what lets a sync client react in about a second instead of
+polling.
+
+Since 0.4.4 getting a subscribe token is one call on this lane:
+
+```
+POST /api/silo/v1/repos/{id}/notify-token   Authorization: Bearer <jwt>
+  → {"jwt_token": "<jwt>", "expires_at": 1787312025}
+```
+
+72h, authorized with `share.CheckPerm` against the session user, and `404` —
+not `403` — when notifications are disabled, so a client can tell "no such
+feature" from "not your library". Note `expires_at` is a **number** in a family
+of responses that are otherwise strings.
+
+Then connect to `/notification` and send one frame per batch of libraries:
+
+```json
+{"type": "subscribe", "content": {"repos": [{"id": "<repo>", "jwt_token": "<jwt>"}]}}
+```
+
+Inbound frames are `{"type": "repo-update", "content": {"repo_id": …, "commit_id": …}}`
+and `{"type": "jwt-expired", "content": …}`; unknown types are ignored rather
+than closing the socket. `unsubscribe` takes the same frame shape as
+`subscribe`. The server pings every 30s and drops a client that has not ponged
+within 90s; most WebSocket libraries answer pings for you.
+
+The older two-hop route still exists and is what the Seafile clients use:
+`POST /api/silo/v1/repos/{id}/sync-token` for a repo token, then
+`GET /repo/{id}/jwt-token` presenting it. That second call rejects a Bearer JWT
+with `403 Invalid token`, because `validateToken` resolves against the
+`RepoUserToken` table and a Silo-lane client has no row in it — which looks
+exactly like a missing endpoint. `notify-token` exists so no new client has to
+learn that.
 
 ### Seahub compatibility API — `/api2/*`
 
@@ -325,7 +394,7 @@ validated against the `RepoUserToken` SQL table per request (with a
 | POST | `/repo/{id}/recv-fs` | Upload FS objects |
 | POST | `/repo/{id}/check-blocks` | Check which blocks exist server-side |
 | GET | `/repo/{id}/quota-check?delta=N` | Will this write fit in quota? |
-| GET | `/repo/{id}/jwt-token` | Get a JWT for notification server |
+| GET | `/repo/{id}/jwt-token` | Get a JWT for subscribing to `/notification`. Wants a **repo token**, not a Bearer JWT — a Silo-lane client calls [`notify-token`](#change-notifications--ws-notification) instead |
 | POST | `/repo/head-commits-multi` | Get HEAD commits for multiple repos in one round-trip. Silo requires a sync token here and answers only for repos that token's owner can read; upstream leaves it unauthenticated. A client that sends no token gets 400 and should fall back to per-repo `GET /commit/HEAD`. |
 | GET | `/files/{token}/{filename}` | Download a file via a short-lived access token |
 | GET | `/repos/{repoid}/files/{filepath}` | Download a file by path (uses repo token) |
