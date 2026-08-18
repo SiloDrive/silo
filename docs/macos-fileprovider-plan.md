@@ -319,6 +319,7 @@ loops, or Finder showing stale state forever.
 | 412 / version mismatch | **no error** — see below | inside `modifyItem`, return the server's item on the success path with `shouldFetchContent: true`. Send `If-Match` built from `baseVersion.contentVersion` on every write |
 | 413 / 507 | `.insufficientQuota` | surface to user |
 | 429 | `.serverUnreachable` | honour `Retry-After`, back off |
+| 503 | `.serverUnreachable` | honour `Retry-After`, retry — a contended write, nothing was applied |
 | 5xx | `.serverUnreachable` | exponential backoff, retriable |
 | offline / DNS | `.serverUnreachable` | retriable |
 | anchor too old | `.syncAnchorExpired` | system falls back to full enumeration |

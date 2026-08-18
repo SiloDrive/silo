@@ -704,18 +704,13 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/repos", api.ListReposHandler).Methods("GET")
 	apiRouter.HandleFunc("/repos", api.CreateRepoHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}", api.DeleteRepoHandler).Methods("DELETE")
-	apiRouter.HandleFunc("/repos/{repoid}/dir/", api.ListDirHandler).Methods("GET")
 	apiRouter.HandleFunc("/repos/{repoid}/changes", api.ChangesHandler).Methods("GET")
 	// The entries surface. One route, all methods: entriesHandler answers a
 	// bad method with 405 and an Allow header, which mux would otherwise turn
 	// into a 404 that reads as "wrong path".
 	apiRouter.HandleFunc("/repos/{repoid}/entries/{path:.*}", entriesHandler)
-	apiRouter.HandleFunc("/repos/{repoid}/mkdir", mkdirHandler).Methods("POST")
-	apiRouter.HandleFunc("/repos/{repoid}/file", deleteFileHandler).Methods("DELETE")
-	apiRouter.HandleFunc("/repos/{repoid}/download", downloadFileHandler).Methods("GET")
-	apiRouter.HandleFunc("/repos/{repoid}/rename", renameHandler).Methods("POST")
-	apiRouter.HandleFunc("/repos/{repoid}/move", moveHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}/sync-token", api.CreateRepoSyncTokenHandler).Methods("POST")
+	apiRouter.HandleFunc("/repos/{repoid}/notify-token", api.CreateNotifyTokenHandler).Methods("POST")
 
 	// SeaDrive compatibility routes (/api2/)
 	// These use Seahub/DRF-style "Authorization: Token <token>" auth, not Bearer JWT.

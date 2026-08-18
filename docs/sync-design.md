@@ -209,9 +209,10 @@ in place, with no v2, and the method signatures didn't change, so the TUI and
 CLI carried over untouched. That window closes the moment a separately-installed
 client points at it, which is why this happened before Porter and not after.
 
-The older `dir`/`download`/`file`/`mkdir`/`rename`/`move` endpoints still exist
-and still work. Nothing outside this repository has ever used them, so they stay
-deletable.
+The older `dir`/`download`/`file`/`mkdir`/`rename`/`move` endpoints were removed
+in 0.4.4. Nothing outside this repository had ever used them and each had an
+equivalent on the entries surface, so they went while that was still true;
+`protocol.md` lists what to call instead.
 
 Sync itself stays out of this. `entries` is human-shaped — one thing at a time,
 ls/get/put. Sync is machine-shaped: batch negotiation over content-addressed

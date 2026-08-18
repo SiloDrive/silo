@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -421,12 +422,7 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 
 	if _, err := postFilesAndGenCommit([]string{fileName}, repo.ID, user, parentDir, true,
 		[]string{id}, []int64{indexedSize}, 0, gcID); err != nil {
-		if errors.Is(err, ErrGCConflict) {
-			http.Error(w, "GC conflict; retry", http.StatusConflict)
-			return
-		}
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to commit %s in repo %s", path, repoID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		writeCommitErr(w, r, err, fmt.Sprintf("commit of %s in repo %s", path, repoID))
 		return
 	}
 

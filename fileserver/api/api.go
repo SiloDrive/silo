@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"net/url"
 
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/fsmgr"
@@ -183,7 +182,14 @@ func repoSelect(alias string) string {
 }
 
 func scanRepos(rows *sql.Rows) []repoInfo {
-	var repos []repoInfo
+	// Allocated rather than declared, so an empty result set marshals as [] and
+	// not null. /changes already promises "always an array, never null", and a
+	// client has no way to learn that the two list endpoints on the same lane
+	// disagree except by emptying an account and looking. Go hides it — a nil
+	// slice ranges zero times — but an account with no libraries is the state
+	// every new account is in, so null is the first response a fresh client
+	// sees, and in TypeScript, Python or Swift it is not iterable.
+	repos := make([]repoInfo, 0)
 	for rows.Next() {
 		var repo repoInfo
 		var name, isEncrypted, commitID sql.NullString
@@ -339,52 +345,17 @@ type dirEntry struct {
 	Modifier string `json:"modifier,omitempty"`
 }
 
-func ListDirHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
-	vars := mux.Vars(r)
-	repoID := vars["repoid"]
-
-	perm := share.CheckPerm(repoID, user)
-	if perm == "" {
-		http.Error(w, "Permission denied", http.StatusForbidden)
-		return
-	}
-
-	repo, err := repomgr.GetWithReason(repoID)
-	if err != nil {
-		code, msg := repomgr.StatusFor(err)
-		http.Error(w, msg, code)
-		return
-	}
-
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		path = "/"
-	}
-	path, _ = url.QueryUnescape(path)
-
-	dir, err := fsmgr.GetSeafdirByPath(repo.StoreID, repo.RootID, path)
-	if err != nil {
-		log.Errorf("Failed to get directory %s in repo %s: %v", path, repoID, err)
-		http.Error(w, "Directory not found", http.StatusNotFound)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, dirEntries(dir))
-}
-
 // ListDirByID writes the listing of a directory the caller has already resolved
-// and authorized.
+// and authorized. It is the only way to list a directory: getEntry resolves the
+// path to answer conditional requests, so it arrives holding the id.
 //
-// It exists so a caller holding the directory's id does not have to go back
-// through ListDirHandler, which would re-check the permission, re-load the
-// repository and walk the path from the root a second time. None of those is
-// cached — CheckPerm is two or more queries, repomgr.Get is a query plus a
-// commit read, and every directory object on the way down is a fresh read and
-// inflate — so on the entries surface, which resolves the path anyway to answer
-// conditional requests, the second walk was pure duplication.
-//
-// The listing itself stays in one place: both entry points end at dirEntries.
+// Taking the id rather than the path is the point. A path-taking entry point
+// has to re-check the permission, re-load the repository and walk from the root
+// a second time, and none of that is cached — CheckPerm is two or more queries,
+// repomgr.Get is a query plus a commit read, and every directory object on the
+// way down is a fresh read and inflate. The old GET /repos/{id}/dir/?path=
+// handler did exactly that second walk and was deleted with the rest of the
+// pre-entries surface; do not reintroduce a path-taking variant.
 func ListDirByID(w http.ResponseWriter, storeID, dirID string) {
 	dir, err := fsmgr.GetSeafdir(storeID, dirID)
 	if err != nil {

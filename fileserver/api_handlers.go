@@ -14,7 +14,6 @@ import (
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
-	"github.com/dkam/silo/fileserver/tokenstore"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
@@ -119,8 +118,7 @@ func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 	desc := fmt.Sprintf("Renamed library to \"%s\"", newName)
 	_, err := GenNewCommit(repo, head, head.RootID, user, desc, false, "", false)
 	if err != nil {
-		log.Errorf("Failed to commit rename: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		writeCommitErr(w, r, err, "library rename")
 		return
 	}
 
@@ -163,8 +161,7 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 	desc := fmt.Sprintf("Added directory \"%s\"", dirName)
 	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, "", false)
 	if err != nil {
-		log.Errorf("Failed to commit mkdir: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		writeCommitErr(w, r, err, "mkdir")
 		return
 	}
 
@@ -200,107 +197,7 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 	desc := fmt.Sprintf("Deleted \"%s\"", filename)
 	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, "", false)
 	if err != nil {
-		log.Errorf("Failed to commit delete: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
-func downloadFileHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
-	vars := mux.Vars(r)
-	repoID := vars["repoid"]
-
-	path, _ := url.QueryUnescape(r.URL.Query().Get("path"))
-	if path == "" {
-		http.Error(w, "path is required", http.StatusBadRequest)
-		return
-	}
-
-	perm := share.CheckPerm(repoID, user)
-	if perm == "" {
-		http.Error(w, "Permission denied", http.StatusForbidden)
-		return
-	}
-
-	repo, err := repomgr.GetWithReason(repoID)
-	if err != nil {
-		code, msg := repomgr.StatusFor(err)
-		http.Error(w, msg, code)
-		return
-	}
-
-	fileID, mode, err := fsmgr.GetObjIDByPath(repo.StoreID, repo.RootID, path)
-	if err != nil || fileID == "" {
-		http.Error(w, "File not found", http.StatusNotFound)
-		return
-	}
-	if fsmgr.IsDir(mode) {
-		http.Error(w, "Cannot download a directory", http.StatusBadRequest)
-		return
-	}
-
-	filename := upath.Base(path)
-	token := tokenstore.CreateToken(repoID, fileID, "download", user, true)
-	redirectURL := fmt.Sprintf("/files/%s/%s", token, url.PathEscape(filename))
-	http.Redirect(w, r, redirectURL, http.StatusFound)
-}
-
-func renameHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
-	vars := mux.Vars(r)
-	repoID := vars["repoid"]
-
-	path, _ := url.QueryUnescape(r.URL.Query().Get("path"))
-	newName, _ := url.QueryUnescape(r.URL.Query().Get("newname"))
-	if path == "" || newName == "" {
-		http.Error(w, "path and newname are required", http.StatusBadRequest)
-		return
-	}
-	if !checkEntryName(w, newName) {
-		return
-	}
-
-	repo, head, ok := loadRepoAndCommit(w, repoID, user)
-	if !ok {
-		return
-	}
-
-	// Get the existing entry
-	oldEntry, err := fsmgr.GetDirentByPath(repo.StoreID, head.RootID, path)
-	if err != nil || oldEntry == nil {
-		http.Error(w, "File not found", http.StatusNotFound)
-		return
-	}
-
-	parentDir := upath.Dir(path)
-	oldName := upath.Base(path)
-
-	// Delete old entry
-	rootAfterDel, err := DelFileFromTree(repo.StoreID, head.RootID, parentDir, oldName)
-	if err != nil {
-		log.Errorf("Failed to delete old entry: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	// Add new entry with same ID but new name
-	newDent := fsmgr.NewDirent(oldEntry.ID, newName, oldEntry.Mode, time.Now().Unix(), oldEntry.Modifier, oldEntry.Size)
-	var names []string
-	newRootID, err := DoPostMultiFiles(repo, rootAfterDel, parentDir, []*fsmgr.SeafDirent{newDent}, user, false, &names)
-	if err != nil {
-		log.Errorf("Failed to add renamed entry: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	desc := fmt.Sprintf("Renamed \"%s\" to \"%s\"", oldName, newName)
-	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, "", false)
-	if err != nil {
-		log.Errorf("Failed to commit rename: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		writeCommitErr(w, r, err, "delete")
 		return
 	}
 
@@ -389,8 +286,7 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 	desc := fmt.Sprintf("Moved \"%s\"", srcName)
 	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, "", false)
 	if err != nil {
-		log.Errorf("Failed to commit move: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		writeCommitErr(w, r, err, "move")
 		return
 	}
 

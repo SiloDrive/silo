@@ -23,9 +23,11 @@ version number protects consumers you cannot upgrade atomically, and until now
 v1 had exactly one consumer shipping in the same binary as the server. That
 window closes the moment a separately-installed client pins the old shape.
 
-The older endpoints still work and are still routed. Nothing outside the Silo
-repository has ever used them, so they remain deletable — **do not build against
-them.**
+The older endpoints are **gone as of 0.4.4** — `dir/`, `mkdir`, `file`,
+`download`, `rename` and `move` no longer route. Nothing outside this repository
+had ever used them, and every one had an equivalent here, so they were removed
+while that was still true rather than carried indefinitely. `protocol.md` lists
+what to call instead.
 
 ## Authentication
 
@@ -167,7 +169,12 @@ GET /api/silo/v1/repos/{repo}/entries/
 ]
 ```
 
-The all-zeros id is the empty-directory sentinel, not an error.
+The all-zeros id is the id of an empty object, not an error. Both an empty
+directory and a zero-byte file carry it — ids are content hashes and empty
+content hashes to one value — so it says nothing about which one you have. Read
+`type` for that, and do not use the id to tell them apart or as a cache key: a
+content-addressed cache keyed on it collides every empty object in the account
+onto one entry.
 
 ### Reading a file
 
@@ -295,11 +302,53 @@ version without a follow-up GET:
 a directory tree.
 
 A trailing slash also means "directory", but prefer the explicit `?type=dir`.
-The distinction is load-bearing now: a bare `PUT` stores the body, so dropping
-the parameter creates an empty file where a directory was meant.
+The distinction is load-bearing: a bare `PUT` stores the body, so dropping the
+marker creates an empty file where a directory was meant — silently, with a
+`201`, and indistinguishable by id from an empty directory (both carry the
+all-zeros sentinel).
+
+Prefer the parameter because the slash does not survive ordinary path handling.
+Go's `path.Join` and `path.Clean` both drop it; `url.PathEscape` turns it into
+`%2F`; proxies and routers normalise it. Silo's own CLI cannot express the
+trailing-slash form at all — `escapePathSegments` (`client/client.go:270`)
+opens with `strings.Trim(p, "/")`, which is exactly the line an obvious client
+implementation writes. A query parameter is untouched by all of that, and it
+says the same word `type` that the listing says back to you.
 
 The library root cannot be moved (**400**) or deleted (**400**), and creating it
 is a **409**.
+
+### What a 503 on a write means
+
+The full status-code reference, including the overloaded ones, is
+[`responses.md`](responses.md); the paragraphs here cover only what bites a sync
+client in practice.
+
+
+Concurrent writers into one library race for the branch head, and the loser is
+told **503** with `Retry-After: 1` and a body of `write contention; retry`.
+Nothing was applied. The identical request will usually succeed on the retry,
+unchanged — retry it rather than surfacing a failure.
+
+This is the case where a wrong status code costs data. A **500** means the
+server hit an unexpected condition and *may have applied part of the request*,
+so the only safe handling is to stop and surface it — `EIO` from a FUSE client,
+which to the application that already wrote the bytes is data loss. Before
+0.4.4 a contended write arrived as exactly that, after a median wait of 14
+seconds, on a write the server would have accepted a second later. If you run
+against an older server, a 500 from a write during concurrent activity is worth
+one retry before you believe it.
+
+Not to be confused with the other write refusals: **412** is a failed `If-Match`
+(someone else's edit — re-read and merge), and **409** is a destination
+collision (`filenameCollision` — rename and retry).
+
+One wart, worth knowing before you write the 409 branch: **409 is currently
+overloaded.** A write that collides with a running GC also answers 409, with the
+body `GC conflict; retry`, and that one wants the same handling as a 503 — retry
+the identical request — not a rename. The two are distinguishable only by body
+text today. Prefer retrying a 409 whose body says `retry` and renaming only on
+`Destination exists`.
 
 ## Conditional writes
 
@@ -510,14 +559,19 @@ looks like.
 Polling `/changes` is correct but latent. `WS /notification` tells you when a
 library moves, so you can call `/changes` immediately instead of on a timer.
 
-Getting subscribed takes two credentials you do not already have, because this
-endpoint predates the Silo lane and speaks the Seafile lane's auth:
+Getting subscribed takes one call, on the lane you are already on:
 
-1. `POST /api/silo/v1/repos/{repoid}/sync-token` — **Bearer** → `{"token":…}`
-   A long-lived repo token. Mint one per library and keep it.
-2. `GET /repo/{repoid}/jwt-token` — header `Seafile-Repo-Token: <that token>`
-   → `{"jwt_token":…}`. Valid **72 hours**, and per library.
-3. Connect to `WS /notification` and send one frame:
+1. `POST /api/silo/v1/repos/{repoid}/notify-token` — **Bearer** →
+   `{"jwt_token":…, "expires_at":<unix seconds>}`. Valid **72 hours**, and per
+   library. Authorized by your session against the library's permissions, so a
+   read-only share can subscribe and nothing else is needed.
+
+   `expires_at` is a **number**, not a string. Every other token endpoint on
+   this lane returns a body of strings, so a client that decodes them all
+   through one `map[string]string` breaks here — see
+   `docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md`. Decode
+   into a typed struct.
+2. Connect to `WS /notification` and send one frame:
 
 ```json
 {"type":"subscribe","content":{"repos":[{"id":"<repo-id>","jwt_token":"<jwt>"}]}}
@@ -534,17 +588,28 @@ endpoint predates the Silo lane and speaks the Seafile lane's auth:
 directly into `GET /changes?since=<your last anchor>`. Do not treat the pushed
 `commit_id` as your new anchor without fetching — you may have missed events.
 
-On `jwt-expired`, re-mint at step 2 and re-subscribe. The 72-hour lifetime means
+On `jwt-expired`, re-mint at step 1 and re-subscribe. The 72-hour lifetime means
 this will happen to any long-running mount, so implement it before you ship
-rather than after the first mysterious silence.
+rather than after the first mysterious silence. Better: re-mint on `expires_at`
+and never see `jwt-expired` at all — the difference between re-minting on
+schedule and re-minting in response to being disconnected mid-session.
 
 The server pings every **30 seconds** and hangs up if it has not seen a pong in
 **90**. Most WebSocket libraries answer pings automatically — confirm yours
 does, because the failure mode is a connection that looks alive and delivers
 nothing.
 
-If notifications are disabled server-side, step 2 returns **404**. Treat that as
+If notifications are disabled server-side, step 1 returns **404**. Treat that as
 "fall back to polling", not as an error.
+
+**Older servers.** `notify-token` landed after 0.4.3. Against a server without
+it the request 404s the same way a disabled notification server does, and the
+two are worth telling apart only if you want the fallback: mint a repo token
+with `POST /api/silo/v1/repos/{repoid}/sync-token` (**Bearer** →
+`{"token":…}`), then `GET /repo/{repoid}/jwt-token` with header
+`Seafile-Repo-Token: <that token>` → `{"jwt_token":…}`, no `expires_at`. That
+pair is the Seafile lane's auth and is kept only for the upstream client; log
+when you use it so it stays visible rather than becoming a habit.
 
 ## Checking your work against the server
 

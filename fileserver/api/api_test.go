@@ -200,3 +200,40 @@ func TestCreateAccessTokenRequiresRepoAndOp(t *testing.T) {
 		})
 	}
 }
+
+// An account with no libraries is the state every new account is in, so this is
+// the first response a fresh client sees. It has to be an array: /changes
+// already promises "always an array, never null", and two list endpoints on one
+// lane spelling "nothing" differently is something a client can only learn by
+// emptying an account and looking. Go hides it — a nil slice ranges zero times
+// — which is why this asserts on the bytes rather than on the decoded value.
+func TestListReposAnswersEmptyArrayNotNull(t *testing.T) {
+	setupPerms(t)
+
+	req := httptest.NewRequest("GET", "/api/silo/v1/repos", nil)
+	req = req.WithContext(context.WithValue(req.Context(), middleware.UserEmailKey, strangerUser))
+
+	rr := httptest.NewRecorder()
+	ListReposHandler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != "[]" {
+		t.Errorf("empty account listed as %q, want []", got)
+	}
+
+	// And the populated case still lists, so the fix did not empty the endpoint.
+	req = httptest.NewRequest("GET", "/api/silo/v1/repos", nil)
+	req = req.WithContext(context.WithValue(req.Context(), middleware.UserEmailKey, ownerUser))
+	rr = httptest.NewRecorder()
+	ListReposHandler(rr, req)
+
+	var repos []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &repos); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(repos) != 1 || repos[0]["id"] != testRepoID {
+		t.Errorf("owner's listing = %v, want the one seeded repo", repos)
+	}
+}

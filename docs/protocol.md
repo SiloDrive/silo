@@ -5,6 +5,10 @@ HTTP endpoints the Go fileserver implements, groups them by which client uses
 them, and notes which Seafile-protocol endpoints are deliberately stubbed or
 left unimplemented.
 
+It says which endpoints exist. For what the *status codes* mean — and which are
+already spoken for — see [`responses.md`](responses.md), which is the file to
+check before a new handler picks one.
+
 Treat this as the source of truth when a new client release starts hitting
 an endpoint we don't support — find it in the "not implemented" list and
 decide whether to shim it.
@@ -36,23 +40,77 @@ The middleware for each lives in `fileserver/middleware/`:
 
 ### Native management API — `/api/silo/v1/*`
 
-JSON request/response bodies. Used by the silo TUI. Protected by
-`RequireAuth` (JWT Bearer).
+JSON request/response bodies. Used by the silo TUI, the CLI in `client/`, and
+the sync clients. Protected by `RequireAuth` (JWT Bearer), except the two marked
+**No auth** below — they are registered above the authenticated subrouter
+(`server.go:698`) because they are what a client needs *before* it has a
+credential: one to learn what it is talking to, one to get a token.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/silo/v1/auth/login` | Email + password → JWT |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.4"}` — semver, no leading `v` |
+| POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
 | POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
 | GET | `/api/silo/v1/repos` | List repos owned by authenticated user |
 | POST | `/api/silo/v1/repos` | Create a new repo |
 | DELETE | `/api/silo/v1/repos/{repoid}` | Delete a repo |
-| GET | `/api/silo/v1/repos/{repoid}/dir/?path=` | List directory contents |
-| POST | `/api/silo/v1/repos/{repoid}/mkdir` | Create a directory |
-| DELETE | `/api/silo/v1/repos/{repoid}/file?path=` | Delete a file |
-| GET | `/api/silo/v1/repos/{repoid}/download?path=` | Download file (302 → `/files/{token}/...`) |
-| POST | `/api/silo/v1/repos/{repoid}/rename` | Rename a file or directory |
-| POST | `/api/silo/v1/repos/{repoid}/move` | Move a file or directory |
 | POST | `/api/silo/v1/repos/{repoid}/sync-token` | Generate a repo sync token (for subsequent sync-protocol calls) |
+| POST | `/api/silo/v1/repos/{repoid}/notify-token` | Mint a notification JWT for `WS /notification` (72h; `404` if notifications are disabled) |
+
+#### The entries surface
+
+One addressable noun with the HTTP methods as its verbs. This is what new
+clients speak, and what `client/` speaks; the wire contract with captured
+responses is in [`porter-brief.md`](porter-brief.md), and the status codes are
+in [`responses.md`](responses.md).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/silo/v1/repos/{repoid}/entries/{path}` | Read a file's bytes, or list a directory. Ranged; `ETag`/`304` |
+| PUT | `/api/silo/v1/repos/{repoid}/entries/{path}` | Store a file — body is the content |
+| PUT | `/api/silo/v1/repos/{repoid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter) |
+| POST | `/api/silo/v1/repos/{repoid}/entries/{path}` | `{"op":"move","to":"/dst"}` — moving covers renaming |
+| DELETE | `/api/silo/v1/repos/{repoid}/entries/{path}` | Delete a file or directory |
+| GET | `/api/silo/v1/repos/{repoid}/changes?since=` | Changes since an anchor (`410` when the anchor is too old) |
+
+`{path}` is relative to the library root and never repeats the library name;
+`entries/` with nothing after it is the root. Every mutating method honours
+`If-Match` and `If-None-Match`.
+
+Directory creation is `PUT …?type=dir` rather than a `MKCOL`-style verb or an
+RPC: `PUT` already means "make the resource at this URI have this state", and
+the marker resolves the one ambiguity — a directory has no body, so without it a
+bodiless `PUT` is indistinguishable from writing an empty file. Parents are not
+created implicitly; a `PUT` into a missing directory is a `404`, for the same
+reason WebDAV's `MKCOL` answers `409` rather than building the tree.
+
+#### Removed in 0.4.4
+
+`dir/`, `mkdir`, `file`, `download`, `rename` and `move` were the pre-entries
+shape: verbs in paths, one resource under two names, the path passed as a query
+parameter. Every one of them had an equivalent on the entries surface, so they
+were duplicates rather than capabilities, and they are gone.
+
+| removed | call instead |
+|---|---|
+| `GET /repos/{repoid}/dir/?path=` | `GET repos/{repoid}/entries/{path}` on a directory |
+| `POST /repos/{repoid}/mkdir` | `PUT repos/{repoid}/entries/{path}?type=dir` |
+| `DELETE /repos/{repoid}/file?path=` | `DELETE repos/{repoid}/entries/{path}` |
+| `GET /repos/{repoid}/download?path=` | `GET repos/{repoid}/entries/{path}` — streams on the same response |
+| `POST /repos/{repoid}/rename` | `POST repos/{repoid}/entries/{path}` with `{"op":"move"}` |
+| `POST /repos/{repoid}/move` | `POST repos/{repoid}/entries/{path}` with `{"op":"move"}` |
+
+`download`'s `302` to `/files/{token}/{name}` is the one behaviour that does not
+survive verbatim, and its removal was already the plan: this lane has no
+browser-shaped consumer, and for a client that sets a bearer header anyway a
+capability URL is overhead — for a FUSE client, two round trips per read. See
+[`capability-urls.md`](capability-urls.md), which is the decision; this removes
+the last route that still contradicted it.
+
+The mechanism is untouched. `/files/{token}/{name}` still serves the Seafile
+lane, and `POST /api/silo/v1/access-tokens` with `{"repo_id":…, "obj_id":<file
+id>, "op":"download"}` still mints the same token the redirect used, if a
+browser-usable URL is ever wanted here.
 
 ### Seahub compatibility API — `/api2/*`
 

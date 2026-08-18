@@ -1792,13 +1792,11 @@ retry:
 		// non-replace upload retried forever, holding the request open and
 		// re-walking the tree each time.
 		if retryCnt >= maxPostFilesRetries {
-			return "", ErrConflict
+			return "", fmt.Errorf("stop posting files to repo %s after %d retries: %w", repoID, maxPostFilesRetries, ErrRetriesExhausted)
 		}
-		retryCnt++
-		/* Sleep random time between 0 and 3 seconds. */
-		random := rand.Intn(30) + 1
 		log.Debugf("concurrent upload retry :%d", retryCnt)
-		time.Sleep(time.Duration(random*100) * time.Millisecond)
+		time.Sleep(contentionBackoff(retryCnt))
+		retryCnt++
 		repo = repomgr.Get(repoID)
 		if repo == nil {
 			err := fmt.Errorf("failed to get repo %s", repoID)
@@ -1853,7 +1851,50 @@ func getCanonPath(p string) string {
 var (
 	ErrConflict   = errors.New("concurrent upload conflict")
 	ErrGCConflict = errors.New("GC Conflict")
+	// ErrRetriesExhausted is a write that kept losing the race for the branch
+	// head until its retry budget ran out. It is contention, not breakage:
+	// nothing was applied, and the same request will usually succeed on a
+	// retry. It exists so callers can tell that apart from a real failure —
+	// without it the exhaustion case is an ordinary error and every HTTP
+	// handler answers 500, which is the one class a client must not retry.
+	ErrRetriesExhausted = errors.New("write contention: retries exhausted")
 )
+
+// writeCommitErr answers a request whose commit failed, and says so in the log
+// exactly once. It lives beside the sentinels rather than in either handler
+// file because entries.go and api_handlers.go both commit, and two copies of
+// this decision would drift — the same reason repomgr.StatusFor exists.
+//
+// The distinction that matters to a client is contention versus breakage. 500
+// is the one class a client must not retry blind: it means the server hit an
+// unexpected condition and may have applied part of the request, so the safe
+// response is to stop and surface it. A lost race for the branch head is the
+// opposite — nothing was applied, and the identical request will usually
+// succeed a moment later.
+//
+// 503 rather than the 409 the GC-conflict case uses, because 409 is no longer
+// free: docs/bugs/fixed/move-onto-directory-destroys-it.md gave it to destination
+// collisions, and Porter maps that to NSFileProviderError.filenameCollision —
+// "return the existing item so the system renames". Answering a contended
+// write with 409 would tell a File Provider client to rename the user's file.
+// 503 says transient, and Retry-After says when.
+func writeCommitErr(w http.ResponseWriter, r *http.Request, err error, what string) {
+	switch {
+	case errors.Is(err, ErrGCConflict):
+		http.Error(w, "GC conflict; retry", http.StatusConflict)
+	case errors.Is(err, ErrRetriesExhausted), errors.Is(err, ErrConflict):
+		// Logged below error level on purpose: contention is an expected
+		// outcome of concurrent writers, and errors go to Sentry. The 3000-file
+		// seeding run in docs/bugs/fixed/write-contention-returns-500.md would have
+		// filed 74 reports of the server working as designed.
+		log.WithContext(r.Context()).WithError(err).Infof("%s lost the race for the branch head", what)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "write contention; retry", http.StatusServiceUnavailable)
+	default:
+		log.WithContext(r.Context()).WithError(err).Errorf("%s failed", what)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
 
 // maxPostFilesRetries bounds how many times postFilesAndGenCommit re-walks and
 // re-commits after losing a race for the branch head. Ten, matching
@@ -1861,6 +1902,32 @@ var (
 // different depths, and there is no reason for the outer one to be more
 // patient than the inner.
 const maxPostFilesRetries = 10
+
+// genNewCommitRetries bounds how many times GenNewCommit re-merges and retries
+// after losing the race for the branch head. A var only so tests can lower it
+// — nothing in the server writes it.
+var genNewCommitRetries = 10
+
+// contentionBackoff is how long to wait before retry number attempt (0-based)
+// of a write that lost the race for the branch head: exponential from 50ms to
+// a 1s ceiling, with full jitter.
+//
+// It replaces a flat "random 100–3000 ms". That made the first retry wait an
+// average of 1.55s to re-take a head the winning writer had claimed in 20ms,
+// and it put ten such waits on the request path — a contended write could hold
+// a connection for 30 seconds before answering, which is most of why the
+// failures in docs/bugs/fixed/write-contention-returns-500.md took a median of 14
+// seconds to arrive. Full jitter (uniform over [0, window), not the window
+// itself) is the part that actually spreads a thundering herd; the doubling is
+// what stops a persistent loser from hammering.
+func contentionBackoff(attempt int) time.Duration {
+	const base, ceiling = 50 * time.Millisecond, time.Second
+	window := base << min(attempt, 5)
+	if window > ceiling {
+		window = ceiling
+	}
+	return time.Duration(rand.Int63n(int64(window)))
+}
 
 // GenNewCommit creates a new commit with the given root and updates the branch.
 func GenNewCommit(repo *repomgr.Repo, base *commitmgr.Commit, newRoot, user, desc string, handleConncurrentUpdate bool, lastGCID string, checkGC bool) (string, error) {
@@ -1875,8 +1942,6 @@ func GenNewCommit(repo *repomgr.Repo, base *commitmgr.Commit, newRoot, user, des
 	}
 	var commitID string
 
-	maxRetryCnt := 10
-
 	for {
 		retry, err := genCommitNeedRetry(repo, base, commit, newRoot, user, handleConncurrentUpdate, &commitID, lastGCID, checkGC)
 		if err != nil {
@@ -1889,10 +1954,8 @@ func GenNewCommit(repo *repomgr.Repo, base *commitmgr.Commit, newRoot, user, des
 			return "", ErrConflict
 		}
 
-		if retryCnt < maxRetryCnt {
-			/* Sleep random time between 0 and 3 seconds. */
-			random := rand.Intn(30) + 1
-			time.Sleep(time.Duration(random*100) * time.Millisecond)
+		if retryCnt < genNewCommitRetries {
+			time.Sleep(contentionBackoff(retryCnt))
 			repo = repomgr.Get(repoID)
 			if repo == nil {
 				err := fmt.Errorf("repo %s doesn't exist", repoID)
@@ -1900,8 +1963,7 @@ func GenNewCommit(repo *repomgr.Repo, base *commitmgr.Commit, newRoot, user, des
 			}
 			retryCnt++
 		} else {
-			err := fmt.Errorf("stop updating repo %s after %d retries", repoID, maxRetryCnt)
-			return "", err
+			return "", fmt.Errorf("stop updating repo %s after %d retries: %w", repoID, genNewCommitRetries, ErrRetriesExhausted)
 		}
 	}
 
