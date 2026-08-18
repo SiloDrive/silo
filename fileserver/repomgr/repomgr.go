@@ -6,7 +6,10 @@ import (
 	"crypto/sha1"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"net/http"
+	"sync"
 	"time"
 
 	// Change to non-blank imports when use
@@ -71,8 +74,44 @@ func Init(readDB, writeDB *sql.DB) {
 	seafileWriteDB = writeDB
 }
 
-// Get returns Repo object by repo ID.
+// A repo can fail to load for four unrelated reasons, and only one of them is
+// a statement about the request. Collapsing them — which returning a bare nil
+// does — is how a server that has lost an object comes to answer 404, and a
+// 404 tells a sync client the library was deleted and its local copy should
+// go with it. The copy it would delete is the one that could have restored
+// the object.
+var (
+	// ErrRepoNotFound means there is no such library. This is the only one of
+	// the four that a client may act on by forgetting the library.
+	ErrRepoNotFound = errors.New("no such library")
+
+	// ErrRepoCorrupted means the library exists but the server cannot read its
+	// head: an empty commit id in Branch, or a commit object the store has
+	// lost. Nothing has been deleted, and the client's copy may be the only
+	// intact one left.
+	ErrRepoCorrupted = errors.New("library storage is damaged")
+
+	// ErrRepoUnavailable means the database could not be read, so nothing is
+	// known about the library either way. Expected to clear on its own.
+	ErrRepoUnavailable = errors.New("library metadata is unavailable")
+)
+
+// Get returns Repo object by repo ID, or nil if it could not be read for any
+// of the four reasons above.
+//
+// Anything answering a client should call GetWithReason instead: which failure
+// happened decides what the client is told, and this signature throws that
+// away.
 func Get(id string) *Repo {
+	repo, _ := GetWithReason(id)
+	return repo
+}
+
+// GetWithReason returns the repo, or the reason it could not be returned —
+// one of ErrRepoNotFound, ErrRepoCorrupted or ErrRepoUnavailable, wrapped with
+// the detail. Faults are logged here, once per repo per repoFaultInterval, so
+// callers should not log again.
+func GetWithReason(id string) (*Repo, error) {
 	query := `SELECT r.repo_id, b.commit_id, v.origin_repo, v.path, v.base_commit FROM ` +
 		`Repo r LEFT JOIN Branch b ON r.repo_id = b.repo_id ` +
 		`LEFT JOIN VirtualRepo v ON r.repo_id = v.repo_id ` +
@@ -82,15 +121,13 @@ func Get(id string) *Repo {
 	defer cancel()
 	stmt, err := seafileDB.PrepareContext(ctx, query)
 	if err != nil {
-		log.Errorf("failed to prepare sql : %s ：%v", query, err)
-		return nil
+		return nil, fault(id, ErrRepoUnavailable, "failed to prepare sql %s: %v", query, err)
 	}
 	defer func() { _ = stmt.Close() }()
 
 	rows, err := stmt.QueryContext(ctx, id)
 	if err != nil {
-		log.Errorf("failed to query sql : %v", err)
-		return nil
+		return nil, fault(id, ErrRepoUnavailable, "failed to query sql: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -102,16 +139,19 @@ func Get(id string) *Repo {
 	if rows.Next() {
 		err := rows.Scan(&repo.ID, &repo.HeadCommitID, &originRepoID, &path, &baseCommitID)
 		if err != nil {
-			log.Errorf("failed to scan sql rows : %v", err)
-			return nil
+			return nil, fault(id, ErrRepoUnavailable, "failed to scan sql rows: %v", err)
 		}
+	} else if err := rows.Err(); err != nil {
+		// No row, but the iteration itself failed — that is the database
+		// speaking, not an answer about whether the library exists.
+		return nil, fault(id, ErrRepoUnavailable, "failed to read sql rows: %v", err)
 	} else {
-		return nil
+		clearFaults(id)
+		return nil, ErrRepoNotFound
 	}
 
 	if repo.HeadCommitID == "" {
-		log.Errorf("repo %s is corrupted", id)
-		return nil
+		return nil, fault(id, ErrRepoCorrupted, "Branch holds no head commit")
 	}
 
 	if originRepoID.Valid {
@@ -133,9 +173,9 @@ func Get(id string) *Repo {
 
 	commit, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
 	if err != nil {
-		log.Errorf("failed to load commit %s/%s : %v", repo.ID, repo.HeadCommitID, err)
-		return nil
+		return nil, fault(id, ErrRepoCorrupted, "failed to load head commit %s: %v", repo.HeadCommitID, err)
 	}
+	clearFaults(id)
 
 	repo.Name = commit.RepoName
 	repo.Desc = commit.RepoDesc
@@ -167,7 +207,92 @@ func Get(id string) *Repo {
 		}
 	}
 
-	return repo
+	return repo, nil
+}
+
+// StatusFor maps a GetWithReason failure onto the status and body a client
+// should see. It lives beside the errors it maps because both packages that
+// serve repos over HTTP need it, and the one decision that matters — that only
+// a missing row is a 404 — must not exist in two copies that can drift.
+//
+// The 500 body says the library still exists on purpose: it is the only thing
+// standing between a damaged server and a client that decides to tidy up.
+func StatusFor(err error) (int, string) {
+	switch {
+	case err == nil:
+		return http.StatusOK, ""
+	case errors.Is(err, ErrRepoNotFound):
+		return http.StatusNotFound, "Repo not found"
+	case errors.Is(err, ErrRepoUnavailable):
+		return http.StatusServiceUnavailable, "Library metadata is temporarily unavailable; retry"
+	default:
+		return http.StatusInternalServerError,
+			"Library exists but its storage is damaged on the server; do not delete your copy"
+	}
+}
+
+// A fault on a library is persistent — a lost object stays lost — and every
+// retrying client rediscovers it. One client retrying produced twelve
+// identical lines in thirty-four seconds, which is enough to bury the first
+// occurrence in the log and to turn one server fault into twelve reports in
+// whatever the error hook forwards to. Each (library, kind) is reported once,
+// then held for repoFaultInterval.
+const repoFaultInterval = 5 * time.Minute
+
+type faultKey struct {
+	repoID string
+	kind   error
+}
+
+var repoFaults = struct {
+	sync.Mutex
+	lastLogged map[faultKey]time.Time
+}{lastLogged: make(map[faultKey]time.Time)}
+
+// faultKinds is every kind clearFaults has to forget. Keep it in step with the
+// sentinels above.
+var faultKinds = []error{ErrRepoNotFound, ErrRepoCorrupted, ErrRepoUnavailable}
+
+// fault wraps the detail as kind, logs it if it has not been logged recently,
+// and returns the wrapped error.
+func fault(repoID string, kind error, format string, args ...interface{}) error {
+	err := fmt.Errorf("%w: repo %s: %s", kind, repoID, fmt.Sprintf(format, args...))
+	if firstReport(repoID, kind) {
+		log.Error(err)
+	}
+	return err
+}
+
+func firstReport(repoID string, kind error) bool {
+	now := time.Now()
+
+	repoFaults.Lock()
+	defer repoFaults.Unlock()
+
+	key := faultKey{repoID, kind}
+	if last, ok := repoFaults.lastLogged[key]; ok && now.Sub(last) < repoFaultInterval {
+		return false
+	}
+	// Entries are only ever added by a fault and dropped by a repair, so the
+	// map tracks broken libraries. Sweeping the stale ones here keeps a repo
+	// that was deleted rather than repaired from being remembered forever.
+	for k, last := range repoFaults.lastLogged {
+		if now.Sub(last) >= repoFaultInterval {
+			delete(repoFaults.lastLogged, k)
+		}
+	}
+	repoFaults.lastLogged[key] = now
+	return true
+}
+
+// clearFaults forgets a library's faults, so that a recurrence after a repair
+// is reported again instead of being suppressed as a repeat.
+func clearFaults(repoID string) {
+	repoFaults.Lock()
+	defer repoFaults.Unlock()
+	for _, kind := range faultKinds {
+		delete(repoFaults.lastLogged, faultKey{repoID, kind})
+	}
 }
 
 // RepoToCommit converts Repo to Commit.
@@ -266,10 +391,13 @@ func GetEx(id string) *Repo {
 
 	commit, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
 	if err != nil {
-		log.Errorf("failed to load commit %s/%s : %v", repo.ID, repo.HeadCommitID, err)
+		// Same fault as in GetWithReason, and reached by the sync path on
+		// every request, so it shares the same suppression.
+		_ = fault(id, ErrRepoCorrupted, "failed to load head commit %s: %v", repo.HeadCommitID, err)
 		repo.IsCorrupted = true
 		return repo
 	}
+	clearFaults(id)
 
 	repo.Name = commit.RepoName
 	repo.LastModifier = commit.CreatorName

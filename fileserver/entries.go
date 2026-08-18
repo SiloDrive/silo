@@ -96,23 +96,29 @@ func entryPath(raw string) string {
 	return raw
 }
 
-// entryRepo checks permission and loads the repository, answering 403 or 404
-// itself and returning nil when it has. write asks for "rw"; otherwise any
-// permission will do, since reading is allowed to anyone who can see the
-// library at all.
+// entryRepo checks permission and loads the repository, answering itself and
+// returning nil when it has. write asks for "rw"; otherwise any permission
+// will do, since reading is allowed to anyone who can see the library at all.
 //
-// Both lookups are uncached — CheckPerm is two or more queries and repomgr.Get
-// is a query plus a commit read — so the result is passed down rather than
-// re-derived by each function that needs it.
+// The lookup failure is not flattened to 404. A client that sees 404 here is
+// entitled to conclude the library was deleted and remove its local copy —
+// that is how a deletion propagates — so only a genuinely missing row may say
+// it. A library whose objects the server has lost answers 500, which a client
+// reads as "something is broken", not as "act on this".
+//
+// Both lookups are uncached — CheckPerm is two or more queries and the repo
+// lookup is a query plus a commit read — so the result is passed down rather
+// than re-derived by each function that needs it.
 func entryRepo(w http.ResponseWriter, repoID, user string, write bool) *repomgr.Repo {
 	perm := share.CheckPerm(repoID, user)
 	if perm == "" || (write && perm != "rw") {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return nil
 	}
-	repo := repomgr.Get(repoID)
-	if repo == nil {
-		http.Error(w, "Repo not found", http.StatusNotFound)
+	repo, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		code, msg := repomgr.StatusFor(err)
+		http.Error(w, msg, code)
 		return nil
 	}
 	return repo

@@ -284,9 +284,10 @@ func SeaDriveDownloadInfoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo := repomgr.Get(repoID)
-	if repo == nil {
-		http.Error(w, "Repo not found", http.StatusNotFound)
+	repo, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		code, msg := repomgr.StatusFor(err)
+		http.Error(w, msg, code)
 		return
 	}
 

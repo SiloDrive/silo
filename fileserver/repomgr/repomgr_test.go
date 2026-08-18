@@ -21,36 +21,33 @@ const (
 	seafileDataDir  = "/root/conf/seafile-data"
 )
 
-// repoID must be set to an existing repo for tests to pass.
-// TODO: replace with Go-native repo creation once repo management API exists.
-var repoID string
-
-func TestMain(m *testing.M) {
-	repoID = os.Getenv("TEST_REPO_ID")
+// TestGet runs against a live MySQL deployment holding the repo named by
+// TEST_REPO_ID, and skips when there isn't one.
+//
+// The setup is in the test rather than in a TestMain, which is not style: a
+// TestMain that calls os.Exit(0) when the variable is unset skips every test in
+// the package, so anything added beside this one would silently never run.
+// TestGetWithReason below covers the same function without needing a server.
+func TestGet(t *testing.T) {
+	repoID := os.Getenv("TEST_REPO_ID")
 	if repoID == "" {
-		fmt.Println("Skipping repomgr tests: TEST_REPO_ID not set")
-		os.Exit(0)
+		t.Skip("TEST_REPO_ID not set")
 	}
+
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?tls=%t", user, password, host, port, dbName, useTLS)
 	seafDB, err := sql.Open("mysql", dsn)
 	if err != nil {
-		fmt.Printf("Failed to open database: %v", err)
-		os.Exit(1)
+		t.Fatalf("failed to open database: %v", err)
 	}
+	t.Cleanup(func() { _ = seafDB.Close() })
 	Init(seafDB, seafDB)
 	commitmgr.Init(seafileConfPath, seafileDataDir)
-	code := m.Run()
-	os.Exit(code)
-}
 
-func TestGet(t *testing.T) {
 	repo := Get(repoID)
 	if repo == nil {
-		t.Errorf("failed to get repo : %s.\n", repoID)
-		t.FailNow()
+		t.Fatalf("failed to get repo : %s", repoID)
 	}
-
 	if repo.ID != repoID {
-		t.Errorf("failed to get repo : %s.\n", repoID)
+		t.Errorf("got repo %s, want %s", repo.ID, repoID)
 	}
 }

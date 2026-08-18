@@ -55,7 +55,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.2"}
+{"version":"0.4.3"}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an
@@ -65,20 +65,23 @@ spelling depended on how the binary was built, and a client that met the release
 build after reading a doc captured from a development build got a string its
 parser rejected. The server now normalises before reporting.
 
-A build from an untagged or dirty tree keeps its suffix — `0.4.2-3-gabc1234`,
-`0.4.2-dirty` — because that says what is actually running. Parse the leading
+A build from an untagged or dirty tree keeps its suffix — `0.4.3-3-gabc1234`,
+`0.4.3-dirty` — because that says what is actually running. Parse the leading
 `major.minor.patch` and ignore the rest.
 
 Strip an optional leading `v` anyway when you parse. It costs one line and it is
 the difference between a clear failure and a silent one if this ever regresses.
 
 Check it at domain setup. **This surface changed materially in 0.4.0** — reads
-stopped redirecting, `PUT` started accepting file content — and **0.4.1** added
-conditional writes. A client built against this document talking to an older
-server will fail in confusing ways: against 0.3.x the reads and writes break
-outright, and against 0.4.0 the `If-Match` headers are silently ignored, which
-is worse, because losing an edit looks like success. Require **0.4.1 or newer**
-and say why, rather than discovering it one broken callback at a time.
+stopped redirecting, `PUT` started accepting file content — **0.4.1** added
+conditional writes, and **0.4.3** stopped reporting a damaged library as a
+deleted one. A client built against this document talking to an older server
+will fail in confusing ways: against 0.3.x the reads and writes break outright;
+against 0.4.0 the `If-Match` headers are silently ignored, which is worse,
+because losing an edit looks like success; and before 0.4.3 a server that has
+lost an object answers 404, which is worse again, because acting on it deletes
+the client's copy. Require **0.4.3 or newer** and say why, rather than
+discovering it one broken callback at a time.
 
 There is no capability list yet, only a version — so a client that cannot parse
 the version has nothing else to go on, and the tempting fallback is to probe
@@ -118,6 +121,26 @@ apart can compare the parent directories itself.
 `entries/` with nothing after it is the library root. An unsupported method
 returns **405** with an `Allow` header, not a 404 — the path was fine, the verb
 wasn't.
+
+### What a 404 on the library means, and what it does not
+
+A **404** naming the library is a positive assertion: it is gone, and removing
+your copy is the correct handling — it is how a library deleted from the web UI
+reaches you. Because of that, from 0.4.3 the server will only say it when the
+library really has no row.
+
+A library the server holds but cannot read — its head commit object is missing
+from the store — answers **500**, and a database it cannot reach answers **503**.
+Both mean *something on the server is broken, nothing has been deleted, do not
+act on it*: `EIO` for a FUSE client, a transient error for a File Provider
+extension, never an `NSFileProviderItem` removal. Neither is worth a full
+re-enumeration; retry, and surface it if it persists.
+
+Before 0.4.3 all three arrived as 404, so a server that lost an object told
+every client the library had been deleted — and the copy a client would then
+delete is the one that could have restored it. If you must run against an
+older server, treat a 404 on a library that `GET /repos` still lists as a
+server fault rather than a deletion; the two surfaces disagreeing is the tell.
 
 ### Escaping
 

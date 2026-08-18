@@ -26,9 +26,10 @@ func loadRepoAndCommit(w http.ResponseWriter, repoID, user string) (*repomgr.Rep
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return nil, nil, false
 	}
-	repo := repomgr.Get(repoID)
-	if repo == nil {
-		http.Error(w, "Repo not found", http.StatusNotFound)
+	repo, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		code, msg := repomgr.StatusFor(err)
+		http.Error(w, msg, code)
 		return nil, nil, false
 	}
 	head, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
@@ -224,9 +225,10 @@ func downloadFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo := repomgr.Get(repoID)
-	if repo == nil {
-		http.Error(w, "Repo not found", http.StatusNotFound)
+	repo, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		code, msg := repomgr.StatusFor(err)
+		http.Error(w, msg, code)
 		return
 	}
 
