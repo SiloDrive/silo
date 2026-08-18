@@ -268,6 +268,22 @@ How passwords and tokens are stored today, why the token columns are the weak
 link rather than the password column, and what has to be issued before any
 per-request-authenticated protocol can work: [`auth.md`](auth.md).
 
+**OIDC login is planned**, and the design is settled in that document. Silo
+serves no HTML, so it cannot host a login form, a callback or a redirect —
+which rules out the flow everyone reaches for first. Instead Silo runs the
+device grant (RFC 8628) as the client against the IdP: Porter shows a code,
+the user approves it on the IdP's own device page, and Silo hands Porter a
+Silo credential once the IdP confirms. Porter never speaks to the IdP at all,
+which is what makes a shipped binary workable against a different IdP per
+deployment.
+
+Login is brokered, not federated. The IdP is consulted once per enrolment, not
+once per request: a mounted filesystem issues requests at `ls` rate, and a
+design that asks the IdP each time means the filesystem stops when the IdP
+does. What the IdP returns is verified once and discarded; the credential Silo
+issues carries the session from there, so revoking access is a row delete
+rather than a cache expiry.
+
 ## Additional Protocol Frontends
 
 Separate question from the compat gaps above: not "what does a Seafile client
@@ -358,7 +374,9 @@ Things we're explicitly *not* going to build, to keep scope honest:
 
 - **Federation / multi-server sync** — one binary, one node.
 - **Plugin system** — if you want custom behaviour, fork.
-- **LDAP / SAML / OIDC** — local password auth only. (A reverse proxy doing
-  header-auth is acceptable; Silo will trust a configurable header.)
+- **LDAP / SAML** — OIDC covers the same ground with far less surface to
+  implement and to get wrong, and it is planned rather than ruled out; see
+  Credentials above. (A reverse proxy doing header-auth also remains
+  acceptable; Silo will trust a configurable header.)
 - **Mobile apps** — use the upstream Seafile mobile clients, they speak our
   protocol.
