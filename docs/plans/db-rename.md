@@ -174,7 +174,6 @@ restores straight into the new layout.
 - **Do NOT rename** the Seafile *object-format* names — `seafileCrypt`, `fsmgr.GetSeafile` /
   `NewSeafile`, `seafileDataDir` — those refer to the file format and the wire protocol,
   not the database.
-- Leave legacy C (`common/`, `server/`, `fuse/`) untouched (not built).
 - Land as **one commit containing nothing but the rename**, so the diff is provably
   mechanical.
 
@@ -189,7 +188,6 @@ restores straight into the new layout.
 - `cmd/silo/main.go` — the `silo backup-db` help text names both databases.
 - `docs/notes.md` and `docs/plan.md` — conceptual "ccnet/seafile DB" → new names
   (note in plan.md that the Seafile-format *object* names remain).
-- `.gitignore` (`tests/conf/ccnet.db`) stays — legacy C test suite.
 - Release notes: new section listing the old → new filenames, stating that adoption is
   automatic on first start, and that any external tooling naming the files must be
   updated.

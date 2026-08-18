@@ -121,17 +121,39 @@ no last-used timestamp, and no client identity. Deciding which one to revoke is
 a guess. And `GenerateRepoToken` mints a fresh row per call with no expiry, so
 `RepoUserToken` only ever grows.
 
-### 7. Smaller things
+### 7. Login says which accounts exist
+
+`ValidatePassword` fetches `passwd` and returns immediately when there is no
+row. An address that exists costs 600,000 PBKDF2 rounds — around 80 ms
+(`authmgr.go:197`) — and one that does not costs a database round trip. That
+gap is not noise; it is a directory listing for anyone willing to time the
+endpoint.
+
+The login limiter does not help, because enumeration needs one attempt per
+address rather than ten, and Argon2id widens the gap rather than closing it.
+
+### 8. The credential model was inherited, not chosen
+
+`RepoUserToken.token` is `CHAR(41)` because the C daemon hashed a UUID to forty
+hex characters and left room for a NUL — the hash accomplishing nothing, since
+a UUID through SHA-1 is still exactly a UUID's worth of randomness. There are
+three credentials on three headers because Seahub and `seaf-server` were
+separate programs that had to authenticate callers to each other. Sync tokens
+are per repo, never expire, and only ever accumulate, because that was the
+cheapest thing for a daemon holding no session state.
+
+Not one of those is a decision Silo made. They are the seams of a distributed
+system Silo does not have, and they currently reach all the way into the
+schema. What to do about it is
+[below](#compatibility-is-an-adapter-not-a-shape).
+
+### 9. Smaller things
 
 `utils.GetAuthorizationToken` (`utils/http.go:14`) splits the header on a space
 and returns field 1 — it ignores the scheme entirely, so `Bearer`, `Token` and
 `Basic` are indistinguishable on the sync lane. Harmless today only because the
 three stores are disjoint; it forecloses ever telling two schemes apart on one
 lane, and it turns "you sent the wrong credential" into "invalid token".
-
-`SHA1(uuid)` for sync tokens is copied from the C implementation. The entropy
-is fine — a uuid through SHA-1 is still a uuid's worth of randomness — but the
-hash accomplishes nothing except producing 40 characters to fit `CHAR(41)`.
 
 The 5-minute `tokenCache` / `permCache` (`sync_api.go:101`) means sync-lane
 revocation lags. `entries` deliberately does not cache. Both choices are
@@ -265,6 +287,58 @@ the git model — an author string on a commit is historical display data, not a
 identity key, and it is *correct* for it to record the address in use at the
 time. Silo must simply never resolve a permission from it.
 
+## Compatibility is an adapter, not a shape
+
+Silo keeps working with SeaDrive and Seafile Desktop. What it stops doing is
+letting them choose the credential model — and the difference between those two
+positions is only *where the translation happens*: in four handlers at the
+edge, or in the schema.
+
+At the edge. What the legacy clients actually require is small:
+
+| What a legacy client needs | What it costs |
+|---|---|
+| `POST /api2/auth-token/`, form-encoded | one handler |
+| Forty hex characters in `Authorization: Token` | an *encoding* — 8 hex of credential id, 32 hex of secret. 128 bits, still an id-first lookup, still one `Resolve` |
+| `Seafile-Repo-Token` per library | one `kind`, minted only by `/api2/repos/{id}/repo-tokens/` |
+| An email address in `/api2` responses | a join, already required by [the identity split](#identity-an-account-is-not-an-email-address) |
+
+Whether SeaDrive genuinely enforces forty characters is an assertion in a
+comment (`api/seadrive.go:17`), not a tested fact. The Ruby harness in `test/`
+against a 3.0.21 client would settle it in an afternoon, and it is worth
+settling — but it gates nothing, because the answer only picks an encoding.
+
+### What we stop carrying
+
+- **Per-repo sync tokens, for anything that is not a legacy client.** Look at
+  what they are: no expiry, no label, no last-used, one row per (repo, device)
+  forever, and a README paragraph explaining that changing your password does
+  not revoke them. A device credential reaches every library the account
+  reaches, and narrowing is `scope` and `perm` on the row — not a second token
+  type with its own table and its own header.
+- **Three headers.** `Authorization` on every Silo-native lane.
+  `Seafile-Repo-Token` becomes an input the legacy handlers translate, not a
+  concept `Resolve` knows about.
+- **`CHAR(41)` and `SHA1(uuid)`**, which existed only to fit a column width
+  chosen in C.
+- **The schema-compatibility promise.** The README used to offer "the sync
+  protocol, block storage layout, and database schema are unchanged, so ...
+  clients work against Silo without modification". The causal claim was never
+  true — a client cannot see the schema — and the identity split breaks the
+  literal one anyway. `README.md:11` now promises the wire only: *Seafile and
+  SeaDrive clients keep working; the schema and the on-disk layout are Silo's
+  own, and are free to change.* Left in place, that sentence would have been a
+  compat claim quietly acting as a veto on every decision in this document.
+
+### A legacy client is a legacy trust level
+
+This should be visible rather than discovered. A `legacy` credential is a
+bearer secret, is account-wide or repo-wide with no ceiling, and cannot
+participate in [proof of possession](#proof-of-possession). That is not a
+defect awaiting a fix; it is what an unmodifiable client can support. So `silo
+credential list` labels it as such, and an operator who wants the stronger
+guarantee knows that it means moving that device to Porter.
+
 ## The design
 
 One table, one verification path, several kinds of credential.
@@ -272,7 +346,7 @@ One table, one verification path, several kinds of credential.
 ### Token format
 
 ```
-silo_<kind>_<id>_<base32(32 random bytes)>
+silo_<kind>_<id>_<base32(32 random bytes)><check>
 ```
 
 The `id` is public, indexed, and how the row is found; only `SHA-256(secret)`
@@ -285,23 +359,34 @@ The `silo_` prefix and the kind make a leaked credential identifiable on sight
 — in a log, a bug report, or a secret scanner — and let a handler reject a
 credential meant for another lane before touching the database.
 
+`check` is six base32 characters of SHA-256 over everything before it. It costs
+nothing to compute, and it means a truncated paste or a mistyped character is
+rejected as *malformed* before the database is touched rather than as *invalid*
+after a lookup. It also lets a secret scanner confirm a match instead of
+guessing at one, which is why `ghp_` tokens carry the same thing.
+
 ### Kinds
 
-| Kind | Held by | Lifetime | Scope |
-|---|---|---|---|
-| `device` | Porter, the File Provider extension, any long-lived client | absolute, default 90d | optional repo + permission ceiling |
-| `session` | the TUI, the CLI, a browser | 24h | account |
-| `sync` | the upstream Seafile client, via `Seafile-Repo-Token` | absolute | one repo |
-| `access` | capability URLs (`/files/`, `/zip/`) | 1h, memory only | one object, one op |
-| `s3` | an S3 frontend, if it is ever built | absolute | see [S3](#s3-needs-a-master-key-not-a-column) |
+| Kind | Held by | Presented as | Lifetime | Scope |
+|---|---|---|---|---|
+| `device` | Porter, the File Provider extension | a signature — [proof of possession](#proof-of-possession) | absolute, default 90d | optional repo + permission ceiling |
+| `session` | the TUI, the CLI | a signature, or a bearer secret where there is no key store | 24h | account |
+| `access` | capability URLs (`/files/`, `/zip/`) | bearer, memory only | 1h | one object, one op |
+| `legacy` | SeaDrive, Seafile Desktop | bearer, forty hex characters | absolute | account on `/api2`, one repo on `Seafile-Repo-Token` |
+| `s3` | an S3 frontend, if it is ever built | SigV4 | absolute | see [S3](#s3-needs-a-master-key-not-a-column) |
+
+`legacy` is what was going to be a `sync` kind. One kind rather than two,
+because what distinguishes it is not which header it arrives on but that it is
+[unmodifiable, and therefore bearer](#a-legacy-client-is-a-legacy-trust-level).
 
 ### The table
 
 ```sql
 CREATE TABLE Credential (
   id          TEXT    PRIMARY KEY,   -- public, travels in the token
-  kind        TEXT    NOT NULL,      -- 'device' | 'session' | 'sync' | 's3'
-  secret_hash BLOB,                  -- SHA-256; NULL for kinds that derive
+  kind        TEXT    NOT NULL,      -- 'device'|'session'|'access'|'legacy'|'s3'
+  secret_hash BLOB,                  -- SHA-256 of the secret, for bearer kinds
+  public_key  BLOB,                  -- SPKI, for proof-of-possession kinds
   account_id  BLOB    NOT NULL REFERENCES Account(id),
   label       TEXT    NOT NULL,      -- "dan's macbook, porter-fuse"
   scope       TEXT,                  -- NULL = all libraries; else a repo id
@@ -309,13 +394,17 @@ CREATE TABLE Credential (
   client_id   TEXT,                  -- device identity, when the lane has one
   ctime       INTEGER NOT NULL,
   expires_at  INTEGER,               -- absolute; NULL = no expiry
-  last_used   INTEGER
+  last_used   INTEGER,
+  CHECK (secret_hash IS NULL OR public_key IS NULL)
 );
 CREATE INDEX credential_account_idx ON Credential (account_id);
 ```
 
 `label` and `last_used` are not decoration. They are what turns revocation from
 a guess into a decision.
+
+A row carries a secret hash or a public key, never both. An `s3` row carries
+neither and derives its secret from the master key.
 
 `expires_at` is **absolute and does not slide**. The current `ApiToken`
 behaviour renews any token more than halfway through its life
@@ -329,14 +418,121 @@ without the credential quietly becoming permanent.
 Every lane resolves its credential through a single function:
 
 ```go
-func Resolve(kind Kind, presented string) (*Credential, error)
+func Resolve(r *http.Request, kind Kind) (*Credential, error)
 ```
 
-which parses the prefix, looks up by id, compares the hash in constant time,
-checks `expires_at`, **joins `Account` and checks `is_active`**, and stamps
-`last_used`. One place. That join is the property that cannot be retrofitted
-onto three separate stores: disabling a user has to kill every lane at once, or
-it does not mean anything.
+which parses the prefix, verifies the checksum, looks up by id, **joins
+`Account` and checks `is_active`**, checks `expires_at`, and stamps
+`last_used`. Proving the credential is one branch inside it: compare
+`SHA-256(secret)` against `secret_hash` in constant time, or verify the
+request's signature against `public_key`.
+
+It takes the request rather than a string because verifying a signature means
+seeing the method, the target and the headers; a bearer kind reads its one
+header and ignores the rest.
+
+One place. That join is the property that cannot be retrofitted onto three
+separate stores: disabling a user has to kill every lane at once, or it does
+not mean anything.
+
+### Proof of possession
+
+A bearer credential is a secret that authenticates whoever holds it, and every
+finding in [What is wrong](#what-is-wrong) is a variation on someone else
+coming to hold it: a database snapshot, a log line, a backup of a laptop, a
+token pasted into a bug report. Hashing the stored side fixes half of that. The
+other half is that the client still has to keep a usable copy.
+
+It does not have to. Enrolment can register a **public key** instead of handing
+out a secret.
+
+```
+Enrolment — password login or the OIDC device grant, either one:
+
+  the client generates a keypair, non-exportable where the platform allows it
+  (Secure Enclave on macOS, TPM on Windows, a 0600 file for the TUI)
+  → the public key goes up with the login
+  → the Credential row stores public_key, and no secret exists to steal
+
+Every request after that:
+
+  Authorization: Silo <credential-id>
+  Signature-Input: sig=("@method" "@target-uri" "date" "nonce");created=…
+  Signature: sig=:<base64>:
+```
+
+Nothing else in this document moves. Kinds, ceilings, `is_active`, the
+generation counter, revocation, the legacy adapter: all unchanged.
+
+**It is not a JWT, and it is not a token.** A JWT is a bearer assertion — a
+signed statement you carry and present, which anyone else who holds it can also
+present. Here nothing is carried. The credential id is a public name, the
+private key never leaves the device, and what is signed is *this request*, so a
+captured signature is a receipt for a request that already happened rather than
+a credential. The close relatives are SSH `publickey` auth, mTLS, and AWS
+SigV4; of those SigV4 is the right mental model, because it signs the request
+rather than asserting an identity. The wire format is RFC 9421 HTTP Message
+Signatures, which is the standardised version of what SigV4 does by hand.
+
+#### The body is mostly not in the signature
+
+Signing a digest of the body would mean buffering a five-gigabyte upload before
+deciding whether the request is authentic. That is unacceptable, and it turns
+out to be unnecessary, because of what Silo's writes already are.
+
+Almost every write is content-addressed, idempotent, and carries the content's
+own hash in the request line:
+
+- `PUT /repo/{id}/block/{block-id}` — the block id *is* the hash of the bytes.
+- `PUT /repo/{id}/commit/{commit-id}` — likewise.
+- `recv-fs` carries a batch of fs objects, each verified against its own id on
+  the way in.
+
+Signing the request line therefore binds the payload already: bytes that hash
+to something else are rejected by the write path regardless of who sent them.
+And replaying one of these is harmless — it stores bytes that are already
+stored, under an id they already have.
+
+What is left is the small set of requests where replay means something:
+
+- `PUT /repo/{id}/commit/HEAD?head=<commit-id>` — the branch update, and the
+  one genuine state change on the sync lane. No body at all; the target is in
+  the query string, so the request line covers it.
+- The mutations on `/api/silo/v1` — mkdir, rename, move, delete, and writes to
+  `entries` — which have small bodies and already accept `If-Match` /
+  `If-None-Match` (`entries.go:262`). A conditional write is replay-proof by
+  construction: the second attempt fails its precondition.
+
+So: **sign the request line, the date and a nonce always; add a content digest
+only where the body is small and is not already named by its hash.** The
+expensive requests do not need the protection, and the ones that need it are
+cheap.
+
+#### Nonce and digest are two different jobs
+
+They look like one job, and conflating them produces something that does
+neither. Replay protection needs *uniqueness* — a value never seen before — and
+a content hash is not unique: uploading the same block twice is legitimate and
+common, and two clients writing identical bytes produce identical hashes.
+Content binding needs the digest, which does not need to be unique at all.
+
+They are separate signed components, and on the content-addressed lanes the
+digest comes free because it is already in the path. A nonce is sixteen random
+bytes; verification keeps a cache of recently seen ones for the width of the
+accepted clock skew — sixty seconds is generous — so the cache stays bounded
+with no cleanup logic beyond expiry.
+
+#### Cost, and who cannot play
+
+Ed25519 verification is around fifty microseconds and P-256 about twice that. A
+directory walk issuing a few hundred requests pays single-digit milliseconds in
+total, comfortably under the storage reads it is making anyway.
+
+The clients that can do this are the ones we control: Porter, the File Provider
+extension, the TUI, the CLI, and any future SFTP frontend by way of SSH keys.
+The ones that cannot are SeaDrive and Seafile Desktop — and, for a different
+reason, S3, whose SigV4 needs a shared secret the server can recompute with.
+Those stay bearer, and say so.
 
 ### Permission ceilings
 
@@ -369,17 +565,6 @@ signing key to be useful.
 on first run at mode 0600, because notification tokens should not all die on
 restart either. But it stops being load-bearing for login.
 
-### Passwords: Argon2id
-
-Since every password can be reset, use the better primitive. Argon2id is
-memory-hard; PBKDF2 is not, which is why a GPU eats it. `validatePasswd`
-(`authmgr.go:72`) already dispatches on a stored prefix, so `argon2id$...`
-slots in beside the existing formats with no special casing, and `needsRehash`
-already upgrades anything weaker on next login.
-
-Parameters worth writing down when chosen: 64 MiB, t=3, p=4 is a reasonable
-starting point, measured on the target hardware rather than copied.
-
 ### Rate limiting stops applying to credentials
 
 The login limiter exists to protect a low-entropy secret. A 256-bit credential
@@ -387,8 +572,9 @@ does not need it, and applying it causes harm: a wedged mount retrying a stale
 credential in parallel empties the **account** bucket in about two seconds, and
 that bucket is shared with the TUI and every sync client the same user owns.
 
-So: the password path keeps exactly the limits it has. `Resolve` bypasses
-`allowLoginAttempt` entirely.
+So: the password path keeps exactly the limits it has, and `Resolve` bypasses
+`allowLoginAttempt` entirely. Once a password is presented only at enrolment,
+those buckets stop colliding with legitimate traffic altogether.
 
 ### Revocation takes effect now
 
@@ -414,6 +600,197 @@ stampede on restart. It is labelled, so a lost laptop is one identifiable row.
 It is revocable, and revocation takes effect on the next request. It can be
 scoped read-only, which is the difference between mounting a library and
 trusting a mount.
+
+With a key in the Secure Enclave there is nothing in the Keychain to steal at
+all: a backup of the laptop, or of Silo's database, yields a public name and a
+public key. See [proof of possession](#proof-of-possession).
+
+## Password login
+
+Password login and OIDC are two enrolment paths that produce one artefact.
+Nothing downstream can tell them apart, which is the point of
+[brokering](#silo-brokers-login-it-does-not-federate-every-request).
+
+### It is not a device grant
+
+The device grant exists for one reason: the client cannot host the user agent
+that has to talk to the authenticator. A local password has no third party —
+Porter collects it in its own window — so the code-and-approval dance would buy
+nothing, at the cost of the HTML approval page the OIDC design specifically
+declined to build.
+
+So `POST /api/silo/v1/auth/login` stays, and becomes the password half of
+enrolment.
+
+```
+POST /api/silo/v1/auth/login
+{ "email": "dan@…", "password": "…",
+  "kind": "device",                       // default "session"
+  "client_name": "Porter 1.2 (macOS)",    // becomes label
+  "public_key": "<base64 SPKI>",          // optional; bearer secret if absent
+  "perm": "r", "scope": "<repo-id>" }     // optional, narrowing only
+
+201 { "credential": "silo_device_…", "expires_at": …, "email": "…" }
+```
+
+`perm` and `scope` follow the [ceiling rule](#permission-ceilings): asking for
+`rw` on an account that has `r` yields `r`, not a 403. A field that can only
+narrow needs no validation branch.
+
+### The password is an enrolment credential, not a request credential
+
+It is presented once, exchanged, and forgotten. Porter stores the credential —
+or, with a key, stores nothing that can be stolen — and never holds the
+password again. That closes
+[finding 4](#4-the-jwt-secret-is-ephemeral-by-default)'s Keychain workaround at
+the source rather than by making sessions renewable.
+
+It also changes the cost model. Password verification drops from "every session
+refresh on every device" to "once per device, ever", and that is what makes the
+next decision affordable.
+
+### Argon2id, and the memory it costs the server
+
+Since every password in the system can be reset from scratch, use the better
+primitive. Argon2id is memory-hard; PBKDF2 is not, which is why a GPU eats it.
+`validatePasswd` (`authmgr.go:72`) already dispatches on a stored prefix, so
+`argon2id$…` slots in beside the existing formats with no special casing, and
+`needsRehash` upgrades anything weaker on the next successful login.
+
+The trap is that memory-hardness is a cost paid by *the server*, and unlike CPU
+it is not self-limiting. PBKDF2 under load queues on the scheduler and the box
+stays up. Argon2id at 64 MiB with twenty verifications in flight is 1.25 GiB
+resident, and the login limiter does not bound concurrency — it bounds attempts
+per address and per account, and a hundred addresses arrive together quite
+happily.
+
+So password verification runs behind a semaphore, four wide or thereabouts,
+returning 429 with `Retry-After` when it is full rather than allocating. The
+semaphore width and the memory parameter multiply, so they are chosen together
+and measured on the target hardware rather than copied from a blog post.
+64 MiB, t=3, p=4 is a reasonable place to start measuring.
+
+### Where the hash lives
+
+```sql
+CREATE TABLE AccountPassword (
+  account_id BLOB    PRIMARY KEY REFERENCES Account(id),
+  hash       TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+```
+
+A row that does not exist means an account is *incapable* of password login
+rather than configured against it. That retires Seafile's `"!"` sentinel
+(`authmgr.go:39`, `authmgr.go:73`), which exists precisely because a nullable
+column invites a code path that reads "no password" as "any password will do".
+
+Login resolves the address through `AccountEmail`, case-folded, so every
+address a user owns works. The asymmetry with
+[identity binding](#binding-an-external-identity-to-a-silo-account) is
+deliberate: an unverified address is fine for password login, where the
+password is the proof and the address is only a lookup key, and is not fine for
+linking an external identity, where the address *is* the proof.
+
+### Close the enumeration oracle
+
+[Finding 7](#7-login-says-which-accounts-exist): verify against a fixed dummy
+hash when there is no account, so a miss costs what a hit costs. A handful of
+lines, and it belongs with the Argon2id change rather than after it — the gap
+gets wider, not narrower, when the KDF gets slower.
+
+### Changing a password, and resetting one
+
+Changing requires the *current* password, even when the request is
+authenticated by a credential. Otherwise a stolen device credential upgrades
+itself into account takeover, and the point of a scoped, revocable credential
+is that it cannot become the account.
+
+What gets revoked has two answers, because the obvious "everything" is wrong:
+
+- **A user changes their own password** → bump the account generation, revoking
+  every `session` credential at once. `device` credentials survive unless the
+  request asks for them too. Unmounting somebody's laptop as a side effect of
+  routine hygiene teaches them to stop doing hygiene.
+- **An administrator resets a password** → revoke everything. The reason an
+  administrator resets a password is that the user has lost control of
+  something, and which something is not knowable from here.
+
+### Coexisting with OIDC
+
+Both can be true of one account: an `AccountPassword` row and an
+`AccountIdentity` row are independent. A deployment that wants the IdP to be
+the only path sets `SILO_PASSWORD_LOGIN=off`.
+
+The failure mode to answer before that switch exists is the IdP being down with
+nobody able to administer the server. Resolve it with the CLI on the host —
+`silo user passwd` — rather than a standing exception for staff accounts.
+Anyone who can run the CLI already owns the data directory, so it grants
+nothing they did not have, and it avoids a permanently-enabled password path
+that exists only for an emergency.
+
+### Bootstrap without a password in the environment
+
+`SILO_ADMIN_PASSWORD` is the one genuine cleartext password in the system
+([finding 9](#9-smaller-things)): it sits in `docker-compose.yml`, in `.envrc`,
+and in the environment of a running container.
+
+Replace it. On first run with no accounts, mint a single-use `setup` credential
+and print it to the log, valid for fifteen minutes or until used; the operator
+creates the first account with it. `SILO_ADMIN_PASSWORD_FILE` stays for
+automated deployments that need one. Either way the password leaves the
+environment.
+
+## Running with no authentication
+
+Discovery, exploration, a test harness, a fresh checkout at 11pm — all of it is
+faster when there is no credential to obtain first. Silo should support that
+directly, so that nobody arrives at it by disabling a check.
+
+```
+SILO_AUTH=none          # every request is the configured account
+SILO_AUTH=none:r        # …read-only, which is what exploring actually needs
+```
+
+### It grants a credential; it does not skip one
+
+The implementation that matters: **no-auth is not a bypass.** `Resolve` is
+still called on every request and still returns a `*Credential` — a synthetic
+one, in memory, belonging to a real account, carrying a real `perm`. Nothing
+downstream learns that the mode exists.
+
+That is the whole design. A bypass means every handler grows a branch, and one
+of those branches is eventually wrong in a build where the mode is off. A
+synthetic credential means the authorization path has exactly one shape, is
+exercised identically in development and production, and `share.CheckPerm` and
+the [ceilings](#permission-ceilings) keep applying — `SILO_AUTH=none:r` really
+is read-only, because it is the same ceiling code every other credential uses.
+
+Which account: `SILO_AUTH_USER`, or the only account if there is exactly one.
+If there are several and none is named, refuse to start. An ambiguous answer to
+"who is everybody?" is not one to guess at.
+
+### Making it hard to run by accident
+
+The mode is safe in the case it is for and catastrophic in every other, so the
+guards are about the boundary rather than the feature:
+
+- **Environment or flag only**, never a value read from the database or from a
+  file that a user of the server can write.
+- **Refuse to start when the listener is not loopback**, unless a second,
+  differently-named acknowledgement is also set. Silo already warns about a
+  non-loopback `SILO_HOST`; with authentication off, a warning is not enough.
+- **Say so, repeatedly.** A banner at startup, a line on every request log, and
+  a field in `GET /api/silo/v1/server-info` — which is already unauthenticated
+  — so the TUI and Porter can show it and skip login rather than inventing a
+  credential.
+- **Never in a release container's default configuration**, and it should be
+  visible in `docker-compose.yml` only as a commented line explaining itself.
+
+Encrypted libraries are unaffected: the server still cannot read one without
+the password in `keycache`, and no-auth does not change that. Turning
+authentication off gives away everything the account can see, which is the
+point — it does not give away what the server itself cannot decrypt.
 
 ## OIDC
 
@@ -652,11 +1029,12 @@ Nothing but a server address field. No `client_id`, no issuer, no IdP
 configuration of any kind. It learns whether OIDC is in play from `server-info`,
 receives a code and a URL from Silo, polls Silo, and stores one credential.
 
-When OIDC is not configured the protocol is unchanged: Silo's `/device/code`
-returns a code whose approval path is a password login rather than an IdP
-redirect, or Porter uses `POST /api/silo/v1/auth/login` (`server.go:699`)
-directly. Porter does not know or care how the human was authenticated, which is
-the point of brokering.
+When OIDC is not configured, `server-info` says so and Porter collects an email
+and a password itself, posting them to `POST /api/silo/v1/auth/login`
+(`server.go:699`). There is no device code on that path and no approval page —
+see [Password login](#password-login). Porter does not otherwise know or care
+how the human was authenticated, which is the point of brokering: the response
+is a credential either way.
 
 ### Dependencies
 
@@ -718,19 +1096,30 @@ ships.
    expects. Everything else assumes this, and it is the one step that wants to
    land whole rather than in pieces.
 2. **`Credential`, device credentials, hashed secrets, one `Resolve`** — with
-   the `is_active` join that closes findings 1, 2, 5 and 6 at once.
+   the `is_active` join that closes findings 1, 2, 5, 6 and 8 at once, and the
+   legacy adapter that keeps SeaDrive working through it rather than beside it.
 3. **A real user CLI** (`silo user add | disable | passwd`), which step 1 makes
    possible and `future-features.md`'s admin API then builds on.
-4. **Persistent JWT keyfile.** Closes finding 4 for notification tokens; login
+4. **Password login as enrolment** — the credential-minting login response, the
+   `AccountPassword` table, Argon2id behind a concurrency semaphore, the
+   dummy-hash fix for finding 7, and setup credentials in place of
+   `SILO_ADMIN_PASSWORD`.
+5. **`SILO_AUTH=none`** — a synthetic credential from `Resolve`, the
+   non-loopback refusal, and the `server-info` field. Cheap, and worth having
+   early, because it is what makes the next three steps pleasant to develop
+   against.
+6. **Persistent JWT keyfile.** Closes finding 4 for notification tokens; login
    no longer depends on it.
-5. **Argon2id**, since every password can be reset from scratch.
-6. **Permission ceilings in `CheckPerm`.** Read-only, single-library
-   credentials.
-7. **OIDC** — Silo's `/device/code` enrolment endpoint for Porter, the device
+7. **Permission ceilings in `CheckPerm`.** Read-only, single-library
+   credentials — and the thing that makes `SILO_AUTH=none:r` mean something.
+8. **Proof of possession** — public keys registered at enrolment, RFC 9421
+   signatures on the Silo-native lanes, bearer retained for legacy clients and
+   capability URLs. Independent of OIDC; whichever is wanted first.
+9. **OIDC** — Silo's `/device/code` enrolment endpoint for Porter, the device
    grant run against the IdP, ID-token verification, `AccountIdentity` binding
    with verified-email recovery, and backchannel logout. Adds no browser
    surface, and step 2's `Credential` is the artefact it produces.
-8. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
+10. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
 Steps 1 and 2 are the ones with a deadline: they are free only while there are
 no deployments.

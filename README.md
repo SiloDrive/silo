@@ -8,7 +8,7 @@ Status: pre-1.0 and young, but no longer reckless with your data. Object writes 
 
 Silo is a Go rewrite of the Seafile server architecture. Where upstream Seafile ships a C daemon (`seaf-server`), a Python/Django web layer (Seahub), and a process manager to tie them together, Silo collapses all of that into a single Go binary that speaks HTTP directly and talks directly to its database.
 
-It keeps full wire compatibility with existing Seafile clients. The sync protocol, block storage layout, and database schema are unchanged, so Seafile desktop, mobile, and SeaDrive clients work against Silo without modification.
+It keeps full wire compatibility with existing Seafile clients: Seafile desktop, mobile, and SeaDrive all work against Silo without modification. The promise is the wire protocol — the database schema and the on-disk layout are Silo's own, and are free to change.
 
 Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.com/charmbracelet/bubbletea) for interactive file management without a browser.
 
@@ -367,9 +367,10 @@ fileserver/        Active Go server
   ├── keycache/    In-memory decrypt key cache
   └── ...
 cmd/silo/          Bubble Tea TUI client
+client/            HTTP client for the management API
+internal/          TUI, CLI plumbing, observability, XDG paths
 docs/              Architecture notes, error reporting, backups, future features
-server/            Legacy C seaf-server code — not built, kept for reference
-python/            Legacy Seahub code — not used
+test/              Ruby integration harness against a running server
 ```
 
 ## Origin and license

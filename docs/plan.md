@@ -1,130 +1,46 @@
-# Seafile Server - Go Migration Plan
+# Migration record and compatibility constraints
 
-## Goal
+The plan this file used to hold — eliminate the C daemon and the Python web
+layer, extend the Go fileserver into a standalone single-binary server, and
+build a TUI on top of it — has landed. What follows is the record of what
+replaced what, and the constraints that still bind every change.
 
-Eliminate the C server (seaf-server) and Python web layer (Seahub) by extending
-the existing Go fileserver into a standalone, single-binary server. Build a TUI
-client that talks to it over HTTP.
+## What landed
 
-## Architecture Target
+| Upstream dependency | Replacement |
+|---|---|
+| searpc `seafile_web_query_access_token` | `fileserver/tokenstore/` — `sync.Map` + TTL |
+| searpc `seafile_get_decrypt_key` | `fileserver/keycache/` — `sync.Map` + TTL |
+| searpc `publish_event` | logrus, plus `fileserver/notif/` over WebSocket |
+| searpc client, `-p` flag, Unix socket | removed outright |
+| Web-layer login | `POST /api/silo/v1/auth/login` → JWT, `fileserver/authmgr/` |
+| Web-layer API tokens for sync clients | `POST /api2/auth-token/`, `fileserver/apitokenstore/` |
+| 174 C RPC handlers for repo operations | `/api/silo/v1/` handlers in `fileserver/api/` |
+| Separate notification-server binary | in-process, `/notification` |
+| Separate controller process | none needed — one process |
 
-```
-TUI (or any HTTP client)
-    |
-    | HTTP (port 8082)
-    v
-Go fileserver (single binary)
-    |
-    v
-MySQL + Filesystem
-```
+The management API is in `docs/protocol.md`; it is not a full replacement for
+the 174 RPC handlers and was never meant to be. Sharing, user management, quota
+administration, trash/restore and history remain unimplemented — see
+`docs/future-features.md`.
 
-No RPC. No C. No Python. One server, one protocol.
+## Standing constraints
 
-## Phase 1: Cut the Cord (Make Go fileserver standalone)
+These hold for anything added from here on.
 
-The Go fileserver currently can't run without the C server because of 3 searpc
-calls. Move these into Go natively.
-
-### 1a. Access Token Store
-- Add `tokenstore` package with `sync.Map` + TTL goroutine
-- Struct: `{RepoID, ObjID, Op, User, ExpireTime, OneTime}`
-- Token: UUID string, 1-hour TTL, cleanup every 5 minutes
-- Replace `parseWebaccessInfo()` in fileop.go to use local store
-- Add HTTP endpoints:
-  - `POST /api/silo/v1/access-tokens` - create token (requires auth)
-  - `GET /api/silo/v1/access-tokens/{token}` - validate (internal use)
-  - `DELETE /api/silo/v1/access-tokens/{token}` - revoke
-
-### 1b. Decrypt Key Cache
-- Add `keycache` package with `sync.Map` + TTL goroutine
-- Key: "repo_id:username", Value: `{Key []byte, IV []byte, Version int}`
-- 1-hour TTL, reaper every 60 seconds
-- Replace `parseCryptKey()` in fileop.go to use local cache
-- Add HTTP endpoint:
-  - `POST /api/silo/v1/repos/{id}/password` - set password, derive + cache key
-
-### 1c. Event System
-- Replace RPC `publish_event` with local Go channels
-- For now, just log events (no consumer yet)
-- Can add WebSocket/SSE endpoint later if needed
-
-### 1d. Remove searpc dependency
-- Delete `fileserver/searpc/` package
-- Remove `rpcclient` global from fileserver.go
-- Remove `rpcClientInit()` call and `-p` flag
-
-**Files to modify:**
-- `fileserver/fileserver.go` - remove RPC init, add new route registration
-- `fileserver/fileop.go` - replace `parseWebaccessInfo()`, `parseCryptKey()`
-- `fileserver/sync_api.go` - replace `publish_event` calls
-
-**New files:**
-- `fileserver/tokenstore/tokenstore.go`
-- `fileserver/keycache/keycache.go`
-
-## Phase 2: Auth Endpoint (Let clients log in)
-
-### 2a. User Authentication
-- Add `POST /api/silo/v1/auth/login` endpoint
-- Validate email + password against `EmailUser` table in ccnet DB
-- Support all password formats:
-  - PBKDF2SHA256 (current) - use Go's `crypto/pbkdf2`
-  - Argon2id - use `golang.org/x/crypto/argon2`
-  - Legacy SHA256+salt - `crypto/sha256` with fixed salt
-  - Legacy SHA1 - `crypto/sha1`
-- Return JWT session token (use existing golang-jwt dependency)
-- JWT signed with HS256 using existing `JWT_PRIVATE_KEY` config
-
-### 2b. Auth Middleware
-- Bearer token middleware for `/api/silo/v1/` routes
-- Validate JWT, extract user email
-- Inject user into request context
-
-**New files:**
-- `fileserver/authmgr/authmgr.go` - password validation + JWT
-- `fileserver/middleware/auth.go` - Bearer token middleware
-
-## Phase 3: Management API (Repo operations)
-
-Add REST endpoints for the most-needed repo operations. Incrementally replace
-what the 174 C RPC handlers do.
-
-### Priority order (by what a TUI needs first):
-1. `GET /api/silo/v1/repos` - list user's repos
-2. `GET /api/silo/v1/repos/{id}` - repo details
-3. `POST /api/silo/v1/repos` - create repo
-4. `DELETE /api/silo/v1/repos/{id}` - delete repo
-5. `GET /api/silo/v1/repos/{id}/dir/` - list directory
-6. `GET /api/silo/v1/repos/{id}/file/` - file metadata
-7. `POST /api/silo/v1/repos/{id}/file/` - upload file
-8. `DELETE /api/silo/v1/repos/{id}/file/` - delete file
-
-### Later:
-- Sharing (add/remove/list shares)
-- User management (list/create/delete users)
-- Quota management
-- Trash / restore
-- History / revisions
-
-**Reuse existing Go code:**
-- `repomgr.Get()`, `repomgr.GetRepoOwner()` - repo queries
-- `share.CheckPerm()` - permission checks
-- `fsmgr` - directory/file listing
-- `commitmgr` - commit operations
-- `blockmgr` - block storage
-
-## Phase 4: TUI Client
-
-Build separately. Talks to the Go server over HTTP. Could be Go or Ruby.
-
-## Key Constraints
-
-- **Client compatibility**: Desktop/mobile Seafile clients must keep working.
-  The existing HTTP sync API (/repo/{id}/block, /repo/{id}/commit, etc.) must
-  not change.
-- **Data compatibility**: Must read/write the same DB schema and filesystem
-  layout. No migrations.
-- **Password compatibility**: Must validate all existing password hash formats.
-- **Encryption compatibility**: AES-CBC (v1,2,4) and AES-128-ECB (v3) must
-  match existing client expectations.
+- **Client compatibility.** SeaDrive and Seafile Desktop must keep working. The
+  sync HTTP API (`/repo/{id}/commit`, `/repo/{id}/block`, `/repo/{id}/fs-id-list`,
+  and the rest) does not change, and neither does the `Seafile-Repo-Token`
+  header. New surface goes in the Silo lane (`/api/silo/v1/`), which is free to
+  differ — see `docs/sync-design.md`.
+- **Data compatibility.** Same DB schema, same on-disk object layout. No
+  migrations. The one planned exception is the database *filenames*, in
+  `docs/plans/db-rename.md`, which adopts existing files rather than migrating
+  their contents.
+- **Password compatibility.** Every hash format an existing install may hold has
+  to validate: `PBKDF2SHA256$…` at whatever iteration count it records, legacy
+  SHA256-with-fixed-salt, and unsalted SHA1. Old formats are flagged for rehash
+  on successful login rather than rejected.
+- **Encryption compatibility.** AES-CBC for repo versions 1, 2 and 4, and
+  AES-128-ECB for version 3, matching what clients already write
+  (`fileserver/crypt.go`). See `docs/encryption.md`.
