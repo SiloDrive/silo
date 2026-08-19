@@ -154,29 +154,38 @@ func (c *APIClient) uploadBlocks(repoID, parentDir, localPath string, blockSize 
 			// The server answered with an id that was never offered.
 			return fmt.Errorf("server asked for block %.8s, which is not part of this file", id)
 		}
-		// A factory, not a reader: doStream re-sends the body after a 401, and
-		// a reader already drained cannot be sent twice.
-		err := c.PutBlock(repoID, id, func() (io.ReadCloser, int64, error) {
-			file, err := os.Open(localPath)
-			if err != nil {
-				return nil, 0, err
-			}
-			if _, err := file.Seek(off, io.SeekStart); err != nil {
-				_ = file.Close()
-				return nil, 0, err
-			}
-			n := blockSize
-			if info, err := file.Stat(); err == nil && info.Size()-off < n {
-				n = info.Size() - off
-			}
-			return readCloser{io.LimitReader(file, n), file}, n, nil
-		})
-		if err != nil {
+		if _, err := c.putBlockFrom(repoID, id, localPath, off, blockSize); err != nil {
 			return err
 		}
 	}
 
 	return c.CommitBlocks(repoID, path.Join("/", parentDir, filepath.Base(localPath)), ids)
+}
+
+// putBlockFrom uploads the block that starts at off in a local file, and
+// reports how many bytes it sent. The last block of a file is short, so the
+// length comes from the file rather than from blockSize.
+func (c *APIClient) putBlockFrom(repoID, id, localPath string, off, blockSize int64) (int64, error) {
+	var sent int64
+	err := c.PutBlock(repoID, id, func() (io.ReadCloser, int64, error) {
+		// A factory, not a reader: doStream re-sends the body after a 401, and
+		// a reader already drained cannot be sent twice.
+		file, err := os.Open(localPath)
+		if err != nil {
+			return nil, 0, err
+		}
+		if _, err := file.Seek(off, io.SeekStart); err != nil {
+			_ = file.Close()
+			return nil, 0, err
+		}
+		n := blockSize
+		if info, err := file.Stat(); err == nil && info.Size()-off < n {
+			n = info.Size() - off
+		}
+		sent = n
+		return readCloser{io.LimitReader(file, n), file}, n, nil
+	})
+	return sent, err
 }
 
 // readCloser pairs a limited reader with the file underneath it, so the whole

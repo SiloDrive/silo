@@ -28,9 +28,9 @@ The sync protocol is a different shape. Its write path is a negotiation:
 
 | Endpoint | Purpose | Registered |
 |---|---|---|
-| `POST /repo/{id}/check-blocks` | which of these block ids do you *not* have? | `server.go:668` |
-| `POST /repo/{id}/check-fs` | same question for fs objects | `server.go:666` |
-| `POST /repo/{id}/recv-fs` | upload the fs objects it asked for | `server.go:670` |
+| `POST /repo/{id}/check-blocks` | which of these block ids do you *not* have? | `server.go:692` |
+| `POST /repo/{id}/check-fs` | same question for fs objects | `server.go:690` |
+| `POST /repo/{id}/recv-fs` | upload the fs objects it asked for | `server.go:694` |
 | `PUT /repo/{id}/block/{id}` | upload one block | see `protocol.md` |
 | `PUT /repo/{id}/commit/HEAD` | advance the branch head | see `protocol.md` |
 
@@ -44,17 +44,30 @@ same album twice costs disk once either way. It costs bandwidth twice.
 
 ## Tier 1 — recursive put
 
-`silo put -r <repo-id> <local-dir> [remote-dir]`.
+`silo put -r <repo-id> <local-dir> [remote-dir]`. **Landed**, and not in the
+shape this section proposed.
 
-A `filepath.WalkDir` in `internal/cli` over the existing `client.Mkdir` and
-`client.UploadFile`. No protocol work, no new server endpoints.
+The plan here was a `filepath.WalkDir` over `client.Mkdir` and
+`client.UploadFile` — no protocol work, and nothing incremental, so a re-run
+would re-upload everything. By the time it was built, tier 2 and the batch
+surface were already there, so it went straight to composing them
+(`client/tree.go`): hash every file in the tree, ask `blocks/missing` about all
+of it at once, send only what is new, then create every directory and file in
+one `batch`. A folder of five hundred photos is one commit rather than five
+hundred, and a re-run transfers nothing.
 
-What it buys: a supported command instead of a `find -exec` one-liner, with
-real error handling and a progress count. Good for one-shot loads and for
-scripting (push a generated report into a library from cron).
+Dedup is across the tree rather than per file, so a directory holding the same
+export twice sends it once.
 
-What it does not buy: anything incremental. Re-running it re-uploads
-everything.
+What it still does not buy is anything incremental in the *tree* sense: a
+re-run sends no content, but it does name every file again, so the server
+writes a new dirent for each and mints a commit. Skipping files whose content
+the library already has at that path means comparing against the remote tree,
+which is tier 3's problem.
+
+The whole-file fallback survives for a server that advertises neither surface,
+and for an encrypted library, which cannot be assembled from blocks
+server-side at all.
 
 ## Tier 2 — dedup-aware upload
 

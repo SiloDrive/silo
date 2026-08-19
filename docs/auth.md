@@ -966,7 +966,7 @@ Everything else — authorization, token, JWKS, and device endpoints — comes f
 `/.well-known/openid-configuration`. Hardcoding those URLs is how integrations
 break on an IdP upgrade.
 
-`GET /api/silo/v1/server-info` (`server.go:700`, already unauthenticated)
+`GET /api/silo/v1/server-info` (`server.go:724`, already unauthenticated)
 advertises whether OIDC is configured, so Porter shows the right first screen
 without being told.
 
