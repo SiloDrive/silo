@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -52,7 +53,12 @@ type dirLoadedMsg struct {
 	entries []client.DirEntry
 	err     error
 }
-type uploadDoneMsg struct{ err error }
+type uploadDoneMsg struct {
+	err error
+	// summary is what to say on success. A directory upload has a count worth
+	// reporting; a single file has "File uploaded" and nothing more.
+	summary string
+}
 type mkdirDoneMsg struct{ err error }
 type deleteFileDoneMsg struct{ err error }
 type downloadDoneMsg struct{ err error }
@@ -76,9 +82,14 @@ type model struct {
 	loginFocus    int // 0=email, 1=password
 
 	// Repos
-	repos   []client.Repo
-	cursor  int
-	message string // status message
+	repos       []client.Repo
+	cursor      int
+	reposOffset int    // index of the first library drawn
+	message     string // status message
+	// result is what to say once the reload a write kicks off has finished.
+	// Put in message directly it would be gone before it was read: the reload
+	// lands a moment later and clears the row it was written to.
+	result string
 
 	// New repo
 	newRepoInput textinput.Model
@@ -89,6 +100,7 @@ type model struct {
 	browsePath     string
 	dirEntries     []client.DirEntry
 	browseCursor   int
+	browseOffset   int // index of the first entry drawn
 
 	// Upload
 	uploadInput textinput.Model
@@ -104,6 +116,7 @@ type model struct {
 	movePickerPath   string
 	movePickerDirs   []client.DirEntry
 	movePickerCursor int
+	movePickerOffset int // index of the first directory drawn
 
 	// Pending download (for overwrite confirmation)
 	pendingDownloadRepoPath  string
@@ -147,7 +160,7 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 	newRepo.CharLimit = 255
 
 	upload := textinput.New()
-	upload.Placeholder = "/path/to/local/file"
+	upload.Placeholder = "/path/to/local/file-or-directory"
 	upload.CharLimit = 1024
 
 	mkdirIn := textinput.New()
@@ -170,6 +183,10 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 		autoEmail:     autoEmail,
 		autoPassword:  autoPassword,
 		serverURL:     serverURL,
+		// A usable size until the first WindowSizeMsg lands, so the opening
+		// frame is not laid out against a zero-sized terminal.
+		width:  80,
+		height: 24,
 	}
 
 	if autoEmail != "" {
@@ -197,7 +214,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "q":
-			if m.view == viewLogin || m.view == viewRepos || m.view == viewBrowse {
+			// Not on the login view: "q" is a legal character in an email
+			// address, and the form has no other way to type one.
+			if m.view == viewRepos || m.view == viewBrowse {
 				return m, tea.Quit
 			}
 		}
@@ -205,34 +224,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+
+	// The server answers after login has already handed the screen to the
+	// library list, so this cannot live in the login view's update.
+	case serverInfoMsg:
+		m.serverVersion = msg.version
 	}
 
+	var (
+		next tea.Model
+		cmd  tea.Cmd
+	)
 	switch m.view {
 	case viewLogin:
-		return m.updateLogin(msg)
+		next, cmd = m.updateLogin(msg)
 	case viewRepos:
-		return m.updateRepos(msg)
+		next, cmd = m.updateRepos(msg)
 	case viewNewRepo:
-		return m.updateNewRepo(msg)
+		next, cmd = m.updateNewRepo(msg)
 	case viewConfirm:
-		return m.updateConfirm(msg)
+		next, cmd = m.updateConfirm(msg)
 	case viewBrowse:
-		return m.updateBrowse(msg)
+		next, cmd = m.updateBrowse(msg)
 	case viewUpload:
-		return m.updateUpload(msg)
+		next, cmd = m.updateUpload(msg)
 	case viewMkdir:
-		return m.updateMkdir(msg)
+		next, cmd = m.updateMkdir(msg)
 	case viewConfirmDelete:
-		return m.updateConfirmDeleteFile(msg)
+		next, cmd = m.updateConfirmDeleteFile(msg)
 	case viewConfirmOverwrite:
-		return m.updateConfirmOverwrite(msg)
+		next, cmd = m.updateConfirmOverwrite(msg)
 	case viewRename:
-		return m.updateRename(msg)
+		next, cmd = m.updateRename(msg)
 	case viewMove:
-		return m.updateMove(msg)
+		next, cmd = m.updateMove(msg)
+	default:
+		return m, nil
 	}
 
-	return m, nil
+	// Every path back out of a view lands here, so a cursor move, a reload
+	// and a resize all get their scroll offsets fixed up the same way.
+	if updated, ok := next.(model); ok {
+		return updated.syncScroll(), cmd
+	}
+	return next, cmd
 }
 
 // --- Login View ---
@@ -274,9 +309,6 @@ func (m model) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.view = viewRepos
 		m.message = ""
 		return m, tea.Batch(m.loadRepos, m.fetchServerInfo)
-
-	case serverInfoMsg:
-		m.serverVersion = msg.version
 	}
 
 	var cmds []tea.Cmd
@@ -289,17 +321,15 @@ func (m model) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderLogin() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Silo Login") + "\n\n")
-	b.WriteString("Email:\n")
-	b.WriteString(m.emailInput.View() + "\n\n")
-	b.WriteString("Password:\n")
-	b.WriteString(m.passwordInput.View() + "\n\n")
-	if m.message != "" {
-		b.WriteString(m.message + "\n\n")
+	header := []string{titleStyle.Render("Silo Login"), ""}
+	body := []string{
+		"Email:",
+		m.emailInput.View(),
+		"",
+		"Password:",
+		m.passwordInput.View(),
 	}
-	b.WriteString(helpStyle.Render("tab: switch field  enter: login  q: quit"))
-	return b.String()
+	return m.frame(header, body, m.footer(headerRows, loginHelp))
 }
 
 // --- Repos View ---
@@ -312,15 +342,11 @@ func (m model) loadRepos() tea.Msg {
 func (m model) updateRepos(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if c, o, ok := moveCursor(msg.String(), m.cursor, m.reposOffset, len(m.repos), m.reposRows()); ok {
+			m.cursor, m.reposOffset = c, o
+			return m, nil
+		}
 		switch msg.String() {
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.repos)-1 {
-				m.cursor++
-			}
 		case "n":
 			m.view = viewNewRepo
 			m.newRepoInput.SetValue("")
@@ -354,7 +380,7 @@ func (m model) updateRepos(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.repos = msg.repos
-		m.message = ""
+		m.message, m.result = m.result, ""
 		if m.cursor >= len(m.repos) {
 			m.cursor = max(0, len(m.repos)-1)
 		}
@@ -364,14 +390,15 @@ func (m model) updateRepos(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderRepos() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Libraries") + "\n\n")
+	from, to, counter := window(m.reposOffset, len(m.repos), m.reposRows())
+	header := []string{titleStyle.Render("Libraries") + counter, ""}
 
+	var body []string
 	if len(m.repos) == 0 {
-		b.WriteString(dimStyle.Render("  No libraries yet. Press 'n' to create one.") + "\n")
+		body = append(body, dimStyle.Render("  No libraries yet. Press 'n' to create one."))
 	}
-
-	for i, repo := range m.repos {
+	for i := from; i < to; i++ {
+		repo := m.repos[i]
 		cursor := "  "
 		name := repo.Name
 		if repo.Name == "" {
@@ -389,16 +416,10 @@ func (m model) renderRepos() string {
 		if repo.Encrypted {
 			encrypted = dimStyle.Render(" [encrypted]")
 		}
-		fmt.Fprintf(&b, "%s%s%s%s\n", cursor, name, ts, encrypted)
-		b.WriteString(dimStyle.Render(fmt.Sprintf("    %s", repo.ID)) + "\n")
+		body = append(body, cursor+name+ts+encrypted, dimStyle.Render("    "+repo.ID))
 	}
 
-	b.WriteString("\n")
-	if m.message != "" {
-		b.WriteString(m.message + "\n")
-	}
-	b.WriteString(helpStyle.Render("j/k: navigate  n: new  d: delete  r: refresh  q: quit"))
-	return b.String()
+	return m.frame(header, body, m.footer(headerRows, reposHelp))
 }
 
 // --- New Repo View ---
@@ -429,7 +450,7 @@ func (m model) updateNewRepo(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.view = viewRepos
-		m.message = successStyle.Render("Library created")
+		m.result = successStyle.Render("Library created")
 		return m, m.loadRepos
 	}
 
@@ -439,15 +460,9 @@ func (m model) updateNewRepo(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderNewRepo() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Create Library") + "\n\n")
-	b.WriteString("Name:\n")
-	b.WriteString(m.newRepoInput.View() + "\n\n")
-	if m.message != "" {
-		b.WriteString(m.message + "\n\n")
-	}
-	b.WriteString(helpStyle.Render("enter: create  esc: cancel"))
-	return b.String()
+	header := []string{titleStyle.Render("Create Library"), ""}
+	body := []string{"Name:", m.newRepoInput.View()}
+	return m.frame(header, body, m.footer(headerRows, createHelp))
 }
 
 // --- Confirm Delete View ---
@@ -475,7 +490,7 @@ func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.view = viewRepos
-		m.message = successStyle.Render("Library deleted")
+		m.result = successStyle.Render("Library deleted")
 		return m, m.loadRepos
 	}
 
@@ -483,15 +498,13 @@ func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderConfirm() string {
-	var b strings.Builder
 	name := "(unnamed)"
 	if m.cursor < len(m.repos) && m.repos[m.cursor].Name != "" {
 		name = m.repos[m.cursor].Name
 	}
-	b.WriteString(titleStyle.Render("Delete Library") + "\n\n")
-	fmt.Fprintf(&b, "Are you sure you want to delete %q?\n\n", name)
-	b.WriteString(helpStyle.Render("y: yes  n: no"))
-	return b.String()
+	header := []string{titleStyle.Render("Delete Library"), ""}
+	body := []string{fmt.Sprintf("Are you sure you want to delete %q?", name)}
+	return m.frame(header, body, m.footer(headerRows, confirmHelp))
 }
 
 // --- Browse View ---
@@ -505,15 +518,11 @@ func (m model) updateBrowse(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		m.message = "" // Clear status on any keypress
+		if c, o, ok := moveCursor(msg.String(), m.browseCursor, m.browseOffset, len(m.dirEntries), m.browseRows()); ok {
+			m.browseCursor, m.browseOffset = c, o
+			return m, nil
+		}
 		switch msg.String() {
-		case "up", "k":
-			if m.browseCursor > 0 {
-				m.browseCursor--
-			}
-		case "down", "j":
-			if m.browseCursor < len(m.dirEntries)-1 {
-				m.browseCursor++
-			}
 		case "enter":
 			if m.browseCursor < len(m.dirEntries) {
 				entry := m.dirEntries[m.browseCursor]
@@ -616,7 +625,7 @@ func (m model) updateBrowse(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.dirEntries = msg.entries
-		m.message = ""
+		m.message, m.result = m.result, ""
 		if m.browseCursor >= len(m.dirEntries) {
 			m.browseCursor = max(0, len(m.dirEntries)-1)
 		}
@@ -626,52 +635,36 @@ func (m model) updateBrowse(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderBrowse() string {
-	var b strings.Builder
+	from, to, counter := window(m.browseOffset, len(m.dirEntries), m.browseRows())
+	header := []string{titleStyle.Render(m.browseRepoName+" "+m.browsePath) + counter, ""}
 
-	// Breadcrumb
-	breadcrumb := m.browseRepoName + " " + m.browsePath
-	b.WriteString(titleStyle.Render(breadcrumb) + "\n\n")
-
+	var body []string
 	if len(m.dirEntries) == 0 {
-		b.WriteString(dimStyle.Render("  (empty directory)") + "\n")
+		body = append(body, dimStyle.Render("  (empty directory)"))
 	}
-
-	for i, entry := range m.dirEntries {
+	for i := from; i < to; i++ {
+		entry := m.dirEntries[i]
 		cursor := "  "
+		name := entry.Name
+		if entry.Type == "dir" {
+			name += "/"
+		}
 		if i == m.browseCursor {
 			cursor = "> "
+			name = selectedStyle.Render(name)
 		}
-
+		ts := ""
+		if entry.Mtime > 0 {
+			ts = dimStyle.Render("  " + time.Unix(entry.Mtime, 0).Format("2006-01-02 15:04"))
+		}
 		if entry.Type == "dir" {
-			name := entry.Name + "/"
-			if i == m.browseCursor {
-				name = selectedStyle.Render(name)
-			}
-			ts := ""
-			if entry.Mtime > 0 {
-				ts = dimStyle.Render("  " + time.Unix(entry.Mtime, 0).Format("2006-01-02 15:04"))
-			}
-			fmt.Fprintf(&b, "%s%s%s\n", cursor, name, ts)
-		} else {
-			name := entry.Name
-			if i == m.browseCursor {
-				name = selectedStyle.Render(name)
-			}
-			size := dimStyle.Render(format.Bytes(entry.Size))
-			ts := ""
-			if entry.Mtime > 0 {
-				ts = dimStyle.Render("  " + time.Unix(entry.Mtime, 0).Format("2006-01-02 15:04"))
-			}
-			fmt.Fprintf(&b, "%s%s  %s%s\n", cursor, name, size, ts)
+			body = append(body, cursor+name+ts)
+			continue
 		}
+		body = append(body, cursor+name+"  "+dimStyle.Render(format.Bytes(entry.Size))+ts)
 	}
 
-	b.WriteString("\n")
-	if m.message != "" {
-		b.WriteString(m.message + "\n")
-	}
-	b.WriteString(helpStyle.Render("j/k: navigate  enter: open/download  u: upload  m: mkdir  r: rename  v: move  x: delete  q: quit"))
-	return b.String()
+	return m.frame(header, body, m.footer(headerRows, browseHelp))
 }
 
 // --- Upload View ---
@@ -684,17 +677,30 @@ func (m model) updateUpload(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.view = viewBrowse
 			return m, nil
 		case "enter":
-			localPath := m.uploadInput.Value()
+			localPath := expandHome(m.uploadInput.Value())
 			if localPath == "" {
 				m.message = "File path is required"
 				return m, nil
 			}
-			m.message = "Uploading..."
+			info, err := os.Stat(localPath)
+			if err != nil {
+				m.message = errorStyle.Render(err.Error())
+				return m, nil
+			}
+
 			repoID := m.browseRepoID
 			parentDir := m.browsePath
+			if info.IsDir() {
+				m.message = "Uploading directory..."
+				return m, func() tea.Msg {
+					up, err := m.api.UploadDir(repoID, parentDir, localPath, nil)
+					return uploadDoneMsg{err: err, summary: uploadSummary(up)}
+				}
+			}
+			m.message = "Uploading..."
 			return m, func() tea.Msg {
 				err := m.api.UploadFile(repoID, parentDir, localPath)
-				return uploadDoneMsg{err: err}
+				return uploadDoneMsg{err: err, summary: "File uploaded"}
 			}
 		}
 
@@ -704,7 +710,7 @@ func (m model) updateUpload(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.view = viewBrowse
-		m.message = successStyle.Render("File uploaded")
+		m.result = successStyle.Render(msg.summary)
 		return m, m.loadDir
 	}
 
@@ -714,16 +720,41 @@ func (m model) updateUpload(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderUpload() string {
-	var b strings.Builder
-	breadcrumb := m.browseRepoName + " " + m.browsePath
-	b.WriteString(titleStyle.Render("Upload to "+breadcrumb) + "\n\n")
-	b.WriteString("Local file path:\n")
-	b.WriteString(m.uploadInput.View() + "\n\n")
-	if m.message != "" {
-		b.WriteString(m.message + "\n\n")
+	header := []string{titleStyle.Render("Upload to " + m.browseRepoName + " " + m.browsePath), ""}
+	body := []string{
+		"Local file or directory:",
+		m.uploadInput.View(),
+		"",
+		dimStyle.Render("A directory is uploaded whole, keeping its own name."),
 	}
-	b.WriteString(helpStyle.Render("enter: upload  esc: cancel"))
-	return b.String()
+	return m.frame(header, body, m.footer(headerRows, uploadHelp))
+}
+
+// uploadSummary says what a directory upload did in one line. Blocks held back
+// is the number worth showing: it is the content the server already had, and
+// the reason a re-run of a large tree finishes in seconds.
+func uploadSummary(up *client.TreeUpload) string {
+	if up == nil {
+		return "Uploaded"
+	}
+	summary := fmt.Sprintf("Uploaded %d files in %d directories", up.Files, up.Dirs)
+	if up.BlocksHeld > 0 {
+		summary += fmt.Sprintf(" (%d blocks already on the server)", up.BlocksHeld)
+	}
+	return summary
+}
+
+// expandHome makes "~/photos" mean what it does in a shell. The input is typed
+// by hand into a field, not expanded by one.
+func expandHome(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
 }
 
 // --- Mkdir View ---
@@ -756,7 +787,7 @@ func (m model) updateMkdir(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.view = viewBrowse
-		m.message = successStyle.Render("Directory created")
+		m.result = successStyle.Render("Directory created")
 		return m, m.loadDir
 	}
 
@@ -766,16 +797,9 @@ func (m model) updateMkdir(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderMkdir() string {
-	var b strings.Builder
-	breadcrumb := m.browseRepoName + " " + m.browsePath
-	b.WriteString(titleStyle.Render("Create directory in "+breadcrumb) + "\n\n")
-	b.WriteString("Directory name:\n")
-	b.WriteString(m.mkdirInput.View() + "\n\n")
-	if m.message != "" {
-		b.WriteString(m.message + "\n\n")
-	}
-	b.WriteString(helpStyle.Render("enter: create  esc: cancel"))
-	return b.String()
+	header := []string{titleStyle.Render("Create directory in " + m.browseRepoName + " " + m.browsePath), ""}
+	body := []string{"Directory name:", m.mkdirInput.View()}
+	return m.frame(header, body, m.footer(headerRows, createHelp))
 }
 
 // --- Confirm Delete File View ---
@@ -805,7 +829,7 @@ func (m model) updateConfirmDeleteFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.view = viewBrowse
-		m.message = successStyle.Render("Deleted")
+		m.result = successStyle.Render("Deleted")
 		return m, m.loadDir
 	}
 
@@ -813,15 +837,13 @@ func (m model) updateConfirmDeleteFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderConfirmDeleteFile() string {
-	var b strings.Builder
 	name := "(unknown)"
 	if m.browseCursor < len(m.dirEntries) {
 		name = m.dirEntries[m.browseCursor].Name
 	}
-	b.WriteString(titleStyle.Render("Delete") + "\n\n")
-	fmt.Fprintf(&b, "Are you sure you want to delete %q?\n\n", name)
-	b.WriteString(helpStyle.Render("y: yes  n: no"))
-	return b.String()
+	header := []string{titleStyle.Render("Delete"), ""}
+	body := []string{fmt.Sprintf("Are you sure you want to delete %q?", name)}
+	return m.frame(header, body, m.footer(headerRows, confirmHelp))
 }
 
 // --- Rename View ---
@@ -855,7 +877,7 @@ func (m model) updateRename(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.view = viewBrowse
-		m.message = successStyle.Render("Renamed")
+		m.result = successStyle.Render("Renamed")
 		return m, m.loadDir
 	}
 
@@ -865,16 +887,13 @@ func (m model) updateRename(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderRename() string {
-	var b strings.Builder
-	name := m.dirEntries[m.browseCursor].Name
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Rename \"%s\"", name)) + "\n\n")
-	b.WriteString("New name:\n")
-	b.WriteString(m.renameInput.View() + "\n\n")
-	if m.message != "" {
-		b.WriteString(m.message + "\n\n")
+	name := "(unknown)"
+	if m.browseCursor < len(m.dirEntries) {
+		name = m.dirEntries[m.browseCursor].Name
 	}
-	b.WriteString(helpStyle.Render("enter: rename  esc: cancel"))
-	return b.String()
+	header := []string{titleStyle.Render(fmt.Sprintf("Rename %q", name)), ""}
+	body := []string{"New name:", m.renameInput.View()}
+	return m.frame(header, body, m.footer(headerRows, renameHelp))
 }
 
 // --- Move View (remote directory picker) ---
@@ -892,15 +911,11 @@ func (m model) updateMove(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		m.message = ""
+		if c, o, ok := moveCursor(msg.String(), m.movePickerCursor, m.movePickerOffset, len(m.movePickerDirs), m.moveRows()); ok {
+			m.movePickerCursor, m.movePickerOffset = c, o
+			return m, nil
+		}
 		switch msg.String() {
-		case "up", "k":
-			if m.movePickerCursor > 0 {
-				m.movePickerCursor--
-			}
-		case "down", "j":
-			if m.movePickerCursor < len(m.movePickerDirs)-1 {
-				m.movePickerCursor++
-			}
 		case "enter":
 			if m.movePickerCursor < len(m.movePickerDirs) {
 				// Navigate into selected directory
@@ -956,7 +971,7 @@ func (m model) updateMove(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.view = viewBrowse
-		m.message = successStyle.Render("Moved")
+		m.result = successStyle.Render("Moved")
 		return m, m.loadDir
 	}
 
@@ -964,34 +979,28 @@ func (m model) updateMove(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderMove() string {
-	var b strings.Builder
-
-	srcName := path.Base(m.moveSrcPath)
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Move \"%s\"", srcName)) + "\n")
-	b.WriteString(dimStyle.Render("Select destination: "+m.movePickerPath) + "\n\n")
-
-	if len(m.movePickerDirs) == 0 {
-		b.WriteString(dimStyle.Render("  (no subdirectories)") + "\n")
+	from, to, counter := window(m.movePickerOffset, len(m.movePickerDirs), m.moveRows())
+	header := []string{
+		titleStyle.Render(fmt.Sprintf("Move %q", path.Base(m.moveSrcPath))) + counter,
+		dimStyle.Render("Select destination: " + m.movePickerPath),
+		"",
 	}
 
-	for i, dir := range m.movePickerDirs {
+	var body []string
+	if len(m.movePickerDirs) == 0 {
+		body = append(body, dimStyle.Render("  (no subdirectories)"))
+	}
+	for i := from; i < to; i++ {
 		cursor := "  "
+		name := m.movePickerDirs[i].Name + "/"
 		if i == m.movePickerCursor {
 			cursor = "> "
-		}
-		name := dir.Name + "/"
-		if i == m.movePickerCursor {
 			name = selectedStyle.Render(name)
 		}
-		fmt.Fprintf(&b, "%s%s\n", cursor, name)
+		body = append(body, cursor+name)
 	}
 
-	b.WriteString("\n")
-	if m.message != "" {
-		b.WriteString(m.message + "\n")
-	}
-	b.WriteString(helpStyle.Render("j/k: navigate  enter: open dir  space: move here  backspace: up  esc: cancel"))
-	return b.String()
+	return m.frame(header, body, m.footer(moveHeaderRows, moveHelp))
 }
 
 // --- Confirm Overwrite View ---
@@ -1020,54 +1029,254 @@ func (m model) updateConfirmOverwrite(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderConfirmOverwrite() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("File exists") + "\n\n")
-	fmt.Fprintf(&b, "Overwrite local file %q?\n\n", m.pendingDownloadLocalPath)
-	b.WriteString(helpStyle.Render("y: yes  n: no"))
-	return b.String()
+	header := []string{titleStyle.Render("File exists"), ""}
+	body := []string{fmt.Sprintf("Overwrite local file %q?", m.pendingDownloadLocalPath)}
+	return m.frame(header, body, m.footer(headerRows, confirmHelp))
+}
+
+// --- Layout ---
+
+// Key help, one binding per item. The layout has to measure it: it wraps to
+// the terminal width, and how many rows that takes decides how many rows are
+// left for the list above it.
+var (
+	loginHelp   = []string{"tab: switch field", "enter: login", "ctrl+c: quit"}
+	reposHelp   = []string{"j/k: navigate", "g/G: top/bottom", "n: new", "d: delete", "r: refresh", "q: quit"}
+	browseHelp  = []string{"j/k: navigate", "g/G: top/bottom", "enter: open/download", "u: upload", "m: mkdir", "r: rename", "v: move", "x: delete", "esc: back", "q: quit"}
+	moveHelp    = []string{"j/k: navigate", "enter: open dir", "space: move here", "backspace: up", "esc: cancel"}
+	confirmHelp = []string{"y: yes", "n: no"}
+	createHelp  = []string{"enter: create", "esc: cancel"}
+	uploadHelp  = []string{"enter: upload", "esc: cancel"}
+	renameHelp  = []string{"enter: rename", "esc: cancel"}
+)
+
+// wrapHelp packs bindings into lines no wider than width, breaking only
+// between them. A general-purpose word wrap breaks inside "r: rename", which
+// then reads as two bindings.
+func wrapHelp(items []string, width int) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	var lines []string
+	line := items[0]
+	for _, item := range items[1:] {
+		if width > 0 && lipgloss.Width(line)+2+lipgloss.Width(item) > width {
+			lines = append(lines, line)
+			line = item
+			continue
+		}
+		line += "  " + item
+	}
+	return append(lines, line)
+}
+
+// How many rows each screen spends on chrome above its body. The renderers
+// and the scroll bookkeeping both read these, so both compute the same window.
+const (
+	headerRows     = 2 // title, blank
+	moveHeaderRows = 3 // title, destination, blank
+	repoItemRows   = 2 // name line, id line
+)
+
+// bodyRows is what is left of the terminal once a screen's header and footer
+// have taken theirs. Never less than one, so a tiny window degrades instead
+// of computing a negative one.
+func (m model) bodyRows(header, footer int) int {
+	rows := m.height - header - footer
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
+// How many list items fit on each of the scrolling screens.
+func (m model) reposRows() int {
+	return max(1, m.bodyRows(headerRows, len(m.footer(headerRows, reposHelp)))/repoItemRows)
+}
+
+func (m model) browseRows() int {
+	return m.bodyRows(headerRows, len(m.footer(headerRows, browseHelp)))
+}
+
+func (m model) moveRows() int {
+	return m.bodyRows(moveHeaderRows, len(m.footer(moveHeaderRows, moveHelp)))
+}
+
+// scrollTo slides offset the shortest distance that keeps cursor inside a
+// window of rows over n items, and keeps that window inside the list.
+func scrollTo(offset, cursor, n, rows int) int {
+	if n <= rows {
+		return 0
+	}
+	if cursor < offset {
+		offset = cursor
+	}
+	if cursor >= offset+rows {
+		offset = cursor - rows + 1
+	}
+	if offset > n-rows {
+		offset = n - rows
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return offset
+}
+
+// syncScroll re-derives every offset from the cursors, the list lengths and
+// the current terminal size. Update runs it after each message, so growing
+// the window, reloading a directory and moving the cursor all agree.
+func (m model) syncScroll() model {
+	m.reposOffset = scrollTo(m.reposOffset, m.cursor, len(m.repos), m.reposRows())
+	m.browseOffset = scrollTo(m.browseOffset, m.browseCursor, len(m.dirEntries), m.browseRows())
+	m.movePickerOffset = scrollTo(m.movePickerOffset, m.movePickerCursor, len(m.movePickerDirs), m.moveRows())
+	return m
+}
+
+// moveCursor applies the list keys every scrolling screen shares — arrows,
+// page, top and bottom — and reports whether it took the key.
+//
+// The arrows only move the cursor and leave the window to syncScroll, which
+// scrolls the least it can. The paging and jump keys move the window as well,
+// because a page key that slid the list by one row would not have paged.
+func moveCursor(key string, cursor, offset, n, rows int) (int, int, bool) {
+	switch key {
+	case "up", "k":
+		cursor--
+	case "down", "j":
+		cursor++
+	case "pgup", "ctrl+b":
+		cursor -= rows
+		offset -= rows
+	case "pgdown", "ctrl+f":
+		cursor += rows
+		offset += rows
+	case "home", "g":
+		cursor, offset = 0, 0
+	case "end", "G":
+		cursor, offset = n-1, n-rows
+	default:
+		return cursor, offset, false
+	}
+	return min(max(cursor, 0), max(n-1, 0)), max(offset, 0), true
+}
+
+// window is the half-open range of items to draw for a list scrolled to
+// offset, plus a "3-11 of 40" counter for the title — empty while the whole
+// list fits, so the counter only appears when there is something off screen.
+func window(offset, n, rows int) (from, to int, counter string) {
+	from = min(offset, max(n-1, 0))
+	to = min(n, from+rows)
+	if n > rows {
+		counter = dimStyle.Render(fmt.Sprintf("  %d-%d of %d", from+1, to, n))
+	}
+	return from, to, counter
+}
+
+// footer is the bottom of every screen: the status message, the key help, and
+// the server bar. The message row is always drawn, so a screen does not jump
+// when a message arrives or clears.
+//
+// The help wraps to the terminal width, so on a narrow window it can be
+// several rows and on a short one it does not fit at all. What has to give
+// gives in this order: the padding row, then the help from the bottom up,
+// then the message. The server bar is the line that always survives.
+func (m model) footer(header int, help []string) []string {
+	status := m.renderStatusBar()
+	var helpLines []string
+	for _, line := range wrapHelp(help, m.width) {
+		helpLines = append(helpLines, helpStyle.Render(line))
+	}
+
+	// The body is owed at least one row; the rest of the screen is the
+	// footer's to spend.
+	budget := m.height - header - 1
+
+	lines := append([]string{"", m.message}, helpLines...)
+	lines = append(lines, status)
+	if len(lines) <= budget {
+		return lines
+	}
+
+	lines = append(append([]string{m.message}, helpLines...), status)
+	for len(lines) > budget && len(lines) > 2 {
+		lines = append(lines[:len(lines)-2], status)
+	}
+	if len(lines) > budget {
+		lines = []string{status}
+	}
+	return lines
+}
+
+// frame lays a screen out as a fixed header, a body padded to fill whatever
+// is left, and a footer on the last rows. Lines are clipped to the terminal
+// width, because one wrapped line would push the footer off the bottom.
+func (m model) frame(header, body, footer []string) string {
+	avail := m.bodyRows(len(header), len(footer))
+	if len(body) > avail {
+		body = body[:avail]
+	}
+
+	lines := make([]string, 0, len(header)+avail+len(footer))
+	lines = append(lines, header...)
+	lines = append(lines, body...)
+	for i := len(body); i < avail; i++ {
+		lines = append(lines, "")
+	}
+	lines = append(lines, footer...)
+
+	// A terminal too short for even the trimmed footer: draw what fits from
+	// the top rather than scrolling the screen out from under itself.
+	if m.height > 0 && len(lines) > m.height {
+		lines = lines[:m.height]
+	}
+
+	if m.width > 0 {
+		clip := lipgloss.NewStyle().MaxWidth(m.width)
+		for i, line := range lines {
+			lines[i] = clip.Render(line)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // --- Status bar ---
 
 func (m model) renderStatusBar() string {
-	version := m.serverVersion
-	if version == "" {
-		version = "?"
+	if m.serverVersion == "" {
+		return dimStyle.Render(m.serverURL)
 	}
-	return dimStyle.Render(fmt.Sprintf("%s (v%s)", m.serverURL, version))
+	return dimStyle.Render(fmt.Sprintf("%s (v%s)", m.serverURL, m.serverVersion))
 }
 
 // --- View dispatch ---
 
 func (m model) View() string {
-	var content string
 	switch m.view {
 	case viewLogin:
 		return m.renderLogin()
 	case viewRepos:
-		content = m.renderRepos()
+		return m.renderRepos()
 	case viewNewRepo:
-		content = m.renderNewRepo()
+		return m.renderNewRepo()
 	case viewConfirm:
-		content = m.renderConfirm()
+		return m.renderConfirm()
 	case viewBrowse:
-		content = m.renderBrowse()
+		return m.renderBrowse()
 	case viewUpload:
-		content = m.renderUpload()
+		return m.renderUpload()
 	case viewMkdir:
-		content = m.renderMkdir()
+		return m.renderMkdir()
 	case viewConfirmDelete:
-		content = m.renderConfirmDeleteFile()
+		return m.renderConfirmDeleteFile()
 	case viewConfirmOverwrite:
-		content = m.renderConfirmOverwrite()
+		return m.renderConfirmOverwrite()
 	case viewRename:
-		content = m.renderRename()
+		return m.renderRename()
 	case viewMove:
-		content = m.renderMove()
-	default:
-		return ""
+		return m.renderMove()
 	}
-	return content + "\n" + m.renderStatusBar()
+	return ""
 }
 
 // Run starts the Bubble Tea TUI. The caller supplies the server URL and
