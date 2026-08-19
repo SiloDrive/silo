@@ -20,6 +20,7 @@ import (
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
+	"github.com/dkam/silo/fileserver/utils"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
@@ -29,7 +30,8 @@ import (
 //
 //	GET    /api/silo/v1/repos/{repo}/entries/{path}   dir -> listing, file -> bytes
 //	HEAD   /api/silo/v1/repos/{repo}/entries/{path}   headers only
-//	PUT    /api/silo/v1/repos/{repo}/entries/{path}   body -> file, or ?type=dir
+//	PUT    /api/silo/v1/repos/{repo}/entries/{path}   body -> file, ?type=dir,
+//	                                                  or ?type=blocks (blocks.go)
 //	DELETE /api/silo/v1/repos/{repo}/entries/{path}
 //	POST   /api/silo/v1/repos/{repo}/entries/{path}   {"op":"move"|"copy","to":"/x/y"}
 //
@@ -257,6 +259,13 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ?type=blocks is a file too, but one whose content is already on the
+	// server: the body names blocks rather than carrying bytes.
+	if strings.EqualFold(r.URL.Query().Get("type"), "blocks") {
+		putEntryBlocks(w, r, vars["repoid"], path)
+		return
+	}
+
 	if !wantsDirectory(r) {
 		putEntryFile(w, r, vars["repoid"], path)
 		return
@@ -442,6 +451,129 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 	w.Header().Set("ETag", `"`+etagPrefix+id+`"`)
 	writeEntryJSON(w, http.StatusCreated, map[string]any{
 		"name": fileName, "type": "file", "id": id, "size": indexedSize,
+	})
+}
+
+// putEntryBlocks commits a file whose content is already in the store, named
+// by the block ids the client uploaded to the block surface. It transfers no
+// content: everything this reads is a few dozen bytes of JSON.
+//
+// This is the second half of a resumable upload, and it is the half that makes
+// the first half safe to interrupt. Blocks are immutable and content-addressed,
+// so uploading them commits to nothing — the file does not exist, and no path
+// changes, until this call names them in order. A client can therefore upload
+// blocks over hours, across restarts, in any order and in parallel, and still
+// produce exactly one commit at the end.
+//
+// See blocks.go for the surface as a whole.
+func putEntryBlocks(w http.ResponseWriter, r *http.Request, repoID, path string) {
+	user := middleware.GetUserEmail(r)
+
+	repo := entryRepo(w, repoID, user, true)
+	if repo == nil {
+		return
+	}
+
+	// An encrypted library stores ciphertext, so its block ids are the hashes
+	// of encrypted bytes and a client cannot name one without doing the
+	// encryption itself under the exact scheme in crypt.go. Refused rather
+	// than half-supported: the whole-file PUT works there and does the
+	// encryption server-side from the cached key.
+	if repo.IsEncrypted {
+		http.Error(w, "An encrypted library cannot be written block by block; PUT the file content instead", http.StatusBadRequest)
+		return
+	}
+
+	if !preconditionsHold(w, r, repo, path) {
+		return
+	}
+
+	parentDir, fileName := upath.Split(path)
+	parentDir = entryPath(parentDir)
+	if !checkEntryName(w, fileName) {
+		return
+	}
+	if parentDir != "/" {
+		parent, err := resolve(repo, parentDir)
+		if err != nil || !parent.isDir {
+			http.Error(w, "Parent directory does not exist", http.StatusNotFound)
+			return
+		}
+	}
+
+	var body struct {
+		Blocks []string `json:"blocks"`
+	}
+	if appErr := decodeLimitedJSON(w, r, maxBlockListBody, &body); appErr != nil {
+		if appErr.Code == http.StatusBadRequest {
+			appErr.Message = `Expected a JSON body such as {"blocks":["<sha1>",…]}`
+		}
+		http.Error(w, appErr.Message, appErr.Code)
+		return
+	}
+
+	// Read before the blocks are checked, so a GC that starts between the
+	// check and the commit is caught as a conflict rather than leaving a
+	// commit pointing at blocks that have just been reclaimed. The same
+	// ordering as the whole-file path, for the same reason.
+	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to get gc id for repo %s", repoID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	for _, id := range body.Blocks {
+		if !utils.IsObjectIDValid(id) {
+			http.Error(w, "Not a block id: "+id, http.StatusBadRequest)
+			return
+		}
+	}
+
+	// The size is summed from the store rather than taken from the request. A
+	// client-supplied length that disagreed with the blocks would produce a
+	// file whose recorded size is a lie, and nothing downstream would notice —
+	// reads take their length from here, not from the blocks.
+	missing, size, err := blockInventory(repo.StoreID, body.Blocks)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory blocks for %s in repo %s", path, repoID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// 424 rather than 400, because the request is not wrong and the identical
+	// one will succeed once its dependency is met — which is precisely what
+	// 400 tells a client never to assume. The list is in the body so the fix
+	// is exact: upload these, then send this same request again.
+	if len(missing) > 0 {
+		writeEntryJSON(w, http.StatusFailedDependency, map[string]any{
+			"error":   "Some blocks are not on the server; upload them and retry",
+			"missing": missing,
+		})
+		return
+	}
+
+	if option.MaxUploadSize > 0 && uint64(size) > option.MaxUploadSize {
+		http.Error(w, "File is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	id, err := writeSeafile(repo.StoreID, repo.Version, size, body.Blocks)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to write seafile for %s in repo %s", path, repoID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if _, err := postFilesAndGenCommit([]string{fileName}, repo.ID, user, parentDir, true,
+		[]string{id}, []int64{size}, 0, gcID); err != nil {
+		writeCommitErr(w, r, err, fmt.Sprintf("commit of %s in repo %s", path, repoID))
+		return
+	}
+
+	w.Header().Set("ETag", `"`+etagPrefix+id+`"`)
+	writeEntryJSON(w, http.StatusCreated, map[string]any{
+		"name": fileName, "type": "file", "id": id, "size": size,
 	})
 }
 

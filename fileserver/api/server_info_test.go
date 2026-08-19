@@ -36,10 +36,31 @@ func TestServerInfoAdvertisesFeatures(t *testing.T) {
 	// Named individually rather than compared as a set: a new capability must
 	// not have to edit this test, but a removed one must break it, because
 	// removing a feature name breaks every client that checked for it.
-	for _, want := range []string{"entries", "entries-copy", "conditional-writes", "changes", "repo-rename"} {
+	for _, want := range []string{"entries", "entries-copy", "conditional-writes", "changes", "repo-rename", "blocks"} {
 		if !slices.Contains(got.Features, want) {
 			t.Errorf("feature %q is missing from %v", want, got.Features)
 		}
+	}
+}
+
+// TestServerInfoReportsTheBlockSize covers the one field a client must have
+// exactly right rather than approximately: chunk at any other offset and every
+// id computed is a name nothing else in the store shares, so the upload works
+// and dedups against nothing.
+func TestServerInfoReportsTheBlockSize(t *testing.T) {
+	original := option.FixedBlockSize
+	t.Cleanup(func() { option.FixedBlockSize = original })
+	option.FixedBlockSize = 4 << 20
+
+	w := httptest.NewRecorder()
+	ServerInfoHandler(w, httptest.NewRequest("GET", "/api/silo/v1/server-info", nil))
+
+	var got siloServerInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode %s: %v", w.Body.String(), err)
+	}
+	if got.BlockSize != 4<<20 {
+		t.Errorf("block_size = %d, want %d — a configured size that is not reported is worse than none", got.BlockSize, 4<<20)
 	}
 }
 

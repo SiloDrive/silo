@@ -9,22 +9,28 @@ independently and in order. Nothing here is committed.
 
 ## What the CLI does today, and why it is not sync
 
-`silo put` maps to `client.UploadFile` (`client/client.go:401`): one
-`PUT repos/{id}/entries/{path}` with the whole file as the request body. (It
-used to mint an upload access token and POST a multipart body; that was the
-pre-0.4.0 shape and this document described it for longer than it was true.)
-`cmdPut` (`internal/cli/cli.go:148`) takes exactly one local path and passes it
-straight through, so a directory argument fails at `os.Open` with
-`read <dir>: is a directory`. There is no walk, no resume, and no way to ask
-the server what it already has.
+`silo put` maps to `client.UploadFile`: one `PUT repos/{id}/entries/{path}`
+with the whole file as the request body for a small file, or the block surface
+for anything over one block. (It used to mint an upload access token and POST a
+multipart body; that was the pre-0.4.0 shape and this document described it for
+longer than it was true.) `cmdPut` (`internal/cli/cli.go:148`) takes exactly one
+local path and passes it straight through, so a directory argument fails at
+`os.Open` with `read <dir>: is a directory`. There is no walk and no incremental
+comparison of a tree.
+
+Tier 2 below is largely built, and on the Silo lane rather than through a
+crossing to the sync lane — see [`protocol.md`](protocol.md) for the endpoints
+and `client/blocks.go` for a working client. What remains is described here as
+it was reasoned about, because the reasoning is what the remaining tiers rest
+on.
 
 The sync protocol is a different shape. Its write path is a negotiation:
 
 | Endpoint | Purpose | Registered |
 |---|---|---|
-| `POST /repo/{id}/check-blocks` | which of these block ids do you *not* have? | `server.go:651` |
-| `POST /repo/{id}/check-fs` | same question for fs objects | `server.go:649` |
-| `POST /repo/{id}/recv-fs` | upload the fs objects it asked for | `server.go:653` |
+| `POST /repo/{id}/check-blocks` | which of these block ids do you *not* have? | `server.go:668` |
+| `POST /repo/{id}/check-fs` | same question for fs objects | `server.go:666` |
+| `POST /repo/{id}/recv-fs` | upload the fs objects it asked for | `server.go:670` |
 | `PUT /repo/{id}/block/{id}` | upload one block | see `protocol.md` |
 | `PUT /repo/{id}/commit/HEAD` | advance the branch head | see `protocol.md` |
 
@@ -68,15 +74,15 @@ can compute the same ids the server would with stdlib SHA-1 and a loop.
 
 That makes this flow available:
 
-1. `POST /api/silo/v1/repos/{id}/sync-token` (`server.go:695`) — the
-   management API already hands out sync tokens, which is the bridge from
-   API-token auth into the sync protocol.
-2. Chunk locally at `FixedBlockSize`, SHA-1 each block.
-3. `POST /repo/{id}/check-blocks` — the server replies with the ids it needs.
-4. Upload only those.
+1. Chunk locally at the server's `block_size`, SHA-1 each block.
+2. `POST /api/silo/v1/repos/{id}/blocks/missing` — the server replies with the
+   ids it needs.
+3. Upload only those, then name the whole list in one call.
 
-Steps 1–4 give "skip what the server already has" without implementing the
-whole protocol. A re-run over a mostly-unchanged tree sends almost nothing.
+This is what shipped, and it needs no sync token: the crossing described in
+earlier drafts of this document — mint a sync token, cross to
+`POST /repo/{id}/check-blocks` on the frozen lane — is gone. A re-run over a
+mostly-unchanged tree sends almost nothing.
 
 ### Caveats
 
@@ -84,11 +90,11 @@ whole protocol. A re-run over a mostly-unchanged tree sends almost nothing.
   a list of block ids, so any chunking produces a valid file. Matching the
   server's `FixedBlockSize` only maximises how much existing server data
   dedups. A mismatch degrades to "upload everything", not to corruption.
-  `FixedBlockSize` is configurable (`option/option.go:449`) and nothing
-  currently exposes it. It belongs in the Silo lane's `GET /server-info`, beside
-  the `features` array — that response is already where a client asks what this
-  server will accept, and a block size a client has to guess is the one input
-  that silently degrades tier 2 to "upload everything".
+  `FixedBlockSize` is configurable (`option/option.go:449`), and `GET
+  /server-info` now reports it as `block_size` beside the `features` array —
+  that response is already where a client asks what this server will accept,
+  and a block size a client has to guess is the one input that silently
+  degrades a dedup-aware upload to "upload everything".
 - **Encrypted repos need the repo key.** `writeChunk` encrypts and then hashes
   (`fileop.go:2722`), so the block id is the SHA-1 of the ciphertext. Without
   the key a client cannot compute matching ids. Moot in practice: Silo cannot
@@ -124,8 +130,11 @@ server half of the merge story.
 
 ## Recommendation
 
-Tier 1 is a contained afternoon and is useful on its own. Tier 2 is the one
-with the interesting payoff-to-effort ratio, and its only real prerequisite is
-exposing `FixedBlockSize` in the server-info response. Tier 3 should not start
-until someone actually wants a headless agent badly enough to maintain it —
-until then, Seafile Desktop is the answer for ongoing sync.
+Tier 2 is built and was the one with the interesting payoff-to-effort ratio;
+its prerequisite — reporting the block size — went in with it. Tier 1 is now
+the contained afternoon that is left, and it is worth more than it was: a
+recursive `put` over the block surface skips everything the server already
+holds, so re-running it over a mostly-unchanged tree is cheap rather than a
+full re-upload. Tier 3 should not start until someone actually wants a headless
+agent badly enough to maintain it — until then, Seafile Desktop is the answer
+for ongoing sync.

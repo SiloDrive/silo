@@ -3,9 +3,17 @@
 package objstore
 
 import (
+	"errors"
 	"io"
 	"path/filepath"
 )
+
+// ErrContentMismatch is returned by a verified write whose bytes do not hash
+// to the id they were offered under. It is a sentinel because the caller's
+// answer depends on who supplied the bytes: an ingest path handed a bad block
+// by a remote client owes that client a 4xx, not the 500 an anonymous error
+// would produce.
+var ErrContentMismatch = errors.New("content does not match its object id")
 
 // The three object types, and the directory each one's store occupies.
 //

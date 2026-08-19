@@ -26,6 +26,12 @@ func Init(readDB, _ *sql.DB) {
 type siloServerInfo struct {
 	Version  string   `json:"version"`
 	Features []string `json:"features"`
+	// BlockSize is the offset a client must chunk at for its block ids to
+	// match the ones this store already holds. It is reported rather than
+	// assumed because it is configurable, and a client that guesses wrong
+	// does not fail — it silently uploads blocks that dedup against nothing
+	// and are useless to every other client of the same library.
+	BlockSize uint64 `json:"block_size"`
 }
 
 // features names the capabilities a client may branch on, so a new client can
@@ -50,6 +56,7 @@ func features() []string {
 		"ranged-reads",       // Range on GET entries, unencrypted libraries
 		"changes",            // GET repos/{id}/changes?since=
 		"repo-rename",        // PATCH repos/{id}
+		"blocks",             // blocks/missing, PUT blocks/{sha1}, PUT entries?type=blocks
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification, POST repos/{id}/notify-token
@@ -60,8 +67,9 @@ func features() []string {
 // ServerInfoHandler handles GET /api/silo/v1/server-info.
 func ServerInfoHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, siloServerInfo{
-		Version:  option.Version,
-		Features: features(),
+		Version:   option.Version,
+		Features:  features(),
+		BlockSize: option.FixedBlockSize,
 	})
 }
 

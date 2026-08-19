@@ -500,7 +500,7 @@ What is left is the small set of requests where replay means something:
   the query string, so the request line covers it.
 - The mutations on `/api/silo/v1` — mkdir, rename, move, delete, and writes to
   `entries` — which have small bodies and already accept `If-Match` /
-  `If-None-Match` (`entries.go:262`). A conditional write is replay-proof by
+  `If-None-Match` (`entries.go:305`). A conditional write is replay-proof by
   construction: the second attempt fails its precondition.
 
 So: **sign the request line, the date and a nonce always; add a content digest

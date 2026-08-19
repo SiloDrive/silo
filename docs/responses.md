@@ -45,7 +45,8 @@ variable.
 | code | means | notes |
 |---|---|---|
 | `200 OK` | done | |
-| `201 Created` | the entry or library now exists | `PUT repos/{repoid}/entries/{path}`, `POST /repos`, and `POST entries/{path}` with `{"op":"copy"}`. Carries the new `ETag` on a write, so a client can record the version without a follow-up `GET`. A copy carries the *source's* `ETag`, because a copy shares its id — so a client that already holds the content knows it does |
+| `201 Created` | the entry, library or block now exists | `PUT repos/{repoid}/entries/{path}` (content or `?type=blocks`), `PUT repos/{repoid}/blocks/{sha1}`, `POST /repos`, and `POST entries/{path}` with `{"op":"copy"}`. Carries the new `ETag` on a write, so a client can record the version without a follow-up `GET`. A copy carries the *source's* `ETag`, because a copy shares its id — so a client that already holds the content knows it does |
+| `204 No Content` | the block is already here | `PUT repos/{repoid}/blocks/{sha1}` only. Answered before the body is read, so a client sending `Expect: 100-continue` never transfers it |
 | `206 Partial Content` | range request satisfied | `GET repos/{repoid}/entries/{path}` advertises `Accept-Ranges: bytes` and honours `Range`. An encrypted library cannot be ranged and says so up front with `Accept-Ranges: none` — see the note below |
 | `302 Found` | **not emitted on this lane.** `GET repos/{repoid}/entries/{path}` streams on the same response — one request, no redirect. The `/files/{token}/…` capability URL still exists; mint its token with `POST /access-tokens` and build the URL yourself |
 | `304 Not Modified` | your `If-None-Match` matched | the entry is unchanged; use your copy |
@@ -54,7 +55,7 @@ variable.
 
 | code | means | what a client should do |
 |---|---|---|
-| `400 Bad Request` | malformed or contradictory request — missing `path`, moving the library root, a `src` equal to its `dst` | fix the request; never retry unchanged |
+| `400 Bad Request` | malformed or contradictory request — missing `path`, moving the library root, a `src` equal to its `dst`, a block whose bytes do not hash to the id it was sent under, `?type=blocks` on an encrypted library | fix the request; never retry unchanged |
 | `401 Unauthorized` | no `Authorization` header, a malformed one, or an expired session token | re-authenticate, then retry once. Do not loop |
 | `403 Forbidden` | authenticated, but not permitted — including libraries you cannot see | surface it; do not retry. A library you cannot see and a library that does not exist both answer `403` from the token endpoints on purpose, so they cannot be used to probe for valid ids |
 | `404 Not Found` | the named thing does not exist — see the overload note below | depends on *what* was not found |
@@ -64,6 +65,7 @@ variable.
 | `412 Precondition Failed` | your `If-Match` did not match; someone else wrote first | re-read, reapply your change, write again. Not an error — it is the mechanism working |
 | `413 Payload Too Large` | body over the limit | do not retry |
 | `416 Range Not Satisfiable` | the range is outside the entry | |
+| `424 Failed Dependency` | the file names blocks the server does not hold | `PUT entries/{path}?type=blocks` only. The body is `{"error":…,"missing":[sha1,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
 | `429 Too Many Requests` | login rate limiting; carries `Retry-After` | wait the stated time. Only the login endpoints produce this |
 
 ### The server could not do it
@@ -140,6 +142,22 @@ body says so explicitly: *Library exists but its storage is damaged on the
 server; do not delete your copy.* Both readings agree on the action — stop, do
 not delete — so this one is safe, but read the body before reporting it.
 
+## `424` — retry, but do something first
+
+Every other code splits into "your request is wrong, fix it" and "the server is
+having a moment, send it again". A commit naming blocks that are not on the
+server is neither. The request is exactly right, and it will succeed unchanged
+— once its dependency exists.
+
+Answering `400` would tell a client never to retry, which is wrong. Answering
+`503` would tell it to retry immediately and forever, which is worse: nothing
+changes on its own. `424` says what is actually true, and the body says which
+blocks, so the fix is exact rather than a re-upload of the whole file.
+
+In practice a client sees this only after `blocks/missing` and its uploads
+disagree — a skipped upload, or a block that went missing between the two. The
+recovery is the same either way: ask again, upload what it names, retry.
+
 ## Reserved, and not yet used
 
 Claim one of these by adding a row here in the same commit that starts
@@ -151,6 +169,11 @@ returning it.
 | `423 Locked` | **WebDAV `LOCK`** if that frontend lands — see `protocol-frontends.md` | do *not* spend it on "encrypted library, no key supplied" (currently `400`/`403`); WebDAV clients read `423` as a lock they can wait on or steal |
 | `428 Precondition Required` | forcing conditional writes | only if Silo ever refuses unconditional writes; it does not today |
 | `507 Insufficient Storage` | quota exhausted | `macos-fileprovider-plan.md` already maps it to `.insufficientQuota` alongside `413`. The quota path currently answers `443` on the Seafile lane only |
+
+`424` used to belong here and no longer does — the block surface claimed it.
+It is a WebDAV code, but a WebDAV frontend would use it inside a `207
+Multi-Status` body rather than as a response of its own, so the two do not
+collide.
 
 ## Seafile sync lane: the `44x` block
 

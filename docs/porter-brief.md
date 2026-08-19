@@ -57,7 +57,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.4","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","notifications"]}
+{"version":"0.4.4","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","blocks","notifications"],"block_size":8388608}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an
@@ -77,8 +77,8 @@ the difference between a clear failure and a silent one if this ever regresses.
 Check it at domain setup. **This surface changed materially in 0.4.0** — reads
 stopped redirecting, `PUT` started accepting file content — **0.4.1** added
 conditional writes, **0.4.3** stopped reporting a damaged library as a
-deleted one, and **0.4.4** added copy, library rename by `PATCH`, and this
-feature list itself. A client built against this document talking to an older server
+deleted one, and **0.4.4** added copy, library rename by `PATCH`, block-by-block
+upload, and this feature list itself. A client built against this document talking to an older server
 will fail in confusing ways: against 0.3.x the reads and writes break outright;
 against 0.4.0 the `If-Match` headers are silently ignored, which is worse,
 because losing an edit looks like success; and before 0.4.3 a server that has
@@ -460,15 +460,57 @@ Note the header changes meaning with the method. On `GET`, `If-None-Match` asks
 exists" and yields **412**. Same header, different question, as RFC 9110
 specifies.
 
+## Uploading in blocks
+
+Check `features` for `blocks` first. Three calls:
+
+```
+POST /api/silo/v1/repos/{repo}/blocks/missing      {"blocks":[sha1,…]} → {"missing":[sha1,…]}
+PUT  /api/silo/v1/repos/{repo}/blocks/{sha1}       the block's bytes
+PUT  /api/silo/v1/repos/{repo}/entries/{path}?type=blocks   {"blocks":[sha1,…]}
+```
+
+**You can compute the ids yourself, and that is the point.** Cut the file at
+`block_size` offsets — the number is in `server-info` — and SHA-1 each piece.
+Those are the names the server uses, so you can ask what it already holds
+before sending anything. Do not guess the block size: chunking at a different
+offset uploads correctly and dedups against nothing, which fails silently and
+forever.
+
+**Nothing exists until the third call.** Blocks are immutable and named by
+their content, so uploading them changes no path, mints no commit and touches
+nothing at the destination. Upload in parallel, in any order, across app
+launches. If the transfer dies, run the same three calls again — the second
+`blocks/missing` returns a shorter list. There is no session, no upload id and
+no offset to persist; the server's answer *is* your resume state.
+
+**The last call is the write**, so it behaves like any other: `If-Match` and
+`If-None-Match` apply, it answers **201** with the new `ETag`, and it is the
+only point at which another client can see anything.
+
+**424 means upload first, then send the same request again.** The body carries
+`{"missing":[…]}`. It is not a 400 — nothing about the request is wrong.
+
+**A rejected block is a corrupt transfer.** The server hashes what arrives and
+answers **400** if it does not match the id you sent it under, so a successful
+PUT is an end-to-end integrity check and not merely an acknowledgement.
+
+**Already-present blocks answer 204 before reading the body.** Send `Expect:
+100-continue` and you skip the transfer entirely, which matters when a
+`blocks/missing` answer has gone stale under you.
+
+**Encrypted libraries are excluded** (**400**). Their blocks are ciphertext, so
+you cannot name one without doing the encryption yourself.
+
 ## Gaps — read this before planning M4
 
 Short list, and shorter than it was.
 
-**No resumable upload.** A PUT that dies partway has to start over. Whole-file
-uploads only; there is no chunk/offset protocol on this endpoint, and no way to
-ask which blocks the server already holds. It is the largest gap on this lane —
-[`protocol-gaps.md`](protocol-gaps.md) has the ranked list and the shape a fix
-would take.
+**A plain PUT that dies partway has to start over.** For anything large, use
+the block surface above instead — that is what it is for. The remaining limit
+is that chunking is at fixed offsets, so inserting a byte near the front of a
+file shifts every boundary after it and nothing dedups;
+[`protocol-gaps.md`](protocol-gaps.md) has what fixing that would cost.
 
 **Encrypted libraries are not readable over this API, at all.** An earlier draft
 said they serve whole files but not ranges. That was wrong: every read reaches a
@@ -585,6 +627,7 @@ exercised against a running server.
 | `modifyItem` (rename) | `POST /api/silo/v1/repos/{id}/entries/{path}` `{"op":"move",…}` |
 | `modifyItem` (reparent) | the same call — a move is a move |
 | duplicate an item | `POST /api/silo/v1/repos/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
+| upload a large file | `POST blocks/missing`, `PUT blocks/{sha1}` for each, then `PUT entries/{path}?type=blocks` |
 | `deleteItem` | `DELETE /api/silo/v1/repos/{id}/entries/{path}` |
 | push invalidation | `WS /notification` |
 

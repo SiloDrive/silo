@@ -20,10 +20,10 @@ The question splits, and the two halves score very differently.
 | Read, browse, on-demand file access — the File Provider / FUSE case | close. The coordination primitives are all present and several are better than what the same client would get from a commercial API |
 | Full bidirectional sync of large libraries — the actual Dropbox case | not close. The distance is concentrated in bulk writes and in enumeration at scale |
 
-The coordination layer is done. What is missing is everything about moving a
-lot of bytes efficiently, and today the honest answer to most of it is "mint a
-sync token and cross to the Seafile lane" — which is precisely the answer the
-Silo lane exists to stop giving.
+The coordination layer is done, and the first half of bulk writes now works on
+this lane rather than requiring a crossing to the Seafile lane. What remains is
+the rest of moving a lot of bytes efficiently: one request per block, one commit
+per file, no delta for an edit in the middle, and no way to page anything.
 
 ## What is already right
 
@@ -54,45 +54,17 @@ thing.
 
 ## Tier 1 — a real client will hit these
 
-### 1. No resumable, dedup-aware upload
+### 1. No delta for an edit in the middle of a file
 
-`PUT` on `entries` spools the entire request body to `httptemp` before indexing,
-because `chunkFile` needs a seekable source. There is no chunk protocol, no
-offset, no resume, and no way to ask the server which blocks it already holds.
-Consequences, in order of severity:
-
-- A large file over a flaky link never completes. There is no partial progress
-  to resume from; every attempt starts at byte zero.
-- Every concurrent upload costs one full copy of the file in temp space.
-- Re-uploading a file that differs in one block transfers the whole file. The
-  store is content-addressed and would store one new block, but the wire doesn't
-  know that.
-
-The workaround in [`native-client.md`](native-client.md) is to mint a repo sync
-token and call `POST /repo/{id}/check-blocks` on the frozen Seafile lane. That
-means two credentials and two protocol shapes to perform the single most common
-operation a sync client performs.
-
-The fix is small because the client can already compute block ids: chunking is
-at fixed 8 MiB offsets, so any client with stdlib SHA-1 and a loop arrives at
-the same names the server would. Roughly:
-
-```
-POST   /api/silo/v1/repos/{repo}/blocks/missing   {"blocks":[sha1,…]} → {"missing":[sha1,…]}
-PUT    /api/silo/v1/repos/{repo}/blocks/{sha1}    raw bytes
-PUT    /api/silo/v1/repos/{repo}/entries/{path}?type=blocks   {"blocks":[sha1,…]}
-```
-
-That is `check-blocks` re-spelled in this lane's idiom, and it buys resume,
-dedup and parallel block upload in one move. Resume falls out for free: the
-client re-asks `blocks/missing` and uploads what is still listed.
-
-#### What block-level dedup will not fix, and what rsync has to say about it
+Resumable, dedup-aware upload landed — see the closed list below. What it did
+not fix, and could not, is the shift problem.
 
 Silo chunks at fixed offsets, so inserting a byte near the front of a file
 shifts every boundary after it and nothing downstream dedups. Fixed chunking
 wins on unchanged and append-only files and loses on edits in the middle — VM
-images, databases, video projects. `blocks/missing` inherits that limit exactly.
+images, databases, video projects. `blocks/missing` inherits that limit exactly:
+it will happily tell a client that every block of a file it has uploaded before
+is missing, because every one of them is, under a new name.
 
 There are two ways out, and they are not equally priced.
 
@@ -130,11 +102,17 @@ down the pipe, so the protocol still has to be implemented. SSH buys SFTP, which
 public-key auth. It does not buy rsync.
 
 So the shape worth building is rdiff semantics on this lane — a signature on the
-way out, a delta on the way in — and not an rsyncd. It is a refinement of
-`blocks/missing`, not a substitute: build the block negotiation first, because it
-is smaller and it covers the traffic most clients actually generate. And if what
-is wanted is rsync's ergonomics rather than its wire efficiency, rclone over a
-WebDAV frontend supplies that with no protocol work at all.
+way out, a delta on the way in — and not an rsyncd. It is a refinement of the
+block surface, not a substitute, and the block surface was the right half to
+build first: it is smaller, and it covers the traffic most clients actually
+generate. And if what is wanted is rsync's ergonomics rather than its wire
+efficiency, rclone over a WebDAV frontend supplies that with no protocol work at
+all.
+
+How much this matters depends entirely on the library. A photo and document
+library is append-mostly and the block surface already handles it. A library of
+VM images or database files re-uploads whole files on every edit, and no amount
+of block negotiation helps.
 
 ### 2. No pagination, anywhere
 
@@ -168,6 +146,13 @@ not only to a hypothetical WebDAV.
 
 Minimum viable is a multi-operation `POST` at the repo level that lands as one
 commit — creates, deletes and moves in a single ordered list.
+
+The block surface sharpened the other half of this. A 1 GB file is now roughly
+128 `PUT`s on this lane, one per block, where before it was one request that
+could not be resumed. That is the right trade and it is still 128 round trips;
+`sync-design.md` calls a `pack-blocks` that streams N blocks in one response the
+highest-value change available, and the same argument now applies in the upload
+direction.
 
 ### 4. No stable per-file identity
 
@@ -208,6 +193,7 @@ records what came off it.
 | **Library rename on this lane** | `PATCH /repos/{repoid}` with `{"name":…}`. `PATCH` because the body names only what changes, so it keeps meaning the same thing when a second mutable field arrives. No more crossing to `/api2/` with a second credential to rename a library you can already create and delete |
 | **`Accept-Ranges` tells the truth** | an encrypted library answers `Accept-Ranges: none` rather than advertising `bytes` and then ignoring `Range`. Ignoring a range is allowed; promising to honour one and then ignoring it is what breaks a client that seeks |
 | **Upload integrity is now a contract** | `PUT` always returned the new id, and a client chunking at the same fixed 8 MiB offsets can compute that id itself — so comparing the two is a complete end-to-end check on the transfer. It was true and documented nowhere; `porter-brief.md` now says so |
+| **Resumable, dedup-aware upload** | the block surface: `POST blocks/missing`, `PUT blocks/{sha1}`, `PUT entries/{path}?type=blocks`. A client computes block ids itself — fixed offsets, SHA-1 of the bytes — so it can ask what the server holds before sending anything. Nothing exists at the destination until the last call, which is what makes an interrupted upload resumable with no session, offset or upload id to keep: ask again and the answer is shorter. `server-info` reports `block_size` so the chunking is not a guess. No more minting a sync token to reach `check-blocks` on the frozen lane |
 | **`HEAD` is in the contract** | it was implemented, and in `porter-brief.md`, but missing from the endpoint table in [`protocol.md`](protocol.md) |
 
 None of these are Tier 1. Nothing above changes the verdict: the coordination

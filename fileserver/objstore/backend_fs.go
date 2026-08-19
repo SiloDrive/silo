@@ -119,7 +119,7 @@ func (b *fsBackend) write(repoID string, objID string, r io.Reader, sync, verify
 	if verify {
 		if got := hex.EncodeToString(hash.Sum(nil)); got != objID {
 			_ = tFile.Close()
-			return fmt.Errorf("object %s/%s hashes to %s: content does not match its id", repoID, objID, got)
+			return fmt.Errorf("object %s/%s hashes to %s: %w", repoID, objID, got, ErrContentMismatch)
 		}
 	}
 

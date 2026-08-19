@@ -24,6 +24,10 @@ type APIClient struct {
 	token    string
 	email    string
 	password string
+	// serverInfo is what /server-info said, fetched at most once. Nil means
+	// not yet asked; a failed ask caches the zero value, because a server that
+	// cannot answer has no capabilities worth waiting for.
+	serverInfo *ServerInfo
 }
 
 func (c *APIClient) getToken() string {
@@ -398,7 +402,29 @@ func (c *APIClient) DownloadFile(repoID, repoPath, localPath string) error {
 // large does not mean holding it in memory. It is opened per attempt, so a
 // retry after a token refresh sends the file from the beginning rather than
 // from wherever the first attempt stopped.
+// UploadFile sends a local file to a library.
+//
+// Which way it goes is the server's answer, not a flag: a server advertising
+// the block surface gets the block path for anything over one block, and
+// everything else gets a single PUT of the body. One request beats four for a
+// small file, and for a large one the block path is worth its extra round
+// trips — it skips content the server already holds, and an interrupted
+// upload resumes from what landed rather than from zero.
 func (c *APIClient) UploadFile(repoID, parentDir, localPath string) error {
+	info := c.capabilities()
+	if info.Has("blocks") {
+		size := int64(-1)
+		if st, err := os.Stat(localPath); err == nil {
+			size = st.Size()
+		}
+		if size > int64(blockSizeOf(info)) {
+			return c.uploadBlocks(repoID, parentDir, localPath, int64(blockSizeOf(info)))
+		}
+	}
+	return c.uploadWhole(repoID, parentDir, localPath)
+}
+
+func (c *APIClient) uploadWhole(repoID, parentDir, localPath string) error {
 	remote := path.Join("/", parentDir, filepath.Base(localPath))
 	resp, err := c.doStream("PUT", entriesURL(repoID, remote), "application/octet-stream",
 		func() (io.ReadCloser, int64, error) {
@@ -429,6 +455,10 @@ func (c *APIClient) UploadFile(repoID, parentDir, localPath string) error {
 type ServerInfo struct {
 	Version  string   `json:"version"`
 	Features []string `json:"features"`
+	// BlockSize is the offset the server chunks at. Chunking at any other
+	// size still uploads correctly and still reads back, but the ids will
+	// match nothing already in the store, so nothing dedups.
+	BlockSize uint64 `json:"block_size"`
 }
 
 // Has reports whether the server advertises a capability. Prefer it to

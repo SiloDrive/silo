@@ -199,9 +199,16 @@ against a body shape that no longer exists.
 
 **`PUT` of file content landed in 0.4.4.** The body is the content; there is no
 multipart wrapper and no access token to mint first. It costs a spool to
-`httptemp` on the way in, because `chunkFile` needs a seekable source — which is
-also why there is no resumable or streaming upload here yet. See
-[`protocol-gaps.md`](protocol-gaps.md).
+`httptemp` on the way in, because `chunkFile` needs a seekable source, which is
+why it is the small-file path rather than the only one.
+
+**The block surface is the large-file path**, and it is the sync lane's
+`check-blocks` negotiation re-spelled in this lane's idiom: ask which blocks are
+missing, send those, then name the whole list. It is deliberately *not* general
+sync — one file, one path, and the client says which file it means — but it is
+the same insight, that a client that can name content by hash should ask before
+it sends. The spool disappears with it: blocks arrive already chunked, so there
+is nothing to seek over.
 
 **The timing mattered more than the shape.** A version number exists to protect
 consumers you can't upgrade atomically. `/api/silo/v1` had exactly one consumer,

@@ -47,7 +47,7 @@ if retryCnt < maxRetryCnt {
 ```
 
 That error is an ordinary `error`, so `putEntryFile` cannot tell it from a real
-one and takes the default branch (`fileserver/entries.go:427`):
+one and takes the default branch (`fileserver/entries.go:443`):
 
 ```go
 if errors.Is(err, ErrGCConflict) {

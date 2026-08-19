@@ -63,12 +63,12 @@ The middleware for each lives in `fileserver/middleware/`:
 JSON request/response bodies. Used by the silo TUI, the CLI in `client/`, and
 the sync clients. Protected by `RequireAuth` (JWT Bearer), except the two marked
 **No auth** below — they are registered above the authenticated subrouter
-(`server.go:698`) because they are what a client needs *before* it has a
+(`server.go:701`) because they are what a client needs *before* it has a
 credential: one to learn what it is talking to, one to get a token.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.4","features":[…]}` — semver with no leading `v`, plus the capability list a client should branch on instead of the version |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.4","features":[…],"block_size":8388608}` — semver with no leading `v`, the capability list a client should branch on instead of the version, and the offset a client must chunk at for its block ids to match the store's |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
 | POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
 | GET | `/api/silo/v1/repos` | List repos owned by authenticated user |
@@ -91,6 +91,7 @@ in [`responses.md`](responses.md).
 | HEAD | `/api/silo/v1/repos/{repoid}/entries/{path}` | The same headers as `GET`, no body. On a directory `Content-Length` is the size of the listing, not of its contents |
 | PUT | `/api/silo/v1/repos/{repoid}/entries/{path}` | Store a file — body is the content |
 | PUT | `/api/silo/v1/repos/{repoid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter) |
+| PUT | `/api/silo/v1/repos/{repoid}/entries/{path}?type=blocks` | Store a file from blocks already uploaded — body is `{"blocks":[sha1,…]}`, no content. See the block surface below |
 | POST | `/api/silo/v1/repos/{repoid}/entries/{path}` | `{"op":"move","to":"/dst"}` — moving covers renaming |
 | POST | `/api/silo/v1/repos/{repoid}/entries/{path}` | `{"op":"copy","to":"/dst"}` — server-side copy; `201` and the source's `ETag`, no content transferred |
 | DELETE | `/api/silo/v1/repos/{repoid}/entries/{path}` | Delete a file or directory |
@@ -112,6 +113,48 @@ the marker resolves the one ambiguity — a directory has no body, so without it
 bodiless `PUT` is indistinguishable from writing an empty file. Parents are not
 created implicitly; a `PUT` into a missing directory is a `404`, for the same
 reason WebDAV's `MKCOL` answers `409` rather than building the tree.
+
+#### The block surface
+
+Feature name `blocks`. Three calls, and the shape of every resumable upload:
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/silo/v1/repos/{repoid}/blocks/missing` | `{"blocks":[sha1,…]}` → `{"missing":[sha1,…]}` — which of these do you not already have? |
+| PUT | `/api/silo/v1/repos/{repoid}/blocks/{sha1}` | Upload one block. `201` when stored, `204` when it was already there |
+| PUT | `/api/silo/v1/repos/{repoid}/entries/{path}?type=blocks` | `{"blocks":[sha1,…]}` — create the file from them. `201` and an `ETag`, as any other write |
+
+A client can compute block ids without asking: chunking is at fixed
+`block_size` offsets and a block's id is the SHA-1 of its bytes, so anything
+with a stdlib SHA-1 and a loop arrives at exactly the names the server would.
+That is the whole reason "which of these do you have?" is a question worth
+asking — the alternative is a negotiation.
+
+The id is not taken on trust in either direction. The server hashes what
+arrives and refuses a block that does not match the id it was offered under
+(`400`), which makes a successful `PUT` an end-to-end integrity check of the
+transfer as well as a store.
+
+**Nothing exists until the last call.** Blocks are immutable and addressed by
+content, so uploading them commits to nothing: no path changes, no commit is
+minted, and the destination is untouched. Upload in any order, in parallel,
+across restarts, over days. An interrupted upload leaves the library exactly as
+it was, and the retry is the same three calls — `blocks/missing` simply returns
+a shorter list the second time. That is what makes it resumable; there is no
+session, no offset and no upload id to keep.
+
+A commit naming a block the server does not hold is `424 Failed Dependency`,
+with the missing ids in the body. It is not `400`: the request is not wrong and
+the identical one succeeds once the blocks are up.
+
+Encrypted libraries are excluded (`400`). Their blocks are ciphertext, so a
+client cannot name one without performing the encryption itself; `PUT` of the
+file content still works there, and the server encrypts from the cached key.
+
+The limit worth knowing: fixed-offset chunking means inserting a byte near the
+front of a file shifts every boundary after it and nothing dedups. Appends and
+unchanged regions are free; edits in the middle are not.
+[`protocol-gaps.md`](protocol-gaps.md) has what that would cost to fix.
 
 #### Removed in 0.4.4
 
