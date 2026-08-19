@@ -741,6 +741,13 @@ creates the first account with it. `SILO_ADMIN_PASSWORD_FILE` stays for
 automated deployments that need one. Either way the password leaves the
 environment.
 
+Half of that has landed already, in the cheapest form it can take:
+`authmgr.BootstrapAdmin` creates `admin@silo.local` with a generated password
+and logs it once when the user table is empty and no password was supplied. It
+is a real account password rather than a single-use setup credential — that
+part waits on credentials existing at all — but it means the default path to a
+running server no longer goes through a cleartext password in the environment.
+
 ## Running with no authentication
 
 Discovery, exploration, a test harness, a fresh checkout at 11pm — all of it is

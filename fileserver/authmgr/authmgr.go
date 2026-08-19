@@ -263,13 +263,21 @@ func upgradeHash(ctx context.Context, email, password string) {
 // EnsureAdmin creates an admin user if it doesn't already exist.
 // Uses INSERT OR IGNORE to avoid TOCTOU races.
 func EnsureAdmin(email, password string) error {
+	_, err := ensureAdmin(email, password)
+	return err
+}
+
+// ensureAdmin is EnsureAdmin plus the one fact the bootstrap path needs: did
+// this call actually write the row? A generated password is only worth
+// printing if the account it belongs to is the account that was created.
+func ensureAdmin(email, password string) (created bool, err error) {
 	if email == "" || password == "" {
-		return nil
+		return false, nil
 	}
 
 	hash, err := hashPassword(password)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
@@ -278,7 +286,7 @@ func EnsureAdmin(email, password string) error {
 	sqlStr := dbutil.InsertOrIgnore("EmailUser", "email, passwd, is_staff, is_active, ctime")
 	result, err := writeDB.ExecContext(ctx, sqlStr, email, hash, 1, 1, time.Now().Unix())
 	if err != nil {
-		return fmt.Errorf("failed to create admin user: %v", err)
+		return false, fmt.Errorf("failed to create admin user: %v", err)
 	}
 
 	rows, _ := result.RowsAffected()
@@ -287,5 +295,112 @@ func EnsureAdmin(email, password string) error {
 	} else {
 		log.Infof("Admin user %s already exists", email)
 	}
-	return nil
+	return rows > 0, nil
+}
+
+// DefaultAdminEmail is the login the server invents when it has to create the
+// first account by itself. It is a login, not an address — nothing is ever
+// sent to it — so it uses a reserved TLD that cannot resolve to somebody
+// else's mailbox.
+const DefaultAdminEmail = "admin@silo.local"
+
+// BootstrapAdmin makes sure the server has an account somebody can log in
+// with, and returns the password it generated when it had to invent one.
+//
+// A server with an empty user table is a server nobody can use: there is no
+// signup endpoint and no user-management API, so the only way in was to have
+// set SILO_ADMIN_EMAIL and SILO_ADMIN_PASSWORD before the first boot. Someone
+// who just ran the binary to see what it does got a working server and no way
+// to talk to it, and the fix — stop it, export two variables, start it again —
+// is only obvious once you already know the answer.
+//
+// So: if there are no users at all and no password was supplied, mint one and
+// let the caller print it. The generated password is stored hashed like any
+// other, which means the log line is the only copy of it that will ever exist.
+// Supplying SILO_ADMIN_PASSWORD keeps the old behaviour exactly, and an
+// existing user table is left alone — this is a bootstrap, not a reset.
+func BootstrapAdmin(email, password string) (generated string, err error) {
+	if email == "" {
+		email = DefaultAdminEmail
+	}
+	if password != "" {
+		return "", EnsureAdmin(email, password)
+	}
+
+	users, err := userCount()
+	if err != nil {
+		return "", err
+	}
+	if users > 0 {
+		return "", nil
+	}
+
+	password, err = generatePassword()
+	if err != nil {
+		return "", err
+	}
+	created, err := ensureAdmin(email, password)
+	if err != nil {
+		return "", err
+	}
+	if !created {
+		// Another process won the race between the count and the insert. Its
+		// password is the real one; ours was never stored, so printing it
+		// would send the operator chasing a credential that cannot work.
+		return "", nil
+	}
+	return password, nil
+}
+
+// userCount reports how many accounts exist.
+func userCount() (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+
+	var n int
+	if err := readDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM EmailUser").Scan(&n); err != nil {
+		return 0, fmt.Errorf("failed to count users: %v", err)
+	}
+	return n, nil
+}
+
+// passwordAlphabet excludes the characters that get lost between a terminal
+// and a keyboard: 0/O, 1/l/I. A generated password is read off a log line and
+// typed by hand at least once, so ambiguity costs more than the two bits.
+const passwordAlphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+// generatedPasswordLen gives ~110 bits over the alphabet above, which is well
+// past anything an online attacker gets through the login rate limiter and
+// still short enough to retype.
+const generatedPasswordLen = 20
+
+// generatePassword returns a random password drawn from passwordAlphabet.
+func generatePassword() (string, error) {
+	buf := make([]byte, generatedPasswordLen)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to generate password: %v", err)
+	}
+	// len(passwordAlphabet) is 56, which does not divide 256, so folding a
+	// byte with % would favour the first 32 characters. Reject and redraw
+	// instead; the loop terminates with probability 1 and in practice on the
+	// first or second try.
+	const limit = 256 - (256 % len(passwordAlphabet))
+	out := make([]byte, 0, generatedPasswordLen)
+	for len(out) < generatedPasswordLen {
+		for _, b := range buf {
+			if int(b) >= limit {
+				continue
+			}
+			out = append(out, passwordAlphabet[int(b)%len(passwordAlphabet)])
+			if len(out) == generatedPasswordLen {
+				break
+			}
+		}
+		if len(out) < generatedPasswordLen {
+			if _, err := rand.Read(buf); err != nil {
+				return "", fmt.Errorf("failed to generate password: %v", err)
+			}
+		}
+	}
+	return string(out), nil
 }

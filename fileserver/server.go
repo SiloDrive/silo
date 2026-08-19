@@ -434,13 +434,21 @@ func Run(args []string) error {
 	apitokenstore.Init(seafilePair.Read, seafilePair.Write)
 	apitokenstore.StartCleanup()
 
-	// Create admin user from env vars if set
+	// Create the admin user from the environment if it is set, and invent one
+	// if it is not and there are no users at all. A server nobody can log in
+	// to is not a useful server, and until now that was what `silo serve` gave
+	// anyone who had not set the two variables before the first boot.
 	adminEmail := option.EnvWithFallback("SILO_ADMIN_EMAIL", "SEAFILE_ADMIN_EMAIL")
 	adminPassword := option.EnvWithFallback("SILO_ADMIN_PASSWORD", "SEAFILE_ADMIN_PASSWORD")
-	if adminEmail != "" && adminPassword != "" {
-		if err := authmgr.EnsureAdmin(adminEmail, adminPassword); err != nil {
-			log.Fatalf("Failed to create admin user: %v", err)
-		}
+	if adminEmail == "" {
+		adminEmail = authmgr.DefaultAdminEmail
+	}
+	generated, err := authmgr.BootstrapAdmin(adminEmail, adminPassword)
+	if err != nil {
+		log.Fatalf("Failed to create admin user: %v", err)
+	}
+	if generated != "" {
+		logGeneratedAdmin(adminEmail, generated)
 	}
 
 	fileopInit()
@@ -525,6 +533,22 @@ func Run(args []string) error {
 
 	<-shutdownDone
 	return nil
+}
+
+// logGeneratedAdmin prints the credentials the server just invented for
+// itself.
+//
+// This is the only time the password is ever legible: it is stored hashed, so
+// nothing on the server can recover it and no later run will print it again.
+// It goes out at warning level and over several lines on purpose — an operator
+// scanning a first boot has to be able to find it, and the line that says
+// "this will not be shown again" is the one that decides whether they write it
+// down now or go looking for it later.
+func logGeneratedAdmin(email, password string) {
+	log.Warn("No users existed and no SILO_ADMIN_PASSWORD was set, so an admin account was created:")
+	log.Warnf("    email:    %s", email)
+	log.Warnf("    password: %s", password)
+	log.Warn("This password is stored hashed and will not be shown again. Save it now.")
 }
 
 // warnIfExposedWithoutTLS says so when the server is reachable from off the

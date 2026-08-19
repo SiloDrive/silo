@@ -127,7 +127,18 @@ SILO_ADMIN_PASSWORD=changeme \
 ./silo serve -d /path/to/silo-data
 ```
 
-The server listens on `127.0.0.1:8082`. On first run it creates the ccnet and seafile SQLite databases, the storage directory, and the admin user. No config file is required — Silo runs on compiled defaults plus environment variables. If you want to tweak low-level settings (quota defaults, cache limits, cluster options) you can pass a `seafile.conf` with `-C /path/to/seafile.conf`.
+The server listens on `127.0.0.1:8082`. On first run it creates the ccnet and seafile SQLite databases, the storage directory, and the admin user.
+
+The credentials are optional. Started with an empty user table and no `SILO_ADMIN_PASSWORD`, the server creates `admin@silo.local` with a random password and prints it once, at warning level:
+
+```
+[WARNING] No users existed and no SILO_ADMIN_PASSWORD was set, so an admin account was created:
+[WARNING]     email:    admin@silo.local
+[WARNING]     password: meKFutKgmKnYF9rFesaJ
+[WARNING] This password is stored hashed and will not be shown again. Save it now.
+```
+
+Save it — the password is stored hashed, so later runs cannot print it again. Setting `SILO_ADMIN_EMAIL` alone names the account and still generates the password; setting `SILO_ADMIN_PASSWORD` skips the whole thing. Once any user exists, this never fires again. No config file is required — Silo runs on compiled defaults plus environment variables. If you want to tweak low-level settings (quota defaults, cache limits, cluster options) you can pass a `seafile.conf` with `-C /path/to/seafile.conf`.
 
 **Loopback is the default on purpose.** Silo speaks plaintext unless given a certificate, and every credential it uses — sync tokens, API tokens, JWTs — is a bearer token in a header. To reach it from other machines, see [Exposing the server](#exposing-the-server).
 
@@ -187,8 +198,8 @@ silo repo rm <repo-id>
 | `SILO_HOST` | Bind address | `127.0.0.1` (`0.0.0.0` in the Docker image) |
 | `SILO_TLS_CERT` / `SILO_TLS_KEY` | Serve HTTPS directly (set both) | — |
 | `SILO_PORT` | Listen port | `8082` |
-| `SILO_ADMIN_EMAIL` | Create admin user on startup | — |
-| `SILO_ADMIN_PASSWORD` | Admin password | — |
+| `SILO_ADMIN_EMAIL` | Create admin user on startup | `admin@silo.local` when the user table is empty |
+| `SILO_ADMIN_PASSWORD` | Admin password | generated and logged on first run |
 | `SILO_JWT_SECRET` | JWT signing key | auto-generated (ephemeral) |
 | `SILO_LOG_LEVEL` | Log level: debug, info, warn, error | — |
 | `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
@@ -343,7 +354,7 @@ The JWT management API (`/api/silo/v1/`) is new and Silo-specific; existing Seaf
 
 Silo is a lean rewrite focused on the sync path and a minimal management API. The following upstream Seafile features are **not** available:
 
-- No user management API — users are created via `SILO_ADMIN_EMAIL`/`SILO_ADMIN_PASSWORD` or direct database insert
+- No user management API — the first user is created at startup (from `SILO_ADMIN_EMAIL`/`SILO_ADMIN_PASSWORD`, or generated and logged), and any further users need a direct database insert
 - No repo sharing API — users can only access repos they own (share tables exist in the schema but have no HTTP endpoints)
 - No group management API
 - No `is_staff` / admin privilege check in the API layer — all authenticated users have equal permissions
