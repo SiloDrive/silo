@@ -63,9 +63,9 @@ variable.
 | `409 Conflict` | a destination collision, or an attempt to create `/` — see the overload note below | rename and retry, or fix the client |
 | `410 Gone` | your `since` anchor, or the commit your page cursor was issued against, is no longer reachable | stop incremental sync and enumerate from scratch. `GET repos/{repoid}/changes` only |
 | `412 Precondition Failed` | your `If-Match` did not match; someone else wrote first | re-read, reapply your change, write again. Not an error — it is the mechanism working |
-| `413 Payload Too Large` | body over the limit | do not retry |
+| `413 Payload Too Large` | body over the limit, or a batch over 1000 operations | do not retry; split it |
 | `416 Range Not Satisfiable` | the range is outside the entry | |
-| `424 Failed Dependency` | the file names blocks the server does not hold | `PUT entries/{path}?type=blocks` only. The body is `{"error":…,"missing":[sha1,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
+| `424 Failed Dependency` | the write names blocks the server does not hold | `PUT entries/{path}?type=blocks` and a `create` inside `POST batch`. The body is `{"error":…,"missing":[sha1,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
 | `429 Too Many Requests` | login rate limiting; carries `Retry-After` | wait the stated time. Only the login endpoints produce this |
 
 ### The server could not do it
@@ -141,6 +141,21 @@ considered answer for a library whose head commit object is missing, where the
 body says so explicitly: *Library exists but its storage is damaged on the
 server; do not delete your copy.* Both readings agree on the action — stop, do
 not delete — so this one is safe, but read the body before reporting it.
+
+## A batch reports the operation, not just the failure
+
+`POST repos/{repoid}/batch` answers a failure with the status code the failing
+operation would have answered on its own — `404` for a missing source, `409` for
+a destructive collision, `424` for blocks that are not up — and a body naming
+where it happened:
+
+```json
+{"error":"Source not found: /old.txt","index":3,"op":"move","path":"/old.txt"}
+```
+
+The code is about the operation; the index is about the batch. Nothing was
+written either way, so there is no partial state to reconcile — fix the
+operation and send the whole batch again.
 
 ## `424` — retry, but do something first
 

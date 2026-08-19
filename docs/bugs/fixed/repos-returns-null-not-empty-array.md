@@ -20,7 +20,7 @@ never null*. Nothing says anything about the first, and it does the opposite.
 
 ## Cause
 
-`scanRepos` (`fileserver/api/api.go:227`) opens with
+`scanRepos` (`fileserver/api/api.go:229`) opens with
 
 ```go
 var repos []repoInfo

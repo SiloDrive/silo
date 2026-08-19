@@ -179,6 +179,14 @@ contention unless writes are batched per session or per time window. This has
 to be decided before the first frontend ships, not retrofitted after a user's
 history is already 500 commits deep for one drag-and-drop.
 
+Half of it now exists: `POST repos/{id}/batch` applies a list of operations as
+one commit, so a frontend has somewhere to put a coalesced window rather than
+having to invent the mechanism. What it does not supply is the *policy* — when
+to close a window, and what to do about a client that goes away mid-drag — and
+that is still a decision per frontend. A handle-based protocol commits on
+`CLOSE`, which is already one commit per file; WebDAV and S3 have no session to
+hang a window on, which is where this bites.
+
 ### Encrypted repos are opaque
 
 The server cannot read an encrypted library without the password cached in

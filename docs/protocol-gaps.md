@@ -22,8 +22,8 @@ The question splits, and the two halves score very differently.
 
 The coordination layer is done, and the first half of bulk writes now works on
 this lane rather than requiring a crossing to the Seafile lane. What remains is
-the rest of moving a lot of bytes efficiently: one request per block, one commit
-per file, and no delta for an edit in the middle.
+narrower than it was: one request per block on the wire, and no delta for an
+edit in the middle of a file.
 
 ## What is already right
 
@@ -114,24 +114,17 @@ library is append-mostly and the block surface already handles it. A library of
 VM images or database files re-uploads whole files on every edit, and no amount
 of block negotiation helps.
 
-### 2. No batching, so one commit per file
+### 2. One request per block, still
 
-Five hundred files dragged into a folder is five hundred requests, five hundred
-`GenNewCommit` calls, five hundred rounds of branch-head contention, and a
-history five hundred commits deep for one drag-and-drop.
-[`protocol-frontends.md`](protocol-frontends.md) already names commit coalescing
-as a decide-before-the-first-frontend problem; it applies to `entries` today,
-not only to a hypothetical WebDAV.
-
-Minimum viable is a multi-operation `POST` at the repo level that lands as one
-commit — creates, deletes and moves in a single ordered list.
-
-The block surface sharpened the other half of this. A 1 GB file is now roughly
-128 `PUT`s on this lane, one per block, where before it was one request that
-could not be resumed. That is the right trade and it is still 128 round trips;
+A 1 GB file is roughly 128 `PUT`s, one per block. That is the right trade
+against an unresumable single request, and it is still 128 round trips.
 `sync-design.md` calls a `pack-blocks` that streams N blocks in one response the
-highest-value change available, and the same argument now applies in the upload
-direction.
+highest-value change available on the download side, and the same argument
+applies going up: a `POST blocks` taking several blocks in one framed body,
+which is also where zstd-on-the-wire would earn its keep.
+
+Commit batching is done — see the closed list — so what is left here is purely
+the transfer, not the history.
 
 ### 3. No stable per-file identity
 
@@ -173,6 +166,7 @@ records what came off it.
 | **Library rename on this lane** | `PATCH /repos/{repoid}` with `{"name":…}`. `PATCH` because the body names only what changes, so it keeps meaning the same thing when a second mutable field arrives. No more crossing to `/api2/` with a second credential to rename a library you can already create and delete |
 | **`Accept-Ranges` tells the truth** | an encrypted library answers `Accept-Ranges: none` rather than advertising `bytes` and then ignoring `Range`. Ignoring a range is allowed; promising to honour one and then ignoring it is what breaks a client that seeks |
 | **Upload integrity is now a contract** | `PUT` always returned the new id, and a client chunking at the same fixed 8 MiB offsets can compute that id itself — so comparing the two is a complete end-to-end check on the transfer. It was true and documented nowhere; `porter-brief.md` now says so |
+| **Batching** | `POST repos/{id}/batch` applies many operations as one commit: mkdir, delete, move, copy, and create from already-uploaded blocks. Ordered, so an operation sees the ones before it, and all-or-nothing, so a failure names the index that stopped it and writes nothing. Five hundred files dragged into a folder is one commit and one round of branch-head contention rather than five hundred of each. The tree operations were already the right shape — each takes a root id and returns a new one — so the change was threading that root through a list instead of committing after every step |
 | **Pagination** | `?limit=N` on `changes` and on directory listings, with the next page in a `Link: …; rel="next"` header so the body shape did not change. Opt-in with no default, because a truncated answer that looks complete is worse than a large one. A cursor pins the commit or directory object the first page came from, so a sequence of pages is a consistent snapshot. On `changes` the anchor is absent until the last page, which makes "record it whenever you see it" the correct client behaviour rather than a rule to remember |
 | **Resumable, dedup-aware upload** | the block surface: `POST blocks/missing`, `PUT blocks/{sha1}`, `PUT entries/{path}?type=blocks`. A client computes block ids itself — fixed offsets, SHA-1 of the bytes — so it can ask what the server holds before sending anything. Nothing exists at the destination until the last call, which is what makes an interrupted upload resumable with no session, offset or upload id to keep: ask again and the answer is shorter. `server-info` reports `block_size` so the chunking is not a guess. No more minting a sync token to reach `check-blocks` on the frozen lane |
 | **`HEAD` is in the contract** | it was implemented, and in `porter-brief.md`, but missing from the endpoint table in [`protocol.md`](protocol.md) |

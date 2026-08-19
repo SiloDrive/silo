@@ -46,11 +46,19 @@ func loadRepoAndCommit(w http.ResponseWriter, repoID, user string) (*repomgr.Rep
 // so "..", embedded separators, invalid UTF-8 and over-long names must never
 // be stored.
 func checkEntryName(w http.ResponseWriter, name string) bool {
-	if name == "" || name == "." || shouldIgnoreFile(name) {
+	if !validEntryName(name) {
 		http.Error(w, "Invalid name", http.StatusBadRequest)
 		return false
 	}
 	return true
+}
+
+// validEntryName is the same rule without a response to write, for callers
+// that report their failures somewhere other than straight down the wire — a
+// batch names the operation that failed, so it cannot let the check answer for
+// it.
+func validEntryName(name string) bool {
+	return name != "" && name != "." && !shouldIgnoreFile(name)
 }
 
 // movesIntoOwnSubtree reports whether dstDir sits at or beneath srcPath. A

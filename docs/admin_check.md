@@ -75,8 +75,8 @@ No routes are wired up in this change. `RequireAdmin` is added as infrastructure
 ## Reused existing code
 
 - `readDB` + `option.DBOpTimeout` pattern — same as `ValidateSessionToken` and `EnsureAdmin` in `fileserver/authmgr/authmgr.go`
-- `middleware.GetUserEmail` + `UserEmailKey` context — `fileserver/middleware/auth.go:43`
-- `EmailUser.is_staff` column — already in `fileserver/dbutil/schema.go:16`, already populated by `authmgr.EnsureAdmin` at `fileserver/authmgr/authmgr.go:196-197`
+- `middleware.GetUserEmail` + `UserEmailKey` context — `fileserver/middleware/auth.go:47`
+- `EmailUser.is_staff` column — already in `fileserver/dbutil/schema.go:17`, already populated by `authmgr.EnsureAdmin` at `fileserver/authmgr/authmgr.go:196-197`
 
 ## Verification
 

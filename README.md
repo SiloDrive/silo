@@ -370,7 +370,7 @@ cmd/silo/          Bubble Tea TUI client
 client/            HTTP client for the management API
 internal/          TUI, CLI plumbing, observability, XDG paths
 docs/              Architecture notes, error reporting, backups, future features
-test/              Ruby integration harness against a running server
+test/              Ruby integration harness against a running server (test/README.md)
 ```
 
 ## Origin and license

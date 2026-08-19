@@ -57,7 +57,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.5","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","blocks","pagination","notifications"],"block_size":8388608}
+{"version":"0.4.5","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","blocks","pagination","batch","notifications"],"block_size":8388608}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an
@@ -78,7 +78,8 @@ Check it at domain setup. **This surface changed materially in 0.4.0** — reads
 stopped redirecting, `PUT` started accepting file content — **0.4.1** added
 conditional writes, **0.4.3** stopped reporting a damaged library as a
 deleted one, **0.4.4** added copy, library rename by `PATCH`, block-by-block
-upload, and this feature list itself, and **0.4.5** added pagination. A client built against this document talking to an older server
+upload, and this feature list itself, and **0.4.5** added pagination and
+batching. A client built against this document talking to an older server
 will fail in confusing ways: against 0.3.x the reads and writes break outright;
 against 0.4.0 the `If-Match` headers are silently ignored, which is worse,
 because losing an edit looks like success; and before 0.4.3 a server that has
@@ -460,6 +461,39 @@ Note the header changes meaning with the method. On `GET`, `If-None-Match` asks
 exists" and yields **412**. Same header, different question, as RFC 9110
 specifies.
 
+## Doing many things in one commit
+
+Check `features` for `batch`.
+
+```
+POST /api/silo/v1/repos/{repo}/batch
+{"ops":[{"op":"mkdir","path":"/a"},{"op":"create","path":"/a/x.txt","blocks":[…]}]}
+→ 200 {"commit_id":"…","ops":2,"changed":true}
+```
+
+`mkdir`, `delete`, `move`, `copy`, `create`. Ordered, and each sees the ones
+before it.
+
+**All or nothing.** A failure writes nothing and tells you which operation
+stopped it: `{"error":…,"index":3,"op":"move","path":"/x"}`, with the status
+code that operation would have answered alone. Retry the whole batch after
+fixing it — there is no partial state to reconcile, which is the reason to use
+this rather than a loop.
+
+**`create` names blocks you already uploaded.** This is the other half of the
+block surface, and together they are the answer to a large drop: upload the
+blocks, skipping everything the server holds, then create every file in one
+commit. Doing it a file at a time costs one commit each, and the user's history
+becomes five hundred entries deep for one drag.
+
+**`If-Match` is about the library root** — the ETag from `GET entries/`. On
+contention you get **503** and `Retry-After`, not a merge; re-read and rebuild.
+
+**`mkdir` over an existing directory succeeds.** Over a file it is a **409**.
+
+`changed:false` means nothing needed doing and no commit was minted. Limits:
+1000 operations, 4 MiB.
+
 ## Paging a long answer
 
 Check `features` for `pagination`. Two endpoints take `?limit=N`: `GET changes`
@@ -664,6 +698,7 @@ exercised against a running server.
 | duplicate an item | `POST /api/silo/v1/repos/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
 | upload a large file | `POST blocks/missing`, `PUT blocks/{sha1}` for each, then `PUT entries/{path}?type=blocks` |
 | enumerate a huge directory | `GET entries/{path}?limit=1000`, then follow `Link: …; rel="next"` |
+| write many things at once | `POST /api/silo/v1/repos/{id}/batch` — one commit, all or nothing |
 | `deleteItem` | `DELETE /api/silo/v1/repos/{id}/entries/{path}` |
 | push invalidation | `WS /notification` |
 

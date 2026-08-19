@@ -76,6 +76,7 @@ credential: one to learn what it is talking to, one to get a token.
 | DELETE | `/api/silo/v1/repos/{repoid}` | Delete a repo |
 | PATCH | `/api/silo/v1/repos/{repoid}` | `{"name":"New name"}` — rename a library. `PATCH` because the body names only what changes |
 | POST | `/api/silo/v1/repos/{repoid}/sync-token` | Generate a repo sync token (for subsequent sync-protocol calls) |
+| POST | `/api/silo/v1/repos/{repoid}/batch` | `{"ops":[…]}` — many operations, one commit. See the batch surface below |
 | POST | `/api/silo/v1/repos/{repoid}/notify-token` | Mint a notification JWT for `WS /notification` (72h; `404` if notifications are disabled) |
 
 #### The entries surface
@@ -114,6 +115,53 @@ the marker resolves the one ambiguity — a directory has no body, so without it
 bodiless `PUT` is indistinguishable from writing an empty file. Parents are not
 created implicitly; a `PUT` into a missing directory is a `404`, for the same
 reason WebDAV's `MKCOL` answers `409` rather than building the tree.
+
+#### The batch surface
+
+Feature name `batch`.
+
+```
+POST /api/silo/v1/repos/{repo}/batch
+{"ops":[
+  {"op":"mkdir",  "path":"/reports"},
+  {"op":"create", "path":"/reports/q3.txt", "blocks":["<sha1>", …]},
+  {"op":"move",   "path":"/old.txt", "to":"/reports/old.txt"},
+  {"op":"copy",   "path":"/tpl.txt", "to":"/reports/tpl.txt"},
+  {"op":"delete", "path":"/stale.txt"}
+]}
+→ 200 {"commit_id":"…","ops":5,"changed":true}   + ETag of the new root
+```
+
+**All or nothing.** The operations apply to a working tree that exists only for
+the duration of the request. If any fails, nothing is written and the library is
+untouched — the reply names the index, the op and the path that stopped it, with
+the status code that operation would have answered on its own. Half-applied is
+the one outcome a client cannot recover from, because it has no way to find out
+which half.
+
+**Ordered.** Each operation sees the ones before it, which is what makes a
+`mkdir` followed by writes into it a single request rather than two.
+
+**`create` takes blocks, not bytes.** Upload them to the block surface first;
+this is the call that makes them a file. That pairing is the point: five hundred
+files become five hundred block uploads — only for content the server does not
+already hold — and one commit, instead of five hundred commits and five hundred
+rounds of branch-head contention.
+
+**`mkdir` of a directory that already exists is not a failure.** A batch
+describes where the library should end up, and "make sure this folder exists"
+has to be expressible in one request or a client is back to asking first and
+racing the answer. A *file* at that path is still a `409`.
+
+**`If-Match` applies to the library root**, whose id is the ETag `GET entries/`
+already returns — so "apply only if the library is still what I read" is spelled
+here the way it is everywhere else. On contention the answer is `503` with
+`Retry-After` rather than a merge: merging is right for uploads, which only add,
+but a batch can delete and move and a three-way merge of those against an unseen
+commit is a guess.
+
+`changed: false` means the operations left the tree exactly as it was, so no
+commit was minted. Limits: 1000 operations, 4 MiB of body.
 
 #### Pagination
 

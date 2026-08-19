@@ -24,9 +24,13 @@ class TokensTest < Minitest::Test
     assert_equal 40, resp["head_commit_id"].length, "Commit ID should be 40-char hex"
   end
 
-  def test_sync_token_for_nonexistent_repo
+  # 403 rather than 404, and deliberately so: a library you cannot see and a
+  # library that does not exist answer the same thing here, or this endpoint
+  # becomes a way to probe for valid library ids. The test asked for 404 from
+  # before that was decided — see docs/responses.md.
+  def test_sync_token_for_nonexistent_repo_is_indistinguishable_from_one_you_cannot_see
     resp = client.create_sync_token("00000000-0000-0000-0000-000000000000")
-    assert_equal 404, resp.status
+    assert_equal 403, resp.status
   end
 
   def test_create_access_token

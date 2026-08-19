@@ -42,7 +42,7 @@ in. Everything else goes through `repomgr.Get`, which reads the head commit.
 
 ## Cause
 
-`repomgr.Get` (`fileserver/repomgr/repomgr.go:75`) returns `nil` for four
+`repomgr.Get` (`fileserver/repomgr/repomgr.go:105`) returns `nil` for four
 unrelated reasons:
 
 | condition | line | what it actually means |
@@ -64,7 +64,7 @@ if repo == nil {
 
 — `entryRepo` in `fileserver/entries.go:113`, and the same shape at
 `fileserver/api/api.go:316` and `:355`, `fileserver/api_handlers.go:31` and
-`:206`, `fileserver/api/changes.go:82`, `fileserver/api/seadrive.go:289`.
+`:206`, `fileserver/api/changes.go:116`, `fileserver/api/seadrive.go:289`.
 
 Three of those four conditions are the server's own failures. All four are
 reported to the client as the one condition that is a statement about *the

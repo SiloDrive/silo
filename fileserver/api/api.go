@@ -58,6 +58,7 @@ func features() []string {
 		"repo-rename",        // PATCH repos/{id}
 		"blocks",             // blocks/missing, PUT blocks/{sha1}, PUT entries?type=blocks
 		"pagination",         // ?limit on changes and directory listings, Link: rel="next"
+		"batch",              // POST repos/{id}/batch — many operations, one commit
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification, POST repos/{id}/notify-token

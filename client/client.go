@@ -496,3 +496,41 @@ func (c *APIClient) GetServerInfo() (ServerInfo, error) {
 	}
 	return info, nil
 }
+
+// BatchOp is one operation in a batch. Op is "mkdir", "delete", "move",
+// "copy" or "create"; To is for move and copy, Blocks for create.
+type BatchOp struct {
+	Op     string   `json:"op"`
+	Path   string   `json:"path"`
+	To     string   `json:"to,omitempty"`
+	Blocks []string `json:"blocks,omitempty"`
+}
+
+// BatchResult is what the server did with a batch.
+type BatchResult struct {
+	CommitID string `json:"commit_id"`
+	Ops      int    `json:"ops"`
+	// Changed is false when the operations left the tree as it was — every
+	// mkdir already existed, say. The library is untouched and no commit was
+	// minted, which is worth distinguishing from having done the work.
+	Changed bool `json:"changed"`
+}
+
+// Batch applies many operations as one commit, in order, all or nothing.
+//
+// Operations see the effects of the ones before them, so a mkdir followed by
+// creates inside it is a single request. If any fails, nothing is written and
+// the error names the index that stopped it.
+//
+// Pair it with the block surface for a bulk upload: send the blocks first,
+// which skips everything the server already holds, then create every file in
+// one commit rather than one commit per file.
+func (c *APIClient) Batch(repoID string, ops []BatchOp) (*BatchResult, error) {
+	var result BatchResult
+	err := c.doRequest("POST", "/api/silo/v1/repos/"+repoID+"/batch",
+		map[string][]BatchOp{"ops": ops}, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

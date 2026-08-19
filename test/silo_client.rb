@@ -47,6 +47,60 @@ class SiloClient
     post("/api/silo/v1/repos/#{repo_id}/sync-token")
   end
 
+  # --- Entries ---
+
+  # The root is /entries/ with nothing after it, not /entries — the route
+  # matches the path segment by segment and an absent one is not an empty one.
+  def entries_url(repo_id, path)
+    encoded = path.split("/").map { |seg| URI.encode_www_form_component(seg).gsub("+", "%20") }.join("/")
+    encoded = "/" if encoded.empty?
+    "/api/silo/v1/repos/#{repo_id}/entries#{encoded}"
+  end
+
+  def list_dir(repo_id, path = "/", query = nil)
+    get("#{entries_url(repo_id, path)}#{query ? "?#{query}" : ""}")
+  end
+
+  def mkdir(repo_id, path)
+    request(:put, "#{entries_url(repo_id, path)}?type=dir")
+  end
+
+  def put_file(repo_id, path, content)
+    request(:put, entries_url(repo_id, path), raw_body: content)
+  end
+
+  # --- Blocks ---
+
+  def missing_blocks(repo_id, blocks)
+    post("/api/silo/v1/repos/#{repo_id}/blocks/missing", { blocks: blocks })
+  end
+
+  def put_block(repo_id, block_id, content)
+    request(:put, "/api/silo/v1/repos/#{repo_id}/blocks/#{block_id}", raw_body: content)
+  end
+
+  def create_from_blocks(repo_id, path, blocks)
+    request(:put, "#{entries_url(repo_id, path)}?type=blocks", body: { blocks: blocks })
+  end
+
+  # --- Batch ---
+
+  def batch(repo_id, ops, if_match: nil)
+    request(:post, "/api/silo/v1/repos/#{repo_id}/batch", body: { ops: ops }, if_match: if_match)
+  end
+
+  # --- Changes ---
+
+  def changes(repo_id, since, query = nil)
+    get("/api/silo/v1/repos/#{repo_id}/changes?since=#{since}#{query ? "&#{query}" : ""}")
+  end
+
+  # --- Server ---
+
+  def server_info
+    get("/api/silo/v1/server-info")
+  end
+
   # --- Sync protocol ---
 
   def get_head_commit(repo_id, sync_token)
@@ -63,7 +117,7 @@ class SiloClient
     request(:post, path, body: body, auth: auth)
   end
 
-  def request(method, path, body: nil, auth: true, sync_token: nil)
+  def request(method, path, body: nil, raw_body: nil, auth: true, sync_token: nil, if_match: nil)
     uri = URI("#{@base_url}#{path}")
     http = Net::HTTP.new(uri.host, uri.port)
     http.open_timeout = 5
@@ -85,9 +139,14 @@ class SiloClient
       req["Seafile-Repo-Token"] = sync_token
     end
 
+    req["If-Match"] = if_match if if_match
+
     if body
       req["Content-Type"] = "application/json"
       req.body = JSON.generate(body)
+    elsif raw_body
+      req["Content-Type"] = "application/octet-stream"
+      req.body = raw_body
     end
 
     response = http.request(req)
@@ -112,6 +171,10 @@ class SiloClient
 
     def body
       @http_response.body
+    end
+
+    def header(name)
+      @http_response[name]
     end
 
     def json

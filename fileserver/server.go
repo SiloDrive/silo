@@ -710,6 +710,7 @@ func newHTTPRouter() *mux.Router {
 	// route only matches 40 hex characters — but it is listed first anyway,
 	// because relying on a regex to keep two routes apart is the kind of thing
 	// that stops being true when someone loosens the regex.
+	apiRouter.HandleFunc("/repos/{repoid}/batch", batchHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}/blocks/missing", blocksMissingHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}/blocks/{id:[0-9a-f]{40}}", putBlockHandler).Methods("PUT")
 	// The entries surface. One route, all methods: entriesHandler answers a
