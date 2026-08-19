@@ -316,14 +316,28 @@ loops, or Finder showing stale state forever.
 | 403 | `.cannotSynchronize` | surface; do not retry |
 | 404 | `.noSuchItem` | treat as deleted; reconcile |
 | 409 | `.filenameCollision` | return the existing item so the system renames |
+| 410 | `.syncAnchorExpired` | anchor too old to diff from; full enumeration |
 | 412 / version mismatch | **no error** — see below | inside `modifyItem`, return the server's item on the success path with `shouldFetchContent: true`. Send `If-Match` built from `baseVersion.contentVersion` on every write |
 | 413 / 507 | `.insufficientQuota` | surface to user |
 | 429 | `.serverUnreachable` | honour `Retry-After`, back off |
-| 503 | `.serverUnreachable` | honour `Retry-After`, retry — a contended write, nothing was applied |
-| 5xx | `.serverUnreachable` | exponential backoff, retriable |
+| 500 | `.cannotSynchronize` | **do not retry** — may have been partly applied |
+| 502 / 503 / 504 | `.serverUnreachable` | transient, nothing applied; back off and retry |
 | offline / DNS | `.serverUnreachable` | retriable |
-| anchor too old | `.syncAnchorExpired` | system falls back to full enumeration |
 | page token stale | `.pageExpired` | restart enumeration |
+
+Two rows in that block are finer than the draft they replace, and both came from
+reading `silo/docs/responses.md` rather than from anything failing.
+
+**5xx is not one row.** `503` is transient, carries `Retry-After`, and the
+identical request will work; `500` means the request *may have been partly
+applied*, and it is also how a library with damaged storage reports itself.
+Retrying a `500` blind is how a client turns a server fault into its own. `502`
+and `504` come from a proxy rather than Silo and are transient by nature.
+
+**`409` means one thing, but only since 0.4.4.** It briefly also carried
+`GC conflict; retry`, where renaming — the correct response to a collision — is
+precisely wrong. That is the reason the floor is a version comparison and not a
+feature check: no feature name appeared or disappeared when the meaning moved.
 
 Two corrections to an earlier draft of this table, both verified against the
 macOS 26.5 SDK headers:
@@ -465,11 +479,13 @@ arrives at M3.
 This is the same bug twice. The trash was found at M1 and the working set at M2 —
 worth assuming there is a third.
 
-### Item metadata is frozen at first enumeration until M3
+### Item metadata was frozen at first enumeration until M3
 
-The sync anchor is a constant and `enumerateChanges` reports nothing, so once the
-system has cached an item's metadata it has no reason to ask again. **Any change
-to what an item reports is invisible on everything already enumerated.**
+~~The sync anchor is a constant and `enumerateChanges` reports nothing, so once
+the system has cached an item's metadata it has no reason to ask again.~~ Fixed
+in M3, but the debugging lesson outlives the cause and the trap returns whenever
+the anchor stops advancing. **Any change to what an item reports is invisible on
+everything already enumerated.**
 
 This wastes an enormous amount of debugging time if you do not know it: a fix to
 `capabilities`, `fileSystemFlags`, or dates appears to have no effect, and the
@@ -478,6 +494,48 @@ was never read. Verify such a change against a domain torn down and re-registere
 *after* the change, or you are testing the old build's metadata.
 
 `reimportItems` is the wrong tool for this, per above.
+
+### A `nil` sync anchor is an answer, not a failure
+
+`currentSyncAnchor` may hand back `nil`, and it means "this enumerator does not
+track changes; re-enumerate me instead of asking what changed". That is the
+correct answer for a per-directory enumerator here and the only workable one:
+Porter's anchor names the state of every library at once, so a directory
+enumerator that returned it would be claiming to answer `enumerateChanges` for
+changes in libraries it has nothing to do with.
+
+Only `.workingSet` returns a real anchor. Everything else returns `nil` and is
+re-enumerated, which costs a listing and buys the guarantee that no enumerator
+ever reports a change it cannot actually see.
+
+### One `changes` batch can carry two operations for the same path
+
+`/changes` is a net diff between two trees, not a replay. Deleting a directory
+`/Z` and creating a file `Z` between two anchors arrives as a create and a
+delete **for the same path**, separable only by `is_dir`, in no guaranteed
+order. A client keyed on path alone will apply them in whichever order they
+arrive and can delete the file it just created.
+
+Porter's answer is structural rather than procedural: `is_dir` is part of the
+`IdMap` location key, so the two are different rows and cannot collide no matter
+what order they are seen in. Deletes are applied before creates within a batch
+for the same reason. This is the same trap that
+`silo/docs/bugs/fixed/move-onto-directory-destroys-it.md` found on the server,
+and it is now documented in `silo/docs/protocol.md` under "Reading `changes`".
+
+### SQLite and Swift disagree about what a character is
+
+Renaming a directory has to rewrite every descendant path, which is a
+`substr` over the old prefix's length. SQLite's `substr` counts **code points**;
+Swift's `String.count` counts **grapheme clusters**. They agree on ASCII and
+diverge exactly where macOS is most likely to hand you a filename that differs —
+macOS returns decomposed (NFD) unicode, so `é` is one grapheme and two code
+points, and an offset computed in Swift would slice one byte into the middle of
+every descendant path under it.
+
+The offset is therefore computed as `oldPrefix.unicodeScalars.count + 1`, which
+is what SQLite is counting. There is no test that would have caught this from
+the outside; it had to be known.
 
 ### `fetchContents` — the staged file contract, as built
 
@@ -568,9 +626,26 @@ read-only `capabilities` force `uchg`, which breaks Quick Look's video player.
 That last one is the first place the read-only posture has cost visible
 functionality rather than just convenience.
 
-**M3 — sync anchor + `enumerateChanges`.** Remote changes appear without a
+~~**M3 — sync anchor + `enumerateChanges`.** Remote changes appear without a
 restart. First milestone needing `IdMap` reconciliation, and the first with any
-Silo work behind it (the `/changes` endpoint). Anchor is the repo HEAD commit ID.
+Silo work behind it (the `/changes` endpoint). Anchor is the repo HEAD commit
+ID.~~ **Done**, against 0.4.4. A commit on the server reaches the Finder in
+about **one second**, and a rename keeps its identifier across the move rather
+than presenting as a delete and a create. Both were the point of the milestone.
+
+The anchor is the repo HEAD commit ID as planned, but per-repo: `SyncAnchor` is
+a `[repo: head]` map, because the working set spans every library and one commit
+id cannot name the state of several. Three things the plan did not anticipate
+are in the field notes below — `nil` from `currentSyncAnchor` is a *supported*
+answer and the right one for a per-repo enumerator, one `changes` batch can
+carry two operations for the same path, and SQLite's `substr` and Swift's
+`String.count` disagree about what a character is.
+
+The socket that makes it prompt lives in the container app, not the extension —
+`ChangeNotifier` documents why. Nothing breaks when the app is not running; the
+system still enumerates on its own schedule, so it is a latency feature rather
+than a correctness one. Making Porter a background agent so that holds without
+a window open is its own change, not part of this.
 
 **M4 — writes.** create / modify / delete / rename / move. Full error mapping.
 Now carries three things beyond its own scope: the Finder padlock, Quick Look
