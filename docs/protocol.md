@@ -262,8 +262,10 @@ unchanged regions are free; edits in the middle are not.
 `{"anchor": "<commit>", "changes": [...]}`, where each change is
 `{op, path, old_path?, id?, size, is_dir}` and `op` is `create`, `delete`,
 `modify` or `move`. The anchor comes back even when nothing changed, so a
-polling caller can always advance. `old_path` is set for moves, and a rename is
-a move — compare the parent directories if you need to tell them apart.
+polling caller can always advance — with the one exception that if you asked to
+[page](#pagination), it is absent on every page but the last. `old_path` is set
+for moves, and a rename is a move — compare the parent directories if you need
+to tell them apart.
 
 It is a **net diff between two trees**, not a replay of what happened. A file
 created and then renamed twice arrives as one create at its final path; a file
