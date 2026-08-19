@@ -68,7 +68,7 @@ credential: one to learn what it is talking to, one to get a token.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.4","features":[…],"block_size":8388608}` — semver with no leading `v`, the capability list a client should branch on instead of the version, and the offset a client must chunk at for its block ids to match the store's |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.5","features":[…],"block_size":8388608}` — semver with no leading `v`, the capability list a client should branch on instead of the version, and the offset a client must chunk at for its block ids to match the store's |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
 | POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
 | GET | `/api/silo/v1/repos` | List repos owned by authenticated user |
@@ -96,6 +96,7 @@ in [`responses.md`](responses.md).
 | POST | `/api/silo/v1/repos/{repoid}/entries/{path}` | `{"op":"copy","to":"/dst"}` — server-side copy; `201` and the source's `ETag`, no content transferred |
 | DELETE | `/api/silo/v1/repos/{repoid}/entries/{path}` | Delete a file or directory |
 | GET | `/api/silo/v1/repos/{repoid}/changes?since=` | Changes since an anchor (`410` when the anchor is too old) |
+| GET | *any of the above* `?limit=N` | Page the answer. `Link: …; rel="next"` until the last page. See pagination below |
 
 `{path}` is relative to the library root and never repeats the library name;
 `entries/` with nothing after it is the root. Every mutating method honours
@@ -113,6 +114,54 @@ the marker resolves the one ambiguity — a directory has no body, so without it
 bodiless `PUT` is indistinguishable from writing an empty file. Parents are not
 created implicitly; a `PUT` into a missing directory is a `404`, for the same
 reason WebDAV's `MKCOL` answers `409` rather than building the tree.
+
+#### Pagination
+
+Feature name `pagination`. Two things page: `GET changes` and a directory
+listing from `GET entries/{path}`.
+
+**It is opt-in and it is a header.** No `limit`, no paging — the response is
+whole, exactly as before. With `limit`, the body keeps the shape it always had
+and the next page arrives as an RFC 8288 header:
+
+```
+Link: </api/silo/v1/repos/{repo}/changes?cursor=eyJ2Ijox…&limit=1000>; rel="next"
+```
+
+Follow it verbatim. The cursor is opaque; it carries an offset today and may
+carry a key tomorrow, and no client should need changing for that. The last
+page carries no `Link`.
+
+There is no default page size, deliberately. A truncated answer that looks
+complete is the worst failure available here — a sync client would apply half a
+diff and record the anchor for all of it — so a client that never asks to page
+is never paged.
+
+**A cursor pins the version it started on.** Objects are immutable, so the
+cursor names the exact commit or directory object the first page was computed
+from, and every later page is served from that one. Items do not skip or repeat
+across a page boundary while the library is written to; the writes show up on
+the client's next pass, which is the bargain the delta feed already makes.
+
+**On `changes`, `anchor` is absent until the last page.** That is the contract
+rather than an omission: a client that records the anchor whenever it is present
+is correct by construction, where one told "record it only at the end" has to
+remember to. Recording it early marks the client up to date for changes it has
+not seen.
+
+**A paged listing carries no `ETag` or `Last-Modified`.** A window is not the
+representation the id names, and a validator there would answer `304` to a
+request for a different page.
+
+`limit` is capped at 10,000, and a bad `limit` is a `400` rather than a clamp.
+
+What paging bounds is the response and the client's apply loop, not the
+server's work: a diff is recomputed per page, because a Merkle diff is
+proportional to what changed and cannot be resumed part-way. A client that wants
+the server to do less should ask more often, not for smaller pages.
+
+`GET /repos` does not page. A library count is bounded by how many an account
+has, which is tens, not by anything a client can grow without noticing.
 
 #### The block surface
 

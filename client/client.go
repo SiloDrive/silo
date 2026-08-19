@@ -62,44 +62,51 @@ func NewClient(baseURL string) *APIClient {
 // doRequest performs an authenticated HTTP request, transparently re-logging
 // in and retrying once if the server returns 401.
 func (c *APIClient) doRequest(method, path string, body, result interface{}) error {
+	_, err := c.doRequestHeaders(method, path, body, result)
+	return err
+}
+
+// doRequestHeaders is doRequest with the response headers handed back, for the
+// callers that need them — pagination reads its next page out of Link.
+func (c *APIClient) doRequestHeaders(method, path string, body, result interface{}) (http.Header, error) {
 	var bodyBytes []byte
 	if body != nil {
 		var err error
 		bodyBytes, err = json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("failed to encode request: %v", err)
+			return nil, fmt.Errorf("failed to encode request: %v", err)
 		}
 	}
 
 	tokenUsed := c.getToken()
 	resp, err := c.sendRequest(method, path, bodyBytes, tokenUsed)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized && c.hasCreds() {
 		_ = resp.Body.Close()
 		if err := c.reloginIfStale(tokenUsed); err != nil {
-			return fmt.Errorf("re-login failed: %v", err)
+			return nil, fmt.Errorf("re-login failed: %v", err)
 		}
 		resp, err = c.sendRequest(method, path, bodyBytes, c.getToken())
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s: %s", resp.Status, string(msg))
+		return resp.Header, fmt.Errorf("%s: %s", resp.Status, string(msg))
 	}
 
 	if result != nil {
 		if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-			return fmt.Errorf("failed to parse response: %v", err)
+			return resp.Header, fmt.Errorf("failed to parse response: %v", err)
 		}
 	}
-	return nil
+	return resp.Header, nil
 }
 
 // doStream performs an authenticated request whose body is streamed rather than

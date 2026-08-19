@@ -57,6 +57,7 @@ func features() []string {
 		"changes",            // GET repos/{id}/changes?since=
 		"repo-rename",        // PATCH repos/{id}
 		"blocks",             // blocks/missing, PUT blocks/{sha1}, PUT entries?type=blocks
+		"pagination",         // ?limit on changes and directory listings, Link: rel="next"
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification, POST repos/{id}/notify-token
@@ -399,14 +400,52 @@ type dirEntry struct {
 // way down is a fresh read and inflate. The old GET /repos/{id}/dir/?path=
 // handler did exactly that second walk and was deleted with the rest of the
 // pre-entries surface; do not reintroduce a path-taking variant.
-func ListDirByID(w http.ResponseWriter, storeID, dirID string) {
+func ListDirByID(w http.ResponseWriter, r *http.Request, storeID, dirID string) {
+	limit, ok := parseLimit(w, r)
+	if !ok {
+		return
+	}
+
+	// A cursor pins the directory object the first page was served from, so a
+	// listing stays consistent while the directory is written to. The pinned
+	// object is still readable: directory objects are immutable and nothing
+	// reclaims them inside a live library.
+	offset := 0
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		c, ok := decodeCursor(raw)
+		if !ok || c.Dir == "" {
+			http.Error(w, "cursor is not one this server issued; list again from the start", http.StatusBadRequest)
+			return
+		}
+		// The directory may have changed under the client mid-listing. It
+		// keeps reading the version it started on rather than half of each.
+		offset, dirID = c.Offset, c.Dir
+	}
+
+	// A window is not the representation the id names, so it carries no
+	// validator: an ETag here would validate a request for a different page of
+	// the same listing. The caller set one before it knew this was paged.
+	if limit > 0 || offset > 0 {
+		w.Header().Del("ETag")
+		w.Header().Del("Last-Modified")
+	}
+
 	dir, err := fsmgr.GetSeafdir(storeID, dirID)
 	if err != nil {
 		log.Errorf("Failed to get directory object %s in store %s: %v", dirID, storeID, err)
 		http.Error(w, "Directory not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, dirEntries(dir))
+
+	entries := dirEntries(dir)
+	from, to, more := window(len(entries), offset, limit)
+	if more {
+		setNextLink(w, r, encodeCursor(pageCursor{Dir: dirID, Offset: to}))
+	}
+	// The body stays an array whether or not it is paged. Pagination lives in
+	// a header precisely so that adding it did not change the shape of a
+	// response every existing client already parses.
+	writeJSON(w, http.StatusOK, entries[from:to])
 }
 
 func dirEntries(dir *fsmgr.SeafDir) []dirEntry {

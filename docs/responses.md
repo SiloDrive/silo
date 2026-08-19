@@ -55,13 +55,13 @@ variable.
 
 | code | means | what a client should do |
 |---|---|---|
-| `400 Bad Request` | malformed or contradictory request — missing `path`, moving the library root, a `src` equal to its `dst`, a block whose bytes do not hash to the id it was sent under, `?type=blocks` on an encrypted library | fix the request; never retry unchanged |
+| `400 Bad Request` | malformed or contradictory request — missing `path`, moving the library root, a `src` equal to its `dst`, a block whose bytes do not hash to the id it was sent under, `?type=blocks` on an encrypted library, a `limit` that is not a positive integer within range, a `cursor` this server did not issue | fix the request; never retry unchanged |
 | `401 Unauthorized` | no `Authorization` header, a malformed one, or an expired session token | re-authenticate, then retry once. Do not loop |
 | `403 Forbidden` | authenticated, but not permitted — including libraries you cannot see | surface it; do not retry. A library you cannot see and a library that does not exist both answer `403` from the token endpoints on purpose, so they cannot be used to probe for valid ids |
 | `404 Not Found` | the named thing does not exist — see the overload note below | depends on *what* was not found |
 | `405 Method Not Allowed` | wrong verb on a real path; carries `Allow` | the path was fine, the verb was not |
 | `409 Conflict` | a destination collision, or an attempt to create `/` — see the overload note below | rename and retry, or fix the client |
-| `410 Gone` | your `since` anchor is too old to diff from | stop incremental sync and enumerate from scratch. `GET repos/{repoid}/changes` only |
+| `410 Gone` | your `since` anchor, or the commit your page cursor was issued against, is no longer reachable | stop incremental sync and enumerate from scratch. `GET repos/{repoid}/changes` only |
 | `412 Precondition Failed` | your `If-Match` did not match; someone else wrote first | re-read, reapply your change, write again. Not an error — it is the mechanism working |
 | `413 Payload Too Large` | body over the limit | do not retry |
 | `416 Range Not Satisfiable` | the range is outside the entry | |

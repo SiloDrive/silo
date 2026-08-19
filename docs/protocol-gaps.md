@@ -23,7 +23,7 @@ The question splits, and the two halves score very differently.
 The coordination layer is done, and the first half of bulk writes now works on
 this lane rather than requiring a crossing to the Seafile lane. What remains is
 the rest of moving a lot of bytes efficiently: one request per block, one commit
-per file, no delta for an edit in the middle, and no way to page anything.
+per file, and no delta for an edit in the middle.
 
 ## What is already right
 
@@ -114,28 +114,7 @@ library is append-mostly and the block surface already handles it. A library of
 VM images or database files re-uploads whole files on every edit, and no amount
 of block negotiation helps.
 
-### 2. No pagination, anywhere
-
-`ListDirByID` marshals an entire directory into one JSON array. `changes`
-marshals an entire diff into one response — no `limit`, no cursor, no
-`has_more`. A directory with two hundred thousand entries, or a client returning
-after a month offline, produces one enormous body that the server materialises
-in memory first.
-
-The anchor already *is* a cursor; what it lacks is the ability to name an
-intermediate commit and a flag saying there is more behind it. The commit DAG
-supplies intermediate points already, so the shape is:
-
-```
-GET /repos/{repo}/changes?since={commit}&limit=1000
-→ {"anchor":"<intermediate or head>", "changes":[…], "has_more":true}
-```
-
-with the contract being that a client loops until `has_more` is false, and that
-each returned anchor is safely resumable. Directory listings want the same
-treatment with an opaque cursor over the sorted dirent list.
-
-### 3. No batching, so one commit per file
+### 2. No batching, so one commit per file
 
 Five hundred files dragged into a folder is five hundred requests, five hundred
 `GenNewCommit` calls, five hundred rounds of branch-head contention, and a
@@ -154,7 +133,7 @@ could not be resumed. That is the right trade and it is still 128 round trips;
 highest-value change available, and the same argument now applies in the upload
 direction.
 
-### 4. No stable per-file identity
+### 3. No stable per-file identity
 
 Identifiers never cross the wire. Every request is `(repo_id, path)`; identity
 across a move is reconstructed client-side from an `IdMap` plus the rename ops
@@ -178,6 +157,7 @@ default.
 | **24h JWT, no refresh** | the client must keep the account password to survive expiry, and there is no server-side device revocation | the device-grant design in [`auth.md`](auth.md) gives revocable per-device credentials as a side effect |
 | **Encrypted libraries are unreadable over this lane, at all** | a whole class of library the client can only grey out | see [`encryption.md`](encryption.md) — the format is being replaced, not patched |
 | **No search of any kind** | acknowledged in [`future-features.md`](future-features.md) | — |
+| **A big directory is still read whole server-side** | paging bounds the response and the client's loop, not the read: dirents are one JSON object addressed by the hash of all of them, so a range of one cannot be read without changing what a directory *is*. The same holds a level up — a Merkle diff is proportional to what changed and cannot be resumed part-way, so `changes` recomputes per page | store-level, much larger than it sounds, and nobody is asking |
 | **No compression negotiation** | blocks are raw on disk, so per-connection zstd is available for free and is not offered | see [`compression.md`](compression.md) |
 
 ## Closed since this list was written
@@ -193,6 +173,7 @@ records what came off it.
 | **Library rename on this lane** | `PATCH /repos/{repoid}` with `{"name":…}`. `PATCH` because the body names only what changes, so it keeps meaning the same thing when a second mutable field arrives. No more crossing to `/api2/` with a second credential to rename a library you can already create and delete |
 | **`Accept-Ranges` tells the truth** | an encrypted library answers `Accept-Ranges: none` rather than advertising `bytes` and then ignoring `Range`. Ignoring a range is allowed; promising to honour one and then ignoring it is what breaks a client that seeks |
 | **Upload integrity is now a contract** | `PUT` always returned the new id, and a client chunking at the same fixed 8 MiB offsets can compute that id itself — so comparing the two is a complete end-to-end check on the transfer. It was true and documented nowhere; `porter-brief.md` now says so |
+| **Pagination** | `?limit=N` on `changes` and on directory listings, with the next page in a `Link: …; rel="next"` header so the body shape did not change. Opt-in with no default, because a truncated answer that looks complete is worse than a large one. A cursor pins the commit or directory object the first page came from, so a sequence of pages is a consistent snapshot. On `changes` the anchor is absent until the last page, which makes "record it whenever you see it" the correct client behaviour rather than a rule to remember |
 | **Resumable, dedup-aware upload** | the block surface: `POST blocks/missing`, `PUT blocks/{sha1}`, `PUT entries/{path}?type=blocks`. A client computes block ids itself — fixed offsets, SHA-1 of the bytes — so it can ask what the server holds before sending anything. Nothing exists at the destination until the last call, which is what makes an interrupted upload resumable with no session, offset or upload id to keep: ask again and the answer is shorter. `server-info` reports `block_size` so the chunking is not a guess. No more minting a sync token to reach `check-blocks` on the frozen lane |
 | **`HEAD` is in the contract** | it was implemented, and in `porter-brief.md`, but missing from the endpoint table in [`protocol.md`](protocol.md) |
 

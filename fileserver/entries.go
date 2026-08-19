@@ -181,7 +181,10 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 	if entry.mtime > 0 {
 		w.Header().Set("Last-Modified", time.Unix(entry.mtime, 0).UTC().Format(http.TimeFormat))
 	}
-	if matchesETag(r.Header.Get("If-None-Match"), etag) {
+	// A paged request is answered on its merits: revalidating it against the
+	// whole directory's id would answer 304 to a client that is asking for the
+	// next window, not for the same one again.
+	if !isPaged(r) && matchesETag(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -190,10 +193,18 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 	// re-walks the tree from the root — the listing and the file body are read
 	// straight from the object the ETag was just computed from.
 	if entry.isDir {
-		api.ListDirByID(w, repo.StoreID, entry.id)
+		api.ListDirByID(w, r, repo.StoreID, entry.id)
 		return
 	}
 	serveFile(w, r, repo, entry.id, upath.Base(path), user)
+}
+
+// isPaged reports whether a request is asking for a window of a listing rather
+// than the whole of it. Both spellings count: limit opens a paged sequence and
+// cursor continues one.
+func isPaged(r *http.Request) bool {
+	q := r.URL.Query()
+	return q.Get("limit") != "" || q.Get("cursor") != ""
 }
 
 // serveFile streams a file's bytes on this request, rather than redirecting to

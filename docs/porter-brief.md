@@ -57,7 +57,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.4","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","blocks","notifications"],"block_size":8388608}
+{"version":"0.4.5","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","blocks","pagination","notifications"],"block_size":8388608}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an
@@ -77,8 +77,8 @@ the difference between a clear failure and a silent one if this ever regresses.
 Check it at domain setup. **This surface changed materially in 0.4.0** — reads
 stopped redirecting, `PUT` started accepting file content — **0.4.1** added
 conditional writes, **0.4.3** stopped reporting a damaged library as a
-deleted one, and **0.4.4** added copy, library rename by `PATCH`, block-by-block
-upload, and this feature list itself. A client built against this document talking to an older server
+deleted one, **0.4.4** added copy, library rename by `PATCH`, block-by-block
+upload, and this feature list itself, and **0.4.5** added pagination. A client built against this document talking to an older server
 will fail in confusing ways: against 0.3.x the reads and writes break outright;
 against 0.4.0 the `If-Match` headers are silently ignored, which is worse,
 because losing an edit looks like success; and before 0.4.3 a server that has
@@ -460,6 +460,41 @@ Note the header changes meaning with the method. On `GET`, `If-None-Match` asks
 exists" and yields **412**. Same header, different question, as RFC 9110
 specifies.
 
+## Paging a long answer
+
+Check `features` for `pagination`. Two endpoints take `?limit=N`: `GET changes`
+and a directory listing.
+
+```
+GET /api/silo/v1/repos/{repo}/changes?since={commit}&limit=1000
+→ 200  {"changes":[…]}
+   Link: </api/silo/v1/repos/{repo}/changes?cursor=…&limit=1000>; rel="next"
+…
+→ 200  {"anchor":"<commit>","changes":[…]}       (no Link — you are done)
+```
+
+**Follow the `Link` verbatim.** It is a relative URL and the cursor inside it is
+opaque. Do not build the next request from parts, and do not parse the cursor:
+it carries an offset today and is free to carry something else tomorrow.
+
+**Do not record the anchor until you have it.** It is absent on every page but
+the last. If you save it after page one you have told yourself you are up to
+date for changes you have not applied, and nothing will ever tell you otherwise.
+
+**You are reading a snapshot.** The cursor pins the commit — or the directory
+object — the first page came from, so writes landing mid-sequence do not make
+items skip or repeat. You will see those writes on your next pass.
+
+**A paged listing carries no `ETag`.** A window is not the thing the id names.
+Revalidate the whole listing, not a page of it.
+
+**No `limit` means no paging**, and that is a real choice rather than a legacy
+default: a truncated answer that looked complete would be worse than a large
+one. `limit` is capped at 10,000 and a bad value is a **400**, not a clamp.
+
+`GET /repos` does not page — the count is bounded by how many libraries the
+account has.
+
 ## Uploading in blocks
 
 Check `features` for `blocks` first. Three calls:
@@ -628,6 +663,7 @@ exercised against a running server.
 | `modifyItem` (reparent) | the same call — a move is a move |
 | duplicate an item | `POST /api/silo/v1/repos/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
 | upload a large file | `POST blocks/missing`, `PUT blocks/{sha1}` for each, then `PUT entries/{path}?type=blocks` |
+| enumerate a huge directory | `GET entries/{path}?limit=1000`, then follow `Link: …; rel="next"` |
 | `deleteItem` | `DELETE /api/silo/v1/repos/{id}/entries/{path}` |
 | push invalidation | `WS /notification` |
 
