@@ -167,7 +167,7 @@ export SILO_PASSWORD=changeme
 
 With that loaded, `./silo serve -d /tmp/silo-data` and `./silo tui` both pick up the same host, port, and credentials — no flags needed.
 
-From the TUI: `n` to create a library, `enter` to open it, `u` to upload a local file, `v` to move, `r` to rename, `x` to delete, `q` to quit.
+From the TUI: `n` to create a library, `enter` to open it, `u` to upload a local file or directory, `v` to move, `r` to rename, `x` to delete, `q` to quit. Lists scroll: `j`/`k` or the arrow keys move the cursor, `g`/`G` jump to the top and bottom, and page up/down move a screen at a time.
 
 ### Use the CLI
 
@@ -177,7 +177,8 @@ The same binary also exposes non-interactive subcommands for scripting:
 silo repos                          # list libraries (use --json for scripts)
 silo repo create "My library"       # prints the new repo ID
 silo ls <repo-id> [/path]           # list a directory
-silo put <repo-id> ./file.txt /     # upload
+silo put <repo-id> ./file.txt /     # upload a file
+silo put -r <repo-id> ./photos /    # upload a directory, one commit
 silo get <repo-id> /file.txt ~/out  # download
 silo mkdir <repo-id> /sub
 silo mv <repo-id> /a.txt /sub/a.txt

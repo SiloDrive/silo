@@ -293,11 +293,12 @@ are surveyed in [`protocol-frontends.md`](protocol-frontends.md).
 
 ## A Native Silo Client
 
-The CLI and TUI drive the management API one file at a time, which is not
-sync: `silo put` takes a single file, always uploads the whole thing, and has
-no way to ask the server what it already holds. Three tiers close that gap —
-recursive put, dedup-aware upload via `check-blocks`, and a full headless sync
-agent — in [`native-client.md`](native-client.md).
+The CLI and TUI drive the management API, which is not sync. Two of the three
+tiers that close that gap have landed: dedup-aware upload via the block surface,
+and `silo put -r`, which composes it with `batch` to write a whole directory in
+one commit. What remains is a full headless sync agent — no incremental
+comparison against the remote tree, and nothing in the read direction. All
+three tiers are in [`native-client.md`](native-client.md).
 
 The middle tier is the interesting one, and is much cheaper than it sounds:
 Silo chunks at fixed 8 MiB offsets rather than content-defined boundaries, so

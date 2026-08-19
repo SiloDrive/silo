@@ -130,7 +130,7 @@ Usage:
   silo repo rm <repo-id>          Delete a library
   silo ls <repo-id> [path] [--json]
   silo get <repo-id> <remote> [local]
-  silo put <repo-id> <local> [remote-dir]
+  silo put [-r] <repo-id> <local> [remote-dir]
   silo mkdir <repo-id> <path>
   silo rm <repo-id> <path>
   silo mv <repo-id> <src> <dst>
