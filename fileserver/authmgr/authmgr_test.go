@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -261,6 +262,10 @@ func authTestDB(t *testing.T) {
 	origTimeout := option.DBOpTimeout
 	option.DBOpTimeout = 5 * time.Second
 
+	// The statement builders dispatch on this; unset, they emit MySQL.
+	origEngine := dbutil.DBEngine
+	dbutil.DBEngine = dbutil.EngineSQLite
+
 	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "ccnet.db"))
 	if err != nil {
 		t.Fatalf("failed to open test database: %v", err)
@@ -274,6 +279,7 @@ func authTestDB(t *testing.T) {
 
 	t.Cleanup(func() {
 		readDB, writeDB = origRead, origWrite
+		dbutil.DBEngine = origEngine
 		option.DBOpTimeout = origTimeout
 		_ = pair.Close()
 	})
@@ -421,4 +427,139 @@ func sha256SaltedSum(s string) []byte {
 	h.Write([]byte(s))
 	h.Write(legacySalt)
 	return h.Sum(nil)
+}
+
+// A fresh server with nothing in the environment has to end up with an
+// account somebody can actually log in to, and the password it hands back has
+// to be that account's password — not merely a random string.
+func TestBootstrapAdminGeneratesUsableCredentials(t *testing.T) {
+	authTestDB(t)
+
+	password, err := BootstrapAdmin("", "")
+	if err != nil {
+		t.Fatalf("BootstrapAdmin returned %v", err)
+	}
+	if password == "" {
+		t.Fatal("no password was generated for an empty user table")
+	}
+	if _, err := ValidatePassword(DefaultAdminEmail, password); err != nil {
+		t.Errorf("the generated password does not log in: %v", err)
+	}
+
+	var isStaff int
+	if err := readDB.QueryRow("SELECT is_staff FROM EmailUser WHERE email = ?",
+		DefaultAdminEmail).Scan(&isStaff); err != nil {
+		t.Fatalf("failed to read the created user: %v", err)
+	}
+	if isStaff != 1 {
+		t.Error("the bootstrap account was not created as staff")
+	}
+}
+
+// SILO_ADMIN_EMAIL on its own is enough to say who the account belongs to.
+func TestBootstrapAdminHonoursSuppliedEmail(t *testing.T) {
+	authTestDB(t)
+
+	password, err := BootstrapAdmin("someone@example.com", "")
+	if err != nil {
+		t.Fatalf("BootstrapAdmin returned %v", err)
+	}
+	if password == "" {
+		t.Fatal("no password was generated for an empty user table")
+	}
+	if _, err := ValidatePassword("someone@example.com", password); err != nil {
+		t.Errorf("the generated password does not log in: %v", err)
+	}
+}
+
+// A supplied password is the old behaviour exactly: the account is created and
+// nothing is printed, because the operator already knows the password.
+func TestBootstrapAdminWithSuppliedPasswordGeneratesNothing(t *testing.T) {
+	authTestDB(t)
+
+	password, err := BootstrapAdmin("admin@example.com", "from-the-environment")
+	if err != nil {
+		t.Fatalf("BootstrapAdmin returned %v", err)
+	}
+	if password != "" {
+		t.Errorf("a password was generated even though one was supplied: %q", password)
+	}
+	if _, err := ValidatePassword("admin@example.com", "from-the-environment"); err != nil {
+		t.Errorf("the supplied password does not log in: %v", err)
+	}
+}
+
+// This is a bootstrap, not a reset: a server that already has users must not
+// acquire another account on every restart.
+func TestBootstrapAdminLeavesAnExistingUserTableAlone(t *testing.T) {
+	authTestDB(t)
+
+	hash, err := hashPassword("their-password")
+	if err != nil {
+		t.Fatalf("hashPassword returned %v", err)
+	}
+	seedUser(t, "existing@example.com", hash)
+
+	password, err := BootstrapAdmin("", "")
+	if err != nil {
+		t.Fatalf("BootstrapAdmin returned %v", err)
+	}
+	if password != "" {
+		t.Errorf("a password was generated despite an existing user: %q", password)
+	}
+
+	var users int
+	if err := readDB.QueryRow("SELECT COUNT(*) FROM EmailUser").Scan(&users); err != nil {
+		t.Fatalf("failed to count users: %v", err)
+	}
+	if users != 1 {
+		t.Errorf("user count is %d, want 1", users)
+	}
+}
+
+// A second boot must not print a password that was never stored: the account
+// already exists, so the credential the operator saved on the first boot is
+// still the one that works.
+func TestBootstrapAdminIsIdempotent(t *testing.T) {
+	authTestDB(t)
+
+	first, err := BootstrapAdmin("", "")
+	if err != nil {
+		t.Fatalf("BootstrapAdmin returned %v", err)
+	}
+	second, err := BootstrapAdmin("", "")
+	if err != nil {
+		t.Fatalf("second BootstrapAdmin returned %v", err)
+	}
+	if second != "" {
+		t.Errorf("the second boot generated another password: %q", second)
+	}
+	if _, err := ValidatePassword(DefaultAdminEmail, first); err != nil {
+		t.Errorf("the first boot's password stopped working: %v", err)
+	}
+}
+
+func TestGeneratePassword(t *testing.T) {
+	seen := make(map[string]bool, 100)
+	for i := 0; i < 100; i++ {
+		password, err := generatePassword()
+		if err != nil {
+			t.Fatalf("generatePassword returned %v", err)
+		}
+		if len(password) != generatedPasswordLen {
+			t.Fatalf("password length is %d, want %d", len(password), generatedPasswordLen)
+		}
+		if strings.ContainsAny(password, "0O1lI") {
+			t.Errorf("password contains an ambiguous character: %q", password)
+		}
+		for _, c := range password {
+			if !strings.ContainsRune(passwordAlphabet, c) {
+				t.Fatalf("password contains %q, which is outside the alphabet: %q", c, password)
+			}
+		}
+		if seen[password] {
+			t.Fatalf("generatePassword repeated itself: %q", password)
+		}
+		seen[password] = true
+	}
 }
