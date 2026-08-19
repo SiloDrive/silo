@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -303,6 +304,23 @@ func (c *APIClient) MoveFile(repoID, src, dst string) error {
 		map[string]string{"op": "move", "to": dst}, nil)
 }
 
+// CopyFile copies a file or a whole directory server-side. The destination
+// dirent points at the object the source already names, so this transfers no
+// content whatever the size — which is the difference between calling it and
+// emulating it with a download followed by an upload.
+func (c *APIClient) CopyFile(repoID, src, dst string) error {
+	return c.doRequest("POST", entriesURL(repoID, src),
+		map[string]string{"op": "copy", "to": dst}, nil)
+}
+
+// RenameRepo renames a library. PATCH, not PUT: the body names what changes and
+// leaves the rest alone, so this keeps meaning the same thing when the server
+// grows a second mutable field.
+func (c *APIClient) RenameRepo(repoID, name string) error {
+	return c.doRequest("PATCH", "/api/silo/v1/repos/"+repoID,
+		map[string]string{"name": name}, nil)
+}
+
 func (c *APIClient) DeleteFile(repoID, path string) error {
 	return c.doRequest("DELETE", entriesURL(repoID, path), nil, nil)
 }
@@ -409,7 +427,17 @@ func (c *APIClient) UploadFile(repoID, parentDir, localPath string) error {
 
 // ServerInfo holds the response from /api/silo/v1/server-info.
 type ServerInfo struct {
-	Version string `json:"version"`
+	Version  string   `json:"version"`
+	Features []string `json:"features"`
+}
+
+// Has reports whether the server advertises a capability. Prefer it to
+// comparing Version: the version says which build answered, the feature list
+// says what that build will accept, and only the second question is the one a
+// caller actually has. An older server simply returns no list, so an unknown
+// name is absent rather than an error.
+func (s ServerInfo) Has(feature string) bool {
+	return slices.Contains(s.Features, feature)
 }
 
 // GetServerInfo fetches version information from the server.

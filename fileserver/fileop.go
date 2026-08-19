@@ -1872,23 +1872,32 @@ var (
 // opposite — nothing was applied, and the identical request will usually
 // succeed a moment later.
 //
-// 503 rather than the 409 the GC-conflict case uses, because 409 is no longer
-// free: docs/bugs/fixed/move-onto-directory-destroys-it.md gave it to destination
-// collisions, and Porter maps that to NSFileProviderError.filenameCollision —
-// "return the existing item so the system renames". Answering a contended
-// write with 409 would tell a File Provider client to rename the user's file.
-// 503 says transient, and Retry-After says when.
+// 503 rather than 409, because 409 is not free: docs/bugs/fixed/
+// move-onto-directory-destroys-it.md gave it to destination collisions, and
+// Porter maps that to NSFileProviderError.filenameCollision — "return the
+// existing item so the system renames". Answering a contended write with 409
+// would tell a File Provider client to rename the user's file. 503 says
+// transient, and Retry-After says when.
+//
+// A GC conflict is the same instruction wearing a different number. The commit
+// lost a race with the garbage collector, nothing was applied, and the fix is
+// to send the identical request again — which is what 503 already means here,
+// so it goes there too rather than keeping 409 overloaded between "retry" and
+// "rename". The Seafile lane still answers 409 on its own upload paths; that
+// number is upstream's contract and is not ours to change.
 func writeCommitErr(w http.ResponseWriter, r *http.Request, err error, what string) {
 	switch {
-	case errors.Is(err, ErrGCConflict):
-		http.Error(w, "GC conflict; retry", http.StatusConflict)
-	case errors.Is(err, ErrRetriesExhausted), errors.Is(err, ErrConflict):
+	case errors.Is(err, ErrGCConflict), errors.Is(err, ErrRetriesExhausted), errors.Is(err, ErrConflict):
 		// Logged below error level on purpose: contention is an expected
 		// outcome of concurrent writers, and errors go to Sentry. The 3000-file
 		// seeding run in docs/bugs/fixed/write-contention-returns-500.md would have
 		// filed 74 reports of the server working as designed.
 		log.WithContext(r.Context()).WithError(err).Infof("%s lost the race for the branch head", what)
 		w.Header().Set("Retry-After", "1")
+		if errors.Is(err, ErrGCConflict) {
+			http.Error(w, "GC conflict; retry", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "write contention; retry", http.StatusServiceUnavailable)
 	default:
 		log.WithContext(r.Context()).WithError(err).Errorf("%s failed", what)

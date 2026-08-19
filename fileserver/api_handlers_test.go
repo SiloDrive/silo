@@ -294,3 +294,110 @@ func TestMoveOntoDirectoryWouldDestroyIt(t *testing.T) {
 		t.Error("destructiveCollision permitted the move that destroys /Precious/keep.txt")
 	}
 }
+
+// TestCopyLeavesTheSourceInPlace pins the one thing that separates copy from
+// move: phase 1 runs, phase 2 does not, and both paths end up naming the same
+// object. If a refactor ever lets the delete run for a copy, this fails.
+func TestCopyLeavesTheSourceInPlace(t *testing.T) {
+	confPath := t.TempDir()
+	fsmgr.Init(confPath, filepath.Join(confPath, "seafile-data"), option.FsCacheLimit)
+
+	const storeID = "1d0f5c92-77b4-4a1e-9c33-5b8e6a2f41d7"
+	repo := &repomgr.Repo{ID: storeID, StoreID: storeID, Version: 1}
+	modeFile := uint32(syscall.S_IFREG | 0644)
+
+	junk, err := fsmgr.NewSeafile(1, 5, []string{"da39a3ee5e6b4b0d3255bfef95601890afd80709"})
+	if err != nil {
+		t.Fatalf("failed to create junk.txt: %v", err)
+	}
+	if err := fsmgr.SaveSeafile(storeID, junk); err != nil {
+		t.Fatalf("failed to save junk.txt: %v", err)
+	}
+	root, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
+		fsmgr.NewDirent(junk.FileID, "junk.txt", modeFile, 0, "", 5),
+	})
+	if err != nil {
+		t.Fatalf("failed to create root: %v", err)
+	}
+	if err := fsmgr.SaveSeafdir(storeID, root); err != nil {
+		t.Fatalf("failed to save root: %v", err)
+	}
+
+	// cp /junk.txt -> /copy.txt, exactly as copyHandler would run it: the new
+	// dirent carries the source's object id, so no bytes move.
+	newDent := fsmgr.NewDirent(junk.FileID, "copy.txt", modeFile, 0, "", 5)
+	var names []string
+	newRoot, err := DoPostMultiFiles(repo, root.DirID, "/", []*fsmgr.SeafDirent{newDent}, "user@example.com", true, &names)
+	if err != nil {
+		t.Fatalf("copy failed: %v", err)
+	}
+
+	src, err := fsmgr.GetDirentByPath(storeID, newRoot, "/junk.txt")
+	if err != nil || src == nil {
+		t.Fatalf("the source was removed by a copy: %v", err)
+	}
+	dst, err := fsmgr.GetDirentByPath(storeID, newRoot, "/copy.txt")
+	if err != nil || dst == nil {
+		t.Fatalf("the copy is missing: %v", err)
+	}
+	if src.ID != dst.ID {
+		t.Errorf("copy stored new content: src id %s, dst id %s — a copy shares the source's id", src.ID, dst.ID)
+	}
+}
+
+// TestCopyIntoOwnSubtreeTerminates is the evidence for the exemption in
+// moveOrCopy: a move into its own subtree destroys the thing it moved, but a
+// copy names the subtree as it stands at this commit, so the result is a finite
+// snapshot and both the original and the copy are readable afterwards.
+func TestCopyIntoOwnSubtreeTerminates(t *testing.T) {
+	confPath := t.TempDir()
+	fsmgr.Init(confPath, filepath.Join(confPath, "seafile-data"), option.FsCacheLimit)
+
+	const storeID = "4b7a1e60-2c9d-48f3-a015-7e3d6c8b9042"
+	repo := &repomgr.Repo{ID: storeID, StoreID: storeID, Version: 1}
+	modeDir := uint32(syscall.S_IFDIR | 0644)
+	modeFile := uint32(syscall.S_IFREG | 0644)
+
+	keep, err := fsmgr.NewSeafile(1, 4, []string{"4f616f98d6a264f75abffe1bc150019c880be239"})
+	if err != nil {
+		t.Fatalf("failed to create keep.txt: %v", err)
+	}
+	if err := fsmgr.SaveSeafile(storeID, keep); err != nil {
+		t.Fatalf("failed to save keep.txt: %v", err)
+	}
+	precious, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
+		fsmgr.NewDirent(keep.FileID, "keep.txt", modeFile, 0, "", 4),
+	})
+	if err != nil {
+		t.Fatalf("failed to create /Precious: %v", err)
+	}
+	if err := fsmgr.SaveSeafdir(storeID, precious); err != nil {
+		t.Fatalf("failed to save /Precious: %v", err)
+	}
+	root, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
+		fsmgr.NewDirent(precious.DirID, "Precious", modeDir, 0, "", 0),
+	})
+	if err != nil {
+		t.Fatalf("failed to create root: %v", err)
+	}
+	if err := fsmgr.SaveSeafdir(storeID, root); err != nil {
+		t.Fatalf("failed to save root: %v", err)
+	}
+
+	// cp /Precious -> /Precious/Precious
+	newDent := fsmgr.NewDirent(precious.DirID, "Precious", modeDir, 0, "", 0)
+	var names []string
+	newRoot, err := DoPostMultiFiles(repo, root.DirID, "/Precious", []*fsmgr.SeafDirent{newDent}, "user@example.com", true, &names)
+	if err != nil {
+		t.Fatalf("copy failed: %v", err)
+	}
+
+	for _, path := range []string{"/Precious/keep.txt", "/Precious/Precious/keep.txt"} {
+		if _, err := fsmgr.GetDirentByPath(storeID, newRoot, path); err != nil {
+			t.Errorf("%s is unreadable after copying a directory into itself: %v", path, err)
+		}
+	}
+	if _, err := fsmgr.GetDirentByPath(storeID, newRoot, "/Precious/Precious/Precious"); err == nil {
+		t.Error("the copy recursed: the snapshot should be one level deep, not infinite")
+	}
+}

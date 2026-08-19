@@ -31,7 +31,7 @@ import (
 //	HEAD   /api/silo/v1/repos/{repo}/entries/{path}   headers only
 //	PUT    /api/silo/v1/repos/{repo}/entries/{path}   body -> file, or ?type=dir
 //	DELETE /api/silo/v1/repos/{repo}/entries/{path}
-//	POST   /api/silo/v1/repos/{repo}/entries/{path}   {"op":"move","to":"/x/y"}
+//	POST   /api/silo/v1/repos/{repo}/entries/{path}   {"op":"move"|"copy","to":"/x/y"}
 //
 // It exists beside the older dir/download/file/mkdir/rename/move endpoints
 // rather than replacing them: those have in-tree callers, and keeping both
@@ -210,8 +210,17 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 // lane and is untouched there.
 func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID, fileName, user string) {
 	// Advertised even when this request has no Range, so a client learns it can
-	// seek without having to try one and see.
-	w.Header().Set("Accept-Ranges", "bytes")
+	// seek without having to try one and see — and *denied* on an encrypted
+	// library, where the whole-file path below ignores Range and answers 200
+	// with everything. Ignoring a Range is allowed; advertising support for one
+	// and then ignoring it is not, and a client that trusts the header has no
+	// way to tell the difference between the file it asked for and the file it
+	// got. See docs/responses.md.
+	if repo.IsEncrypted {
+		w.Header().Set("Accept-Ranges", "none")
+	} else {
+		w.Header().Set("Accept-Ranges", "bytes")
+	}
 
 	var cryptKey *seafileCrypt
 	if repo.IsEncrypted {
@@ -512,8 +521,8 @@ func deleteEntry(w http.ResponseWriter, r *http.Request) {
 	deleteFileHandler(w, r)
 }
 
-// postEntry performs an operation on an existing entry. Only "move" so far,
-// which covers renaming.
+// postEntry performs an operation on an existing entry: "move", which covers
+// renaming, and "copy".
 func postEntry(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	path := entryPath(vars["path"])
@@ -529,8 +538,8 @@ func postEntry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, appErr.Message, appErr.Code)
 		return
 	}
-	if body.Op != "move" {
-		http.Error(w, `Unsupported op; the only operation is {"op":"move","to":"/new/path"}`, http.StatusBadRequest)
+	if body.Op != "move" && body.Op != "copy" {
+		http.Error(w, `Unsupported op; the operations are {"op":"move","to":"/new/path"} and {"op":"copy","to":"/new/path"}`, http.StatusBadRequest)
 		return
 	}
 	to := entryPath(strings.TrimPrefix(body.To, "/"))
@@ -539,17 +548,22 @@ func postEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if path == "/" {
-		http.Error(w, "The library root cannot be moved", http.StatusBadRequest)
+		http.Error(w, "The library root cannot be the source of a "+body.Op, http.StatusBadRequest)
 		return
 	}
 
-	// The precondition is about the source — what is being moved — because that
-	// is the thing the caller looked at before deciding to move it.
+	// The precondition is about the source — what is being moved or copied —
+	// because that is the thing the caller looked at before deciding to act on
+	// it. On a copy it means "copy this version, not whatever it became".
 	if !checkPreconditions(w, r, vars["repoid"], middleware.GetUserEmail(r), path) {
 		return
 	}
 
 	setQuery(r, url.Values{"src": {path}, "dst": {to}})
+	if body.Op == "copy" {
+		copyHandler(w, r)
+		return
+	}
 	moveHandler(w, r)
 }
 

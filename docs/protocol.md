@@ -7,11 +7,31 @@ left unimplemented.
 
 It says which endpoints exist. For what the *status codes* mean — and which are
 already spoken for — see [`responses.md`](responses.md), which is the file to
-check before a new handler picks one.
+check before a new handler picks one. For what a client would want that is *not*
+here, and why, see [`protocol-gaps.md`](protocol-gaps.md).
 
 Treat this as the source of truth when a new client release starts hitting
 an endpoint we don't support — find it in the "not implemented" list and
 decide whether to shim it.
+
+## Who reads what
+
+| if you are | read |
+|---|---|
+| writing a new client | the Silo lane below, then [`porter-brief.md`](porter-brief.md) for the wire contract with captured responses |
+| choosing a status code for a new handler | [`responses.md`](responses.md). Always, and before you write the handler |
+| debugging SeaDrive or Seafile Desktop | the `/api2/` and `/repo/` sections below — every Seafile-family client speaks both |
+| wondering why something is missing | [`protocol-gaps.md`](protocol-gaps.md) |
+
+The organising axis here is the **lane**, not the client, because clients do not
+partition. SeaDrive speaks `/api2/` for its session and `/repo/` for every byte
+it transfers; so does the desktop client; so would any other Seafile-family
+client. Splitting these documents per client would copy the sync lane into each
+one and leave the next protocol change needing three identical edits.
+
+Audience-shaped documents are the *briefs* — `porter-brief.md` is one, written
+for someone building a File Provider extension. A brief names a subset and the
+traps in it, and links here rather than restating.
 
 ## Tested clients
 
@@ -48,12 +68,13 @@ credential: one to learn what it is talking to, one to get a token.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.4"}` — semver, no leading `v` |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.4","features":[…]}` — semver with no leading `v`, plus the capability list a client should branch on instead of the version |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
 | POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
 | GET | `/api/silo/v1/repos` | List repos owned by authenticated user |
 | POST | `/api/silo/v1/repos` | Create a new repo |
 | DELETE | `/api/silo/v1/repos/{repoid}` | Delete a repo |
+| PATCH | `/api/silo/v1/repos/{repoid}` | `{"name":"New name"}` — rename a library. `PATCH` because the body names only what changes |
 | POST | `/api/silo/v1/repos/{repoid}/sync-token` | Generate a repo sync token (for subsequent sync-protocol calls) |
 | POST | `/api/silo/v1/repos/{repoid}/notify-token` | Mint a notification JWT for `WS /notification` (72h; `404` if notifications are disabled) |
 
@@ -67,15 +88,23 @@ in [`responses.md`](responses.md).
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/silo/v1/repos/{repoid}/entries/{path}` | Read a file's bytes, or list a directory. Ranged; `ETag`/`304` |
+| HEAD | `/api/silo/v1/repos/{repoid}/entries/{path}` | The same headers as `GET`, no body. On a directory `Content-Length` is the size of the listing, not of its contents |
 | PUT | `/api/silo/v1/repos/{repoid}/entries/{path}` | Store a file — body is the content |
 | PUT | `/api/silo/v1/repos/{repoid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter) |
 | POST | `/api/silo/v1/repos/{repoid}/entries/{path}` | `{"op":"move","to":"/dst"}` — moving covers renaming |
+| POST | `/api/silo/v1/repos/{repoid}/entries/{path}` | `{"op":"copy","to":"/dst"}` — server-side copy; `201` and the source's `ETag`, no content transferred |
 | DELETE | `/api/silo/v1/repos/{repoid}/entries/{path}` | Delete a file or directory |
 | GET | `/api/silo/v1/repos/{repoid}/changes?since=` | Changes since an anchor (`410` when the anchor is too old) |
 
 `{path}` is relative to the library root and never repeats the library name;
 `entries/` with nothing after it is the root. Every mutating method honours
-`If-Match` and `If-None-Match`.
+`If-Match` and `If-None-Match`; on a `move` or a `copy` the precondition is
+about the *source*, which is the thing the caller looked at before deciding.
+
+Copy is cheap in a way worth stating plainly: the destination dirent points at
+the object the source already names, so a copy costs one dirent and one commit
+whether it is an empty file or a hundred-gigabyte subtree, and reads no content
+at all. A client emulating it with `GET` then `PUT` pays for the content twice.
 
 Directory creation is `PUT …?type=dir` rather than a `MKCOL`-style verb or an
 RPC: `PUT` already means "make the resource at this URI have this state", and

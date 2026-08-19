@@ -9,9 +9,11 @@ independently and in order. Nothing here is committed.
 
 ## What the CLI does today, and why it is not sync
 
-`silo put` maps to `client.UploadFile` (`client/client.go:284`): mint an
-upload access token, then POST the whole file as one multipart body.
-`cmdPut` (`internal/cli/cli.go:146`) takes exactly one local path and passes it
+`silo put` maps to `client.UploadFile` (`client/client.go:401`): one
+`PUT repos/{id}/entries/{path}` with the whole file as the request body. (It
+used to mint an upload access token and POST a multipart body; that was the
+pre-0.4.0 shape and this document described it for longer than it was true.)
+`cmdPut` (`internal/cli/cli.go:148`) takes exactly one local path and passes it
 straight through, so a directory argument fails at `os.Open` with
 `read <dir>: is a directory`. There is no walk, no resume, and no way to ask
 the server what it already has.
@@ -30,7 +32,7 @@ The difference that matters is `check-blocks`. A sync client asks before it
 sends; the management API has no way to ask, so it always sends everything.
 
 Note this is a *network* distinction, not a storage one. The server chunks
-uploads through `writeChunk` (`fileop.go:2713`) and `blockmgr.WriteBytes`
+uploads through `writeChunk` (`fileop.go:2722`) and `blockmgr.WriteBytes`
 (`blockmgr/blockmgr.go:66`) skips any block already present, so uploading the
 same album twice costs disk once either way. It costs bandwidth twice.
 
@@ -54,10 +56,10 @@ The interesting tier, and cheaper than it sounds, because of one fact:
 
 **Silo chunks at fixed offsets, not content-defined boundaries.**
 
-`chunkFile` (`fileop.go:2666`) seeks to an offset and reads exactly
+`chunkFile` (`fileop.go:2675`) seeks to an offset and reads exactly
 `FixedBlockSize` bytes; the caller steps offsets by the same amount
-(`fileop.go:2536-2542`). The default is `1 << 23`, 8 MiB
-(`option/option.go:220`). So a block id is:
+(`fileop.go:2545-2551`). The default is `1 << 23`, 8 MiB
+(`option/option.go:221`). So a block id is:
 
     blockID = sha1(file[offset : offset+8MiB])
 
@@ -82,11 +84,13 @@ whole protocol. A re-run over a mostly-unchanged tree sends almost nothing.
   a list of block ids, so any chunking produces a valid file. Matching the
   server's `FixedBlockSize` only maximises how much existing server data
   dedups. A mismatch degrades to "upload everything", not to corruption.
-  `FixedBlockSize` is configurable (`option/option.go:448`) and nothing
-  currently exposes it — `/api2/server-info/` returns version and features
-  only. If tier 2 is built, add it there.
+  `FixedBlockSize` is configurable (`option/option.go:449`) and nothing
+  currently exposes it. It belongs in the Silo lane's `GET /server-info`, beside
+  the `features` array — that response is already where a client asks what this
+  server will accept, and a block size a client has to guess is the one input
+  that silently degrades tier 2 to "upload everything".
 - **Encrypted repos need the repo key.** `writeChunk` encrypts and then hashes
-  (`fileop.go:2713`), so the block id is the SHA-1 of the ciphertext. Without
+  (`fileop.go:2722`), so the block id is the SHA-1 of the ciphertext. Without
   the key a client cannot compute matching ids. Moot in practice: Silo cannot
   create encrypted repos and will not support Seafile's format — see
   `docs/encryption.md`. Worth noting that hashing *after* encrypting is the
@@ -96,7 +100,9 @@ whole protocol. A re-run over a mostly-unchanged tree sends almost nothing.
   wins on unchanged and append-only files, loses on edits in the middle. This
   is inherited from Seafile; content-defined chunking would fix it and would
   also change every block id in existence, so it is not a change to make
-  casually.
+  casually. The cheaper answer is a delta on the wire rather than new
+  boundaries in the store — see the rsync note in
+  [`protocol-gaps.md`](protocol-gaps.md).
 
 ## Tier 3 — a headless sync agent
 
@@ -113,7 +119,7 @@ no virtual filesystem, which neither SeaDrive nor Seafile Desktop offers.
 The hard parts are the ones every sync client has: tree diffing against the
 last known commit, deletion and rename detection, conflict resolution when the
 remote head has moved, and deciding what to do about files that change while
-being read. `fastForwardOrMerge` (`fileop.go:1973`) already implements the
+being read. `fastForwardOrMerge` (`fileop.go:1982`) already implements the
 server half of the merge story.
 
 ## Recommendation

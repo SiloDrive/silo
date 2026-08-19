@@ -45,8 +45,8 @@ variable.
 | code | means | notes |
 |---|---|---|
 | `200 OK` | done | |
-| `201 Created` | the entry or library now exists | `PUT repos/{repoid}/entries/{path}`, `POST /repos`. Carries the new `ETag` on a write, so a client can record the version without a follow-up `GET` |
-| `206 Partial Content` | range request satisfied | `GET repos/{repoid}/entries/{path}` advertises `Accept-Ranges: bytes` and honours `Range` — **except on an encrypted library**, where it silently streams the whole file with `200`. See the note below |
+| `201 Created` | the entry or library now exists | `PUT repos/{repoid}/entries/{path}`, `POST /repos`, and `POST entries/{path}` with `{"op":"copy"}`. Carries the new `ETag` on a write, so a client can record the version without a follow-up `GET`. A copy carries the *source's* `ETag`, because a copy shares its id — so a client that already holds the content knows it does |
+| `206 Partial Content` | range request satisfied | `GET repos/{repoid}/entries/{path}` advertises `Accept-Ranges: bytes` and honours `Range`. An encrypted library cannot be ranged and says so up front with `Accept-Ranges: none` — see the note below |
 | `302 Found` | **not emitted on this lane.** `GET repos/{repoid}/entries/{path}` streams on the same response — one request, no redirect. The `/files/{token}/…` capability URL still exists; mint its token with `POST /access-tokens` and build the URL yourself |
 | `304 Not Modified` | your `If-None-Match` matched | the entry is unchanged; use your copy |
 
@@ -59,7 +59,7 @@ variable.
 | `403 Forbidden` | authenticated, but not permitted — including libraries you cannot see | surface it; do not retry. A library you cannot see and a library that does not exist both answer `403` from the token endpoints on purpose, so they cannot be used to probe for valid ids |
 | `404 Not Found` | the named thing does not exist — see the overload note below | depends on *what* was not found |
 | `405 Method Not Allowed` | wrong verb on a real path; carries `Allow` | the path was fine, the verb was not |
-| `409 Conflict` | a collision — see the overload note below | depends which collision |
+| `409 Conflict` | a destination collision, or an attempt to create `/` — see the overload note below | rename and retry, or fix the client |
 | `410 Gone` | your `since` anchor is too old to diff from | stop incremental sync and enumerate from scratch. `GET repos/{repoid}/changes` only |
 | `412 Precondition Failed` | your `If-Match` did not match; someone else wrote first | re-read, reapply your change, write again. Not an error — it is the mechanism working |
 | `413 Payload Too Large` | body over the limit | do not retry |
@@ -71,42 +71,50 @@ variable.
 | code | means | what a client should do |
 |---|---|---|
 | `500 Internal Server Error` | an unexpected condition, and the request **may have been partly applied** | stop and surface it. This is the one class you must not retry blind. It also covers a library whose storage is damaged — see the overload note |
-| `503 Service Unavailable` | transient, nothing was applied; carries `Retry-After` | retry the identical request. Two sources: write contention (`write contention; retry`) and an unreachable database (`Library metadata is temporarily unavailable; retry`) |
+| `503 Service Unavailable` | transient, nothing was applied; carries `Retry-After` | retry the identical request. Three sources: write contention (`write contention; retry`), a write that raced the garbage collector (`GC conflict; retry`), and an unreachable database (`Library metadata is temporarily unavailable; retry`). The bodies differ so the logs can tell them apart; the handling does not |
 
 `Retry-After` is the tell. A response carrying it is one the server expects to
 succeed later; `429` and `503` are the only two that do.
 
 ### Ranged reads on an encrypted library
 
-`serveFile` sets `Accept-Ranges: bytes` unconditionally, but refuses to range
-an encrypted repo — correctly, since the stored blocks are ciphertext and a
-byte range of the plaintext is not a byte range of what is stored. It then
-falls through to the whole-file path, so a client that sends `Range` against an
-encrypted library gets **`200` and the entire file**, not `206` and not `416`.
+An encrypted library cannot be ranged — the stored blocks are ciphertext, so a
+byte range of the plaintext is not a byte range of what is stored — and `Range`
+against one is ignored: the whole file arrives with `200`.
 
-A client that assumes its `Range` was honoured will write the whole file at the
-requested offset. Check for `206` before trusting the offset, rather than
-assuming the request implies the response.
+Ignoring a `Range` is allowed. Advertising support for one and then ignoring it
+is not, and `serveFile` used to set `Accept-Ranges: bytes` unconditionally — so
+a client that trusted the header wrote the whole file at the requested offset.
+From 0.4.4 an encrypted library answers `Accept-Ranges: none`.
+
+The general rule still holds and is cheaper than any header: check for `206`
+before trusting the offset, rather than assuming the request implies the
+response.
 
 ## The overloads, and how to tell them apart
 
 These are the places where one code carries two meanings. Each is a hazard for
 a client written from the code alone.
 
-### `409` — collision, or contention
+### `409` — one meaning again
 
 | body | means | correct handling |
 |---|---|---|
-| `Destination exists and is a directory` / `…and is a file` | a move would destroy the destination | rename and retry (`NSFileProviderError.filenameCollision`) |
+| `Destination exists and is a directory` / `…and is a file` | a move or copy would destroy the destination | rename and retry (`NSFileProviderError.filenameCollision`) |
 | `The library root already exists` | you tried to create `/` | a bug in the client; do not retry |
-| `GC conflict; retry` | your write raced a garbage collection | **retry the identical request** — the same handling as `503` |
 
-The third one is the wart. It predates the other two, and a client that reads
-`409` as "collision" will rename a file in response to a GC conflict. Prefer
-retrying a `409` whose body ends in `retry`, and renaming only on
-`Destination exists`. Moving GC conflict to `503` would resolve it and is a
-one-line change; it has not been made because it is a shipped code a client may
-key on. See `docs/bugs/fixed/write-contention-returns-500.md`.
+Both are collisions, and both want the same shape of response, so `409` is no
+longer overloaded on this lane.
+
+It used to be. `GC conflict; retry` — a write that raced the garbage collector —
+also answered `409`, which meant a client reading `409` as "collision" would
+rename a file in response to something whose only correct handling is to send
+the identical request again. From 0.4.4 it answers `503` with `Retry-After`,
+alongside write contention, which is what it always meant.
+
+The Seafile lane still answers `409` on its own upload paths. That number is
+upstream's contract, not ours, and is not to be changed. See
+`docs/bugs/fixed/write-contention-returns-500.md`.
 
 ### `404` — three different subjects
 

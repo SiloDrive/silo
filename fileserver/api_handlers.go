@@ -113,16 +113,69 @@ func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-
-	repo.Name = newName
-	desc := fmt.Sprintf("Renamed library to \"%s\"", newName)
-	_, err := GenNewCommit(repo, head, head.RootID, user, desc, false, "", false)
-	if err != nil {
-		writeCommitErr(w, r, err, "library rename")
+	if !renameRepo(w, r, repo, head, user, newName) {
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// patchRepoHandler handles PATCH /api/silo/v1/repos/{repoid}. Renaming is the
+// only field so far, which is why this is a PATCH and not a PUT: the body names
+// what changes, and everything unmentioned is left alone, so adding a second
+// mutable field later does not change what an existing client's request means.
+//
+// The operation itself already existed, form-encoded, on /api2/ — but reaching
+// it meant a Silo-lane client holding a second credential on a frozen lane to
+// rename a library it can already create and delete. That is the crossing this
+// lane exists to remove.
+func patchRepoHandler(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserEmail(r)
+	repoID := mux.Vars(r)["repoid"]
+
+	var body struct {
+		Name string `json:"name"`
+	}
+	if appErr := decodeLimitedJSON(w, r, 64<<10, &body); appErr != nil {
+		if appErr.Code == http.StatusBadRequest {
+			appErr.Message = `Expected a JSON body such as {"name":"New name"}`
+		}
+		http.Error(w, appErr.Message, appErr.Code)
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		http.Error(w, `name is required, as {"name":"New name"}`, http.StatusBadRequest)
+		return
+	}
+	// A library name is not a dirent, but it reaches the same places: clients
+	// create a directory named after it. The guard the tree uses is the guard
+	// it needs.
+	if !checkEntryName(w, name) {
+		return
+	}
+
+	repo, head, ok := loadRepoAndCommit(w, repoID, user)
+	if !ok {
+		return
+	}
+	if !renameRepo(w, r, repo, head, user, name) {
+		return
+	}
+
+	writeEntryJSON(w, http.StatusOK, map[string]any{"id": repo.ID, "name": name})
+}
+
+// renameRepo gives a library a new name and commits it, answering the request
+// itself on failure. It reports whether the caller should carry on.
+func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, head *commitmgr.Commit, user, newName string) bool {
+	repo.Name = newName
+	desc := fmt.Sprintf("Renamed library to \"%s\"", newName)
+	if _, err := GenNewCommit(repo, head, head.RootID, user, desc, false, "", false); err != nil {
+		writeCommitErr(w, r, err, "library rename")
+		return false
+	}
+	return true
 }
 
 func mkdirHandler(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +257,18 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func moveHandler(w http.ResponseWriter, r *http.Request) {
+func moveHandler(w http.ResponseWriter, r *http.Request) { moveOrCopy(w, r, false) }
+
+// copyHandler serves {"op":"copy"}. Copying is the same tree edit as moving
+// with the delete left off: the new dirent points at the object the source
+// already names, so no bytes are read, nothing new reaches the block store, and
+// a copy costs one dirent and one commit whether it is an empty file or a
+// hundred-gigabyte subtree. A client emulating it with a download followed by an
+// upload pays the entire content twice for the one operation the store gives
+// away.
+func copyHandler(w http.ResponseWriter, r *http.Request) { moveOrCopy(w, r, true) }
+
+func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 	user := middleware.GetUserEmail(r)
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
@@ -220,6 +284,10 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 	if srcPath == dstPath {
 		http.Error(w, "src and dst are the same", http.StatusBadRequest)
 		return
+	}
+	verb := "move"
+	if isCopy {
+		verb = "copy"
 	}
 	if !checkEntryName(w, upath.Base(dstPath)) {
 		return
@@ -242,9 +310,26 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 	dstDir := upath.Dir(dstPath)
 	dstName := upath.Base(dstPath)
 
-	if fsmgr.IsDir(srcEntry.Mode) && movesIntoOwnSubtree(srcPath, dstDir) {
+	// Copying is exempt: the destination dirent holds the source's id, which
+	// names the subtree as it stands at this commit, so a copy into its own
+	// subtree is a snapshot of a finite thing and terminates. A move cannot be,
+	// because its delete would take the copy with it.
+	if !isCopy && fsmgr.IsDir(srcEntry.Mode) && movesIntoOwnSubtree(srcPath, dstDir) {
 		http.Error(w, "Cannot move a directory into itself", http.StatusBadRequest)
 		return
+	}
+
+	// Without this, a destination whose parent is missing reaches phase 1 and
+	// fails there, and the caller is told the server broke when in fact it named
+	// a directory that does not exist. Same answer, same words, as PUT
+	// entries/{path} into a missing parent — parents are never created
+	// implicitly on this lane.
+	if dstDir != "/" {
+		parent, err := fsmgr.GetDirentByPath(repo.StoreID, head.RootID, dstDir)
+		if err != nil || parent == nil || !fsmgr.IsDir(parent.Mode) {
+			http.Error(w, "Parent directory does not exist", http.StatusNotFound)
+			return
+		}
 	}
 
 	// Phase 1 replaces whatever already sits at the destination, and until this
@@ -268,27 +353,49 @@ func moveHandler(w http.ResponseWriter, r *http.Request) {
 	// Phase 1: Add to destination
 	newDent := fsmgr.NewDirent(srcEntry.ID, dstName, srcEntry.Mode, time.Now().Unix(), srcEntry.Modifier, srcEntry.Size)
 	var names []string
-	rootAfterAdd, err := DoPostMultiFiles(repo, head.RootID, dstDir, []*fsmgr.SeafDirent{newDent}, user, true, &names)
+	newRootID, err := DoPostMultiFiles(repo, head.RootID, dstDir, []*fsmgr.SeafDirent{newDent}, user, true, &names)
 	if err != nil {
 		log.Errorf("Failed to add to destination: %v", err)
-		http.Error(w, "Failed to move: destination error", http.StatusInternalServerError)
+		http.Error(w, "Failed to "+verb+": destination error", http.StatusInternalServerError)
 		return
 	}
 
-	// Phase 2: Remove from source
-	newRootID, err := DelFileFromTree(repo.StoreID, rootAfterAdd, srcDir, srcName)
-	if err != nil {
-		log.Errorf("Failed to remove from source: %v", err)
-		http.Error(w, "Failed to move: source error", http.StatusInternalServerError)
-		return
+	// Phase 2: Remove from source. A copy stops at phase 1 — that is the whole
+	// difference between the two operations.
+	if !isCopy {
+		newRootID, err = DelFileFromTree(repo.StoreID, newRootID, srcDir, srcName)
+		if err != nil {
+			log.Errorf("Failed to remove from source: %v", err)
+			http.Error(w, "Failed to move: source error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	desc := fmt.Sprintf("Moved \"%s\"", srcName)
-	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, "", false)
-	if err != nil {
-		writeCommitErr(w, r, err, "move")
+	if isCopy {
+		desc = fmt.Sprintf("Copied \"%s\"", srcName)
+	}
+	if _, err := GenNewCommit(repo, head, newRootID, user, desc, false, "", false); err != nil {
+		writeCommitErr(w, r, err, verb)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	if !isCopy {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// A copy creates a resource where there was none, so it answers 201 and
+	// describes what it made — the same shape PUT entries/{path} returns, and
+	// with the same ETag, because a copy is content-addressed and shares the
+	// source's id. A client can file the destination in its cache without a
+	// follow-up GET, and will find it already has the content.
+	entryType := "file"
+	if fsmgr.IsDir(srcEntry.Mode) {
+		entryType = "dir"
+	}
+	w.Header().Set("ETag", `"`+etagPrefix+srcEntry.ID+`"`)
+	writeEntryJSON(w, http.StatusCreated, map[string]any{
+		"name": dstName, "type": entryType, "id": srcEntry.ID, "size": srcEntry.Size,
+	})
 }

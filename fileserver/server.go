@@ -704,6 +704,7 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/repos", api.ListReposHandler).Methods("GET")
 	apiRouter.HandleFunc("/repos", api.CreateRepoHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}", api.DeleteRepoHandler).Methods("DELETE")
+	apiRouter.HandleFunc("/repos/{repoid}", patchRepoHandler).Methods("PATCH")
 	apiRouter.HandleFunc("/repos/{repoid}/changes", api.ChangesHandler).Methods("GET")
 	// The entries surface. One route, all methods: entriesHandler answers a
 	// bad method with 405 and an Allow header, which mux would otherwise turn

@@ -197,10 +197,11 @@ are read. The `v1-` prefix versions the *representation*: without it, changing
 the listing JSON would leave clients holding cache entries that validate
 against a body shape that no longer exists.
 
-**`PUT` of file content is the one gap.** It returns 501. Uploads index blocks
-straight out of a multipart part (`indexBlocks` takes a `*multipart.FileHeader`),
-so a raw request body needs a reader-shaped variant of that function first.
-Until then, writes use the existing access-token + `/upload-api/{token}` flow.
+**`PUT` of file content landed in 0.4.4.** The body is the content; there is no
+multipart wrapper and no access token to mint first. It costs a spool to
+`httptemp` on the way in, because `chunkFile` needs a seekable source — which is
+also why there is no resumable or streaming upload here yet. See
+[`protocol-gaps.md`](protocol-gaps.md).
 
 **The timing mattered more than the shape.** A version number exists to protect
 consumers you can't upgrade atomically. `/api/silo/v1` had exactly one consumer,

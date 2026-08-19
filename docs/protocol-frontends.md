@@ -11,8 +11,8 @@ architecture, rather than re-argued per protocol.
 
 Silo is a git-shaped store: commits point at `SeafDir` trees, which point at
 `Seafile` objects, which are lists of content-addressed blocks. Every mutation
-goes through `GenNewCommit` (`fileserver/fileop.go:1933`) and `updateBranch`
-(`fileop.go:2086`), with `fastForwardOrMerge` (`fileop.go:1973`) resolving
+goes through `GenNewCommit` (`fileserver/fileop.go:1942`) and `updateBranch`
+(`fileop.go:2095`), with `fastForwardOrMerge` (`fileop.go:1982`) resolving
 contention. There is no partial-file update anywhere in the model: changing one
 byte means re-indexing the whole file into blocks and minting a new commit.
 
@@ -36,7 +36,7 @@ The operations are currently welded to `http.ResponseWriter`. `accessCB`
 (`fileop.go:155`), `doUpload` (`fileop.go:1048`) and `postMultiFiles`
 (`fileop.go:1607`) all take `(rsp, r)` and write status codes inline. The
 reusable layer beneath them — `fsmgr.GetObjIDByPath`, `fsmgr.GetSeafdirByPath`,
-`DoPostMultiFiles` (`fileop.go:2183`), `DelFileFromTree` (`fileop.go:2200`) —
+`DoPostMultiFiles` (`fileop.go:2192`), `DelFileFromTree` (`fileop.go:2209`) —
 sits one level too low to build a protocol on.
 
 Any second frontend means extracting a protocol-neutral core first:
@@ -75,7 +75,7 @@ Gotchas:
 - `LOCK`/`UNLOCK` can start as an in-memory no-op that satisfies clients. It
   becomes real once file locking lands (see `future-features.md`).
 - Finder sprays `._*` and `.DS_Store` at any mount. `shouldIgnoreFile`
-  (`fileop.go:2440`) already exists for exactly this.
+  (`fileop.go:2449`) already exists for exactly this.
 - The Windows client is fussy about Basic auth and `Depth` handling. Budget a
   day for its quirks alone.
 

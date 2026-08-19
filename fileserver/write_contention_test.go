@@ -140,7 +140,10 @@ func TestWriteCommitErr(t *testing.T) {
 			http.StatusServiceUnavailable, true},
 		// The non-replace upload path returns this bare, one level further out.
 		{"conflict", ErrConflict, http.StatusServiceUnavailable, true},
-		{"gc conflict", fmt.Errorf("wrapped: %w", ErrGCConflict), http.StatusConflict, false},
+		// A GC conflict is retried identically, so it is told apart from a lost
+		// branch-head race only in the log — never by the status, which would
+		// have to be 409, which now means "rename and retry".
+		{"gc conflict", fmt.Errorf("wrapped: %w", ErrGCConflict), http.StatusServiceUnavailable, true},
 		// A real failure must still read as one, or the fix has only moved the
 		// lie in the other direction.
 		{"genuine failure", errors.New("disk on fire"), http.StatusInternalServerError, false},

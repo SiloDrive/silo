@@ -23,10 +23,45 @@ func Init(readDB, _ *sql.DB) {
 	seafileDB = readDB
 }
 
+type siloServerInfo struct {
+	Version  string   `json:"version"`
+	Features []string `json:"features"`
+}
+
+// features names the capabilities a client may branch on, so a new client can
+// ask this server what it does instead of comparing version strings against a
+// changelog. Version numbers answer "which build is this"; they answer "can I
+// call this" only for someone holding the release notes, and a client talking
+// to a server it did not ship with is exactly the case that has neither.
+//
+// A name is added in the release its capability ships, and then never removed
+// and never reused. Removing one breaks the clients that checked for it, and
+// reusing one for something else is worse than having no name at all, because
+// the check still passes.
+//
+// Runtime configuration belongs here too, which is why notifications is
+// conditional: a client that sees the name can go straight to notify-token
+// instead of learning from a 404 that this server was built without it.
+func features() []string {
+	f := []string{
+		"entries",            // one addressable noun, HTTP methods as its verbs
+		"entries-copy",       // POST {"op":"copy","to":…}
+		"conditional-writes", // If-Match / If-None-Match on every mutating method
+		"ranged-reads",       // Range on GET entries, unencrypted libraries
+		"changes",            // GET repos/{id}/changes?since=
+		"repo-rename",        // PATCH repos/{id}
+	}
+	if option.EnableNotification {
+		f = append(f, "notifications") // WS /notification, POST repos/{id}/notify-token
+	}
+	return f
+}
+
 // ServerInfoHandler handles GET /api/silo/v1/server-info.
 func ServerInfoHandler(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"version": option.Version,
+	writeJSON(w, http.StatusOK, siloServerInfo{
+		Version:  option.Version,
+		Features: features(),
 	})
 }
 

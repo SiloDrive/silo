@@ -57,7 +57,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.3"}
+{"version":"0.4.4","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","notifications"]}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an
@@ -76,8 +76,9 @@ the difference between a clear failure and a silent one if this ever regresses.
 
 Check it at domain setup. **This surface changed materially in 0.4.0** — reads
 stopped redirecting, `PUT` started accepting file content — **0.4.1** added
-conditional writes, and **0.4.3** stopped reporting a damaged library as a
-deleted one. A client built against this document talking to an older server
+conditional writes, **0.4.3** stopped reporting a damaged library as a
+deleted one, and **0.4.4** added copy, library rename by `PATCH`, and this
+feature list itself. A client built against this document talking to an older server
 will fail in confusing ways: against 0.3.x the reads and writes break outright;
 against 0.4.0 the `If-Match` headers are silently ignored, which is worse,
 because losing an edit looks like success; and before 0.4.3 a server that has
@@ -85,12 +86,24 @@ lost an object answers 404, which is worse again, because acting on it deletes
 the client's copy. Require **0.4.3 or newer** and say why, rather than
 discovering it one broken callback at a time.
 
-There is no capability list yet, only a version — so a client that cannot parse
-the version has nothing else to go on, and the tempting fallback is to probe
-behaviour and infer. That fallback is worth resisting: when it works it looks
-like success, while the check you wrote is no longer the thing making the
-decision. If you would rather feature-detect than compare version strings, ask —
-it is a small addition and this is the argument for it.
+**Prefer `features` to the version.** The version says which build answered; the
+feature list says what that build will accept, and only the second is the
+question a client actually has. Test for a name, never for a version range, and
+never by probing behaviour and inferring — when probing works it looks like
+success, while the check you wrote is no longer the thing making the decision.
+
+A name is added in the release its capability ships and is then never removed
+and never reused, so `has("entries-copy")` stays a safe question forever. An
+older server sends no list at all, which reads as "no features" and is the
+correct answer: absent means do not call it.
+
+`notifications` is the one entry that depends on how the server was started
+rather than on which build it is. Seeing it is how a client knows to mint a
+`notify-token`, instead of learning from a 404 that this deployment has the
+notification endpoint switched off.
+
+The version is still worth checking once at domain setup, because the entries
+surface itself moved under clients before the feature list existed.
 
 ## Libraries
 
@@ -273,7 +286,9 @@ useless for identity.
 | upload a file | `PUT entries/{path}` — the body **is** the file → **201** |
 | create a directory | `PUT entries/{path}?type=dir` → **201** |
 | move or rename | `POST entries/{path}` with `{"op":"move","to":"/new/path"}` |
+| copy | `POST entries/{path}` with `{"op":"copy","to":"/new/path"}` → **201** |
 | delete | `DELETE entries/{path}` |
+| rename a library | `PATCH repos/{repoid}` with `{"name":"New name"}` |
 
 **`PUT` replaces.** That is what PUT means, and it is deliberately unlike the
 Seafile lane's upload, which is modelled on a person dragging files into a
@@ -297,9 +312,28 @@ version without a follow-up GET:
 {"id":"b8d0fa06…","name":"greeting.txt","size":14,"type":"file"}
 ```
 
+**Check the id you get back.** You can compute it yourself: files are chunked at
+fixed 8 MiB offsets and a block's name is the SHA-1 of its bytes, so a client
+that hashes as it uploads knows what id the server should arrive at. If the two
+differ, the bytes that landed are not the bytes you sent. That is a complete
+end-to-end integrity check for the transfer, and it costs a comparison.
+
 **The parent directory must exist** — a PUT into a missing directory is a
 **404**, not an implicit `mkdir -p`. A typo in a path should not silently build
-a directory tree.
+a directory tree. The same holds for the destination of a `move` or a `copy`.
+
+**Copy transfers nothing.** The destination dirent points at the object the
+source already names, so a server-side copy costs one dirent and one commit
+whether it is an empty file or a hundred-gigabyte subtree — and it returns
+**201** with the *source's* `ETag`, because the copy shares its id. If you
+already hold that content, you already hold the copy's content. Emulating this
+with `GET` then `PUT` pays for every byte twice and produces a different id only
+because the mtime differs.
+
+Both `move` and `copy` take the precondition on the **source**: `If-Match` there
+means "act on this version, not on whatever it has become". Neither will
+overwrite a directory, or replace a file with a directory — that is a **409**,
+and the answer is to rename and retry.
 
 A trailing slash also means "directory", but prefer the explicit `?type=dir`.
 The distinction is load-bearing: a bare `PUT` stores the body, so dropping the
@@ -343,12 +377,13 @@ Not to be confused with the other write refusals: **412** is a failed `If-Match`
 (someone else's edit — re-read and merge), and **409** is a destination
 collision (`filenameCollision` — rename and retry).
 
-One wart, worth knowing before you write the 409 branch: **409 is currently
-overloaded.** A write that collides with a running GC also answers 409, with the
-body `GC conflict; retry`, and that one wants the same handling as a 503 — retry
-the identical request — not a rename. The two are distinguishable only by body
-text today. Prefer retrying a 409 whose body says `retry` and renaming only on
-`Destination exists`.
+**409 means exactly one thing now.** It used to be overloaded: a write that
+collided with a running GC also answered 409, with the body `GC conflict;
+retry`, and that one wants a retry rather than a rename — so a client reading
+409 as "collision" renamed the user's file in response to a transient server
+condition. From 0.4.4 GC conflicts answer 503 with `Retry-After`, where they
+belong. Against an older server, keep the old rule: retry a 409 whose body says
+`retry`, rename only on `Destination exists`.
 
 ## Conditional writes
 
@@ -430,7 +465,10 @@ specifies.
 Short list, and shorter than it was.
 
 **No resumable upload.** A PUT that dies partway has to start over. Whole-file
-uploads only; there is no chunk/offset protocol on this endpoint.
+uploads only; there is no chunk/offset protocol on this endpoint, and no way to
+ask which blocks the server already holds. It is the largest gap on this lane —
+[`protocol-gaps.md`](protocol-gaps.md) has the ranked list and the shape a fix
+would take.
 
 **Encrypted libraries are not readable over this API, at all.** An earlier draft
 said they serve whole files but not ranges. That was wrong: every read reaches a
@@ -546,6 +584,7 @@ exercised against a running server.
 | `modifyItem` (contents) | the same `PUT` — it replaces |
 | `modifyItem` (rename) | `POST /api/silo/v1/repos/{id}/entries/{path}` `{"op":"move",…}` |
 | `modifyItem` (reparent) | the same call — a move is a move |
+| duplicate an item | `POST /api/silo/v1/repos/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
 | `deleteItem` | `DELETE /api/silo/v1/repos/{id}/entries/{path}` |
 | push invalidation | `WS /notification` |
 
