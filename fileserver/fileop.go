@@ -1233,7 +1233,10 @@ func writeBlockDataToTmpFile(r *http.Request, fsm *recvData, formFiles map[strin
 	var f *os.File
 	filePath := filepath.Join("/", parentDir, filename)
 	tmpFile, err := repomgr.GetUploadTmpFile(repoID, filePath)
-	if err != nil || tmpFile == "" {
+	if err != nil {
+		return fmt.Errorf("failed to get upload tmp file: %w", err)
+	}
+	if tmpFile == "" {
 		tmpDir := filepath.Join(httpTempDir, "cluster-shared")
 		f, err = os.CreateTemp(tmpDir, filename)
 		if err != nil {
@@ -1244,7 +1247,7 @@ func writeBlockDataToTmpFile(r *http.Request, fsm *recvData, formFiles map[strin
 		}
 		tmpFile = f.Name()
 	} else {
-		f, err = os.OpenFile(tmpFile, os.O_WRONLY|os.O_CREATE, 0666)
+		f, err = os.OpenFile(tmpFile, os.O_WRONLY, 0666)
 		if err != nil {
 			return err
 		}
@@ -1337,6 +1340,12 @@ func mkdirWithParents(repoID, parentDir, newDirPath, user string) error {
 		parentDirCan = getCanonPath(parentDir)
 	}
 
+	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
+	if err != nil {
+		err := fmt.Errorf("failed to get current gc id for repo %s: %v", repo.StoreID, err)
+		return err
+	}
+
 	absPath, dirID, err := checkAndCreateDir(repo, headCommit.RootID, parentDirCan, subFolders)
 	if err != nil {
 		err := fmt.Errorf("failed to check and create dir: %v", err)
@@ -1358,7 +1367,7 @@ func mkdirWithParents(repoID, parentDir, newDirPath, user string) error {
 	}
 
 	buf := fmt.Sprintf("Added directory \"%s\"", relativeDirCan)
-	_, err = GenNewCommit(repo, headCommit, rootID, user, buf, true, "", false)
+	_, err = GenNewCommit(repo, headCommit, rootID, user, buf, true, gcID, true)
 	if err != nil {
 		err := fmt.Errorf("failed to generate new commit: %v", err)
 		return err
@@ -1466,7 +1475,7 @@ func genDirRecursive(repo *repomgr.Repo, toPath []string) (string, error) {
 }
 
 func clearTmpFile(fsm *recvData, parentDir string) {
-	if fsm.rstart >= 0 && fsm.rend == fsm.fsize-1 {
+	if fsm.rstart >= 0 && fsm.rend == fsm.fsize-1 && len(fsm.fileNames) > 0 {
 		filePath := filepath.Join("/", parentDir, fsm.fileNames[0])
 		tmpFile, err := repomgr.GetUploadTmpFile(fsm.repoID, filePath)
 		if err == nil && tmpFile != "" {
@@ -2881,6 +2890,9 @@ func updateDir(repoID, dirPath, newDirID, user, headID string) (string, error) {
 		if commitDesc == "" {
 			commitDesc = "Auto merge by system"
 		}
+		// No gc check, same as upstream: replacing the root wholesale writes no
+		// new fs object here — newDirID was uploaded before this call — so there
+		// is nothing a GC starting now could reclaim out from under the commit.
 		newCommitID, err := GenNewCommit(repo, headCommit, newDirID, user, commitDesc, true, "", false)
 		if err != nil {
 			err := fmt.Errorf("failed to generate new commit: %v", err)
@@ -2911,6 +2923,12 @@ func updateDir(repoID, dirPath, newDirID, user, headID string) (string, error) {
 
 	newDent := fsmgr.NewDirent(newDirID, dirName, (syscall.S_IFDIR | 0644), time.Now().Unix(), "", 0)
 
+	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
+	if err != nil {
+		err := fmt.Errorf("failed to get current gc id for repo %s: %v", repo.StoreID, err)
+		return "", err
+	}
+
 	rootID, err := doPutFile(repo, headCommit.RootID, canonPath, newDent)
 	if err != nil || rootID == "" {
 		err := fmt.Errorf("failed to put file")
@@ -2922,7 +2940,7 @@ func updateDir(repoID, dirPath, newDirID, user, headID string) (string, error) {
 		commitDesc = "Auto merge by system"
 	}
 
-	newCommitID, err := GenNewCommit(repo, headCommit, rootID, user, commitDesc, true, "", false)
+	newCommitID, err := GenNewCommit(repo, headCommit, rootID, user, commitDesc, true, gcID, true)
 	if err != nil {
 		err := fmt.Errorf("failed to generate new commit: %v", err)
 		return "", err

@@ -31,7 +31,7 @@ is not broken. The write lost a race for the branch head ten times running.
 
 ## Cause
 
-`GenNewCommit` (`fileserver/fileop.go:1942`) retries a lost race up to ten
+`GenNewCommit` (`fileserver/fileop.go:1951`) retries a lost race up to ten
 times, sleeping a random 100–3000 ms between attempts:
 
 ```go

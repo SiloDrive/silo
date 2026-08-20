@@ -38,7 +38,7 @@ The difference that matters is `check-blocks`. A sync client asks before it
 sends; the management API has no way to ask, so it always sends everything.
 
 Note this is a *network* distinction, not a storage one. The server chunks
-uploads through `writeChunk` (`fileop.go:2722`) and `blockmgr.WriteBytes`
+uploads through `writeChunk` (`fileop.go:2731`) and `blockmgr.WriteBytes`
 (`blockmgr/blockmgr.go:66`) skips any block already present, so uploading the
 same album twice costs disk once either way. It costs bandwidth twice.
 
@@ -62,9 +62,9 @@ The interesting tier, and cheaper than it sounds, because of one fact:
 
 **Silo chunks at fixed offsets, not content-defined boundaries.**
 
-`chunkFile` (`fileop.go:2675`) seeks to an offset and reads exactly
+`chunkFile` (`fileop.go:2684`) seeks to an offset and reads exactly
 `FixedBlockSize` bytes; the caller steps offsets by the same amount
-(`fileop.go:2545-2551`). The default is `1 << 23`, 8 MiB
+(`fileop.go:2554-2560`). The default is `1 << 23`, 8 MiB
 (`option/option.go:221`). So a block id is:
 
     blockID = sha1(file[offset : offset+8MiB])
@@ -96,7 +96,7 @@ mostly-unchanged tree sends almost nothing.
   and a block size a client has to guess is the one input that silently
   degrades a dedup-aware upload to "upload everything".
 - **Encrypted repos need the repo key.** `writeChunk` encrypts and then hashes
-  (`fileop.go:2722`), so the block id is the SHA-1 of the ciphertext. Without
+  (`fileop.go:2731`), so the block id is the SHA-1 of the ciphertext. Without
   the key a client cannot compute matching ids. Moot in practice: Silo cannot
   create encrypted repos and will not support Seafile's format — see
   `docs/encryption.md`. Worth noting that hashing *after* encrypting is the
@@ -125,7 +125,7 @@ no virtual filesystem, which neither SeaDrive nor Seafile Desktop offers.
 The hard parts are the ones every sync client has: tree diffing against the
 last known commit, deletion and rename detection, conflict resolution when the
 remote head has moved, and deciding what to do about files that change while
-being read. `fastForwardOrMerge` (`fileop.go:1982`) already implements the
+being read. `fastForwardOrMerge` (`fileop.go:1991`) already implements the
 server half of the merge story.
 
 ## Recommendation
