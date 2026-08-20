@@ -40,6 +40,21 @@ func loadRepoAndCommit(w http.ResponseWriter, repoID, user string) (*repomgr.Rep
 	return repo, head, true
 }
 
+// currentGCID reads the store's gc id so the commit that follows can be
+// checked against it. Read it before any object the commit will name is
+// written, so a GC that starts mid-request is caught as a conflict rather
+// than leaving behind a commit pointing at reclaimed objects. Answers the
+// request itself on failure, and reports whether the caller should carry on.
+func currentGCID(w http.ResponseWriter, repo *repomgr.Repo) (string, bool) {
+	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
+	if err != nil {
+		log.Errorf("Failed to get gc id for repo %s: %v", repo.StoreID, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return "", false
+	}
+	return gcID, true
+}
+
 // checkEntryName applies the same name guard the upload path uses before a
 // dirent reaches the tree, replying 400 when the name is rejected. Syncing
 // clients write dirent names straight to disk relative to the library root,
@@ -179,6 +194,9 @@ func patchRepoHandler(w http.ResponseWriter, r *http.Request) {
 func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, head *commitmgr.Commit, user, newName string) bool {
 	repo.Name = newName
 	desc := fmt.Sprintf("Renamed library to \"%s\"", newName)
+	// No gc check: this commit names the root it was handed, and writes no fs
+	// object a GC could reclaim between here and the commit. Every handler that
+	// builds a new tree takes a gc id first; this one has nothing to protect.
 	if _, err := GenNewCommit(repo, head, head.RootID, user, desc, false, "", false); err != nil {
 		writeCommitErr(w, r, err, "library rename")
 		return false
@@ -208,6 +226,11 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	gcID, ok := currentGCID(w, repo)
+	if !ok {
+		return
+	}
+
 	mode := uint32(syscall.S_IFDIR | 0644)
 	dent := fsmgr.NewDirent(fsmgr.EmptySha1, dirName, mode, time.Now().Unix(), "", 0)
 
@@ -220,7 +243,7 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	desc := fmt.Sprintf("Added directory \"%s\"", dirName)
-	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, "", false)
+	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, gcID, true)
 	if err != nil {
 		writeCommitErr(w, r, err, "mkdir")
 		return
@@ -245,6 +268,11 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	gcID, ok := currentGCID(w, repo)
+	if !ok {
+		return
+	}
+
 	parentDir := upath.Dir(path)
 	filename := upath.Base(path)
 
@@ -256,7 +284,7 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	desc := fmt.Sprintf("Deleted \"%s\"", filename)
-	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, "", false)
+	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, gcID, true)
 	if err != nil {
 		writeCommitErr(w, r, err, "delete")
 		return
@@ -358,6 +386,11 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 		return
 	}
 
+	gcID, ok := currentGCID(w, repo)
+	if !ok {
+		return
+	}
+
 	// Phase 1: Add to destination
 	newDent := fsmgr.NewDirent(srcEntry.ID, dstName, srcEntry.Mode, time.Now().Unix(), srcEntry.Modifier, srcEntry.Size)
 	var names []string
@@ -383,7 +416,7 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 	if isCopy {
 		desc = fmt.Sprintf("Copied \"%s\"", srcName)
 	}
-	if _, err := GenNewCommit(repo, head, newRootID, user, desc, false, "", false); err != nil {
+	if _, err := GenNewCommit(repo, head, newRootID, user, desc, false, gcID, true); err != nil {
 		writeCommitErr(w, r, err, verb)
 		return
 	}
