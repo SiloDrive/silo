@@ -72,7 +72,7 @@ credential: one to learn what it is talking to, one to get a token.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.5","features":[…],"block_size":8388608}` — semver with no leading `v`, the capability list a client should branch on instead of the version, and the offset a client must chunk at for its block ids to match the store's |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.6","features":[…],"block_size":8388608}` — semver with no leading `v`, the capability list a client should branch on instead of the version, and the offset a client must chunk at for its block ids to match the store's |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
 | POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
 | GET | `/api/silo/v1/repos` | List repos owned by authenticated user, each with `head_commit_id` — the anchor `changes` starts from. `[]`, never `null`, for an empty account |

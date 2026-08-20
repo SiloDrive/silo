@@ -57,7 +57,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.5","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","blocks","pagination","batch","notifications"],"block_size":8388608}
+{"version":"0.4.6","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","blocks","pagination","batch","notifications"],"block_size":8388608}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an
@@ -79,7 +79,8 @@ stopped redirecting, `PUT` started accepting file content — **0.4.1** added
 conditional writes, **0.4.3** stopped reporting a damaged library as a
 deleted one, **0.4.4** added copy, library rename by `PATCH`, block-by-block
 upload, and this feature list itself, and **0.4.5** added pagination and
-batching. A client built against this document talking to an older server
+batching. **0.4.6** changes nothing here — it is a server-bootstrap and client
+release — so a client written against 0.4.5 needs no attention. A client built against this document talking to an older server
 will fail in confusing ways: against 0.3.x the reads and writes break outright;
 against 0.4.0 the `If-Match` headers are silently ignored, which is worse,
 because losing an edit looks like success; and before 0.4.3 a server that has
