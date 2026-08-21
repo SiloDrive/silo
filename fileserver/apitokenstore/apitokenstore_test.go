@@ -18,18 +18,17 @@ func setupStore(t *testing.T) {
 	t.Helper()
 
 	option.LoadFileServerOptions("")
-	dbutil.DBEngine = dbutil.EngineSQLite
 
-	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "seafile.db"))
+	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = pair.Close() })
 
-	if err := dbutil.CreateSeafileTables(pair.Write); err != nil {
+	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
 		t.Fatalf("create tables: %v", err)
 	}
-	if err := dbutil.MigrateSeafileTables(pair.Write, option.APITokenTTL); err != nil {
+	if err := dbutil.MigrateSiloTables(pair.Write, option.APITokenTTL); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -241,9 +240,8 @@ func TestDeleteExpiredSweepsOnlyExpired(t *testing.T) {
 // database never hit it, so only an upgrade did.
 func TestMigrationUpgradesPreExistingDatabase(t *testing.T) {
 	option.LoadFileServerOptions("")
-	dbutil.DBEngine = dbutil.EngineSQLite
 
-	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "seafile.db"))
+	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -262,10 +260,10 @@ func TestMigrationUpgradesPreExistingDatabase(t *testing.T) {
 	}
 
 	// This is the ordering the server uses: create, then migrate.
-	if err := dbutil.CreateSeafileTables(pair.Write); err != nil {
+	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
 		t.Fatalf("CreateSeafileTables against a pre-existing database: %v", err)
 	}
-	if err := dbutil.MigrateSeafileTables(pair.Write, option.APITokenTTL); err != nil {
+	if err := dbutil.MigrateSiloTables(pair.Write, option.APITokenTTL); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -301,7 +299,7 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	setupStore(t)
 
 	for i := 0; i < 3; i++ {
-		if err := dbutil.MigrateSeafileTables(writeDB, option.APITokenTTL); err != nil {
+		if err := dbutil.MigrateSiloTables(writeDB, option.APITokenTTL); err != nil {
 			t.Fatalf("migration run %d failed: %v", i+1, err)
 		}
 	}

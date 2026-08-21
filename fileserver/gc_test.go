@@ -18,30 +18,26 @@ import (
 func sqliteTestDB(t *testing.T) {
 	t.Helper()
 
-	origEngine := dbutil.DBEngine
-	dbutil.DBEngine = dbutil.EngineSQLite
-
 	// RunGC loads it from config; these tests call the internals directly, and
 	// a zero timeout makes every query fail as "context deadline exceeded".
 	origTimeout := option.DBOpTimeout
 	option.DBOpTimeout = 5 * time.Second
 
-	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "seafile.db"))
+	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
 	if err != nil {
 		t.Fatalf("failed to open test database: %v", err)
 	}
-	if err := dbutil.CreateSeafileTables(pair.Write); err != nil {
+	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
 		t.Fatalf("failed to create test tables: %v", err)
 	}
 
-	origPair := seafilePair
+	origPair := siloPair
 	origDataDir := absDataDir
-	seafilePair = pair
+	siloPair = pair
 
 	t.Cleanup(func() {
-		seafilePair = origPair
+		siloPair = origPair
 		absDataDir = origDataDir
-		dbutil.DBEngine = origEngine
 		option.DBOpTimeout = origTimeout
 		_ = pair.Read.Close()
 		_ = pair.Write.Close()
@@ -50,7 +46,7 @@ func sqliteTestDB(t *testing.T) {
 
 func dbExec(t *testing.T, query string, args ...interface{}) {
 	t.Helper()
-	if _, err := seafilePair.Write.Exec(query, args...); err != nil {
+	if _, err := siloPair.Write.Exec(query, args...); err != nil {
 		t.Fatalf("failed to exec %q: %v", query, err)
 	}
 }
@@ -178,7 +174,7 @@ func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
 	}
 
 	var remaining int
-	if err := seafilePair.Read.QueryRow("SELECT COUNT(*) FROM GarbageRepos").Scan(&remaining); err != nil {
+	if err := siloPair.Read.QueryRow("SELECT COUNT(*) FROM GarbageRepos").Scan(&remaining); err != nil {
 		t.Fatalf("failed to count GarbageRepos: %v", err)
 	}
 	if remaining != 0 {

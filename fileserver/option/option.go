@@ -59,7 +59,12 @@ var (
 	// notification server
 	EnableNotification bool
 
-	// GROUP options
+	// GroupTableName is the table groups are read from.
+	//
+	// Configurable because upstream let the group table be provisioned
+	// externally under another name. Silo creates the schema itself, so the
+	// only value that works with a Silo-created database is the default —
+	// point it elsewhere and the table has to already exist.
 	GroupTableName string
 
 	// quota options
@@ -175,28 +180,11 @@ var (
 	// throttles everyone.
 	TrustProxyHeaders bool
 
-	// database — use dbutil.DBEngine for portable SQL helpers
-	DBType string
-
 	JWTPrivateKey string
 
 	// metric
 	NodeName string
 )
-
-type DBOption struct {
-	User          string
-	Password      string
-	Host          string
-	Port          int
-	CcnetDbName   string
-	SeafileDbName string
-	CaPath        string
-	UseTLS        bool
-	SkipVerify    bool
-	Charset       string
-	DBEngine      string
-}
 
 // EnvWithFallback returns the first non-empty value from the named env vars.
 func EnvWithFallback(names ...string) string {
@@ -378,7 +366,7 @@ func LoadFileServerOptions(configFile string) {
 
 	loadCacheOptionFromEnv()
 
-	GroupTableName = os.Getenv("SEAFILE_MYSQL_DB_GROUP_TABLE_NAME")
+	GroupTableName = EnvWithFallback("SILO_GROUP_TABLE_NAME", "SEAFILE_MYSQL_DB_GROUP_TABLE_NAME")
 	if GroupTableName == "" {
 		GroupTableName = "Group"
 	}
@@ -596,156 +584,4 @@ func LoadJWTConfig() error {
 	}
 
 	return nil
-}
-
-func LoadDBOption(configFile string) (*DBOption, error) {
-	dbOpt, err := loadDBOptionFromFile(configFile)
-	if err != nil {
-		log.Warnf("failed to load database config: %v", err)
-		dbOpt = &DBOption{DBEngine: "sqlite"}
-	}
-
-	// Check env override for DB type
-	if dbType := os.Getenv("SEAFILE_DB_TYPE"); dbType != "" {
-		dbOpt.DBEngine = dbType
-	}
-
-	if dbOpt.DBEngine == "sqlite" {
-		// SQLite needs no host/user/password
-		DBType = "sqlite"
-		return dbOpt, nil
-	}
-
-	dbOpt = loadDBOptionFromEnv(dbOpt)
-
-	if dbOpt.Host == "" {
-		return nil, fmt.Errorf("no database host in seafile.conf")
-	}
-	if dbOpt.User == "" {
-		return nil, fmt.Errorf("no database user in seafile.conf")
-	}
-	if dbOpt.Password == "" {
-		return nil, fmt.Errorf("no database password in seafile.conf")
-	}
-
-	DBType = dbOpt.DBEngine
-
-	return dbOpt, nil
-}
-
-func loadDBOptionFromFile(configFile string) (*DBOption, error) {
-	dbOpt := new(DBOption)
-	// Default to SQLite — Silo ships with an embedded store and the
-	// [database] section only needs to exist when the operator wants MySQL.
-	dbOpt.DBEngine = "sqlite"
-
-	if configFile == "" {
-		return dbOpt, nil
-	}
-	if _, err := os.Stat(configFile); os.IsNotExist(err) {
-		return dbOpt, nil
-	}
-	opts := ini.LoadOptions{}
-	opts.SpaceBeforeInlineComment = true
-	config, err := ini.LoadSources(opts, configFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load %s: %v", configFile, err)
-	}
-
-	section, err := config.GetSection("database")
-	if err != nil {
-		return dbOpt, nil
-	}
-
-	dbEngine := "sqlite"
-	key, err := section.GetKey("type")
-	if err == nil {
-		dbEngine = key.String()
-	}
-	if dbEngine != "mysql" && dbEngine != "sqlite" {
-		return nil, fmt.Errorf("unsupported database %s", dbEngine)
-	}
-	dbOpt.DBEngine = dbEngine
-	if key, err = section.GetKey("host"); err == nil {
-		dbOpt.Host = key.String()
-	}
-	// user is required.
-	if key, err = section.GetKey("user"); err == nil {
-		dbOpt.User = key.String()
-	}
-
-	if key, err = section.GetKey("password"); err == nil {
-		dbOpt.Password = key.String()
-	}
-
-	if key, err = section.GetKey("db_name"); err == nil {
-		dbOpt.SeafileDbName = key.String()
-	}
-	port := 3306
-	if key, err = section.GetKey("port"); err == nil {
-		port, _ = key.Int()
-	}
-	dbOpt.Port = port
-	useTLS := false
-	if key, err = section.GetKey("use_ssl"); err == nil {
-		useTLS, _ = key.Bool()
-	}
-	dbOpt.UseTLS = useTLS
-	skipVerify := false
-	if key, err = section.GetKey("skip_verify"); err == nil {
-		skipVerify, _ = key.Bool()
-	}
-	dbOpt.SkipVerify = skipVerify
-	if key, err = section.GetKey("ca_path"); err == nil {
-		dbOpt.CaPath = key.String()
-	}
-	if key, err = section.GetKey("connection_charset"); err == nil {
-		dbOpt.Charset = key.String()
-	}
-
-	return dbOpt, nil
-}
-
-func loadDBOptionFromEnv(dbOpt *DBOption) *DBOption {
-	user := os.Getenv("SEAFILE_MYSQL_DB_USER")
-	password := os.Getenv("SEAFILE_MYSQL_DB_PASSWORD")
-	host := os.Getenv("SEAFILE_MYSQL_DB_HOST")
-	portStr := os.Getenv("SEAFILE_MYSQL_DB_PORT")
-	ccnetDbName := os.Getenv("SEAFILE_MYSQL_DB_CCNET_DB_NAME")
-	seafileDbName := os.Getenv("SEAFILE_MYSQL_DB_SEAFILE_DB_NAME")
-
-	if dbOpt == nil {
-		dbOpt = new(DBOption)
-	}
-	if user != "" {
-		dbOpt.User = user
-	}
-	if password != "" {
-		dbOpt.Password = password
-	}
-	if host != "" {
-		dbOpt.Host = host
-	}
-	if portStr != "" {
-		port, _ := strconv.ParseUint(portStr, 10, 32)
-		if port > 0 {
-			dbOpt.Port = int(port)
-		}
-	}
-	if dbOpt.Port == 0 {
-		dbOpt.Port = 3306
-	}
-	if ccnetDbName != "" {
-		dbOpt.CcnetDbName = ccnetDbName
-	} else if dbOpt.CcnetDbName == "" {
-		dbOpt.CcnetDbName = "ccnet_db"
-		log.Infof("Failed to read SEAFILE_MYSQL_DB_CCNET_DB_NAME, use ccnet_db by default")
-	}
-	if seafileDbName != "" {
-		dbOpt.SeafileDbName = seafileDbName
-	} else if dbOpt.SeafileDbName == "" {
-		dbOpt.SeafileDbName = "seafile_db"
-		log.Infof("Failed to read SEAFILE_MYSQL_DB_SEAFILE_DB_NAME, use seafile_db by default")
-	}
-	return dbOpt
 }

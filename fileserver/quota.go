@@ -66,7 +66,7 @@ func getUserQuota(user string) (int64, error) {
 	sqlStr := "SELECT quota FROM UserQuota WHERE user=?"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	row := seafilePair.Read.QueryRowContext(ctx, sqlStr, user)
+	row := siloPair.Read.QueryRowContext(ctx, sqlStr, user)
 	if err := row.Scan(&quota); err != nil {
 		if err != sql.ErrNoRows {
 			return -1, err
@@ -90,7 +90,7 @@ func getUserUsage(user string) (int64, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	row := seafilePair.Read.QueryRowContext(ctx, sqlStr, user)
+	row := siloPair.Read.QueryRowContext(ctx, sqlStr, user)
 	if err := row.Scan(&usage); err != nil {
 		if err != sql.ErrNoRows {
 			return -1, err

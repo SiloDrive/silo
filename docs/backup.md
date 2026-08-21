@@ -4,23 +4,23 @@ A Silo deployment is two kinds of state, and they need different handling:
 
 | What | Where | How to copy |
 |---|---|---|
-| Databases | `<data-dir>/ccnet.db`, `<data-dir>/seafile.db` | `silo backup-db` |
+| Database | `<data-dir>/silo.db` | `silo backup-db` |
 | Object store | `<data-dir>/storage/` | `rsync`, `cp -a`, snapshot, tar — anything |
 
 The object store is an immutable content-addressed file tree; any ordinary
-copy tool handles it. The databases are not safe to copy with `cp`, and the
+copy tool handles it. The database is not safe to copy with `cp`, and the
 order the two halves are captured in decides whether the backup restores.
 
-## Why `cp seafile.db` is not a backup
+## Why `cp silo.db` is not a backup
 
-The databases run in WAL mode. A committed transaction is durable once it
-reaches `seafile.db-wal`; it only moves into `seafile.db` at a checkpoint, and
-Silo checkpoints on clean shutdown. Copying only `seafile.db` off a running
+The database runs in WAL mode. A committed transaction is durable once it
+reaches `silo.db-wal`; it only moves into `silo.db` at a checkpoint, and
+Silo checkpoints on clean shutdown. Copying only `silo.db` off a running
 server therefore silently drops every write since the last checkpoint — no
 error, no warning, and nothing in the restored copy to show that anything is
 missing.
 
-Copying `seafile.db`, `seafile.db-wal` and `seafile.db-shm` together is not a
+Copying `silo.db`, `silo.db-wal` and `silo.db-shm` together is not a
 fix either. The three files are read at three different instants, and the set
 you end up with need not be a state the database was ever in.
 
@@ -30,7 +30,7 @@ safe while the server is running and blocks no writer.
 
 ## The order rule
 
-**Databases first. Object store second.**
+**Database first. Object store second.**
 
 Objects are content-addressed and never rewritten, so every object referenced
 by a branch head captured at T1 is still on disk at T2. Capture in that order
@@ -44,8 +44,11 @@ copied at T2 can contain heads referencing objects written between T1 and T2 —
 objects the backup does not have. That library restores broken, and the
 breakage does not show up until someone opens the file.
 
-This is the mistake a plain `rsync -a <data-dir>/ backup/` makes: rsync walks
-alphabetically, so `storage/` is copied before `seafile.db`.
+Do not depend on a copy tool's traversal order to get this right. `rsync -a
+<data-dir>/ backup/` happens to walk alphabetically, and `silo.db` sorts before
+`storage/` — but that is a coincidence of the names, not a guarantee, and it
+does not make the rsync safe: it is still copying a live WAL database, which
+is the mistake the section above is about.
 
 The one thing that invalidates the rule is object deletion, so **do not run
 `silo gc -delete` while a backup is in progress**.
@@ -95,10 +98,10 @@ any other divergence — nothing on the server side needs resetting.
 
 ## Verifying a backup
 
-The databases are checked cheaply:
+The database is checked cheaply:
 
 ```sh
-sqlite3 /backup/silo/2026-08-16/seafile.db 'PRAGMA integrity_check;'
+sqlite3 /backup/silo/2026-08-16/silo.db 'PRAGMA integrity_check;'
 ```
 
 A snapshot from `backup-db` stands alone: there should be no `-wal` or `-shm`
@@ -108,8 +111,26 @@ To confirm the store matches the heads, restore into a scratch data directory
 and run `silo serve` against it — a client that syncs a library end to end has
 verified every object that library's head references.
 
-## MySQL and PostgreSQL
+## Upgrading from a two-database install
 
-`silo backup-db` only handles SQLite and exits with an error on other engines.
-Use `mysqldump` or `pg_dump` for the databases; the order rule and everything
-said about `storage/` above is unchanged.
+Silo 0.4.6 and earlier kept two SQLite files, `ccnet.db` (users, groups) and
+`seafile.db` (repos, shares, tokens). It now keeps one, `silo.db`.
+
+A server started on a data directory that still has the old pair refuses to
+start rather than creating an empty `silo.db` beside them, and prints the
+commands to fold them together. No table name is shared between the two, so
+they concatenate:
+
+```sh
+sqlite3 <data-dir>/ccnet.db   'PRAGMA wal_checkpoint(TRUNCATE)'
+sqlite3 <data-dir>/seafile.db 'PRAGMA wal_checkpoint(TRUNCATE)'
+{ sqlite3 <data-dir>/ccnet.db .dump
+  sqlite3 <data-dir>/seafile.db .dump; } | sqlite3 <data-dir>/silo.db
+```
+
+The checkpoints are not optional: both files run in WAL mode, so a dump taken
+without one silently omits every transaction since the last checkpoint.
+
+The next start adds any table or column the schema has gained since. Keep the
+old files until you have confirmed the server comes up with your users and
+libraries intact.

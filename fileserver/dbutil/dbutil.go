@@ -4,102 +4,28 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
 )
-
-// Database engine constants.
-const (
-	EngineMySQL    = "mysql"
-	EngineSQLite   = "sqlite"
-	EnginePostgres = "postgres"
-)
-
-// DBEngine tracks the active database type. Set during initialization.
-var DBEngine string
 
 // InsertOrReplace returns an upsert statement that inserts a row or
 // overwrites it if a conflict on the primary key is found.
 //
 //	dbutil.InsertOrReplace("RepoHead", "repo_id, branch_name")
-//	→ MySQL:    "REPLACE INTO RepoHead (repo_id, branch_name) VALUES (?, ?)"
-//	→ SQLite:   "INSERT OR REPLACE INTO RepoHead (repo_id, branch_name) VALUES (?, ?)"
-//	→ Postgres: "INSERT INTO RepoHead (repo_id, branch_name) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET branch_name=EXCLUDED.branch_name"
+//	→ "INSERT OR REPLACE INTO RepoHead (repo_id, branch_name) VALUES (?, ?)"
 func InsertOrReplace(table, columns string) string {
-	cols := splitColumns(columns)
-	placeholders := makePlaceholders(len(cols))
-
-	switch DBEngine {
-	case EnginePostgres:
-		// First column is assumed to be the PK for ON CONFLICT.
-		sets := make([]string, 0, len(cols)-1)
-		for _, c := range cols[1:] {
-			sets = append(sets, c+"=EXCLUDED."+c)
-		}
-		conflict := cols[0]
-		if len(sets) == 0 {
-			return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING",
-				table, columns, placeholders, conflict)
-		}
-		return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s",
-			table, columns, placeholders, conflict, strings.Join(sets, ", "))
-	case EngineSQLite:
-		return fmt.Sprintf("INSERT OR REPLACE INTO %s (%s) VALUES (%s)",
-			table, columns, placeholders)
-	default: // mysql
-		return fmt.Sprintf("REPLACE INTO %s (%s) VALUES (%s)",
-			table, columns, placeholders)
-	}
+	return fmt.Sprintf("INSERT OR REPLACE INTO %s (%s) VALUES (%s)",
+		table, columns, makePlaceholders(countColumns(columns)))
 }
 
 // InsertOrIgnore returns a statement that inserts a row or silently
 // does nothing if a conflict on the primary key is found.
 //
 //	dbutil.InsertOrIgnore("GarbageRepos", "repo_id")
-//	→ MySQL:    "INSERT IGNORE INTO GarbageRepos (repo_id) VALUES (?)"
-//	→ SQLite:   "INSERT OR IGNORE INTO GarbageRepos (repo_id) VALUES (?)"
-//	→ Postgres: "INSERT INTO GarbageRepos (repo_id) VALUES ($1) ON CONFLICT DO NOTHING"
+//	→ "INSERT OR IGNORE INTO GarbageRepos (repo_id) VALUES (?)"
 func InsertOrIgnore(table, columns string) string {
-	cols := splitColumns(columns)
-	placeholders := makePlaceholders(len(cols))
-
-	switch DBEngine {
-	case EnginePostgres:
-		return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING",
-			table, columns, placeholders)
-	case EngineSQLite:
-		return fmt.Sprintf("INSERT OR IGNORE INTO %s (%s) VALUES (%s)",
-			table, columns, placeholders)
-	default: // mysql
-		return fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES (%s)",
-			table, columns, placeholders)
-	}
-}
-
-// SharedLockSuffix returns the clause that puts a shared read lock on the rows
-// a SELECT returns, including its leading space, or "" for engines that have
-// no such clause.
-//
-//	MySQL:    " LOCK IN SHARE MODE"
-//	Postgres: " FOR SHARE"
-//	SQLite:   ""
-//
-// SQLite has no row locks and no such syntax — appending the MySQL clause is a
-// parse error, not a no-op, so the whole statement fails to prepare. It needs
-// no substitute: under WAL a reader sees a consistent snapshot without
-// blocking, and writes are already serialised onto the single write
-// connection.
-func SharedLockSuffix() string {
-	switch DBEngine {
-	case EnginePostgres:
-		return " FOR SHARE"
-	case EngineSQLite:
-		return ""
-	default: // mysql
-		return " LOCK IN SHARE MODE"
-	}
+	return fmt.Sprintf("INSERT OR IGNORE INTO %s (%s) VALUES (%s)",
+		table, columns, makePlaceholders(countColumns(columns)))
 }
 
 // RowsAffected reports how many rows a statement touched, or zero when the
@@ -117,30 +43,21 @@ func RowsAffected(res sql.Result) int64 {
 	return n
 }
 
-func splitColumns(columns string) []string {
-	parts := strings.Split(columns, ",")
-	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
-	}
-	return parts
+func countColumns(columns string) int {
+	return len(strings.Split(columns, ","))
 }
 
 func makePlaceholders(n int) string {
 	ph := make([]string, n)
 	for i := range ph {
-		if DBEngine == EnginePostgres {
-			ph[i] = fmt.Sprintf("$%d", i+1)
-		} else {
-			ph[i] = "?"
-		}
+		ph[i] = "?"
 	}
 	return strings.Join(ph, ", ")
 }
 
-// DBPair holds separate read and write database connections.
-// For SQLite: write has MaxOpenConns(1) to serialize writes,
-// read has MaxOpenConns(4) for concurrent reads. Both use WAL mode.
-// For MySQL: both Read and Write point to the same *sql.DB.
+// DBPair holds separate read and write connections to the one database.
+// Write has MaxOpenConns(1) to serialise writes, Read has MaxOpenConns(4)
+// for concurrent reads. Both use WAL mode.
 type DBPair struct {
 	Read  *sql.DB
 	Write *sql.DB
@@ -205,17 +122,4 @@ func OpenSQLite(path string) (*DBPair, error) {
 	readDB.SetConnMaxLifetime(0)
 
 	return &DBPair{Read: readDB, Write: writeDB}, nil
-}
-
-// OpenMySQL opens a MySQL database. Both Read and Write use the same connection pool.
-func OpenMySQL(dsn string) (*DBPair, error) {
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open mysql connection: %v", err)
-	}
-	db.SetConnMaxLifetime(5 * time.Minute)
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(8)
-
-	return &DBPair{Read: db, Write: db}, nil
 }

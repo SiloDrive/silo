@@ -10,19 +10,7 @@ import (
 	"time"
 )
 
-func TestInsertOrReplaceMySQL(t *testing.T) {
-	DBEngine = "mysql"
-
-	got := InsertOrReplace("RepoHead", "repo_id, branch_name")
-	want := "REPLACE INTO RepoHead (repo_id, branch_name) VALUES (?, ?)"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestInsertOrReplaceSQLite(t *testing.T) {
-	DBEngine = "sqlite"
-
+func TestInsertOrReplace(t *testing.T) {
 	got := InsertOrReplace("RepoHead", "repo_id, branch_name")
 	want := "INSERT OR REPLACE INTO RepoHead (repo_id, branch_name) VALUES (?, ?)"
 	if got != want {
@@ -30,39 +18,7 @@ func TestInsertOrReplaceSQLite(t *testing.T) {
 	}
 }
 
-func TestInsertOrReplacePostgres(t *testing.T) {
-	DBEngine = "postgres"
-
-	got := InsertOrReplace("RepoHead", "repo_id, branch_name")
-	want := "INSERT INTO RepoHead (repo_id, branch_name) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET branch_name=EXCLUDED.branch_name"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestInsertOrReplacePostgresSingleColumn(t *testing.T) {
-	DBEngine = "postgres"
-
-	got := InsertOrReplace("GarbageRepos", "repo_id")
-	want := "INSERT INTO GarbageRepos (repo_id) VALUES ($1) ON CONFLICT (repo_id) DO NOTHING"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestInsertOrIgnoreMySQL(t *testing.T) {
-	DBEngine = "mysql"
-
-	got := InsertOrIgnore("GarbageRepos", "repo_id")
-	want := "INSERT IGNORE INTO GarbageRepos (repo_id) VALUES (?)"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestInsertOrIgnoreSQLite(t *testing.T) {
-	DBEngine = "sqlite"
-
+func TestInsertOrIgnore(t *testing.T) {
 	got := InsertOrIgnore("GarbageRepos", "repo_id")
 	want := "INSERT OR IGNORE INTO GarbageRepos (repo_id) VALUES (?)"
 	if got != want {
@@ -70,31 +26,17 @@ func TestInsertOrIgnoreSQLite(t *testing.T) {
 	}
 }
 
-func TestInsertOrIgnorePostgres(t *testing.T) {
-	DBEngine = "postgres"
-
-	got := InsertOrIgnore("GarbageRepos", "repo_id")
-	want := "INSERT INTO GarbageRepos (repo_id) VALUES ($1) ON CONFLICT DO NOTHING"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
 func TestInsertOrIgnoreMultipleColumns(t *testing.T) {
-	DBEngine = "mysql"
-
 	got := InsertOrIgnore("RepoUserToken", "repo_id, email, token")
-	want := "INSERT IGNORE INTO RepoUserToken (repo_id, email, token) VALUES (?, ?, ?)"
+	want := "INSERT OR IGNORE INTO RepoUserToken (repo_id, email, token) VALUES (?, ?, ?)"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestInsertOrReplaceMultipleColumns(t *testing.T) {
-	DBEngine = "postgres"
-
 	got := InsertOrReplace("RepoOwner", "repo_id, owner_id")
-	want := "INSERT INTO RepoOwner (repo_id, owner_id) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET owner_id=EXCLUDED.owner_id"
+	want := "INSERT OR REPLACE INTO RepoOwner (repo_id, owner_id) VALUES (?, ?)"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -143,7 +85,8 @@ func TestOpenSQLiteCreatesFile(t *testing.T) {
 }
 
 func TestDBPairCloseShared(t *testing.T) {
-	// Simulate MySQL where Read == Write — Close should only close once
+	// Close guards against Read and Write aliasing the same handle, so a
+	// pair built that way closes once and reports no error.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "shared.db")
 
@@ -151,7 +94,6 @@ func TestDBPairCloseShared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
-	// Make Read point to same handle as Write (MySQL behavior)
 	_ = pair.Read.Close()
 	pair.Read = pair.Write
 
@@ -169,8 +111,6 @@ func TestSQLiteUpsertIntegration(t *testing.T) {
 		t.Fatalf("OpenSQLite failed: %v", err)
 	}
 	defer func() { _ = pair.Close() }()
-
-	DBEngine = "sqlite"
 
 	// Create a test table
 	if _, err := pair.Write.Exec("CREATE TABLE test_kv (key TEXT PRIMARY KEY, value TEXT)"); err != nil {
@@ -215,8 +155,6 @@ func TestSQLiteInsertOrIgnoreIntegration(t *testing.T) {
 		t.Fatalf("OpenSQLite failed: %v", err)
 	}
 	defer func() { _ = pair.Close() }()
-
-	DBEngine = "sqlite"
 
 	if _, err := pair.Write.Exec("CREATE TABLE test_ids (id TEXT PRIMARY KEY)"); err != nil {
 		t.Fatalf("failed to create table: %v", err)

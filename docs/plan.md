@@ -33,10 +33,12 @@ These hold for anything added from here on.
   and the rest) does not change, and neither does the `Seafile-Repo-Token`
   header. New surface goes in the Silo lane (`/api/silo/v1/`), which is free to
   differ — see `docs/sync-design.md`.
-- **Data compatibility.** Same DB schema, same on-disk object layout. No
-  migrations. The one planned exception is the database *filenames*, in
-  `docs/plans/db-rename.md`, which adopts existing files rather than migrating
-  their contents.
+- **Data compatibility.** Same table definitions, same on-disk object layout.
+  No migrations of row contents. The one exception is where the tables *live*:
+  `ccnet.db` and `seafile.db` became a single `silo.db`. No table was
+  redefined, so the two files concatenate — a server that finds the old pair
+  refuses to start and prints the commands, rather than silently creating an
+  empty database beside them. See `docs/backup.md`.
 - **Password compatibility.** Every hash format an existing install may hold has
   to validate: `PBKDF2SHA256$…` at whatever iteration count it records, legacy
   SHA256-with-fixed-salt, and unsalted SHA1. Old formats are flagged for rehash

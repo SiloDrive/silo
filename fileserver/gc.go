@@ -126,7 +126,7 @@ func collectGarbageRepos() ([]*garbageRepo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout*2)
 	defer cancel()
 
-	rows, err := seafilePair.Read.QueryContext(ctx, "SELECT repo_id FROM GarbageRepos")
+	rows, err := siloPair.Read.QueryContext(ctx, "SELECT repo_id FROM GarbageRepos")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read GarbageRepos: %v", err)
 	}
@@ -204,7 +204,7 @@ var reclaimBlockers = []struct{ query, reason string }{
 
 func rowExists(ctx context.Context, query, arg string) (bool, error) {
 	var one int
-	err := seafilePair.Read.QueryRowContext(ctx, query, arg).Scan(&one)
+	err := siloPair.Read.QueryRowContext(ctx, query, arg).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -270,7 +270,7 @@ func reclaim(r *garbageRepo) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	if _, err := seafilePair.Write.ExecContext(ctx, "DELETE FROM GarbageRepos WHERE repo_id = ?", r.repoID); err != nil {
+	if _, err := siloPair.Write.ExecContext(ctx, "DELETE FROM GarbageRepos WHERE repo_id = ?", r.repoID); err != nil {
 		return fmt.Errorf("removed objects but failed to clear GarbageRepos row: %v", err)
 	}
 	return nil

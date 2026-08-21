@@ -166,9 +166,8 @@ the server first: nothing locks the data directory.
 and reports what the receiver said, so a silent tracker can be told apart from
 a healthy server that has had nothing to report.
 
-"silo backup-db" writes a consistent snapshot of ccnet.db and seafile.db,
-safely while the server runs — copying them with cp loses everything since
-the last WAL checkpoint. Copy storage/ afterwards, never before; see
-docs/backup.md.
+"silo backup-db" writes a consistent snapshot of silo.db, safely while the
+server runs — copying it with cp loses everything since the last WAL
+checkpoint. Copy storage/ afterwards, never before; see docs/backup.md.
 `)
 }

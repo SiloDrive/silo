@@ -9,8 +9,15 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Ccnet database schema (users, groups)
-const ccnetSchema = `
+// The Silo database schema.
+//
+// Users, groups and repositories used to live in two separate SQLite files
+// (ccnet.db and seafile.db), inherited from upstream's two server processes.
+// Silo is one process, so they are one database: no table name collides
+// between the two halves, and a share permission check that has to read a
+// group and a repository can now do it in a single statement.
+const siloSchema = `
+-- Users, groups, LDAP.
 CREATE TABLE IF NOT EXISTS Binding (email TEXT, peer_id TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS peer_index on Binding (peer_id);
 
@@ -34,10 +41,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS groupid_username_indx on GroupUser (group_id, 
 CREATE INDEX IF NOT EXISTS username_indx on GroupUser (user_name);
 CREATE TABLE IF NOT EXISTS GroupDNPair (group_id INTEGER, dn VARCHAR(255));
 CREATE TABLE IF NOT EXISTS GroupStructure (group_id INTEGER PRIMARY KEY, path VARCHAR(1024));
-`
 
-// Seafile database schema (repos, shares, tokens, permissions)
-const seafileSchema = `
+-- Repositories, shares, tokens, permissions, quotas.
 CREATE TABLE IF NOT EXISTS Branch (name VARCHAR(10), repo_id CHAR(40), commit_id CHAR(40), PRIMARY KEY (repo_id, name));
 CREATE TABLE IF NOT EXISTS Repo (repo_id CHAR(37) PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS RepoOwner (repo_id CHAR(37) PRIMARY KEY, owner_id TEXT);
@@ -133,17 +138,12 @@ CREATE TABLE IF NOT EXISTS ApiToken (token CHAR(40) PRIMARY KEY, email VARCHAR(2
 CREATE INDEX IF NOT EXISTS apitoken_email_idx ON ApiToken (email);
 `
 
-// CreateCcnetTables creates all ccnet tables if they don't exist.
-func CreateCcnetTables(db *sql.DB) error {
-	return execSchema(db, ccnetSchema)
+// CreateSiloTables creates all tables if they don't exist.
+func CreateSiloTables(db *sql.DB) error {
+	return execSchema(db, siloSchema)
 }
 
-// CreateSeafileTables creates all seafile tables if they don't exist.
-func CreateSeafileTables(db *sql.DB) error {
-	return execSchema(db, seafileSchema)
-}
-
-// MigrateSeafileTables brings a database created by an earlier version up to
+// MigrateSiloTables brings a database created by an earlier version up to
 // the current schema. CREATE TABLE IF NOT EXISTS silently leaves an existing
 // table alone, so columns added after a release need an explicit migration.
 //
@@ -154,7 +154,7 @@ func CreateSeafileTables(db *sql.DB) error {
 // the new policy going forward without that.
 // The TTL is passed in rather than read from the option package so that
 // dbutil stays free of dependencies on the rest of the server.
-func MigrateSeafileTables(db *sql.DB, apiTokenTTL time.Duration) error {
+func MigrateSiloTables(db *sql.DB, apiTokenTTL time.Duration) error {
 	// A zero TTL reaches here whenever a caller forgets to load options first,
 	// and the backfill below would then stamp every pre-existing token with
 	// expires_at = now — signing out every client as a side effect of running
@@ -185,7 +185,7 @@ func MigrateSeafileTables(db *sql.DB, apiTokenTTL time.Duration) error {
 	}
 
 	// Safe only now that expires_at is guaranteed to exist. See the note in
-	// seafileSchema for why it isn't declared alongside the table.
+	// siloSchema for why it isn't declared alongside the table.
 	addIndexIfMissing(db, "apitoken_expires_idx", "ApiToken", "expires_at")
 
 	added, err = AddColumnIfMissing(db, "RepoUserToken", "ctime", "BIGINT")
@@ -204,16 +204,11 @@ func MigrateSeafileTables(db *sql.DB, apiTokenTTL time.Duration) error {
 
 // addIndexIfMissing creates an index, tolerating one that is already there.
 //
-// MySQL has no portable "CREATE INDEX IF NOT EXISTS", so the duplicate case is
-// absorbed rather than tested for. An index is only an optimisation, so a
-// failure here is logged and the caller continues — the alternative, aborting
-// startup because an index could not be created, trades a slow sweep for an
-// outage.
+// An index is only an optimisation, so a failure here is logged and the
+// caller continues — the alternative, aborting startup because an index could
+// not be created, trades a slow sweep for an outage.
 func addIndexIfMissing(db *sql.DB, name, table, columns string) {
 	stmt := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s)", name, table, columns)
-	if DBEngine == EngineMySQL {
-		stmt = fmt.Sprintf("CREATE INDEX %s ON %s (%s)", name, table, columns)
-	}
 	if _, err := db.Exec(stmt); err != nil {
 		log.Debugf("Index %s on %s(%s) not created: %v", name, table, columns, err)
 	}
@@ -222,9 +217,8 @@ func addIndexIfMissing(db *sql.DB, name, table, columns string) {
 // AddColumnIfMissing adds a column to an existing table unless it is already
 // there.
 //
-// Presence is probed with a zero-row SELECT rather than an engine-specific
-// catalogue query — PRAGMA table_info on SQLite, information_schema on MySQL —
-// so one implementation covers both engines.
+// Presence is probed with a zero-row SELECT rather than a PRAGMA table_info
+// walk, which keeps it a single statement.
 //
 // It reports whether the column was actually added, so a caller that needs to
 // backfill the new column can do it once rather than on every start.

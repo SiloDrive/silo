@@ -27,15 +27,14 @@ func getTestStore(t *testing.T) string {
 	t.Helper()
 
 	option.LoadFileServerOptions("") // defaults, incl. a non-zero DBOpTimeout
-	dbutil.DBEngine = dbutil.EngineSQLite
 
 	dir := t.TempDir()
-	pair, err := dbutil.OpenSQLite(filepath.Join(dir, "seafile.db"))
+	pair, err := dbutil.OpenSQLite(filepath.Join(dir, "silo.db"))
 	if err != nil {
-		t.Fatalf("open seafile db: %v", err)
+		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = pair.Close() })
-	if err := dbutil.CreateSeafileTables(pair.Write); err != nil {
+	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
 		t.Fatalf("create seafile tables: %v", err)
 	}
 

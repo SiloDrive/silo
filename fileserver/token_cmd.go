@@ -42,7 +42,7 @@ func RunToken(args []string) error {
 	if err := openStores(); err != nil {
 		return err
 	}
-	apitokenstore.Init(seafilePair.Read, seafilePair.Write)
+	apitokenstore.Init(siloPair.Read, siloPair.Write)
 
 	switch action {
 	case "list":

@@ -23,10 +23,9 @@ Two consequences worth knowing:
   share-link routes (`/f/`, `/u/`, `/d/`) and the web file-access route were
   removed rather than ported, because every one of them authorized by calling
   out to a service Silo does not run. See `docs/capability-urls.md`.
-- Names on disk and on the wire still read "seafile" (`seafile.db`,
-  `Seafile-Repo-Token`, `seafile.conf`). Renaming the databases is planned
-  separately in `docs/plans/db-rename.md`; the wire header is fixed by client
-  compatibility and will not change.
+- Names on disk and on the wire still read "seafile" in places
+  (`Seafile-Repo-Token`, `seafile.conf`). The database is now `silo.db`; the
+  wire header is fixed by client compatibility and will not change.
 
 ## Authentication — two paths
 
@@ -75,17 +74,18 @@ The three calls the Go fileserver used to make into the C server are now local:
 
 ## Database
 
-Two logical databases: `ccnet` (users, groups) and `seafile` (repos, shares,
-tokens). SQLite is the default and the production path — embedded, WAL mode, one
-serialized write connection and a read-only read pool. A MySQL path still exists
-in `fileserver/option/` but is unused and slated for removal.
+One database, `<data-dir>/silo.db`. SQLite is the only engine — embedded, WAL
+mode, one serialized write connection and a read-only read pool. Users and
+groups used to live in a second file (`ccnet.db`) because upstream ran two
+server processes; Silo runs one, so they are one database. `docs/backup.md`
+has the upgrade recipe for a data directory that still has the old pair.
 
-### ccnet DB
+### Users and groups
 - `EmailUser` — users (id, email, passwd, is_staff, is_active, ctime, reference_id)
 - `GroupUser` — group membership
 - Groups table (configurable name)
 
-### seafile DB
+### Repositories
 - `Repo` — repositories
 - `Branch` — branch heads (repo_id, name, commit_id)
 - `RepoOwner` — repo ownership

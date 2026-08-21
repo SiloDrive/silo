@@ -25,9 +25,9 @@ import (
 var readDB *sql.DB
 var writeDB *sql.DB
 
-func Init(ccnetReadDB, ccnetWriteDB *sql.DB) {
-	readDB = ccnetReadDB
-	writeDB = ccnetWriteDB
+func Init(siloReadDB, siloWriteDB *sql.DB) {
+	readDB = siloReadDB
+	writeDB = siloWriteDB
 }
 
 // Legacy fixed salt used by old Seafile SHA256 password hashing.

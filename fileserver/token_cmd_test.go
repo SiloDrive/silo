@@ -29,8 +29,8 @@ func tokenTestStore(t *testing.T) {
 	t.Helper()
 
 	sqliteTestDB(t)
-	repomgr.Init(seafilePair.Read, seafilePair.Write)
-	apitokenstore.Init(seafilePair.Read, seafilePair.Write)
+	repomgr.Init(siloPair.Read, siloPair.Write)
+	apitokenstore.Init(siloPair.Read, siloPair.Write)
 
 	origTTL := option.APITokenTTL
 	option.APITokenTTL = 30 * 24 * time.Hour
@@ -61,7 +61,7 @@ func tokenTestStore(t *testing.T) {
 func countRows(t *testing.T, query string, args ...interface{}) int {
 	t.Helper()
 	var n int
-	if err := seafilePair.Read.QueryRow(query, args...).Scan(&n); err != nil {
+	if err := siloPair.Read.QueryRow(query, args...).Scan(&n); err != nil {
 		t.Fatalf("failed to count with %q: %v", query, err)
 	}
 	return n

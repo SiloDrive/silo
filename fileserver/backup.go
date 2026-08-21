@@ -6,17 +6,15 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/internal/format"
 )
 
-// RunBackupDB snapshots the SQLite databases into a destination directory.
+// RunBackupDB snapshots the SQLite database into a destination directory.
 //
-// The databases are the part of a Silo backup that cannot be copied with cp.
-// They run in WAL mode, so the bytes in seafile.db lag the committed state by
-// however much sits in seafile.db-wal, and Silo only checkpoints on a clean
+// The database is the part of a Silo backup that cannot be copied with cp.
+// It runs in WAL mode, so the bytes in silo.db lag the committed state by
+// however much sits in silo.db-wal, and Silo only checkpoints on a clean
 // shutdown. Copying just the .db file off a running server therefore loses
 // every write since the last checkpoint, silently and without any error to
 // notice — and copying the -wal and -shm files alongside it is not a fix,
@@ -30,7 +28,7 @@ import (
 // that rsync handles better than anything worth writing, but the *order*
 // matters and is the other half of what makes a naive backup wrong:
 //
-//	databases first, object store second.
+//	database first, object store second.
 //
 // Objects are content-addressed and never rewritten, so every object a head
 // captured at T1 references is still present at T2. Copy the store first and
@@ -57,15 +55,6 @@ func RunBackupDB(args []string) error {
 		return err
 	}
 
-	dbOpt, err := option.LoadDBOption(configFile)
-	if err != nil {
-		return fmt.Errorf("failed to load database configuration: %v", err)
-	}
-	if dbOpt.DBEngine != dbutil.EngineSQLite {
-		return fmt.Errorf("backup-db only handles SQLite; this deployment uses %s, "+
-			"so back it up with that engine's own tooling (mysqldump, pg_dump)", dbOpt.DBEngine)
-	}
-
 	if destDir == absDataDir {
 		return fmt.Errorf("destination %s is the data directory itself", destDir)
 	}
@@ -73,42 +62,40 @@ func RunBackupDB(args []string) error {
 		return fmt.Errorf("failed to create destination %s: %v", destDir, err)
 	}
 
-	for _, name := range []string{"ccnet.db", "seafile.db"} {
-		src := filepath.Join(absDataDir, name)
-		dst := filepath.Join(destDir, name)
-		if _, err := os.Stat(src); err != nil {
-			return fmt.Errorf("cannot read %s: %v", src, err)
-		}
-		// VACUUM INTO refuses to overwrite, which is the behaviour we want by
-		// default: a backup that silently replaced last night's good copy with
-		// a failed one would be worse than no backup. -f is the explicit
-		// opt-out for scripted rotation into a fixed path.
-		if _, err := os.Stat(dst); err == nil {
-			if !*force {
-				return fmt.Errorf("%s already exists; use -f to overwrite", dst)
-			}
-			if err := os.Remove(dst); err != nil {
-				return fmt.Errorf("failed to remove %s: %v", dst, err)
-			}
-		}
-		if err := vacuumInto(src, dst); err != nil {
-			return err
-		}
-		info, err := os.Stat(dst)
-		if err != nil {
-			return fmt.Errorf("failed to stat %s: %v", dst, err)
-		}
-		fmt.Printf("%s → %s (%s)\n", src, dst, format.Bytes(info.Size()))
+	src := filepath.Join(absDataDir, DatabaseName)
+	dst := filepath.Join(destDir, DatabaseName)
+	if _, err := os.Stat(src); err != nil {
+		return fmt.Errorf("cannot read %s: %v", src, err)
 	}
+	// VACUUM INTO refuses to overwrite, which is the behaviour we want by
+	// default: a backup that silently replaced last night's good copy with
+	// a failed one would be worse than no backup. -f is the explicit
+	// opt-out for scripted rotation into a fixed path.
+	if _, err := os.Stat(dst); err == nil {
+		if !*force {
+			return fmt.Errorf("%s already exists; use -f to overwrite", dst)
+		}
+		if err := os.Remove(dst); err != nil {
+			return fmt.Errorf("failed to remove %s: %v", dst, err)
+		}
+	}
+	if err := vacuumInto(src, dst); err != nil {
+		return err
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		return fmt.Errorf("failed to stat %s: %v", dst, err)
+	}
+	fmt.Printf("%s → %s (%s)\n", src, dst, format.Bytes(info.Size()))
 
 	storeDir := objstore.Root(absDataDir)
 	fmt.Printf(`
-Databases copied. Now copy the object store, in this order — never before:
+Database copied. Now copy the object store, in this order — never before:
 
   rsync -a %s/ %s/storage/
 
 Objects are immutable, so anything the copied heads reference is still there.
-Copying the store first and the databases after can capture heads that point
+Copying the store first and the database after can capture heads that point
 at objects the backup does not contain. Do not run "silo gc -delete" while a
 backup is in progress.
 `, storeDir, destDir)

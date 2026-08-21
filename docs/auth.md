@@ -61,7 +61,7 @@ None of that changes below. What changes is everything around it.
 
 `apitokenstore.Create` (`apitokenstore.go:62`) inserts the raw token;
 `repomgr.GenerateRepoToken` (`repomgr.go:987`) does the same. A read of
-`seafile.db` — a backup, a snapshot, a stray `SELECT` through some future admin
+`silo.db` — a backup, a snapshot, a stray `SELECT` through some future admin
 surface — yields immediately usable credentials for every device of every user,
 with no cracking required.
 
@@ -96,7 +96,7 @@ every notification token in flight.
 
 ### 4. The JWT secret is ephemeral by default
 
-`LoadJWTConfig` (`option.go:585`) generates a random key when
+`LoadJWTConfig` (`option.go:573`) generates a random key when
 `SILO_JWT_SECRET` is unset and logs a line about it. Every restart invalidates
 every session simultaneously.
 

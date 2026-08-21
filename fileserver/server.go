@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
-	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
@@ -15,7 +14,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -37,7 +35,6 @@ import (
 	"github.com/dkam/silo/fileserver/utils"
 	"github.com/dkam/silo/internal/observability"
 	"github.com/dkam/silo/internal/xdg"
-	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 
@@ -51,7 +48,7 @@ var logFile, absLogFile string
 var pidFilePath string
 var logFp *os.File
 
-var seafilePair, ccnetPair *dbutil.DBPair
+var siloPair *dbutil.DBPair
 
 var httpServer *http.Server
 var shutdownDone = make(chan struct{})
@@ -199,108 +196,93 @@ func openStores() error {
 		return err
 	}
 	option.LoadFileServerOptions(configFile)
-	loadDatabases()
-	repomgr.Init(seafilePair.Read, seafilePair.Write)
+	loadDatabase()
+	repomgr.Init(siloPair.Read, siloPair.Write)
 	return nil
 }
 
-func loadDatabases() {
-	dbOpt, err := option.LoadDBOption(configFile)
-	if err != nil {
-		log.Fatalf("Failed to load database: %v", err)
-	}
+// DatabaseName is the single SQLite file every table lives in, relative to
+// the data directory.
+const DatabaseName = "silo.db"
 
-	dbutil.DBEngine = dbOpt.DBEngine
-	if dbOpt.DBEngine == dbutil.EngineSQLite {
-		loadSQLiteDatabases()
-	} else {
-		loadMySQLDatabases(dbOpt)
-	}
+// legacyDatabaseNames are the two files Silo used before it had one database.
+// They are never opened — only refused, by checkLegacyDatabases.
+var legacyDatabaseNames = []string{"ccnet.db", "seafile.db"}
 
-	// Runs for both engines: CreateSeafileTables only executes on the SQLite
-	// path, but a MySQL deployment with an externally-provisioned schema needs
-	// the added columns just as much.
-	if err := dbutil.MigrateSeafileTables(seafilePair.Write, option.APITokenTTL); err != nil {
-		log.Fatalf("Failed to migrate seafile database: %v", err)
-	}
-}
-
-func loadSQLiteDatabases() {
-	ccnetPath := filepath.Join(absDataDir, "ccnet.db")
-	seafilePath := filepath.Join(absDataDir, "seafile.db")
-
-	var err error
-	ccnetPair, err = dbutil.OpenSQLite(ccnetPath)
-	if err != nil {
-		log.Fatalf("Failed to open ccnet database: %v", err)
-	}
-
-	if err := dbutil.CreateCcnetTables(ccnetPair.Write); err != nil {
-		log.Fatalf("Failed to create ccnet tables: %v", err)
-	}
-
-	seafilePair, err = dbutil.OpenSQLite(seafilePath)
-	if err != nil {
-		log.Fatalf("Failed to open seafile database: %v", err)
-	}
-
-	if err := dbutil.CreateSeafileTables(seafilePair.Write); err != nil {
-		log.Fatalf("Failed to create seafile tables: %v", err)
-	}
-
-	log.Info("Using SQLite databases")
-}
-
-func loadMySQLDatabases(dbOpt *option.DBOption) {
-	ccnetDSN := buildMySQLDSN(dbOpt, dbOpt.CcnetDbName)
-	seafileDSN := buildMySQLDSN(dbOpt, dbOpt.SeafileDbName)
-
-	var err error
-	ccnetPair, err = dbutil.OpenMySQL(ccnetDSN)
-	if err != nil {
-		log.Fatalf("Failed to open ccnet database: %v", err)
-	}
-
-	seafilePair, err = dbutil.OpenMySQL(seafileDSN)
-	if err != nil {
-		log.Fatalf("Failed to open seafile database: %v", err)
-	}
-
-	log.Info("Using MySQL databases")
-}
-
-func buildMySQLDSN(dbOpt *option.DBOption, dbName string) string {
-	timeout := "&readTimeout=60s" + "&writeTimeout=60s"
-	var dsn string
-	if dbOpt.UseTLS && dbOpt.SkipVerify {
-		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?tls=skip-verify%s", dbOpt.User, dbOpt.Password, dbOpt.Host, dbOpt.Port, dbName, timeout)
-	} else if dbOpt.UseTLS && !dbOpt.SkipVerify {
-		registerCA(dbOpt.CaPath)
-		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?tls=custom%s", dbOpt.User, dbOpt.Password, dbOpt.Host, dbOpt.Port, dbName, timeout)
-	} else {
-		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?tls=%t%s", dbOpt.User, dbOpt.Password, dbOpt.Host, dbOpt.Port, dbName, dbOpt.UseTLS, timeout)
-	}
-	if dbOpt.Charset != "" {
-		dsn = fmt.Sprintf("%s&charset=%s", dsn, dbOpt.Charset)
-	}
-	return dsn
-}
-
-// registerCA registers CA to verify server cert.
-func registerCA(capath string) {
-	rootCertPool := x509.NewCertPool()
-	pem, err := os.ReadFile(capath)
-	if err != nil {
+func loadDatabase() {
+	dbPath := filepath.Join(absDataDir, DatabaseName)
+	if err := checkLegacyDatabases(absDataDir, dbPath); err != nil {
 		log.Fatal(err)
 	}
-	if ok := rootCertPool.AppendCertsFromPEM(pem); !ok {
-		log.Fatal("Failed to append PEM.")
+
+	var err error
+	siloPair, err = dbutil.OpenSQLite(dbPath)
+	if err != nil {
+		log.Fatalf("Failed to open database: %v", err)
 	}
-	if err := mysql.RegisterTLSConfig("custom", &tls.Config{
-		RootCAs: rootCertPool,
-	}); err != nil {
-		log.Fatalf("Failed to register TLS config: %v", err)
+
+	if err := dbutil.CreateSiloTables(siloPair.Write); err != nil {
+		log.Fatalf("Failed to create tables: %v", err)
 	}
+
+	if err := dbutil.MigrateSiloTables(siloPair.Write, option.APITokenTTL); err != nil {
+		log.Fatalf("Failed to migrate database: %v", err)
+	}
+
+	log.Infof("Using database %s", dbPath)
+}
+
+// checkLegacyDatabases refuses to start on a data directory written by a
+// version that kept users and repositories in two separate SQLite files.
+//
+// Opening silo.db regardless would succeed, create every table empty, and
+// present a server with no users and no libraries next to a directory that
+// still holds all of them — indistinguishable, from the outside, from having
+// lost the lot. Failing with the recipe below costs one command and cannot be
+// mistaken for anything.
+//
+// Once silo.db exists the old files are ignored: whatever is in them has
+// either been folded in already or was deliberately left behind.
+func checkLegacyDatabases(dir, dbPath string) error {
+	if _, err := os.Stat(dbPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to stat %s: %v", dbPath, err)
+	}
+
+	var found, foundNames []string
+	for _, name := range legacyDatabaseNames {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			found = append(found, p)
+			foundNames = append(foundNames, name)
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+
+	// The checkpoints are the part that is easy to leave out and impossible
+	// to notice: both databases run in WAL mode, so a dump taken without one
+	// silently omits every transaction since the last checkpoint.
+	var recipe strings.Builder
+	for _, p := range found {
+		fmt.Fprintf(&recipe, "  sqlite3 %s 'PRAGMA wal_checkpoint(TRUNCATE)'\n", p)
+	}
+	recipe.WriteString("  { ")
+	for i, p := range found {
+		if i > 0 {
+			recipe.WriteString("; ")
+		}
+		fmt.Fprintf(&recipe, "sqlite3 %s .dump", p)
+	}
+	fmt.Fprintf(&recipe, "; } | sqlite3 %s\n", dbPath)
+
+	return fmt.Errorf("%s holds %s from a version that used two databases, and there is no %s.\n"+
+		"Silo now keeps users, groups and repositories in one database. No table name is\n"+
+		"shared between the old pair, so they concatenate directly:\n\n%s\n"+
+		"Then start the server again — it adds anything the schema has gained since.",
+		dir, strings.Join(foundNames, " and "), DatabaseName, recipe.String())
 }
 
 func writePidFile(pid_file_path string) error {
@@ -397,7 +379,7 @@ func Run(args []string) error {
 	if bindAddr != "" {
 		option.Host = bindAddr
 	}
-	loadDatabases()
+	loadDatabase()
 
 	level, err := log.ParseLevel(option.LogLevel)
 	if err != nil {
@@ -407,7 +389,7 @@ func Run(args []string) error {
 		log.SetLevel(level)
 	}
 
-	repomgr.Init(seafilePair.Read, seafilePair.Write)
+	repomgr.Init(siloPair.Read, siloPair.Write)
 
 	// Drop cached authorisations as soon as the rows behind them go away,
 	// rather than at the next cache expiry. Registered here because repomgr
@@ -424,14 +406,14 @@ func Run(args []string) error {
 
 	commitmgr.Init("", dataDir)
 
-	share.Init(ccnetPair.Read, seafilePair.Read, option.GroupTableName, option.CloudMode)
+	share.Init(siloPair.Read, option.GroupTableName, option.CloudMode)
 
 	tokenstore.StartCleanup()
 	keycache.StartReaper()
-	authmgr.Init(ccnetPair.Read, ccnetPair.Write)
-	api.Init(seafilePair.Read, seafilePair.Write)
+	authmgr.Init(siloPair.Read, siloPair.Write)
+	api.Init(siloPair.Read, siloPair.Write)
 	api.StartLoginLimiterCleanup()
-	apitokenstore.Init(seafilePair.Read, seafilePair.Write)
+	apitokenstore.Init(siloPair.Read, siloPair.Write)
 	apitokenstore.StartCleanup()
 
 	// Create the admin user from the environment if it is set, and invent one
@@ -586,13 +568,7 @@ func handleSignals() {
 		}
 	}
 
-	// Checkpoint both DBs in parallel — they're independent and a large WAL
-	// can take a noticeable fraction of a second to flush.
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); checkpointAndClose(seafilePair, "seafile") }()
-	go func() { defer wg.Done(); checkpointAndClose(ccnetPair, "ccnet") }()
-	wg.Wait()
+	checkpointAndClose(siloPair)
 
 	metrics.Stop()
 	if err := removePidfile(pidFilePath); err != nil {
@@ -603,17 +579,15 @@ func handleSignals() {
 	close(shutdownDone)
 }
 
-func checkpointAndClose(pair *dbutil.DBPair, name string) {
+func checkpointAndClose(pair *dbutil.DBPair) {
 	if pair == nil {
 		return
 	}
-	if option.DBType == dbutil.EngineSQLite {
-		if _, err := pair.Write.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-			log.Warnf("%s WAL checkpoint failed: %v", name, err)
-		}
+	if _, err := pair.Write.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		log.Warnf("WAL checkpoint failed: %v", err)
 	}
 	if err := pair.Close(); err != nil {
-		log.Warnf("%s DB close failed: %v", name, err)
+		log.Warnf("DB close failed: %v", err)
 	}
 }
 

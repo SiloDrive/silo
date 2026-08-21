@@ -10,19 +10,15 @@ import (
 func schemaTestDB(t *testing.T) *DBPair {
 	t.Helper()
 
-	origEngine := DBEngine
-	DBEngine = EngineSQLite
-
-	pair, err := OpenSQLite(filepath.Join(t.TempDir(), "seafile.db"))
+	pair, err := OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
 	if err != nil {
 		t.Fatalf("failed to open test database: %v", err)
 	}
-	if err := CreateSeafileTables(pair.Write); err != nil {
+	if err := CreateSiloTables(pair.Write); err != nil {
 		t.Fatalf("failed to create test tables: %v", err)
 	}
 
 	t.Cleanup(func() {
-		DBEngine = origEngine
 		_ = pair.Read.Close()
 		_ = pair.Write.Close()
 	})
@@ -54,7 +50,7 @@ func TestMigrateRejectsNonPositiveTTL(t *testing.T) {
 	}
 
 	for _, ttl := range []time.Duration{0, -time.Hour} {
-		if err := MigrateSeafileTables(pair.Write, ttl); err == nil {
+		if err := MigrateSiloTables(pair.Write, ttl); err == nil {
 			t.Errorf("MigrateSeafileTables accepted a TTL of %v, want refusal", ttl)
 		}
 
@@ -66,7 +62,7 @@ func TestMigrateRejectsNonPositiveTTL(t *testing.T) {
 	}
 
 	// A real TTL still migrates, so the guard has not broken the happy path.
-	if err := MigrateSeafileTables(pair.Write, 30*24*time.Hour); err != nil {
+	if err := MigrateSiloTables(pair.Write, 30*24*time.Hour); err != nil {
 		t.Fatalf("MigrateSeafileTables rejected a valid TTL: %v", err)
 	}
 	var expiresAt sql.NullInt64

@@ -4,46 +4,32 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 )
 
 // syncAuthTestDB adds what the sync endpoints need to answer an authenticated
-// request: a ccnet database for share lookups, repomgr and share wired up, and
-// the auth caches cleared so one test cannot see another's decisions.
+// request: repomgr and share wired up against the test database, and the auth
+// caches cleared so one test cannot see another's decisions.
 func syncAuthTestDB(t *testing.T) {
 	t.Helper()
 
 	sqliteTestDB(t)
-	repomgr.Init(seafilePair.Read, seafilePair.Write)
-
-	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "ccnet.db"))
-	if err != nil {
-		t.Fatalf("failed to open ccnet database: %v", err)
-	}
-	if err := dbutil.CreateCcnetTables(pair.Write); err != nil {
-		t.Fatalf("failed to create ccnet tables: %v", err)
-	}
-	origCcnet := ccnetPair
-	ccnetPair = pair
-	share.Init(pair.Read, seafilePair.Read, "Group", false)
+	repomgr.Init(siloPair.Read, siloPair.Write)
+	share.Init(siloPair.Read, "Group", false)
 
 	origTTL := option.AuthCacheTTL
 	option.AuthCacheTTL = 5 * time.Minute
 	clearAuthCaches()
 
 	t.Cleanup(func() {
-		ccnetPair = origCcnet
 		option.AuthCacheTTL = origTTL
 		clearAuthCaches()
-		_ = pair.Close()
 	})
 }
 

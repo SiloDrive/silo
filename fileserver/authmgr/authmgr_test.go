@@ -255,7 +255,7 @@ func TestGenerateSessionTokenRejectsEmptyEmail(t *testing.T) {
 	}
 }
 
-// authTestDB points the package at a throwaway ccnet database.
+// authTestDB points the package at a throwaway database.
 func authTestDB(t *testing.T) {
 	t.Helper()
 
@@ -263,14 +263,12 @@ func authTestDB(t *testing.T) {
 	option.DBOpTimeout = 5 * time.Second
 
 	// The statement builders dispatch on this; unset, they emit MySQL.
-	origEngine := dbutil.DBEngine
-	dbutil.DBEngine = dbutil.EngineSQLite
 
-	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "ccnet.db"))
+	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
 	if err != nil {
 		t.Fatalf("failed to open test database: %v", err)
 	}
-	if err := dbutil.CreateCcnetTables(pair.Write); err != nil {
+	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
 		t.Fatalf("failed to create test tables: %v", err)
 	}
 
@@ -279,7 +277,6 @@ func authTestDB(t *testing.T) {
 
 	t.Cleanup(func() {
 		readDB, writeDB = origRead, origWrite
-		dbutil.DBEngine = origEngine
 		option.DBOpTimeout = origTimeout
 		_ = pair.Close()
 	})

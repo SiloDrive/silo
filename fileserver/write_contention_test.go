@@ -24,7 +24,7 @@ func contendedRepoTestDB(t *testing.T) *commitmgr.Commit {
 	t.Helper()
 
 	sqliteTestDB(t)
-	repomgr.Init(seafilePair.Read, seafilePair.Write)
+	repomgr.Init(siloPair.Read, siloPair.Write)
 
 	confPath := t.TempDir()
 	dataDir := filepath.Join(confPath, "seafile-data")

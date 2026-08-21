@@ -28,9 +28,9 @@ The sync protocol is a different shape. Its write path is a negotiation:
 
 | Endpoint | Purpose | Registered |
 |---|---|---|
-| `POST /repo/{id}/check-blocks` | which of these block ids do you *not* have? | `server.go:692` |
-| `POST /repo/{id}/check-fs` | same question for fs objects | `server.go:690` |
-| `POST /repo/{id}/recv-fs` | upload the fs objects it asked for | `server.go:694` |
+| `POST /repo/{id}/check-blocks` | which of these block ids do you *not* have? | `server.go:665` |
+| `POST /repo/{id}/check-fs` | same question for fs objects | `server.go:663` |
+| `POST /repo/{id}/recv-fs` | upload the fs objects it asked for | `server.go:667` |
 | `PUT /repo/{id}/block/{id}` | upload one block | see `protocol.md` |
 | `PUT /repo/{id}/commit/HEAD` | advance the branch head | see `protocol.md` |
 

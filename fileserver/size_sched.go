@@ -147,7 +147,7 @@ func computeRepoSize(args ...interface{}) error {
 func setRepoSizeAndFileCount(repoID, newHeadID string, size, fileCount int64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	trans, err := seafilePair.Write.BeginTx(ctx, nil)
+	trans, err := siloPair.Write.BeginTx(ctx, nil)
 	if err != nil {
 		err := fmt.Errorf("failed to start transaction: %v", err)
 		return err
@@ -254,7 +254,7 @@ func getOldRepoInfo(repoID string) (*RepoInfo, error) {
 	repoInfo := new(RepoInfo)
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	row := seafilePair.Read.QueryRowContext(ctx, sqlStr, repoID)
+	row := siloPair.Read.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&repoInfo.HeadID, &repoInfo.Size, &repoInfo.FileCount); err != nil {
 		if err != sql.ErrNoRows {
 			return nil, err

@@ -27,36 +27,26 @@ const (
 	missingRepoID = "99999999-8888-7777-6666-555555555555"
 )
 
-// setupPerms wires up in-package SQLite databases and seeds one repo owned by
+// setupPerms wires up an in-package SQLite database and seeds one repo owned by
 // ownerUser, shared "rw" with rwShareUser and "r" with roShareUser.
 // strangerUser is left with no relationship to the repo at all.
 func setupPerms(t *testing.T) {
 	t.Helper()
 
 	option.LoadFileServerOptions("") // defaults, incl. a non-zero DBOpTimeout
-	dbutil.DBEngine = dbutil.EngineSQLite
 
 	dir := t.TempDir()
 
-	ccnetPair, err := dbutil.OpenSQLite(filepath.Join(dir, "ccnet.db"))
+	siloPair, err := dbutil.OpenSQLite(filepath.Join(dir, "silo.db"))
 	if err != nil {
-		t.Fatalf("open ccnet db: %v", err)
+		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { _ = ccnetPair.Close() })
-	if err := dbutil.CreateCcnetTables(ccnetPair.Write); err != nil {
-		t.Fatalf("create ccnet tables: %v", err)
+	t.Cleanup(func() { _ = siloPair.Close() })
+	if err := dbutil.CreateSiloTables(siloPair.Write); err != nil {
+		t.Fatalf("create tables: %v", err)
 	}
 
-	seafilePair, err := dbutil.OpenSQLite(filepath.Join(dir, "seafile.db"))
-	if err != nil {
-		t.Fatalf("open seafile db: %v", err)
-	}
-	t.Cleanup(func() { _ = seafilePair.Close() })
-	if err := dbutil.CreateSeafileTables(seafilePair.Write); err != nil {
-		t.Fatalf("create seafile tables: %v", err)
-	}
-
-	if _, err := seafilePair.Write.Exec(
+	if _, err := siloPair.Write.Exec(
 		"INSERT INTO RepoOwner (repo_id, owner_id) VALUES (?, ?)", testRepoID, ownerUser); err != nil {
 		t.Fatalf("seed RepoOwner: %v", err)
 	}
@@ -64,16 +54,16 @@ func setupPerms(t *testing.T) {
 		{rwShareUser, "rw"},
 		{roShareUser, "r"},
 	} {
-		if _, err := seafilePair.Write.Exec(
+		if _, err := siloPair.Write.Exec(
 			"INSERT INTO SharedRepo (repo_id, from_email, to_email, permission) VALUES (?, ?, ?, ?)",
 			testRepoID, ownerUser, s.user, s.perm); err != nil {
 			t.Fatalf("seed SharedRepo for %s: %v", s.user, err)
 		}
 	}
 
-	repomgr.Init(seafilePair.Read, seafilePair.Write)
-	share.Init(ccnetPair.Read, seafilePair.Read, "Group", false)
-	Init(seafilePair.Read, seafilePair.Write)
+	repomgr.Init(siloPair.Read, siloPair.Write)
+	share.Init(siloPair.Read, "Group", false)
+	Init(siloPair.Read, siloPair.Write)
 }
 
 // postAccessToken invokes CreateAccessTokenHandler as `user` would, bypassing

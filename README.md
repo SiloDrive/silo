@@ -31,7 +31,7 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
 ```
 
 - One process. No RPC, no Python, no controller.
-- Two logical databases — `ccnet` (users, groups) and `seafile` (repos, shares, tokens). Both live in embedded SQLite files in the data directory.
+- One embedded SQLite database, `silo.db`, in the data directory: users, groups, repos, shares and tokens together.
 - Content-addressable object store under `{data-dir}/storage/` with separate trees for blocks, commits, and filesystem objects.
 
 ## Features
@@ -127,7 +127,7 @@ SILO_ADMIN_PASSWORD=changeme \
 ./silo serve -d /path/to/silo-data
 ```
 
-The server listens on `127.0.0.1:8082`. On first run it creates the ccnet and seafile SQLite databases, the storage directory, and the admin user.
+The server listens on `127.0.0.1:8082`. On first run it creates the SQLite database, the storage directory, and the admin user.
 
 The credentials are optional. Started with an empty user table and no `SILO_ADMIN_PASSWORD`, the server creates `admin@silo.local` with a random password and prints it once, at warning level:
 
@@ -236,11 +236,11 @@ disturbing whatever the service normally runs with.
 
 ## Backups
 
-`cp seafile.db` is not a backup — the databases run in WAL mode, so a plain
+`cp silo.db` is not a backup — the database runs in WAL mode, so a plain
 copy silently loses every write since the last checkpoint. Use:
 
 ```sh
-silo backup-db /backup/silo/$(date +%F)                       # databases, first
+silo backup-db /backup/silo/$(date +%F)                       # database, first
 rsync -a "$SILO_DATA_DIR"/storage/ /backup/silo/$(date +%F)/storage/   # objects, second
 ```
 

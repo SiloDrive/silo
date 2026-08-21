@@ -18,7 +18,6 @@ import (
 
 	"github.com/dkam/silo/fileserver/blockmgr"
 	"github.com/dkam/silo/fileserver/commitmgr"
-	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/diff"
 	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/option"
@@ -709,14 +708,18 @@ func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return writeJSON(rsp, map[string]string{})
 	}
 
+	// No shared-lock clause: SQLite has no row locks and no such syntax, and
+	// needs no substitute. Under WAL a reader sees a consistent snapshot
+	// without blocking, and writes are already serialised onto the single
+	// write connection.
 	sqlStr := fmt.Sprintf(
 		"SELECT repo_id, commit_id FROM Branch WHERE name='master' AND "+
-			"repo_id IN (%s)%s",
-		repoIDs.String(), dbutil.SharedLockSuffix())
+			"repo_id IN (%s)",
+		repoIDs.String())
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	rows, err := seafilePair.Read.QueryContext(ctx, sqlStr)
+	rows, err := siloPair.Read.QueryContext(ctx, sqlStr)
 	if err != nil {
 		err := fmt.Errorf("failed to get commit id: %v", err)
 		return &appError{err, "", http.StatusInternalServerError}
@@ -955,7 +958,7 @@ func getRepoStoreID(repoID string) (string, error) {
 	sqlStr := "SELECT repo_id, origin_repo FROM VirtualRepo where repo_id = ?"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	row := seafilePair.Read.QueryRowContext(ctx, sqlStr, repoID)
+	row := siloPair.Read.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&rID, &originRepoID); err != nil {
 		if err == sql.ErrNoRows {
 			vInfo.storeID = repoID
@@ -1308,7 +1311,7 @@ func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 	var exists bool
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	row := seafilePair.Read.QueryRowContext(ctx, sqlStr, repoID)
+	row := siloPair.Read.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&exists); err != nil {
 		if err != sql.ErrNoRows {
 			log.Errorf("DB error when check repo %s existence: %v", repoID, err)
@@ -1328,7 +1331,7 @@ func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 
 	var commitID string
 	sqlStr = "SELECT commit_id FROM Branch WHERE name='master' AND repo_id=?"
-	row = seafilePair.Read.QueryRowContext(ctx, sqlStr, repoID)
+	row = siloPair.Read.QueryRowContext(ctx, sqlStr, repoID)
 
 	if err := row.Scan(&commitID); err != nil {
 		if err != sql.ErrNoRows {
