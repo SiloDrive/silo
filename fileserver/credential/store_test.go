@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/option"
 )
@@ -30,6 +31,7 @@ func testDB(t *testing.T) *dbutil.DBPair {
 
 	origRead, origWrite := readDB, writeDB
 	Init(pair.Read, pair.Write)
+	account.Init(pair.Read, pair.Write)
 
 	t.Cleanup(func() {
 		readDB, writeDB = origRead, origWrite
@@ -39,17 +41,26 @@ func testDB(t *testing.T) *dbutil.DBPair {
 	return pair
 }
 
-func addUser(t *testing.T, pair *dbutil.DBPair, email string, active bool) {
+// addUser mints an account and returns its id. active = false stands in for a
+// user an operator has disabled.
+func addUser(t *testing.T, pair *dbutil.DBPair, email string, active bool) account.ID {
 	t.Helper()
-	if _, err := pair.Write.Exec(
-		"INSERT INTO EmailUser (email, passwd, is_staff, is_active, ctime) VALUES (?, '!', 0, ?, ?)",
-		email, active, time.Now().Unix()); err != nil {
-		t.Fatalf("inserting user: %v", err)
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	id, _, err := account.Create(ctx, email, "", false)
+	if err != nil {
+		t.Fatalf("creating account: %v", err)
 	}
+	if !active {
+		if _, err := pair.Write.Exec("UPDATE Account SET is_active = 0 WHERE id = ?", id); err != nil {
+			t.Fatalf("disabling account: %v", err)
+		}
+	}
+	return id
 }
 
 type credOpts struct {
-	email     string
+	account   account.ID
 	scope     string
 	perm      string
 	expiresAt int64
@@ -64,9 +75,6 @@ func mint(t *testing.T, pair *dbutil.DBPair, kind Kind, o credOpts) (string, Tok
 	if err != nil {
 		t.Fatalf("NewToken: %v", err)
 	}
-	if o.email == "" {
-		o.email = "dan@example.com"
-	}
 	if o.perm == "" {
 		o.perm = "rw"
 	}
@@ -80,10 +88,10 @@ func mint(t *testing.T, pair *dbutil.DBPair, kind Kind, o credOpts) (string, Tok
 		expires = o.expiresAt
 	}
 	if _, err := pair.Write.Exec(
-		`INSERT INTO Credential (id, kind, secret_hash, public_key, email, label, scope,
+		`INSERT INTO Credential (id, kind, secret_hash, public_key, account_id, label, scope,
 		                         perm, client_id, ctime, expires_at, last_used)
 		 VALUES (?, ?, ?, ?, ?, 'test', ?, ?, NULL, ?, ?, NULL)`,
-		tok.ID, string(kind), hash, o.publicKey, o.email, o.scope, o.perm,
+		tok.ID, string(kind), hash, o.publicKey, o.account, o.scope, o.perm,
 		time.Now().Unix(), expires); err != nil {
 		t.Fatalf("inserting credential: %v", err)
 	}
@@ -98,8 +106,8 @@ func bearer(s string) *http.Request {
 
 func TestResolveAcceptsAValidCredential(t *testing.T) {
 	pair := testDB(t)
-	addUser(t, pair, "dan@example.com", true)
-	s, tok := mint(t, pair, KindDevice, credOpts{scope: "repo-1:/photos", perm: "r"})
+	dan := addUser(t, pair, "dan@example.com", true)
+	s, tok := mint(t, pair, KindDevice, credOpts{account: dan, scope: "repo-1:/photos", perm: "r"})
 
 	cred, err := Resolve(bearer(s), KindDevice)
 	if err != nil {
@@ -108,8 +116,8 @@ func TestResolveAcceptsAValidCredential(t *testing.T) {
 	if cred.ID != tok.ID {
 		t.Errorf("id = %q, want %q", cred.ID, tok.ID)
 	}
-	if cred.Email != "dan@example.com" {
-		t.Errorf("email = %q", cred.Email)
+	if cred.AccountID != dan {
+		t.Errorf("account = %s, want %s", cred.AccountID, dan)
 	}
 	if got, want := cred.Scope.String(), "repo-1:/photos"; got != want {
 		t.Errorf("scope = %q, want %q", got, want)
@@ -126,8 +134,8 @@ func TestResolveAcceptsAValidCredential(t *testing.T) {
 // the pair answers "is this credential real?" for anyone who asks.
 func TestResolveDoesNotDistinguishMissingFromWrong(t *testing.T) {
 	pair := testDB(t)
-	addUser(t, pair, "dan@example.com", true)
-	s, _ := mint(t, pair, KindDevice, credOpts{})
+	dan := addUser(t, pair, "dan@example.com", true)
+	s, _ := mint(t, pair, KindDevice, credOpts{account: dan})
 
 	// A credential whose row was never written.
 	_, unknown, err := NewToken(KindDevice)
@@ -159,14 +167,13 @@ func TestResolveDoesNotDistinguishMissingFromWrong(t *testing.T) {
 
 func TestResolveRejects(t *testing.T) {
 	pair := testDB(t)
-	addUser(t, pair, "dan@example.com", true)
-	addUser(t, pair, "disabled@example.com", false)
+	dan := addUser(t, pair, "dan@example.com", true)
+	disabled := addUser(t, pair, "disabled@example.com", false)
 
-	valid, _ := mint(t, pair, KindDevice, credOpts{})
-	expired, _ := mint(t, pair, KindDevice, credOpts{expiresAt: time.Now().Add(-time.Hour).Unix()})
-	inactive, _ := mint(t, pair, KindDevice, credOpts{email: "disabled@example.com"})
-	orphan, _ := mint(t, pair, KindDevice, credOpts{email: "deleted@example.com"})
-	pop, _ := mint(t, pair, KindDevice, credOpts{publicKey: []byte("spki")})
+	valid, _ := mint(t, pair, KindDevice, credOpts{account: dan})
+	expired, _ := mint(t, pair, KindDevice, credOpts{account: dan, expiresAt: time.Now().Add(-time.Hour).Unix()})
+	inactive, _ := mint(t, pair, KindDevice, credOpts{account: disabled})
+	pop, _ := mint(t, pair, KindDevice, credOpts{account: dan, publicKey: []byte("spki")})
 
 	tests := []struct {
 		name string
@@ -180,7 +187,6 @@ func TestResolveRejects(t *testing.T) {
 		{"wrong lane", bearer(valid), KindSession, ErrWrongKind},
 		{"expired", bearer(expired), KindDevice, ErrExpired},
 		{"disabled account", bearer(inactive), KindDevice, ErrInactive},
-		{"deleted account", bearer(orphan), KindDevice, ErrInactive},
 		{"proof of possession", bearer(pop), KindDevice, ErrSignatureNotImplemented},
 	}
 
@@ -192,19 +198,33 @@ func TestResolveRejects(t *testing.T) {
 	}
 }
 
+// A credential is a reference to an account, and the schema says so. Deleting
+// the account out from under one is refused rather than leaving a row that
+// authenticates nobody — which is why Resolve has no "deleted account" case to
+// answer, only a disabled one.
+func TestAnAccountHoldingCredentialsCannotBeDeleted(t *testing.T) {
+	pair := testDB(t)
+	dan := addUser(t, pair, "dan@example.com", true)
+	mint(t, pair, KindDevice, credOpts{account: dan})
+
+	if _, err := pair.Write.Exec("DELETE FROM Account WHERE id = ?", dan); err == nil {
+		t.Error("an account with a live credential was deleted")
+	}
+}
+
 // The account join is the property that could not be retrofitted onto three
 // separate stores: disabling a user has to kill every lane at once.
 func TestResolveFollowsTheAccountImmediately(t *testing.T) {
 	pair := testDB(t)
-	addUser(t, pair, "dan@example.com", true)
-	s, _ := mint(t, pair, KindDevice, credOpts{})
+	dan := addUser(t, pair, "dan@example.com", true)
+	s, _ := mint(t, pair, KindDevice, credOpts{account: dan})
 
 	if _, err := Resolve(bearer(s), KindDevice); err != nil {
 		t.Fatalf("before disabling: %v", err)
 	}
 
 	if _, err := pair.Write.Exec(
-		"UPDATE EmailUser SET is_active = 0 WHERE email = ?", "dan@example.com"); err != nil {
+		"UPDATE Account SET is_active = 0 WHERE id = ?", dan); err != nil {
 		t.Fatalf("disabling user: %v", err)
 	}
 
@@ -215,8 +235,8 @@ func TestResolveFollowsTheAccountImmediately(t *testing.T) {
 
 func TestResolveStampsLastUsedCoarsely(t *testing.T) {
 	pair := testDB(t)
-	addUser(t, pair, "dan@example.com", true)
-	s, tok := mint(t, pair, KindDevice, credOpts{})
+	dan := addUser(t, pair, "dan@example.com", true)
+	s, tok := mint(t, pair, KindDevice, credOpts{account: dan})
 
 	readLastUsed := func() int64 {
 		var v *int64
@@ -271,7 +291,7 @@ func TestResolveStampsLastUsedCoarsely(t *testing.T) {
 
 func TestResolveLegacyToken(t *testing.T) {
 	pair := testDB(t)
-	addUser(t, pair, "dan@example.com", true)
+	dan := addUser(t, pair, "dan@example.com", true)
 
 	// A legacy client presents forty hex characters, which auth.md reads as an
 	// encoding of the same row rather than a separate store.
@@ -281,9 +301,9 @@ func TestResolveLegacyToken(t *testing.T) {
 		t.Fatalf("ParseLegacyToken: %v", err)
 	}
 	if _, err := pair.Write.Exec(
-		`INSERT INTO Credential (id, kind, secret_hash, email, label, perm, ctime)
-		 VALUES (?, 'legacy', ?, 'dan@example.com', 'seadrive', 'rw', ?)`,
-		tok.ID, tok.SecretHash(), time.Now().Unix()); err != nil {
+		`INSERT INTO Credential (id, kind, secret_hash, account_id, label, perm, ctime)
+		 VALUES (?, 'legacy', ?, ?, 'seadrive', 'rw', ?)`,
+		tok.ID, tok.SecretHash(), dan, time.Now().Unix()); err != nil {
 		t.Fatalf("inserting credential: %v", err)
 	}
 
@@ -294,7 +314,7 @@ func TestResolveLegacyToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if cred.Kind != KindLegacy || cred.Email != "dan@example.com" {
+	if cred.Kind != KindLegacy || cred.AccountID != dan {
 		t.Errorf("resolved the wrong row: %+v", cred)
 	}
 }

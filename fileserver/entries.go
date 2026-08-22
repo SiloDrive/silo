@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/middleware"
@@ -112,7 +113,7 @@ func entryPath(raw string) string {
 // Both lookups are uncached — CheckPerm is two or more queries and the repo
 // lookup is a query plus a commit read — so the result is passed down rather
 // than re-derived by each function that needs it.
-func entryRepo(w http.ResponseWriter, repoID, user string, write bool) *repomgr.Repo {
+func entryRepo(w http.ResponseWriter, repoID string, user account.ID, write bool) *repomgr.Repo {
 	perm := share.CheckPerm(repoID, user)
 	if perm == "" || (write && perm != "rw") {
 		http.Error(w, "Permission denied", http.StatusForbidden)
@@ -160,12 +161,13 @@ func resolve(repo *repomgr.Repo, path string) (*resolved, error) {
 // dirent lookup in the parent directory — no blocks are read at all. A client
 // re-checking a materialised file pays almost nothing to learn it is current.
 func getEntry(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
+	user := acct.Email
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 	path := entryPath(vars["path"])
 
-	repo := entryRepo(w, repoID, user, false)
+	repo := entryRepo(w, repoID, acct.ID, false)
 	if repo == nil {
 		return
 	}
@@ -282,7 +284,7 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !checkPreconditions(w, r, vars["repoid"], middleware.GetUserEmail(r), path) {
+	if !checkPreconditions(w, r, vars["repoid"], middleware.GetAccountID(r), path) {
 		return
 	}
 	setQuery(r, url.Values{"path": {path}})
@@ -313,7 +315,7 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 // repository. It loads one only when a precondition header is actually present,
 // so an unconditional write costs nothing extra — the delegate it is about to
 // call does its own permission check and load anyway.
-func checkPreconditions(w http.ResponseWriter, r *http.Request, repoID, user, path string) bool {
+func checkPreconditions(w http.ResponseWriter, r *http.Request, repoID string, user account.ID, path string) bool {
 	if r.Header.Get("If-Match") == "" && r.Header.Get("If-None-Match") == "" {
 		return true
 	}
@@ -379,9 +381,10 @@ func preconditionResult(etag, ifMatch, ifNoneMatch string) bool {
 // seekable source, and indexFileWorker already accepts a path for exactly this
 // reason. A request body is neither seekable nor replayable.
 func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
+	user := acct.Email
 
-	repo := entryRepo(w, repoID, user, true)
+	repo := entryRepo(w, repoID, acct.ID, true)
 	if repo == nil {
 		return
 	}
@@ -478,9 +481,10 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 //
 // See blocks.go for the surface as a whole.
 func putEntryBlocks(w http.ResponseWriter, r *http.Request, repoID, path string) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
+	user := acct.Email
 
-	repo := entryRepo(w, repoID, user, true)
+	repo := entryRepo(w, repoID, acct.ID, true)
 	if repo == nil {
 		return
 	}
@@ -657,7 +661,7 @@ func deleteEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	// If-Match on a delete means "only if this is still what I think it is",
 	// which is how a client avoids deleting an edit it never saw.
-	if !checkPreconditions(w, r, vars["repoid"], middleware.GetUserEmail(r), path) {
+	if !checkPreconditions(w, r, vars["repoid"], middleware.GetAccountID(r), path) {
 		return
 	}
 	setQuery(r, url.Values{"path": {path}})
@@ -698,7 +702,7 @@ func postEntry(w http.ResponseWriter, r *http.Request) {
 	// The precondition is about the source — what is being moved or copied —
 	// because that is the thing the caller looked at before deciding to act on
 	// it. On a copy it means "copy this version, not whatever it became".
-	if !checkPreconditions(w, r, vars["repoid"], middleware.GetUserEmail(r), path) {
+	if !checkPreconditions(w, r, vars["repoid"], middleware.GetAccountID(r), path) {
 		return
 	}
 

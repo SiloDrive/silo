@@ -1,6 +1,6 @@
 // Package apitokenstore persists SeaDrive/Seahub-style API tokens (40-char hex
 // strings) in the seafile DB so they survive server restarts. Each token maps
-// to a user email and carries an expiry.
+// to an account and carries an expiry.
 //
 // Tokens are minted per login and never deduplicated: two devices logging in
 // as the same user get two tokens, so revoking one does not sign the other
@@ -15,6 +15,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/option"
 	log "github.com/sirupsen/logrus"
@@ -47,7 +48,7 @@ func Init(read, write *sql.DB) {
 	writeDB = write
 }
 
-func Create(email string) (string, error) {
+func Create(id account.ID) (string, error) {
 	b := make([]byte, 20)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -59,8 +60,8 @@ func Create(email string) (string, error) {
 	defer cancel()
 
 	_, err := writeDB.ExecContext(ctx,
-		"INSERT INTO ApiToken (token, email, ctime, expires_at) VALUES (?, ?, ?, ?)",
-		token, email, now.Unix(), now.Add(option.APITokenTTL).Unix(),
+		"INSERT INTO ApiToken (token, account_id, ctime, expires_at) VALUES (?, ?, ?, ?)",
+		token, id, now.Unix(), now.Add(option.APITokenTTL).Unix(),
 	)
 	if err != nil {
 		return "", err
@@ -68,22 +69,22 @@ func Create(email string) (string, error) {
 	return token, nil
 }
 
-// Lookup returns the email a token belongs to, or ErrNotFound if the token is
-// unknown or has expired. Using a token slides its expiry forward.
-func Lookup(token string) (string, error) {
+// Lookup returns the account a token belongs to, or ErrNotFound if the token
+// is unknown or has expired. Using a token slides its expiry forward.
+func Lookup(token string) (account.ID, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 
-	var email string
+	var id account.ID
 	var expiresAt sql.NullInt64
 	err := readDB.QueryRowContext(ctx,
-		"SELECT email, expires_at FROM ApiToken WHERE token = ?", token,
-	).Scan(&email, &expiresAt)
+		"SELECT account_id, expires_at FROM ApiToken WHERE token = ?", token,
+	).Scan(&id, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNotFound
+		return account.Zero, ErrNotFound
 	}
 	if err != nil {
-		return "", err
+		return account.Zero, err
 	}
 
 	// A NULL expiry means a row the migration didn't reach — treat it as
@@ -92,11 +93,11 @@ func Lookup(token string) (string, error) {
 	now := time.Now()
 	if !expiresAt.Valid {
 		renew(token, now)
-		return email, nil
+		return id, nil
 	}
 
 	if now.Unix() >= expiresAt.Int64 {
-		return "", ErrNotFound
+		return account.Zero, ErrNotFound
 	}
 
 	// Slide the expiry once the token is more than renewThreshold through its
@@ -106,7 +107,7 @@ func Lookup(token string) (string, error) {
 		renew(token, now)
 	}
 
-	return email, nil
+	return id, nil
 }
 
 // renew pushes a token's expiry out by a full TTL. Failures are logged and
@@ -128,20 +129,20 @@ func renew(token string, now time.Time) {
 // Token is one row of the ApiToken table.
 type Token struct {
 	Token     string
-	Email     string
+	Account   account.ID
 	Ctime     sql.NullInt64
 	ExpiresAt sql.NullInt64
 }
 
-// ListByEmail returns every API token a user holds, including expired ones.
-// Lookup hides expired tokens because they cannot authenticate; an operator
-// deciding what to revoke needs to see what is actually in the table.
-func ListByEmail(email string) ([]Token, error) {
+// ListByAccount returns every API token an account holds, including expired
+// ones. Lookup hides expired tokens because they cannot authenticate; an
+// operator deciding what to revoke needs to see what is actually in the table.
+func ListByAccount(id account.ID) ([]Token, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 
 	rows, err := readDB.QueryContext(ctx,
-		"SELECT token, email, ctime, expires_at FROM ApiToken WHERE email = ? ORDER BY ctime", email)
+		"SELECT token, account_id, ctime, expires_at FROM ApiToken WHERE account_id = ? ORDER BY ctime", id)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +151,7 @@ func ListByEmail(email string) ([]Token, error) {
 	var tokens []Token
 	for rows.Next() {
 		var t Token
-		if err := rows.Scan(&t.Token, &t.Email, &t.Ctime, &t.ExpiresAt); err != nil {
+		if err := rows.Scan(&t.Token, &t.Account, &t.Ctime, &t.ExpiresAt); err != nil {
 			return nil, err
 		}
 		tokens = append(tokens, t)
@@ -167,13 +168,13 @@ func Delete(token string) error {
 	return err
 }
 
-// DeleteByEmail revokes every token belonging to a user, signing out all of
-// their devices. Returns the number of tokens removed.
-func DeleteByEmail(email string) (int64, error) {
+// DeleteByAccount revokes every token belonging to an account, signing out all
+// of their devices. Returns the number of tokens removed.
+func DeleteByAccount(id account.ID) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 
-	res, err := writeDB.ExecContext(ctx, "DELETE FROM ApiToken WHERE email = ?", email)
+	res, err := writeDB.ExecContext(ctx, "DELETE FROM ApiToken WHERE account_id = ?", id)
 	if err != nil {
 		return 0, err
 	}

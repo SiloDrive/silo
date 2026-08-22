@@ -26,8 +26,9 @@ func authCacheTest(t *testing.T) {
 	clearAuthCaches()
 	t.Cleanup(clearAuthCaches)
 
-	dbExec(t, "INSERT INTO RepoUserToken (repo_id, email, token, ctime) VALUES (?, ?, ?, ?)",
-		sharedRepoID, victim, victimSyncA, time.Now().Unix())
+	mintAccount(t, victim)
+	dbExec(t, "INSERT INTO RepoUserToken (repo_id, account_id, token, ctime) VALUES (?, ?, ?, ?)",
+		sharedRepoID, acctFor(t, victim).ID, victimSyncA, time.Now().Unix())
 }
 
 func clearAuthCaches() {
@@ -49,12 +50,12 @@ func tokenRequest(token string) *http.Request {
 func TestValidateTokenRejectsAnExpiredCacheEntry(t *testing.T) {
 	authCacheTest(t)
 
-	email, appErr := validateToken(tokenRequest(victimSyncA), sharedRepoID, false)
+	acct, appErr := validateToken(tokenRequest(victimSyncA), sharedRepoID, false)
 	if appErr != nil {
 		t.Fatalf("validateToken returned %d: %v", appErr.Code, appErr.Message)
 	}
-	if email != victim {
-		t.Fatalf("validateToken returned %q, want %q", email, victim)
+	if acct.Email != victim {
+		t.Fatalf("validateToken returned %q, want %q", acct.Email, victim)
 	}
 
 	// Revoke out of process, the way `silo token revoke` does.
@@ -108,10 +109,11 @@ func TestInvalidateRepoAuthDropsOnlyThatRepo(t *testing.T) {
 	if _, appErr := validateToken(tokenRequest(victimSyncA), sharedRepoID, false); appErr != nil {
 		t.Fatalf("validateToken returned %d: %v", appErr.Code, appErr.Message)
 	}
-	permCache.Store(sharedRepoID+":"+victim+":upload", &permInfo{
+	victimID := acctFor(t, victim).ID.String()
+	permCache.Store(sharedRepoID+":"+victimID+":upload", &permInfo{
 		expireTime: time.Now().Add(time.Hour).Unix(),
 	})
-	permCache.Store(otherRepoID+":"+victim+":upload", &permInfo{
+	permCache.Store(otherRepoID+":"+victimID+":upload", &permInfo{
 		expireTime: time.Now().Add(time.Hour).Unix(),
 	})
 	virtualRepoInfoCache.Store(sharedRepoID, &virtualRepoInfo{storeID: sharedRepoID})
@@ -121,13 +123,13 @@ func TestInvalidateRepoAuthDropsOnlyThatRepo(t *testing.T) {
 	if _, ok := tokenCache.Load(victimSyncA); ok {
 		t.Error("the deleted repo's token is still cached")
 	}
-	if _, ok := permCache.Load(sharedRepoID + ":" + victim + ":upload"); ok {
+	if _, ok := permCache.Load(sharedRepoID + ":" + victimID + ":upload"); ok {
 		t.Error("the deleted repo's permission is still cached")
 	}
 	if _, ok := virtualRepoInfoCache.Load(sharedRepoID); ok {
 		t.Error("the deleted repo's store id is still cached")
 	}
-	if _, ok := permCache.Load(otherRepoID + ":" + victim + ":upload"); !ok {
+	if _, ok := permCache.Load(otherRepoID + ":" + victimID + ":upload"); !ok {
 		t.Error("another repo's permission was dropped")
 	}
 }
@@ -136,8 +138,9 @@ func TestInvalidateRepoAuthDropsOnlyThatRepo(t *testing.T) {
 // and stops at the user named.
 func TestInvalidateUserAuthDropsOnlyThatUser(t *testing.T) {
 	authCacheTest(t)
-	dbExec(t, "INSERT INTO RepoUserToken (repo_id, email, token, ctime) VALUES (?, ?, ?, ?)",
-		sharedRepoID, bystander, bystanderSync, time.Now().Unix())
+	mintAccount(t, bystander)
+	dbExec(t, "INSERT INTO RepoUserToken (repo_id, account_id, token, ctime) VALUES (?, ?, ?, ?)",
+		sharedRepoID, acctFor(t, bystander).ID, bystanderSync, time.Now().Unix())
 
 	for _, token := range []string{victimSyncA, bystanderSync} {
 		if _, appErr := validateToken(tokenRequest(token), sharedRepoID, false); appErr != nil {
@@ -145,7 +148,7 @@ func TestInvalidateUserAuthDropsOnlyThatUser(t *testing.T) {
 		}
 	}
 
-	invalidateUserAuth(victim)
+	invalidateUserAuth(acctFor(t, victim).ID)
 
 	if _, ok := tokenCache.Load(victimSyncA); ok {
 		t.Error("the revoked user's token is still cached")
@@ -166,8 +169,8 @@ func TestRepomgrRevocationHookIsWired(t *testing.T) {
 	if _, appErr := validateToken(tokenRequest(victimSyncA), sharedRepoID, false); appErr != nil {
 		t.Fatalf("validateToken returned %d: %v", appErr.Code, appErr.Message)
 	}
-	if _, err := repomgr.DeleteRepoTokensByEmail(victim); err != nil {
-		t.Fatalf("DeleteRepoTokensByEmail returned %v", err)
+	if _, err := repomgr.DeleteRepoTokensByAccount(acctFor(t, victim).ID); err != nil {
+		t.Fatalf("DeleteRepoTokensByAccount returned %v", err)
 	}
 
 	if _, ok := tokenCache.Load(victimSyncA); ok {

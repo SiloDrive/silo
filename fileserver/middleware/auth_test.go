@@ -3,9 +3,13 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/authmgr"
+	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/option"
 )
 
@@ -13,8 +17,41 @@ func init() {
 	option.JWTPrivateKey = "test-secret-key-for-unit-tests"
 }
 
+// seedAccount gives the test a database and one account in it. RequireAuth
+// reads the account behind a session token — that lookup is what makes a
+// disabled account stop working mid-session — so a token alone is no longer
+// enough to exercise the middleware.
+func seedAccount(t *testing.T, email string) *account.Account {
+	t.Helper()
+
+	if option.DBOpTimeout <= 0 {
+		option.DBOpTimeout = 5 * time.Second
+	}
+	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = pair.Close() })
+	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
+		t.Fatalf("create tables: %v", err)
+	}
+	account.Init(pair.Read, pair.Write)
+
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	if _, _, err := account.Create(ctx, email, "PBKDF2SHA256$1$00$00", false); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	acct, err := account.ByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("read account: %v", err)
+	}
+	return acct
+}
+
 func TestRequireAuthSuccess(t *testing.T) {
-	token, err := authmgr.GenerateSessionToken("alice@example.com")
+	alice := seedAccount(t, "alice@example.com")
+	token, err := authmgr.GenerateSessionToken(alice.ID)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -100,7 +137,8 @@ func TestRequireAuthExpiredToken(t *testing.T) {
 }
 
 func TestRequireAuthCaseInsensitiveBearer(t *testing.T) {
-	token, err := authmgr.GenerateSessionToken("bob@example.com")
+	bob := seedAccount(t, "bob@example.com")
+	token, err := authmgr.GenerateSessionToken(bob.ID)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -125,5 +163,35 @@ func TestGetUserEmailNoContext(t *testing.T) {
 	email := GetUserEmail(req)
 	if email != "" {
 		t.Errorf("expected empty string, got %s", email)
+	}
+}
+
+// A session outliving the account it names is the failure the id-carrying
+// claim exists to prevent: the token still verifies, but the account behind it
+// no longer may do anything.
+func TestRequireAuthRefusesADisabledAccount(t *testing.T) {
+	acct := seedAccount(t, "carol@example.com")
+	token, err := authmgr.GenerateSessionToken(acct.ID)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	handler := RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not be called")
+	}))
+
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	if err := account.SetActive(ctx, acct.ID, false); err != nil {
+		t.Fatalf("disabling account: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/silo/v1/repos", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("a disabled account kept its session: got %d, want 401", rr.Code)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
@@ -64,17 +65,23 @@ func seedHeadCommitsMulti(t *testing.T) {
 	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES (?, ?, ?)",
 		"master", repoTheirs, "3734cf995f6efbad74a5ccd23af389dd2b655d5a")
 
-	for _, r := range []struct{ repoID, ownerEmail string }{
-		{repoA, owner}, {repoB, owner}, {repoTheirs, outsider},
+	ownerAcct := mintAccount(t, owner)
+	outsiderAcct := mintAccount(t, outsider)
+
+	for _, r := range []struct {
+		repoID string
+		acct   *account.Account
+	}{
+		{repoA, ownerAcct}, {repoB, ownerAcct}, {repoTheirs, outsiderAcct},
 	} {
-		dbExec(t, "INSERT INTO RepoOwner (repo_id, owner_id) VALUES (?, ?)", r.repoID, r.ownerEmail)
+		dbExec(t, "INSERT INTO RepoOwner (repo_id, account_id) VALUES (?, ?)", r.repoID, r.acct.ID)
 	}
 
 	now := time.Now().Unix()
-	dbExec(t, "INSERT INTO RepoUserToken (repo_id, email, token, ctime) VALUES (?, ?, ?, ?)",
-		repoA, owner, ownerToken, now)
-	dbExec(t, "INSERT INTO RepoUserToken (repo_id, email, token, ctime) VALUES (?, ?, ?, ?)",
-		repoTheirs, outsider, outsiderTok, now)
+	dbExec(t, "INSERT INTO RepoUserToken (repo_id, account_id, token, ctime) VALUES (?, ?, ?, ?)",
+		repoA, ownerAcct.ID, ownerToken, now)
+	dbExec(t, "INSERT INTO RepoUserToken (repo_id, account_id, token, ctime) VALUES (?, ?, ?, ?)",
+		repoTheirs, outsiderAcct.ID, outsiderTok, now)
 }
 
 func headCommitsMultiReq(body, token string) *http.Request {

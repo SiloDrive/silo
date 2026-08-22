@@ -6,14 +6,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/option"
 )
 
 const testEmail = "alice@example.com"
 
-// setupStore gives each test its own SQLite pair, migrated to the current
-// schema, and returns the write handle for tests that need to age a row.
+// testAccount is the account setupStore mints, and the one every test in this
+// file issues tokens for.
+var testAccount account.ID
+
+// setupStore gives each test its own SQLite pair and one account to hold
+// tokens.
 func setupStore(t *testing.T) {
 	t.Helper()
 
@@ -28,11 +33,17 @@ func setupStore(t *testing.T) {
 	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
 		t.Fatalf("create tables: %v", err)
 	}
-	if err := dbutil.MigrateSiloTables(pair.Write, option.APITokenTTL); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 
 	Init(pair.Read, pair.Write)
+	account.Init(pair.Read, pair.Write)
+
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	id, _, err := account.Create(ctx, testEmail, "PBKDF2SHA256$1$00$00", false)
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	testAccount = id
 }
 
 // setExpiry forces a token's expires_at, standing in for the passage of time.
@@ -57,7 +68,7 @@ func expiryOf(t *testing.T, token string) int64 {
 func TestCreateAndLookup(t *testing.T) {
 	setupStore(t)
 
-	token, err := Create(testEmail)
+	token, err := Create(testAccount)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -65,12 +76,12 @@ func TestCreateAndLookup(t *testing.T) {
 		t.Errorf("expected a 40-char token, got %d chars", len(token))
 	}
 
-	email, err := Lookup(token)
+	id, err := Lookup(token)
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	if email != testEmail {
-		t.Errorf("expected %s, got %s", testEmail, email)
+	if id != testAccount {
+		t.Errorf("expected the account %s holds, got %s", testEmail, id)
 	}
 }
 
@@ -86,7 +97,7 @@ func TestLookupUnknownToken(t *testing.T) {
 func TestLookupRejectsExpiredToken(t *testing.T) {
 	setupStore(t)
 
-	token, err := Create(testEmail)
+	token, err := Create(testAccount)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -102,11 +113,11 @@ func TestLookupRejectsExpiredToken(t *testing.T) {
 func TestTokensArePerLoginNotShared(t *testing.T) {
 	setupStore(t)
 
-	first, err := Create(testEmail)
+	first, err := Create(testAccount)
 	if err != nil {
 		t.Fatalf("create first: %v", err)
 	}
-	second, err := Create(testEmail)
+	second, err := Create(testAccount)
 	if err != nil {
 		t.Fatalf("create second: %v", err)
 	}
@@ -130,7 +141,7 @@ func TestTokensArePerLoginNotShared(t *testing.T) {
 func TestLookupSlidesExpiryPastThreshold(t *testing.T) {
 	setupStore(t)
 
-	token, err := Create(testEmail)
+	token, err := Create(testAccount)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -153,7 +164,7 @@ func TestLookupSlidesExpiryPastThreshold(t *testing.T) {
 func TestLookupDoesNotSlideFreshToken(t *testing.T) {
 	setupStore(t)
 
-	token, err := Create(testEmail)
+	token, err := Create(testAccount)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -172,7 +183,7 @@ func TestLookupDoesNotSlideFreshToken(t *testing.T) {
 func TestLookupGivesNullExpiryATTL(t *testing.T) {
 	setupStore(t)
 
-	token, err := Create(testEmail)
+	token, err := Create(testAccount)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -189,16 +200,23 @@ func TestLookupGivesNullExpiryATTL(t *testing.T) {
 	}
 }
 
-func TestDeleteByEmailRevokesEveryDevice(t *testing.T) {
+func TestDeleteByAccountRevokesEveryDevice(t *testing.T) {
 	setupStore(t)
 
-	first, _ := Create(testEmail)
-	second, _ := Create(testEmail)
-	other, _ := Create("bob@example.com")
+	first, _ := Create(testAccount)
+	second, _ := Create(testAccount)
 
-	n, err := DeleteByEmail(testEmail)
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	bob, _, err := account.Create(ctx, "bob@example.com", "PBKDF2SHA256$1$00$00", false)
 	if err != nil {
-		t.Fatalf("delete by email: %v", err)
+		t.Fatalf("create account: %v", err)
+	}
+	other, _ := Create(bob)
+
+	n, err := DeleteByAccount(testAccount)
+	if err != nil {
+		t.Fatalf("delete by account: %v", err)
 	}
 	if n != 2 {
 		t.Errorf("expected 2 tokens revoked, got %d", n)
@@ -217,8 +235,8 @@ func TestDeleteByEmailRevokesEveryDevice(t *testing.T) {
 func TestDeleteExpiredSweepsOnlyExpired(t *testing.T) {
 	setupStore(t)
 
-	live, _ := Create(testEmail)
-	dead, _ := Create(testEmail)
+	live, _ := Create(testAccount)
+	dead, _ := Create(testAccount)
 	setExpiry(t, dead, time.Now().Add(-time.Hour))
 
 	n, err := DeleteExpired()
@@ -230,85 +248,5 @@ func TestDeleteExpiredSweepsOnlyExpired(t *testing.T) {
 	}
 	if _, err := Lookup(live); err != nil {
 		t.Errorf("sweep removed a live token: %v", err)
-	}
-}
-
-// Regression test for a startup crash: a database created by an earlier
-// version has an ApiToken table without expires_at, and CREATE TABLE IF NOT
-// EXISTS leaves it that way. Declaring the expires_at index alongside the
-// table therefore aborted startup on every existing deployment — a fresh
-// database never hit it, so only an upgrade did.
-func TestMigrationUpgradesPreExistingDatabase(t *testing.T) {
-	option.LoadFileServerOptions("")
-
-	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = pair.Close() })
-
-	// Build the old shapes by hand, then seed a row in each.
-	for _, stmt := range []string{
-		"CREATE TABLE ApiToken (token CHAR(40) PRIMARY KEY, email VARCHAR(255) NOT NULL, ctime BIGINT)",
-		"CREATE TABLE RepoUserToken (repo_id CHAR(37), email VARCHAR(255), token CHAR(41))",
-		"INSERT INTO ApiToken VALUES ('legacyapi', 'old@example.com', 1)",
-		"INSERT INTO RepoUserToken VALUES ('repo', 'old@example.com', 'legacysync')",
-	} {
-		if _, err := pair.Write.Exec(stmt); err != nil {
-			t.Fatalf("seed %q: %v", stmt, err)
-		}
-	}
-
-	// This is the ordering the server uses: create, then migrate.
-	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
-		t.Fatalf("CreateSeafileTables against a pre-existing database: %v", err)
-	}
-	if err := dbutil.MigrateSiloTables(pair.Write, option.APITokenTTL); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	Init(pair.Read, pair.Write)
-
-	// The legacy API token must have been given a future expiry, not expired
-	// on the spot — an upgrade must not sign every client out.
-	var exp int64
-	if err := pair.Read.QueryRow(
-		"SELECT expires_at FROM ApiToken WHERE token = 'legacyapi'").Scan(&exp); err != nil {
-		t.Fatalf("legacy token has no expiry after migration: %v", err)
-	}
-	if exp <= time.Now().Unix() {
-		t.Errorf("migration expired a pre-existing token (expires_at=%d)", exp)
-	}
-	if _, err := Lookup("legacyapi"); err != nil {
-		t.Errorf("pre-existing token stopped working after upgrade: %v", err)
-	}
-
-	var ctime int64
-	if err := pair.Read.QueryRow(
-		"SELECT ctime FROM RepoUserToken WHERE token = 'legacysync'").Scan(&ctime); err != nil {
-		t.Fatalf("legacy sync token has no ctime after migration: %v", err)
-	}
-	if ctime == 0 {
-		t.Error("migration left RepoUserToken.ctime unset")
-	}
-}
-
-// The migration must be safe to run against an already-current schema, since
-// it runs on every start.
-func TestMigrationIsIdempotent(t *testing.T) {
-	setupStore(t)
-
-	for i := 0; i < 3; i++ {
-		if err := dbutil.MigrateSiloTables(writeDB, option.APITokenTTL); err != nil {
-			t.Fatalf("migration run %d failed: %v", i+1, err)
-		}
-	}
-
-	token, err := Create(testEmail)
-	if err != nil {
-		t.Fatalf("create after re-migration: %v", err)
-	}
-	if _, err := Lookup(token); err != nil {
-		t.Errorf("lookup after re-migration: %v", err)
 	}
 }

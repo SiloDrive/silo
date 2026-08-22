@@ -15,10 +15,11 @@ import (
 
 	"golang.org/x/crypto/pbkdf2"
 
-	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/utils"
 	jwt "github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -33,40 +34,49 @@ func Init(siloReadDB, siloWriteDB *sql.DB) {
 // Legacy fixed salt used by old Seafile SHA256 password hashing.
 var legacySalt = []byte{0xdb, 0x91, 0x45, 0xc3, 0x06, 0xc7, 0xcc, 0x26}
 
-// ValidatePassword checks email/password against the EmailUser table.
-// Returns the user email (possibly lowercased) on success.
-func ValidatePassword(email, password string) (string, error) {
+// ValidatePassword checks an address and password against the account behind
+// them, and returns the account on success.
+//
+// It returns the account rather than an address because the address is no
+// longer the thing anything is looked up by. Callers that need one -- a
+// response body, a commit author -- read it off the account.
+//
+// There is one failure message for "no such account", "no password on this
+// account" and "wrong password". Distinguishing them would turn the login form
+// into a way to ask which addresses exist here.
+func ValidatePassword(email, password string) (*account.Account, error) {
 	if password == "!" {
-		return "", fmt.Errorf("invalid password")
+		return nil, fmt.Errorf("invalid password")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 
-	var storedPasswd string
-	row := readDB.QueryRowContext(ctx, "SELECT passwd FROM EmailUser WHERE email=?", email)
-	err := row.Scan(&storedPasswd)
-	if err == sql.ErrNoRows {
-		emailDown := strings.ToLower(email)
-		row = readDB.QueryRowContext(ctx, "SELECT passwd FROM EmailUser WHERE email=?", emailDown)
-		err = row.Scan(&storedPasswd)
-		if err != nil {
-			return "", fmt.Errorf("user not found")
-		}
-		email = emailDown
-	} else if err != nil {
-		return "", fmt.Errorf("database error: %v", err)
+	id, storedPasswd, err := account.PasswordHash(ctx, email)
+	if err != nil {
+		return nil, fmt.Errorf("user not found")
 	}
 
 	if !validatePasswd(password, storedPasswd) {
-		return "", fmt.Errorf("incorrect password")
+		return nil, fmt.Errorf("incorrect password")
+	}
+
+	acct, err := account.ByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("user not found")
+	}
+	// An account nobody may use any more must not be able to log in. Every
+	// other lane asks this through credential.Resolve; this is the lane that
+	// mints the credentials, so it has to ask for itself.
+	if !acct.IsActive {
+		return nil, fmt.Errorf("account is not active")
 	}
 
 	if needsRehash(storedPasswd) {
-		upgradeHash(ctx, email, password)
+		upgradeHash(ctx, acct, password)
 	}
 
-	return email, nil
+	return acct, nil
 }
 
 func validatePasswd(password, storedPasswd string) bool {
@@ -129,19 +139,25 @@ func validateSHA1(password, storedPasswd string) bool {
 	return subtle.ConstantTimeCompare([]byte(computed), []byte(storedPasswd)) == 1
 }
 
+// SessionClaims names the account, not the address.
+//
+// Sub carries the account id in its usual text form. A session that named an
+// address would have to be reissued whenever the address changed, and worse,
+// would resolve to whoever holds that address at the moment it is presented
+// rather than to whoever held it when it was issued.
 type SessionClaims struct {
-	Email string `json:"email"`
+	Sub string `json:"sub"`
 	jwt.RegisteredClaims
 }
 
-func GenerateSessionToken(email string) (string, error) {
-	if email == "" {
-		return "", fmt.Errorf("refusing to issue a session token with no email")
+func GenerateSessionToken(id account.ID) (string, error) {
+	if id.IsZero() {
+		return "", fmt.Errorf("refusing to issue a session token with no account")
 	}
 
 	now := time.Now()
 	claims := SessionClaims{
-		Email: email,
+		Sub: id.String(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(24 * time.Hour)),
@@ -158,7 +174,7 @@ func GenerateSessionToken(email string) (string, error) {
 	return tokenString, nil
 }
 
-func ValidateSessionToken(tokenString string) (string, error) {
+func ValidateSessionToken(tokenString string) (account.ID, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &SessionClaims{},
 		func(token *jwt.Token) (interface{}, error) {
 			return []byte(option.JWTPrivateKey), nil
@@ -171,28 +187,30 @@ func ValidateSessionToken(tokenString string) (string, error) {
 		jwt.WithAudience(utils.AudSession),
 	)
 	if err != nil {
-		return "", fmt.Errorf("invalid token: %v", err)
+		return account.Zero, fmt.Errorf("invalid token: %v", err)
 	}
 
 	claims, ok := token.Claims.(*SessionClaims)
 	if !ok || !token.Valid {
-		return "", fmt.Errorf("invalid token claims")
+		return account.Zero, fmt.Errorf("invalid token claims")
 	}
 
 	// A token of another kind that somehow satisfied the checks above would
-	// carry no email, and an empty identity must never reach a handler:
-	// share.CheckPerm("") denies, but repo creation would happily accept it.
-	if claims.Email == "" {
-		return "", fmt.Errorf("token has no email claim")
+	// carry no subject, and an empty identity must never reach a handler:
+	// share.CheckPerm on no account denies, but repo creation would happily
+	// accept it.
+	u, err := uuid.Parse(claims.Sub)
+	if err != nil {
+		return account.Zero, fmt.Errorf("token has no account claim")
 	}
-
-	return claims.Email, nil
+	return account.ID(u), nil
 }
 
 // PBKDF2Iterations is the work factor for new password hashes, at OWASP's
 // current recommendation for PBKDF2-HMAC-SHA256. The previous value, 10,000,
 // dates from a Seafile of some years ago and is now sixty times too cheap:
-// it puts a stolen EmailUser table within reach of ordinary offline cracking.
+// it puts a stolen AccountPassword table within reach of ordinary offline
+// cracking.
 //
 // Measured at roughly 80ms per verification on a 2020s x86 core, against
 // 1.4ms before. That is a cost worth paying at login — logins are rare here,
@@ -243,21 +261,20 @@ func needsRehash(storedPasswd string) bool {
 // successfully; refusing the login because an upgrade could not be written
 // would turn a transient database problem into a lockout, and the old hash
 // still works.
-func upgradeHash(ctx context.Context, email, password string) {
+func upgradeHash(ctx context.Context, acct *account.Account, password string) {
 	if writeDB == nil {
 		return
 	}
 	hash, err := hashPassword(password)
 	if err != nil {
-		log.Warnf("Failed to rehash password for %s: %v", email, err)
+		log.Warnf("Failed to rehash password for %s: %v", acct.Email, err)
 		return
 	}
-	if _, err := writeDB.ExecContext(ctx,
-		"UPDATE EmailUser SET passwd = ? WHERE email = ?", hash, email); err != nil {
-		log.Warnf("Failed to store upgraded password hash for %s: %v", email, err)
+	if err := account.SetPassword(ctx, acct.ID, hash); err != nil {
+		log.Warnf("Failed to store upgraded password hash for %s: %v", acct.Email, err)
 		return
 	}
-	log.Infof("Upgraded stored password hash for %s", email)
+	log.Infof("Upgraded stored password hash for %s", acct.Email)
 }
 
 // EnsureAdmin creates an admin user if it doesn't already exist.
@@ -283,19 +300,16 @@ func ensureAdmin(email, password string) (created bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 
-	sqlStr := dbutil.InsertOrIgnore("EmailUser", "email, passwd, is_staff, is_active, ctime")
-	result, err := writeDB.ExecContext(ctx, sqlStr, email, hash, 1, 1, time.Now().Unix())
+	_, created, err = account.Create(ctx, email, hash, true)
 	if err != nil {
 		return false, fmt.Errorf("failed to create admin user: %v", err)
 	}
-
-	rows, _ := result.RowsAffected()
-	if rows > 0 {
+	if created {
 		log.Infof("Created admin user: %s", email)
 	} else {
 		log.Infof("Admin user %s already exists", email)
 	}
-	return rows > 0, nil
+	return created, nil
 }
 
 // DefaultAdminEmail is the login the server invents when it has to create the
@@ -357,11 +371,7 @@ func userCount() (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 
-	var n int
-	if err := readDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM EmailUser").Scan(&n); err != nil {
-		return 0, fmt.Errorf("failed to count users: %v", err)
-	}
-	return n, nil
+	return account.Count(ctx)
 }
 
 // passwordAlphabet excludes the characters that get lost between a terminal

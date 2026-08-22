@@ -32,7 +32,7 @@ func damagedRepoTestDB(t *testing.T) {
 	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)",
 		damagedRepo, damagedHead)
 	dbExec(t, "INSERT INTO RepoHead (repo_id, branch_name) VALUES (?, 'master')", damagedRepo)
-	dbExec(t, "INSERT INTO RepoOwner (repo_id, owner_id) VALUES (?, ?)", damagedRepo, repoOwner)
+	dbExec(t, "INSERT INTO RepoOwner (repo_id, account_id) VALUES (?, ?)", damagedRepo, mintAccount(t, repoOwner).ID)
 }
 
 // The bug, at the surface porter-fuse and the File Provider extension both
@@ -45,7 +45,7 @@ func TestEntryRepoDoesNotReport404ForAMissingObject(t *testing.T) {
 	damagedRepoTestDB(t)
 
 	w := httptest.NewRecorder()
-	repo := entryRepo(w, damagedRepo, repoOwner, false)
+	repo := entryRepo(w, damagedRepo, acctFor(t, repoOwner).ID, false)
 
 	if repo != nil {
 		t.Fatal("entryRepo returned a repo whose head commit is missing")
@@ -67,10 +67,10 @@ func TestEntryRepoStillReports404ForAnAbsentLibrary(t *testing.T) {
 	damagedRepoTestDB(t)
 
 	// Owned, so the permission check passes and the lookup is what answers.
-	dbExec(t, "INSERT INTO RepoOwner (repo_id, owner_id) VALUES (?, ?)", goneRepo, repoOwner)
+	dbExec(t, "INSERT INTO RepoOwner (repo_id, account_id) VALUES (?, ?)", goneRepo, mintAccount(t, repoOwner).ID)
 
 	w := httptest.NewRecorder()
-	if repo := entryRepo(w, goneRepo, repoOwner, false); repo != nil {
+	if repo := entryRepo(w, goneRepo, acctFor(t, repoOwner).ID, false); repo != nil {
 		t.Fatal("entryRepo returned a repo that has no row")
 	}
 	if w.Code != http.StatusNotFound {
@@ -83,7 +83,7 @@ func TestLoadRepoAndCommitDoesNotReport404ForAMissingObject(t *testing.T) {
 	damagedRepoTestDB(t)
 
 	w := httptest.NewRecorder()
-	if _, _, ok := loadRepoAndCommit(w, damagedRepo, repoOwner); ok {
+	if _, _, ok := loadRepoAndCommit(w, damagedRepo, acctFor(t, repoOwner).ID); ok {
 		t.Fatal("loadRepoAndCommit succeeded with a missing head commit")
 	}
 	if w.Code == http.StatusNotFound {

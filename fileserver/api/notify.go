@@ -36,16 +36,16 @@ func CreateNotifyTokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
 	repoID := mux.Vars(r)["repoid"]
 
-	if share.CheckPerm(repoID, user) == "" {
+	if share.CheckPerm(repoID, acct.ID) == "" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
 
 	expires := time.Now().Add(notifyTokenTTL)
-	token, err := utils.GenNotifJWTToken(repoID, user, expires.Unix())
+	token, err := utils.GenNotifJWTToken(repoID, acct.Email, expires.Unix())
 	if err != nil {
 		log.Errorf("Failed to generate notification token for repo %s: %v", repoID, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)

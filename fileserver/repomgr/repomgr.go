@@ -13,6 +13,7 @@ import (
 	"time"
 
 	// Change to non-blank imports when use
+	"github.com/dkam/silo/fileserver/account"
 	_ "github.com/dkam/silo/fileserver/blockmgr"
 	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
@@ -470,43 +471,44 @@ func GetVirtualRepoInfoByOrigin(originRepo string) ([]*VRepoInfo, error) {
 	return vRepos, nil
 }
 
-// GetEmailByToken return user's email by token.
-func GetEmailByToken(repoID string, token string) (string, error) {
-	var email string
-	sqlStr := "SELECT email FROM RepoUserToken WHERE repo_id = ? AND token = ?"
+// GetAccountByToken returns the account a sync token belongs to, or the zero
+// id if the token is not one of that repo's.
+func GetAccountByToken(repoID string, token string) (account.ID, error) {
+	var id account.ID
+	sqlStr := "SELECT account_id FROM RepoUserToken WHERE repo_id = ? AND token = ?"
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID, token)
-	if err := row.Scan(&email); err != nil {
+	if err := row.Scan(&id); err != nil {
 		if err != sql.ErrNoRows {
-			return email, err
+			return account.Zero, err
 		}
 	}
-	return email, nil
+	return id, nil
 }
 
-// GetEmailForToken resolves a sync token to its owner without naming a repo.
+// GetAccountForToken resolves a sync token to its owner without naming a repo.
 //
-// GetEmailByToken is the one to use wherever the repo is known — it is the
+// GetAccountByToken is the one to use wherever the repo is known — it is the
 // stronger check, since it also proves the token was issued for that repo.
 // This exists for the batched endpoints, which are handed a list of repos and
 // one token and have to establish who is asking before they can decide which
 // of those repos to answer for.
-func GetEmailForToken(token string) (string, error) {
-	var email string
+func GetAccountForToken(token string) (account.ID, error) {
+	var id account.ID
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 
 	row := seafileDB.QueryRowContext(ctx,
-		"SELECT email FROM RepoUserToken WHERE token = ?", token)
-	if err := row.Scan(&email); err != nil {
+		"SELECT account_id FROM RepoUserToken WHERE token = ?", token)
+	if err := row.Scan(&id); err != nil {
 		if err == sql.ErrNoRows {
-			return "", nil
+			return account.Zero, nil
 		}
-		return "", err
+		return account.Zero, err
 	}
-	return email, nil
+	return id, nil
 }
 
 // GetRepoStatus return repo status by repo id.
@@ -853,16 +855,16 @@ func IsVirtualRepo(repoID string) (bool, error) {
 }
 
 // GetRepoOwner get the owner of repo.
-func GetRepoOwner(repoID string) (string, error) {
-	var owner string
-	sqlStr := "SELECT owner_id FROM RepoOwner WHERE repo_id=?"
+func GetRepoOwner(repoID string) (account.ID, error) {
+	var owner account.ID
+	sqlStr := "SELECT account_id FROM RepoOwner WHERE repo_id=?"
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&owner); err != nil {
 		if err != sql.ErrNoRows {
-			return "", err
+			return account.Zero, err
 		}
 	}
 
@@ -978,63 +980,63 @@ func SetLastGCID(repoID, clientID, gcID string) error {
 // Sync tokens deliberately have no expiry. Seafile and SeaDrive persist them
 // in local config and treat them as durable, so ageing them out would stop
 // sync silently at the TTL. Revocation is the intended way to invalidate one.
-func GenerateRepoToken(repoID, email string) (string, error) {
+func GenerateRepoToken(repoID string, id account.ID) (string, error) {
 	u := uuid.New().String()
 	h := sha1.New()
 	h.Write([]byte(u))
 	token := hex.EncodeToString(h.Sum(nil))
 
-	sqlStr := "INSERT INTO RepoUserToken (repo_id, email, token, ctime) VALUES (?, ?, ?, ?)"
+	sqlStr := "INSERT INTO RepoUserToken (repo_id, account_id, token, ctime) VALUES (?, ?, ?, ?)"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, email, token, time.Now().Unix()); err != nil {
+	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, id, token, time.Now().Unix()); err != nil {
 		return "", fmt.Errorf("failed to insert repo token: %v", err)
 	}
 
 	return token, nil
 }
 
-// DeleteRepoTokensByEmail revokes every sync token a user holds, across all
-// repos, stopping all of their devices from syncing. Returns the count.
-func DeleteRepoTokensByEmail(email string) (int64, error) {
+// DeleteRepoTokensByAccount revokes every sync token an account holds, across
+// all repos, stopping all of their devices from syncing. Returns the count.
+func DeleteRepoTokensByAccount(id account.ID) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 
 	res, err := seafileWriteDB.ExecContext(ctx,
-		"DELETE FROM RepoUserToken WHERE email = ?", email)
+		"DELETE FROM RepoUserToken WHERE account_id = ?", id)
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete repo tokens: %v", err)
 	}
-	notify(OnTokensRevoked, email)
+	notifyAccount(OnTokensRevoked, id)
 
 	return dbutil.RowsAffected(res), nil
 }
 
 // DeleteRepoToken removes a specific sync token.
-func DeleteRepoToken(repoID, token, email string) error {
-	sqlStr := "DELETE FROM RepoUserToken WHERE repo_id = ? AND token = ? AND email = ?"
+func DeleteRepoToken(repoID, token string, id account.ID) error {
+	sqlStr := "DELETE FROM RepoUserToken WHERE repo_id = ? AND token = ? AND account_id = ?"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, token, email); err != nil {
+	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, token, id); err != nil {
 		return fmt.Errorf("failed to delete repo token: %v", err)
 	}
-	notify(OnTokensRevoked, email)
+	notifyAccount(OnTokensRevoked, id)
 	return nil
 }
 
 type RepoToken struct {
-	RepoID string
-	Email  string
-	Token  string
-	Ctime  sql.NullInt64
+	RepoID  string
+	Account account.ID
+	Token   string
+	Ctime   sql.NullInt64
 }
 
-// ListRepoTokensByEmail returns all sync tokens for a user.
-func ListRepoTokensByEmail(email string) ([]RepoToken, error) {
-	sqlStr := "SELECT repo_id, email, token, ctime FROM RepoUserToken WHERE email = ? ORDER BY ctime"
+// ListRepoTokensByAccount returns all sync tokens for an account.
+func ListRepoTokensByAccount(id account.ID) ([]RepoToken, error) {
+	sqlStr := "SELECT repo_id, account_id, token, ctime FROM RepoUserToken WHERE account_id = ? ORDER BY ctime"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	rows, err := seafileDB.QueryContext(ctx, sqlStr, email)
+	rows, err := seafileDB.QueryContext(ctx, sqlStr, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list repo tokens: %v", err)
 	}
@@ -1046,7 +1048,7 @@ func ListRepoTokensByEmail(email string) ([]RepoToken, error) {
 		// A scan failure is returned rather than skipped: this list is what an
 		// operator revokes from, and silently omitting a row would show a
 		// token as already gone while it still authenticates.
-		if err := rows.Scan(&t.RepoID, &t.Email, &t.Token, &t.Ctime); err != nil {
+		if err := rows.Scan(&t.RepoID, &t.Account, &t.Token, &t.Ctime); err != nil {
 			return nil, fmt.Errorf("failed to read repo token row: %v", err)
 		}
 		tokens = append(tokens, t)
@@ -1059,11 +1061,18 @@ const emptySHA1 = "0000000000000000000000000000000000000000"
 // CreateRepo creates a new unencrypted repository.
 // It generates a UUID, creates an initial commit with an empty root,
 // and inserts all required DB records.
-func CreateRepo(name, owner string) (string, error) {
+//
+// It takes the whole account rather than an id because the owner is used for
+// two different things here. RepoOwner records who may administer the
+// library, and that is a key, so it stores the id. The commit's author and
+// RepoInfo.last_modifier record what the creator was called at the time, and
+// those are display data — the commit's is baked into its content hash and
+// could not be rewritten later even if it should be.
+func CreateRepo(name string, owner *account.Account) (string, error) {
 	repoID := uuid.New().String()
 
 	// Create initial commit with empty root
-	commit := commitmgr.NewCommit(repoID, "", emptySHA1, owner, "Created library")
+	commit := commitmgr.NewCommit(repoID, "", emptySHA1, owner.Email, "Created library")
 	commit.RepoName = name
 	commit.Version = 1
 	if err := commitmgr.Save(commit); err != nil {
@@ -1089,11 +1098,11 @@ func CreateRepo(name, owner string) (string, error) {
 	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("RepoHead", "repo_id, branch_name"), repoID, "master"); err != nil {
 		return "", fmt.Errorf("failed to insert repo head: %v", err)
 	}
-	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("RepoOwner", "repo_id, owner_id"), repoID, owner); err != nil {
+	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("RepoOwner", "repo_id, account_id"), repoID, owner.ID); err != nil {
 		return "", fmt.Errorf("failed to insert repo owner: %v", err)
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO RepoInfo (repo_id, name, update_time, version, is_encrypted, last_modifier) VALUES (?, ?, ?, 1, 0, ?)",
-		repoID, name, now, owner); err != nil {
+		repoID, name, now, owner.Email); err != nil {
 		return "", fmt.Errorf("failed to insert repo info: %v", err)
 	}
 
@@ -1208,11 +1217,17 @@ func listVirtualRepoIDs(repoID string) ([]string, error) {
 // registers them, so the CLI paths — which have no caches — need no wiring.
 var (
 	OnRepoDeleted   func(repoID string)
-	OnTokensRevoked func(email string)
+	OnTokensRevoked func(id account.ID)
 )
 
 func notify(hook func(string), arg string) {
 	if hook != nil {
 		hook(arg)
+	}
+}
+
+func notifyAccount(hook func(account.ID), id account.ID) {
+	if hook != nil {
+		hook(id)
 	}
 }

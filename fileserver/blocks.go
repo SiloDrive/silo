@@ -56,7 +56,7 @@ const maxBlockListBody = 16 << 20
 // "yes, I have that one" to anyone with read access to any library turns this
 // into an oracle for whether a given file exists somewhere on the server.
 func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
-	repo := entryRepo(w, mux.Vars(r)["repoid"], middleware.GetUserEmail(r), true)
+	repo := entryRepo(w, mux.Vars(r)["repoid"], middleware.GetAccountID(r), true)
 	if repo == nil {
 		return
 	}
@@ -140,7 +140,7 @@ func blockInventory(storeID string, ids []string) (missing []string, size int64,
 // and the client gets told rather than finding out later.
 func putBlockHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	repo := entryRepo(w, vars["repoid"], middleware.GetUserEmail(r), true)
+	repo := entryRepo(w, vars["repoid"], middleware.GetAccountID(r), true)
 	if repo == nil {
 		return
 	}

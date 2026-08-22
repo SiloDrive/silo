@@ -33,7 +33,7 @@ func SeaDriveAuthTokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email, err := authmgr.ValidatePassword(username, password)
+	acct, err := authmgr.ValidatePassword(username, password)
 	if err != nil {
 		loginFailed(r, username)
 		log.Infof("SeaDrive login failed for %s: %v", username, err)
@@ -42,7 +42,7 @@ func SeaDriveAuthTokenHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	loginSucceeded(username)
 
-	token, err := apitokenstore.Create(email)
+	token, err := apitokenstore.Create(acct.ID)
 	if err != nil {
 		log.Errorf("Failed to generate API token: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -131,7 +131,7 @@ type seadriveRepo struct {
 // (a sync token). Without all three it logs "Invalid resp from create repo api"
 // and fails to sync the newly created library.
 func SeaDriveCreateRepoHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
 
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form data", http.StatusBadRequest)
@@ -143,7 +143,7 @@ func SeaDriveCreateRepoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoID, err := repomgr.CreateRepo(name, user)
+	repoID, err := repomgr.CreateRepo(name, acct)
 	if err != nil {
 		log.Errorf("Failed to create repo: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -157,7 +157,7 @@ func SeaDriveCreateRepoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := repomgr.GenerateRepoToken(repoID, user)
+	token, err := repomgr.GenerateRepoToken(repoID, acct.ID)
 	if err != nil {
 		log.Errorf("Failed to generate sync token for new repo %s: %v", repoID, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -174,7 +174,7 @@ func SeaDriveCreateRepoHandler(w http.ResponseWriter, r *http.Request) {
 // SeaDriveReposHandler handles GET /api2/repos/. Returns repos accessible to
 // the authenticated user in Seahub's format.
 func SeaDriveReposHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
 
 	seen := make(map[string]bool)
 	var result []seadriveRepo
@@ -209,24 +209,24 @@ func SeaDriveReposHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	owned, err := share.GetReposByOwner(user)
+	owned, err := share.GetReposByOwner(acct.ID)
 	if err != nil {
-		log.Errorf("Failed to get owned repos for %s: %v", user, err)
+		log.Errorf("Failed to get owned repos for %s: %v", acct.Email, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	add(owned, "repo", user)
+	add(owned, "repo", acct.Email)
 
-	shared, err := share.ListShareRepos(user, "to_email")
+	shared, err := share.ListShareRepos(acct.ID, share.SharedWithMe)
 	if err != nil {
-		log.Warnf("Failed to list shared repos for %s: %v", user, err)
+		log.Warnf("Failed to list shared repos for %s: %v", acct.Email, err)
 	} else {
 		add(shared, "srepo", "")
 	}
 
-	group, err := share.GetGroupReposByUser(user, -1)
+	group, err := share.GetGroupReposByUser(acct.ID)
 	if err != nil {
-		log.Warnf("Failed to list group repos for %s: %v", user, err)
+		log.Warnf("Failed to list group repos for %s: %v", acct.Email, err)
 	} else {
 		add(group, "grepo", "")
 	}
@@ -276,10 +276,10 @@ type downloadInfoResponse struct {
 // SeaDriveDownloadInfoHandler returns the sync token + repo metadata + file
 // server URL so SeaDrive can start syncing the library.
 func SeaDriveDownloadInfoHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
 	repoID := mux.Vars(r)["repoid"]
 
-	if share.CheckPerm(repoID, user) == "" {
+	if share.CheckPerm(repoID, acct.ID) == "" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
@@ -291,7 +291,7 @@ func SeaDriveDownloadInfoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := repomgr.GenerateRepoToken(repoID, user)
+	token, err := repomgr.GenerateRepoToken(repoID, acct.ID)
 	if err != nil {
 		log.Errorf("Failed to generate repo token: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -310,7 +310,7 @@ func SeaDriveDownloadInfoHandler(w http.ResponseWriter, r *http.Request) {
 		Token:         token,
 		RepoID:        repo.ID,
 		RepoName:      repo.Name,
-		Email:         user,
+		Email:         acct.Email,
 		RandomKey:     repo.RandomKey,
 		EncVersion:    repo.EncVersion,
 		Magic:         repo.Magic,

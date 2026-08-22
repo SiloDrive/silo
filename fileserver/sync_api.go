@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/blockmgr"
 	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/diff"
@@ -105,7 +106,7 @@ var (
 
 type tokenInfo struct {
 	repoID     string
-	email      string
+	acct       *account.Account
 	expireTime int64
 }
 
@@ -148,9 +149,11 @@ func syncAPIInit() {
 	calFsIdPool = workerpool.CreateWorkerPool(getFsId, fsIdWorkers)
 }
 
+// calResult is how the worker pool hands a request's outcome back to the
+// handler waiting on it. Only the error crosses: the caller already has the
+// request.
 type calResult struct {
-	user string
-	err  *appError
+	err *appError
 }
 
 func getFsId(args ...interface{}) error {
@@ -168,7 +171,7 @@ func getFsId(args ...interface{}) error {
 	if !utils.IsObjectIDValid(serverHead) {
 		msg := "Invalid server-head parameter."
 		appErr := &appError{nil, msg, http.StatusBadRequest}
-		resChan <- &calResult{"", appErr}
+		resChan <- &calResult{appErr}
 		return nil
 	}
 
@@ -176,7 +179,7 @@ func getFsId(args ...interface{}) error {
 	if clientHead != "" && !utils.IsObjectIDValid(clientHead) {
 		msg := "Invalid client-head parameter."
 		appErr := &appError{nil, msg, http.StatusBadRequest}
-		resChan <- &calResult{"", appErr}
+		resChan <- &calResult{appErr}
 		return nil
 	}
 
@@ -190,19 +193,19 @@ func getFsId(args ...interface{}) error {
 	repoID := vars["repoid"]
 	user, appErr := validateToken(r, repoID, false)
 	if appErr != nil {
-		resChan <- &calResult{user, appErr}
+		resChan <- &calResult{appErr}
 		return nil
 	}
-	appErr = checkPermission(repoID, user, "download", false)
+	appErr = checkPermission(repoID, user.ID, "download", false)
 	if appErr != nil {
-		resChan <- &calResult{user, appErr}
+		resChan <- &calResult{appErr}
 		return nil
 	}
 	repo := repomgr.Get(repoID)
 	if repo == nil {
 		err := fmt.Errorf("failed to find repo %.8s", repoID)
 		appErr := &appError{err, "", http.StatusInternalServerError}
-		resChan <- &calResult{user, appErr}
+		resChan <- &calResult{appErr}
 		return nil
 	}
 	ret, err := calculateSendObjectList(r.Context(), repo, serverHead, clientHead, dirOnly)
@@ -210,11 +213,11 @@ func getFsId(args ...interface{}) error {
 		if !errors.Is(err, context.Canceled) {
 			err := fmt.Errorf("failed to get fs id list: %w", err)
 			appErr := &appError{err, "", http.StatusInternalServerError}
-			resChan <- &calResult{user, appErr}
+			resChan <- &calResult{appErr}
 			return nil
 		}
 		appErr := &appError{nil, "", http.StatusInternalServerError}
-		resChan <- &calResult{user, appErr}
+		resChan <- &calResult{appErr}
 		return nil
 	}
 
@@ -223,7 +226,7 @@ func getFsId(args ...interface{}) error {
 		objList, err = json.Marshal(ret)
 		if err != nil {
 			appErr := &appError{err, "", http.StatusInternalServerError}
-			resChan <- &calResult{user, appErr}
+			resChan <- &calResult{appErr}
 			return nil
 		}
 	} else {
@@ -235,7 +238,7 @@ func getFsId(args ...interface{}) error {
 	rsp.WriteHeader(http.StatusOK)
 	_, _ = rsp.Write(objList)
 
-	resChan <- &calResult{user, nil}
+	resChan <- &calResult{nil}
 
 	return nil
 }
@@ -286,7 +289,7 @@ func permissionCheckCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	if err != nil {
 		return err
 	}
-	err = checkPermission(repoID, user, op, true)
+	err = checkPermission(repoID, user.ID, op, true)
 	if err != nil {
 		return err
 	}
@@ -297,7 +300,7 @@ func permissionCheckCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	ip := utils.ClientIP(r, option.TrustProxyHeaders)
 
 	if op == "download" {
-		onRepoOper("repo-download-sync", repoID, user, ip, clientName)
+		onRepoOper("repo-download-sync", repoID, user.Email, ip, clientName)
 	}
 	if clientID != "" && clientName != "" {
 		token := r.Header.Get("Seafile-Repo-Token")
@@ -329,7 +332,7 @@ func getBlockMapCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	if appErr != nil {
 		return appErr
 	}
-	appErr = checkPermission(repoID, user, "download", false)
+	appErr = checkPermission(repoID, user.ID, "download", false)
 	if appErr != nil {
 		return appErr
 	}
@@ -375,9 +378,9 @@ func getAccessibleRepoListCB(rsp http.ResponseWriter, r *http.Request) *appError
 
 	obtainedRepos := make(map[string]string)
 
-	repos, err := share.GetReposByOwner(user)
+	repos, err := share.GetReposByOwner(user.ID)
 	if err != nil {
-		err := fmt.Errorf("failed to get repos by owner %s: %v", user, err)
+		err := fmt.Errorf("failed to get repos by owner %s: %v", user.Email, err)
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 
@@ -391,13 +394,13 @@ func getAccessibleRepoListCB(rsp http.ResponseWriter, r *http.Request) *appError
 		}
 		repo.Permission = "rw"
 		repo.Type = "repo"
-		repo.Owner = user
+		repo.Owner = user.Email
 		repoObjects = append(repoObjects, repo)
 	}
 
-	repos, err = share.ListShareRepos(user, "to_email")
+	repos, err = share.ListShareRepos(user.ID, share.SharedWithMe)
 	if err != nil {
-		err := fmt.Errorf("failed to get share repos by user %s: %v", user, err)
+		err := fmt.Errorf("failed to get share repos by user %s: %v", user.Email, err)
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 	for _, sRepo := range repos {
@@ -412,9 +415,9 @@ func getAccessibleRepoListCB(rsp http.ResponseWriter, r *http.Request) *appError
 		repoObjects = append(repoObjects, sRepo)
 	}
 
-	repos, err = share.GetGroupReposByUser(user, -1)
+	repos, err = share.GetGroupReposByUser(user.ID)
 	if err != nil {
-		err := fmt.Errorf("failed to get group repos by user %s: %v", user, err)
+		err := fmt.Errorf("failed to get group repos by user %s: %v", user.Email, err)
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 	reposTable := filterGroupRepos(repos)
@@ -479,7 +482,7 @@ func recvFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return appErr
 	}
 
-	appErr = checkPermission(repoID, user, "upload", false)
+	appErr = checkPermission(repoID, user.ID, "upload", false)
 	if appErr != nil {
 		return appErr
 	}
@@ -555,7 +558,7 @@ func postCheckExistCB(rsp http.ResponseWriter, r *http.Request, existType checkE
 	if appErr != nil {
 		return appErr
 	}
-	appErr = checkPermission(repoID, user, "download", false)
+	appErr = checkPermission(repoID, user.ID, "download", false)
 	if appErr != nil {
 		return appErr
 	}
@@ -599,7 +602,7 @@ func packFSCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	if appErr != nil {
 		return appErr
 	}
-	appErr = checkPermission(repoID, user, "download", false)
+	appErr = checkPermission(repoID, user.ID, "download", false)
 	if appErr != nil {
 		return appErr
 	}
@@ -667,12 +670,12 @@ func headCommitsMultiCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	if token == "" {
 		return &appError{nil, "token is null", http.StatusBadRequest}
 	}
-	user, err := repomgr.GetEmailForToken(token)
+	user, err := repomgr.GetAccountForToken(token)
 	if err != nil {
 		log.Errorf("Failed to resolve token for head-commits-multi: %v", err)
 		return &appError{err, "", http.StatusInternalServerError}
 	}
-	if user == "" {
+	if user.IsZero() {
 		return &appError{nil, "Invalid token", http.StatusForbidden}
 	}
 
@@ -812,7 +815,7 @@ func getJWTTokenCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	}
 
 	exp := time.Now().Add(time.Hour * 72).Unix()
-	tokenString, err := utils.GenNotifJWTToken(repoID, user, exp)
+	tokenString, err := utils.GenNotifJWTToken(repoID, user.Email, exp)
 	if err != nil {
 		return &appError{err, "", http.StatusInternalServerError}
 	}
@@ -872,7 +875,7 @@ func putSendBlockCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return appErr
 	}
 
-	appErr = checkPermission(repoID, user, "upload", false)
+	appErr = checkPermission(repoID, user.ID, "upload", false)
 	if appErr != nil {
 		return appErr
 	}
@@ -888,7 +891,7 @@ func putSendBlockCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return &appError{err, "", http.StatusInternalServerError}
 	}
 
-	sendStatisticMsg(storeID, user, "sync-file-upload", uint64(r.ContentLength))
+	sendStatisticMsg(storeID, user.Email, "sync-file-upload", uint64(r.ContentLength))
 
 	return nil
 }
@@ -903,7 +906,7 @@ func getBlockInfo(rsp http.ResponseWriter, r *http.Request) *appError {
 		return appErr
 	}
 
-	appErr = checkPermission(repoID, user, "download", false)
+	appErr = checkPermission(repoID, user.ID, "download", false)
 	if appErr != nil {
 		return appErr
 	}
@@ -932,7 +935,7 @@ func getBlockInfo(rsp http.ResponseWriter, r *http.Request) *appError {
 		return nil
 	}
 
-	sendStatisticMsg(storeID, user, "sync-file-download", uint64(blockSize))
+	sendStatisticMsg(storeID, user.Email, "sync-file-download", uint64(blockSize))
 	return nil
 }
 
@@ -1010,7 +1013,7 @@ func putCommitCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	if appErr != nil {
 		return appErr
 	}
-	appErr = checkPermission(repoID, user, "upload", true)
+	appErr = checkPermission(repoID, user.ID, "upload", true)
 	if appErr != nil {
 		return appErr
 	}
@@ -1064,7 +1067,7 @@ func getCommitInfo(rsp http.ResponseWriter, r *http.Request) *appError {
 	if appErr != nil {
 		return appErr
 	}
-	appErr = checkPermission(repoID, user, "download", false)
+	appErr = checkPermission(repoID, user.ID, "download", false)
 	if appErr != nil {
 		return appErr
 	}
@@ -1102,7 +1105,7 @@ func putUpdateBranchCB(rsp http.ResponseWriter, r *http.Request) *appError {
 		return appErr
 	}
 
-	appErr = checkPermission(repoID, user, "upload", false)
+	appErr = checkPermission(repoID, user.ID, "upload", false)
 	if appErr != nil && appErr.Code == http.StatusForbidden {
 		return appErr
 	}
@@ -1150,7 +1153,7 @@ func putUpdateBranchCB(rsp http.ResponseWriter, r *http.Request) *appError {
 	if token == "" {
 		token = utils.GetAuthorizationToken(r.Header)
 	}
-	if err := fastForwardOrMerge(user, token, repo, base, newCommit); err != nil {
+	if err := fastForwardOrMerge(user.Email, token, repo, base, newCommit); err != nil {
 		if errors.Is(err, ErrGCConflict) {
 			return &appError{nil, "GC Conflict.\n", http.StatusConflict}
 		} else {
@@ -1352,7 +1355,7 @@ func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 	return nil
 }
 
-func checkPermission(repoID, user, op string, skipCache bool) *appError {
+func checkPermission(repoID string, user account.ID, op string, skipCache bool) *appError {
 	key := fmt.Sprintf("%s:%s:%s", repoID, user, op)
 	if !skipCache {
 		if value, ok := permCache.Load(key); ok {
@@ -1394,13 +1397,19 @@ func checkPermission(repoID, user, op string, skipCache bool) *appError {
 	return &appError{nil, "", http.StatusForbidden}
 }
 
-func validateToken(r *http.Request, repoID string, skipCache bool) (string, *appError) {
+// validateToken resolves a sync token to the account holding it.
+//
+// It returns the whole account because both halves are needed downstream: the
+// id is what a permission check keys on, and the address is what goes into a
+// commit as its author and into the statistics stream. Neither is derivable
+// from the other without another query, so the one lookup returns both.
+func validateToken(r *http.Request, repoID string, skipCache bool) (*account.Account, *appError) {
 	token := r.Header.Get("Seafile-Repo-Token")
 	if token == "" {
 		token = utils.GetAuthorizationToken(r.Header)
 		if token == "" {
 			msg := "token is null"
-			return "", &appError{nil, msg, http.StatusBadRequest}
+			return nil, &appError{nil, msg, http.StatusBadRequest}
 		}
 	}
 
@@ -1409,32 +1418,49 @@ func validateToken(r *http.Request, repoID string, skipCache bool) (string, *app
 			if info, ok := value.(*tokenInfo); ok && info.expireTime > time.Now().Unix() {
 				if info.repoID != repoID {
 					msg := "Invalid token"
-					return "", &appError{nil, msg, http.StatusForbidden}
+					return nil, &appError{nil, msg, http.StatusForbidden}
 				}
-				return info.email, nil
+				return info.acct, nil
 			}
 		}
 	}
 
-	email, err := repomgr.GetEmailByToken(repoID, token)
+	id, err := repomgr.GetAccountByToken(repoID, token)
 	if err != nil {
 		// The token is a bearer credential — log the repo instead, which is
 		// the useful correlation key and not a secret.
-		log.Errorf("Failed to get email by token for repo %s: %v", repoID, err)
+		log.Errorf("Failed to resolve token for repo %s: %v", repoID, err)
 		tokenCache.Delete(token)
-		return email, &appError{err, "", http.StatusInternalServerError}
+		return nil, &appError{err, "", http.StatusInternalServerError}
 	}
-	if email == "" {
+	if id.IsZero() {
 		tokenCache.Delete(token)
 		msg := "Invalid token"
-		return email, &appError{nil, msg, http.StatusForbidden}
+		return nil, &appError{nil, msg, http.StatusForbidden}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), option.DBOpTimeout)
+	defer cancel()
+	acct, err := account.ByID(ctx, id)
+	if err != nil {
+		tokenCache.Delete(token)
+		msg := "Invalid token"
+		return nil, &appError{nil, msg, http.StatusForbidden}
+	}
+	// A sync token outlives a password change by design, so deactivating the
+	// account is the only thing that stops it. Asking here is what makes that
+	// true for the sync lane as well as the API one.
+	if !acct.IsActive {
+		tokenCache.Delete(token)
+		msg := "Invalid token"
+		return nil, &appError{nil, msg, http.StatusForbidden}
 	}
 
 	if expireTime, caching := authCacheExpiry(); caching {
-		tokenCache.Store(token, &tokenInfo{email: email, expireTime: expireTime, repoID: repoID})
+		tokenCache.Store(token, &tokenInfo{acct: acct, expireTime: expireTime, repoID: repoID})
 	}
 
-	return email, nil
+	return acct, nil
 }
 
 // authCacheExpiry returns the expiry stamp for a new auth cache entry, and
@@ -1464,11 +1490,11 @@ func invalidateRepoAuth(repoID string) {
 	virtualRepoInfoCache.Delete(repoID)
 }
 
-// invalidateUserAuth drops every cached token belonging to a user, so a
+// invalidateUserAuth drops every cached token belonging to an account, so a
 // revocation this process performs takes effect on the next request rather
 // than at the next cache expiry.
-func invalidateUserAuth(email string) {
-	deleteCachedTokens(func(info *tokenInfo) bool { return info.email == email })
+func invalidateUserAuth(id account.ID) {
+	deleteCachedTokens(func(info *tokenInfo) bool { return info.acct != nil && info.acct.ID == id })
 }
 
 // deleteCachedTokens drops every cached token entry that match selects.

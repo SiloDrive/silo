@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/option"
 )
 
@@ -75,13 +76,13 @@ var (
 // stored hash or the public key, and keeping them off the struct's surface
 // means they cannot reach a log line through a %+v.
 type Credential struct {
-	ID       string
-	Kind     Kind
-	Email    string
-	Label    string
-	Scope    Scope
-	Perm     string
-	ClientID string
+	ID        string
+	Kind      Kind
+	AccountID account.ID
+	Label     string
+	Scope     Scope
+	Perm      string
+	ClientID  string
 
 	Ctime     int64
 	ExpiresAt int64 // 0 = no expiry
@@ -137,7 +138,11 @@ func Resolve(r *http.Request, kind Kind) (*Credential, error) {
 		return nil, ErrExpired
 	}
 
-	active, err := accountIsActive(ctx, cred.Email)
+	// The check that could not be retrofitted. Disabling an account has to
+	// kill every lane at once, and it only does if every lane asks — which is
+	// what having one Resolve buys, and what three separate token stores made
+	// impossible.
+	active, err := account.IsActive(ctx, cred.AccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +210,7 @@ func tokenFromRequest(r *http.Request) (Token, error) {
 var zeroHash = make([]byte, sha256.Size)
 
 func load(ctx context.Context, id string) (*Credential, error) {
-	const q = `SELECT id, kind, secret_hash, public_key, email, label, scope, perm,
+	const q = `SELECT id, kind, secret_hash, public_key, account_id, label, scope, perm,
 	                  client_id, ctime, expires_at, last_used
 	           FROM Credential WHERE id = ?`
 
@@ -218,7 +223,7 @@ func load(ctx context.Context, id string) (*Credential, error) {
 		lastUsed sql.NullInt64
 	)
 	err := readDB.QueryRowContext(ctx, q, id).Scan(
-		&c.ID, &kind, &c.secretHash, &c.publicKey, &c.Email, &c.Label, &scope, &c.Perm,
+		&c.ID, &kind, &c.secretHash, &c.publicKey, &c.AccountID, &c.Label, &scope, &c.Perm,
 		&clientID, &c.Ctime, &expires, &lastUsed)
 	if err == sql.ErrNoRows {
 		subtle.ConstantTimeCompare(zeroHash, zeroHash)
@@ -259,28 +264,6 @@ func prove(c *Credential, tok Token) error {
 		return ErrInvalid
 	}
 	return nil
-}
-
-// accountIsActive is the join that could not be retrofitted. Disabling a user
-// has to kill every lane at once, and it only does if every lane asks.
-//
-// LDAPUsers carries its own is_active column and nothing in the file server
-// reads that table today. When it does, this is the one place that has to
-// learn about it.
-func accountIsActive(ctx context.Context, email string) (bool, error) {
-	var active bool
-	err := readDB.QueryRowContext(ctx,
-		"SELECT is_active FROM EmailUser WHERE email = ?", email).Scan(&active)
-	if err == sql.ErrNoRows {
-		// The row references an account that no longer exists. Treat it as
-		// inactive rather than as an error: deleting a user must not leave
-		// their credentials working.
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("checking account: %v", err)
-	}
-	return active, nil
 }
 
 // lastUsedGranularity is how stale last_used is allowed to get before it is
