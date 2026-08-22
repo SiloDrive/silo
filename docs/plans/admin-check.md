@@ -1,10 +1,18 @@
 # Plan: Admin privilege check (`is_staff`)
 
+**Status: not built.** Nothing in the tree reads `is_staff` outside the schema
+and the account backfill. This is where we intend to go, not what is there.
+
+**Written before the identity split.** [`auth.md`](../auth.md) moves the flag
+onto `Account`, which is where the code below should read it from — the shape
+of the plan survives, but `IsStaff(email)` becomes a field on the account the
+request already carries, and the snippets below are the pre-split spelling.
+
 ## Context
 
-Silo's management API at `/api/v1/` currently treats every authenticated user as equal — there is no way to gate endpoints behind an admin role. This blocks upcoming work on user management, repo sharing admin views, and "view-only" accounts (see `docs/future-features.md`).
+Silo's management API at `/api/silo/v1/` treats every authenticated user as equal — there is no way to gate endpoints behind an admin role. This blocks upcoming work on user management, repo sharing admin views, and "view-only" accounts (see [`future-features.md`](../future-features.md)).
 
-The groundwork is already in place: the `EmailUser` table has an `is_staff` column, and `EnsureAdmin()` writes `is_staff=1` for the bootstrap admin. What's missing is (a) a helper that reads `is_staff` for an authenticated user, and (b) a middleware that refuses non-admin requests. This plan adds both as a minimal, surgical change — no existing behaviour is altered.
+The groundwork is already in place: the `EmailUser` table has an `is_staff` column, `Account` has one beside it, and the bootstrap admin is written with it set. What's missing is (a) a helper that reads `is_staff` for an authenticated user, and (b) a middleware that refuses non-admin requests. This plan adds both as a minimal, surgical change — no existing behaviour is altered.
 
 **Scope decisions (confirmed with user):**
 - `is_staff` only gates future admin endpoints. `CheckPerm` and `ListReposHandler` are **not** changed — admins do not implicitly see or write all repos.
@@ -86,12 +94,12 @@ No routes are wired up in this change. `RequireAdmin` is added as infrastructure
    - Create an `EmailUser` row with `is_staff=1` → `IsStaff` returns `true, nil`.
    - Create an `EmailUser` row with `is_staff=0` → `IsStaff` returns `false, nil`.
    - Unknown email → `IsStaff` returns `false, nil` (no error).
-4. **Middleware smoke test** (can be deferred until a real admin route exists): temporarily wire a throwaway `/api/v1/_admin_ping` handler behind `RequireAuth` + `RequireAdmin` in a scratch branch, then:
+4. **Middleware smoke test** (can be deferred until a real admin route exists): temporarily wire a throwaway `/api/silo/v1/_admin_ping` handler behind `RequireAuth` + `RequireAdmin` in a scratch branch, then:
    - Hit it with the bootstrap admin token → `200`.
    - Create a second non-staff user, log in, hit it → `403`.
    - Hit it with no token → `401`.
    Remove the scratch handler before merging.
-5. **Regression check**: exercise the existing `/api/v1/repos` endpoints with a non-admin user (create one by direct DB insert with `is_staff=0`) to confirm nothing has changed — the permission model for existing routes must be identical.
+5. **Regression check**: exercise the existing `/api/silo/v1/repos` endpoints with a non-admin user (create one by direct DB insert with `is_staff=0`) to confirm nothing has changed — the permission model for existing routes must be identical.
 
 ## Out of scope (explicitly)
 

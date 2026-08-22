@@ -185,7 +185,19 @@ silo mv <repo-id> /a.txt /sub/a.txt
 silo rename <repo-id> /sub/a.txt b.txt
 silo rm <repo-id> /sub/b.txt
 silo repo rm <repo-id>
+silo changes <repo-id> <since-commit>   # what changed since a commit
 ```
+
+And two that run against the data directory rather than the API:
+
+```bash
+silo gc                             # report what deleted libraries left on disk
+silo gc -delete                     # reclaim it — stop the server first
+silo backup-db <dir>                # snapshot the database; see Backups below
+```
+
+`silo gc` only ever touches libraries that have already been deleted; it does
+not reclaim unreferenced history inside a library that still exists.
 
 `silo help` prints the full subcommand list.
 
@@ -206,6 +218,9 @@ silo repo rm <repo-id>
 | `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
 | `SILO_VERIFY_FS_OBJECT_HASHES` | Check uploaded fs objects hash to their id (costs a decompress each; blocks and commits are always checked) | `true` |
 | `SILO_AUTH_CACHE_TTL` | How long token/permission lookups are cached (`0` disables) | `5m` |
+| `SILO_API_TOKEN_TTL` | How long a SeaDrive API token lasts. A value below one hour is refused rather than clamped — it would expire every existing token irrecoverably | `720h` (30 days) |
+| `SILO_ENABLE_NOTIFICATIONS` | Serve the WebSocket notification endpoint. `false` turns it off, and `notify-token` then answers `404` | `true` |
+| `SILO_GROUP_TABLE_NAME` | Name of the groups table, for a database inherited from a deployment that renamed it | `Group` |
 | `SILO_LOGIN_RATE_LIMIT` | Throttle failed logins per address and per account | `true` |
 | `SILO_TRUST_PROXY_HEADERS` | Believe `X-Forwarded-For` / `X-Real-Ip` — **set this behind a reverse proxy** | `false` |
 | `SILO_SENTRY_DSN` | Send errors, panics and request timings to Sentry, [Splat](https://github.com/dkam/splat) or GlitchTip (`SENTRY_DSN` also works) | — (send nothing) |
@@ -356,7 +371,10 @@ The JWT management API (`/api/silo/v1/`) is new and Silo-specific; existing Seaf
 Silo is a lean rewrite focused on the sync path and a minimal management API. The following upstream Seafile features are **not** available:
 
 - No user management API — the first user is created at startup (from `SILO_ADMIN_EMAIL`/`SILO_ADMIN_PASSWORD`, or generated and logged), and any further users need a direct database insert
-- No repo sharing API — users can only access repos they own (share tables exist in the schema but have no HTTP endpoints)
+- No repo sharing API — nothing can *create* a share. The share tables are read
+  and honoured: a row in `SharedRepo` or `RepoGroup` grants the access it
+  describes, and `GET /api/silo/v1/repos` lists directly shared libraries beside
+  owned ones. Putting the row there means a direct database insert
 - No group management API
 - No `is_staff` / admin privilege check in the API layer — all authenticated users have equal permissions
 - No web UI — use the TUI or a Seafile client
@@ -381,12 +399,17 @@ fileserver/        Active Go server
 cmd/silo/          Bubble Tea TUI client
 client/            HTTP client for the management API
 internal/          TUI, CLI plumbing, observability, XDG paths
-docs/              Architecture notes, error reporting, backups, future features
+docs/              Architecture, protocol, backups, and the plans (docs/README.md)
 test/              Ruby integration harness against a running server (test/README.md)
 ```
 
+[`docs/README.md`](docs/README.md) is the index, and it marks each document as
+describing the server *as it is*, as a *plan* for where it is going, or as a
+*record* of something already decided. Several of the documents are plans, and
+reading one as a description is the mistake it exists to prevent.
+
 ## Origin and license
 
-Silo started as a fork of [haiwen/seafile-server](https://github.com/haiwen/seafile-server). It reuses the on-disk format, database schema, and wire protocol so that upstream clients keep working.
+Silo started as a fork of [haiwen/seafile-server](https://github.com/haiwen/seafile-server). It reuses the on-disk object format and the wire protocol, which is what keeps upstream clients working. The database schema started there too, but it is not part of the promise and has already diverged — a client cannot see the schema, so nothing about compatibility depends on it.
 
 Licensed under **AGPLv3**, inherited from the upstream project. See [`NOTICE`](NOTICE) for attribution and [`LICENSE.txt`](LICENSE.txt) for the full license text.

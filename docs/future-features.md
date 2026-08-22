@@ -4,9 +4,14 @@ Rough roadmap for Silo. Ordered loosely by priority, but nothing here is committ
 
 ## User Management
 
-Currently users can only be created via env vars on startup
-(`SEAFILE_ADMIN_EMAIL` / `SEAFILE_ADMIN_PASSWORD`) or by writing directly to
-the `EmailUser` table. We need a proper admin-gated API.
+Users can only be created at startup — `SILO_ADMIN_EMAIL` / `SILO_ADMIN_PASSWORD`,
+or the bootstrap admin the server mints and logs when the user table is empty —
+or by writing to the database directly. There is one account and no lifecycle.
+We need a proper admin-gated API.
+
+[`auth.md`](auth.md) puts a CLI (`silo user add | disable | passwd`) ahead of
+this API, on the grounds that the identity split makes it possible and it is
+what the API would be built on anyway.
 
 ### Endpoints
 
@@ -21,10 +26,11 @@ the `EmailUser` table. We need a proper admin-gated API.
 
 ### Prerequisites
 
-- **Admin check helper**: query `is_staff` from `EmailUser` for the authed user.
-- **Admin middleware** (or per-handler guard): gate `/api/silo/v1/users/*` behind
-  `is_staff = 1`. Cache the flag on the JWT claim so we don't hit the DB on
-  every request.
+- **Admin check helper and middleware**: read `is_staff` for the authenticated
+  user and gate `/api/silo/v1/users/*` behind it. Planned in
+  [`plans/admin-check.md`](plans/admin-check.md), which settles one thing worth
+  not re-arguing: the flag is read per request rather than cached on the token,
+  so revoking admin takes effect immediately instead of at the next expiry.
 - Decide: should `is_staff` also grant all-repo visibility in `CheckPerm` and
   `ListReposHandler`? Upstream conflates "admin" with "can see everything";
   we may want a cleaner split.
@@ -44,9 +50,12 @@ only access shared repos.
 
 ## Repo Sharing
 
-Share tables (`SharedRepo`, `SharedRepoV2`, `RepoGroup`) already exist in the
-schema — they're just not exposed over HTTP. Once user management lands,
-sharing should be straightforward.
+The share tables — `SharedRepo` for user-to-user, `RepoGroup` for groups,
+`InnerPubRepo` for server-wide — already exist and are already read: a row in
+any of them grants what it says, through `share.CheckPerm`. What is missing is
+every way to *write* one. (There is no `SharedRepoV2`; an earlier draft of this
+section named one that has never been in Silo's schema.) Once user management
+lands, sharing should be straightforward.
 
 ### Endpoints
 
@@ -91,7 +100,7 @@ Group membership should participate in `CheckPerm` via the existing
 
 Seafile supports per-file advisory locks so two clients editing the same
 document don't clobber each other. SeaDrive and Seafile Desktop both honour
-the lock state when present. Tables `FileLocks` and `FileLocksTimestamp` exist
+the lock state when present. Tables `FileLocks` and `FileLockTimestamp` exist
 in the schema.
 
 ### Endpoints
@@ -137,15 +146,25 @@ a matter of exposing what's already on disk. Upstream endpoints to port:
 - `POST /api2/repos/{id}/trash/restore/`            — restore from trash
 - `DELETE /api2/repos/{id}/trash/`                  — empty trash
 
-Trash is interesting because Silo currently has no GC — "deleted" files are
-still reachable via old commits forever. A real trash needs a retention
-window and a GC pass that prunes commits older than the window.
+Trash is interesting because a file deleted from a library it stays in is
+still reachable via old commits forever — `silo gc` only reclaims libraries
+that were deleted whole. A real trash needs a retention window and a GC pass
+that prunes commits older than the window; see Garbage Collection below.
 
 ## Garbage Collection
 
-Related to trash: there's no block GC. If you delete a 10 GB file, the blocks
-stay on disk indefinitely under `{data-dir}/storage/blocks/`. Need a
-`silo gc` subcommand (or background job) that:
+Half of this landed. `silo gc` reclaims the object-store directories of
+libraries that have already been *deleted* — `DeleteRepo` records the id in
+`GarbageRepos` and the command removes that library's tree from the commit, fs
+and block stores. It reports by default and needs `-delete` to remove anything,
+and it deliberately never inspects a library that still exists, which is what
+lets it run without reasoning about concurrent writes. Stop the server first;
+nothing locks the data directory.
+
+What is still missing is GC *within* a live library. If you delete a 10 GB file
+from a library you keep, its blocks stay on disk indefinitely under
+`{data-dir}/storage/blocks/`, because an old commit still references them. That
+needs a pass that:
 
 1. Walks reachable commits per repo (`commitmgr.Load` from each repo's head,
    following parents), collecting the live fs-object and block set via
@@ -197,8 +216,8 @@ enforced on the upload path today, and there's no API to set a user's cap.
   - `PUT /api/silo/v1/users/{email}/quota` — set cap (admin only)
   - `GET /api/silo/v1/account/quota` — self lookup, no admin needed
 - **Default quota config**: surface `option.DefaultQuota` as an env var
-  (`SEAFILE_DEFAULT_QUOTA`) so it's settable without editing
-  `seafile.conf`.
+  (`SILO_DEFAULT_QUOTA`, following every other variable Silo added) so it's
+  settable without editing `seafile.conf`.
 - **Per-repo quota** (extension, not upstream-compatible): there's no
   `RepoQuota` table in the schema. For "this shared team library can grow
   to 500 GB regardless of who owns it" we'd need to add one and have
@@ -248,9 +267,10 @@ still uses.
   on `/metrics` in Prometheus format.
 - **Healthcheck**: a real `/healthz` that pings both SQLite handles and
   returns 503 if either is wedged.
-- ~~**Backup story**~~: done — `silo backup-db` snapshots both SQLite files
-  with `VACUUM INTO`, and [`backup.md`](backup.md) documents the ordering the
-  object-store copy has to follow.
+- ~~**Backup story**~~: done — `silo backup-db` snapshots the database with
+  `VACUUM INTO`, and [`backup.md`](backup.md) documents the ordering the
+  object-store copy has to follow. It said *both* SQLite files when there were
+  two of them; there is one now, `silo.db`.
 
 ## Protocol / Client Compat Gaps
 

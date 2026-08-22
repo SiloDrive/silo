@@ -75,7 +75,7 @@ credential: one to learn what it is talking to, one to get a token.
 | GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.6","features":[…],"block_size":8388608}` — semver with no leading `v`, the capability list a client should branch on instead of the version, and the offset a client must chunk at for its block ids to match the store's |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
 | POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
-| GET | `/api/silo/v1/repos` | List repos owned by authenticated user, each with `head_commit_id` — the anchor `changes` starts from. `[]`, never `null`, for an empty account |
+| GET | `/api/silo/v1/repos` | List the caller's libraries — owned, plus any shared directly to them through `SharedRepo` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |
 | POST | `/api/silo/v1/repos` | Create a new repo |
 | DELETE | `/api/silo/v1/repos/{repoid}` | Delete a repo |
 | PATCH | `/api/silo/v1/repos/{repoid}` | `{"name":"New name"}` — rename a library. `PATCH` because the body names only what changes |
@@ -370,9 +370,23 @@ the login endpoint itself.
 | GET | `/api2/repos/` | Yes | List accessible repos (owned + shared + group) in Seahub format |
 | POST | `/api2/repos/` | Yes | Create a new repo. SeaDrive calls this when you `mkdir` in "My Libraries" |
 | GET | `/api2/repos/{repoid}/download-info/` | Yes | Returns token + metadata + file server URL so SeaDrive can begin sync |
+| POST | `/api2/repos/{repoid}/?op=rename` | Yes | Form-encoded `repo_name` → rename a library. Same handler as the `/api/v2.1/` spelling below |
 | POST | `/api2/repos/{repoid}/repo-tokens/` | Yes | Alternate path to generate a repo sync token (unused by current SeaDrive; kept for other clients) |
 
 Handler implementations: `fileserver/api/seadrive.go`.
+
+### Seahub v2.1 compatibility — `/api/v2.1/*`
+
+SeaDrive reaches for `/api/v2.1/` for two operations rather than the `/api2/`
+spellings of them. Same `Authorization: Token` auth, same handlers — the routes
+exist so a client that picked the newer path finds it there.
+
+| Method | Path | Auth? | Notes |
+|---|---|---|---|
+| POST | `/api/v2.1/repos/{repoid}/?op=rename` | Yes | Rename a library |
+| DELETE | `/api/v2.1/repos/{repoid}/` | Yes | Delete a library |
+
+Nothing else under `/api/v2.1/` routes; the rest is a 404, logged as `WARN`.
 
 ### Sync protocol — `/repo/*`, `/files/*`, `/seafhttp/*`
 
@@ -430,7 +444,7 @@ not applicable to our single-binary standalone model.
 | ~~/notification/ping~~ | Integrated into Silo (`fileserver/notif`) | Handled | — |
 | ~~/notification/events~~ | Integrated into Silo (`fileserver/notif`) | Handled | — |
 | Anything else under `/api2/` we haven't listed | Seahub | 404 | Logged as WARN so new SeaDrive releases are easy to catch |
-| Anything under `/api/v2.1/` | Seahub REST API v2.1 | 404 | No tested client uses this yet |
+| Anything under `/api/v2.1/` beyond rename and delete | Seahub REST API v2.1 | 404 | Logged as WARN. The two that are implemented are [above](#seahub-v21-compatibility--apiv21) |
 
 If a client starts hitting something in this list and breaks, the fix is
 usually to add a shim handler that reuses existing `fileserver/` code.
