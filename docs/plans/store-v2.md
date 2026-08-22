@@ -147,11 +147,35 @@ reference skeleton and (E2EE only) a sealed secrets section:
 
 ```
 version u8 | flags u8 | file_size varint
-public:  (chunk_id [32]byte, size varint)*   -- ordered; size = PLAINTEXT bytes
+public:  chunk_count varint                  -- chunked only
+         (chunk_id [32]byte, size varint)*   -- ordered; size = PLAINTEXT bytes
          seal_hash [32]byte                  -- E2EE only; SHA-256 of sealed plaintext
-sealed:  (H_p [32]byte)*                     -- E2EE only; one per entry; AEAD below
-   or:   inline_data (len varint, bytes)     -- files under 64 KiB (sealed when E2EE)
+sealed:  (H_p [32]byte)*                     -- E2EE only; exactly chunk_count of them
+   or:   the file's bytes                    -- files under 64 KiB (sealed when E2EE;
+                                             --   in a plain library they follow the
+                                             --   header directly, unsealed)
 ```
+
+Three details this diagram did not originally carry, resolved by the phase-1
+spec and recorded here so the two do not drift:
+
+- **`chunk_count` is explicit.** A parser could have found the end of the
+  chunk list by summing sizes to `file_size`, but the count-rejects-on-mismatch
+  rule below exists precisely so two parsers cannot disagree about a malformed
+  object — and it applies to this list for the same reason it applies to
+  `entry_count`. Cost: one to five bytes per manifest.
+- **Inline data carries no length of its own**, because `file_size` already
+  states it. More generally: *the sealed plaintext's length is always fixed by
+  the public section* — `32 × chunk_count` chunked, `file_size` inline — so no
+  sealed section carries a length field and trailing bytes have nowhere to
+  hide.
+- **Inlining is determined by size, not chosen by the writer**: under 64 KiB a
+  manifest inlines and must carry no chunk list; at or above, it is chunked and
+  must carry no inline data, both enforced on read. The bullet below reads as
+  though a writer may inline when it likes, which would let two clients mint
+  two manifest ids for one file — dedup missing and `changes?since=` reporting
+  a modification that did not happen. A manifest is a function of its file's
+  content and nothing else.
 
 - `size` is pinned as the **plaintext** size — offset→chunk mapping needs
   it. The client-visible wire size is derivable: +16 (content-layer tag)
@@ -204,8 +228,8 @@ sealed:  (H_p [32]byte)*                     -- E2EE only; one per entry; AEAD b
   loss, and identical files from two members into spurious `changes?since=`
   traffic — the exact positional-anchoring mistake the chunk scheme exists
   to avoid.
-- **Inlining is in the format from day one** (the flag and field), even if the
-  server starts writing inline manifests later. A 4 KB file must not cost
+- **Inlining is in the format from day one** — mandatory below the threshold
+  rather than optional, per the note above. A 4 KB file must not cost
   manifest + dirent + chunk — three round trips over a remote backend. Inline
   data sits in the sealed section under E2EE.
 
@@ -955,11 +979,12 @@ Phases are sequential on the branch; each leaves the tree working.
 0. **Gates G1, G2.** — **done, 2026-08-22.** Plus the two paper decisions:
    confirm default-on E2EE and AES-GCM. Cheap, do first, everything
    downstream hardens.
-1. **Spec + shared package + vectors.** — **building.** Ids, chunker
-   parameters, the keyed gear table, the cut loop and its vectors have
-   landed in [`store/`](../../store) and
-   [`spec/store-format.md`](../spec/store-format.md); manifests, the
-   directory/commit codecs and the content crypto are next. The chunker, id, manifest, and crypto
+1. **Spec + shared package + vectors.** — **building.** Landed in
+   [`store/`](../../store) and [`spec/store-format.md`](../spec/store-format.md):
+   ids, chunker parameters, the keyed gear table and the cut loop; the
+   manifest codec in both library types; convergent chunk encryption and the
+   sealed-container key derivation; vectors for all of it. Left: the
+   directory and commit codecs, AES-SIV names, and key wrapping. The chunker, id, manifest, and crypto
    spec as a document; the Go package; test vectors generated and committed.
    No server changes yet. This is the artifact porter-mac builds against, so
    it lands first.

@@ -105,11 +105,6 @@ func vectorParams(seed [32]byte) paramsVector {
 	}
 }
 
-// e2eeVectorKey is a fixed stand-in for a library content key. A real CK is
-// 32 random bytes; this one is published so the derived seed, gear table and
-// boundaries are all reproducible from the spec.
-var e2eeVectorKey = []byte("silo test content key, not secret")
-
 func buildVectors(t *testing.T) vectorDoc {
 	t.Helper()
 	doc := vectorDoc{
@@ -125,7 +120,7 @@ func buildVectors(t *testing.T) vectorDoc {
 		seed [32]byte
 	}{
 		{"plain", PlainSeed()},
-		{"e2ee", ChunkerSeed(e2eeVectorKey)},
+		{"e2ee", ChunkerSeed(vectorCK)},
 	}
 	for _, s := range seeds {
 		g := gearTable(s.seed)
@@ -155,7 +150,7 @@ func buildVectors(t *testing.T) vectorDoc {
 		{"one-chunk", vectorParams(PlainSeed()), inputVector{"pseudorandom", "silo/vector/one", 300000}},
 		{"pseudorandom-16MiB", vectorParams(PlainSeed()), inputVector{"pseudorandom", "silo/vector/random", 16 << 20}},
 		{"zeros-16MiB", vectorParams(PlainSeed()), inputVector{"zeros", "", 16 << 20}},
-		{"pseudorandom-16MiB-e2ee", vectorParams(ChunkerSeed(e2eeVectorKey)), inputVector{"pseudorandom", "silo/vector/random", 16 << 20}},
+		{"pseudorandom-16MiB-e2ee", vectorParams(ChunkerSeed(vectorCK)), inputVector{"pseudorandom", "silo/vector/random", 16 << 20}},
 	}
 	for _, c := range cases {
 		v := cutVector{Name: c.name, Params: c.params, Input: c.input}

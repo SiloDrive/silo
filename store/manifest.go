@@ -1,0 +1,333 @@
+package store
+
+import (
+	"crypto/sha256"
+	"fmt"
+)
+
+// ManifestVersion is the version byte this package writes. Version counters
+// are per object type — manifests, directories and commits revise
+// independently, as their separate domain strings already imply — so a port
+// sharing one counter across all three would bump directory ids when the
+// manifest format changed.
+const ManifestVersion = 1
+
+// The flag bits, pinned. They sit inside the authenticated range, so two
+// ports that assign the same fact to different bits mint different keys and
+// different ids for identical trees: the failure the byte layouts exist to
+// prevent, arriving through the one byte a layout diagram does not describe.
+const (
+	flagE2EE     = 0x01 // all objects: gates every E2EE-only field
+	flagInline   = 0x02 // manifests only: the file's bytes replace its chunk list
+	flagReserved = 0xfc // must be zero; parsers reject if set
+)
+
+// MaxManifestBytes bounds an encoded manifest, checkable from Content-Length
+// before a byte is parsed or allocated — which is what actually bounds
+// allocation, where a cap on the chunk count would not.
+//
+// It is a *format* ceiling — what a file may be — not a memory promise.
+// Manifests do not segment and their size is linear in the file's
+// (~67 bytes per chunk, so ~67 MB per TB at the 1 MiB target), so a very
+// large file means a large immutable object rewritten in full on every edit.
+// The answer for those is a streaming parse, not a smaller constant.
+const MaxManifestBytes = 1 << 30
+
+// MaxFileSize bounds the file a manifest may claim to describe: 256 TiB. Not
+// a manifest can reach it — the ceiling above binds first, and long before —
+// but file_size is parsed before anything is sized from it, so it needs a
+// bound of its own rather than inheriting one by accident.
+const MaxFileSize = 1 << 48
+
+// ChunkRef is one entry of a manifest's chunk list.
+type ChunkRef struct {
+	ID ID
+	// Size is the chunk's PLAINTEXT length. Pinned as plaintext because
+	// mapping a read offset to a chunk needs it; the wire size is derivable
+	// (+16 for the content tag under E2EE, +0 plain). Storage framing is
+	// server-internal and never enters client arithmetic.
+	Size int64
+	// PlaintextHash is H_p, carried in an E2EE manifest's sealed section and
+	// zero in a plain one. It exists because ids alone cannot decrypt: a
+	// reader holds SHA-256(ciphertext) and needs a key derived from
+	// SHA-256(plaintext), and there is no path between them.
+	PlaintextHash ID
+}
+
+// Manifest is a file: an ordered chunk list, or the bytes themselves when the
+// file is small enough to inline.
+//
+// Whether a manifest inlines is a function of the file's size alone, never a
+// writer's choice — see Validate. Two clients that disagreed about a 30 KB
+// file would mint two manifest ids for identical content, and dedup and
+// changes?since= would both see a modification that did not happen.
+type Manifest struct {
+	FileSize int64
+	Chunks   []ChunkRef // empty when inline
+	Inline   []byte     // nil unless inline; the file's bytes
+}
+
+// Inlined reports whether a file of this size carries its bytes in its
+// manifest. G1 measured a third of all files under the threshold holding
+// 0.01% of all bytes: inlining removes a third of the store's chunk objects,
+// and spares a 4 KB file the three round trips of manifest, dirent and chunk.
+func Inlined(fileSize int64) bool { return fileSize < InlineThreshold }
+
+// Validate reports whether the manifest describes a file at all.
+func (m *Manifest) Validate() error {
+	if m.FileSize < 0 {
+		return fmt.Errorf("%w: negative file size %d", ErrEncoding, m.FileSize)
+	}
+	if Inlined(m.FileSize) {
+		if len(m.Chunks) != 0 {
+			return fmt.Errorf("%w: a %d-byte file inlines, but the manifest lists %d chunks",
+				ErrEncoding, m.FileSize, len(m.Chunks))
+		}
+		if int64(len(m.Inline)) != m.FileSize {
+			return fmt.Errorf("%w: inline data is %d bytes, file size says %d",
+				ErrEncoding, len(m.Inline), m.FileSize)
+		}
+		return nil
+	}
+	if m.Inline != nil {
+		return fmt.Errorf("%w: a %d-byte file is chunked, but the manifest carries inline data",
+			ErrEncoding, m.FileSize)
+	}
+	if len(m.Chunks) == 0 {
+		return fmt.Errorf("%w: a %d-byte file has no chunks", ErrEncoding, m.FileSize)
+	}
+	var total int64
+	for i, c := range m.Chunks {
+		if c.Size <= 0 {
+			return fmt.Errorf("%w: chunk %d is %d bytes", ErrEncoding, i, c.Size)
+		}
+		total += c.Size
+	}
+	if total != m.FileSize {
+		return fmt.Errorf("%w: chunks total %d bytes, file size says %d",
+			ErrEncoding, total, m.FileSize)
+	}
+	return nil
+}
+
+// Encode encodes the manifest for a plain library.
+func (m *Manifest) Encode() ([]byte, error) { return m.encode(nil) }
+
+// EncodeSealed encodes the manifest for an E2EE library under its content
+// key, sealing the per-chunk plaintext hashes — or, for an inline file, the
+// file's own bytes.
+func (m *Manifest) EncodeSealed(ck []byte) ([]byte, error) {
+	if len(ck) == 0 {
+		return nil, fmt.Errorf("store: sealing a manifest needs a content key")
+	}
+	return m.encode(ck)
+}
+
+func (m *Manifest) encode(ck []byte) ([]byte, error) {
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	e2ee := ck != nil
+	inline := Inlined(m.FileSize)
+
+	var flags byte
+	if e2ee {
+		flags |= flagE2EE
+	}
+	if inline {
+		flags |= flagInline
+	}
+
+	out := []byte{ManifestVersion, flags}
+	out = appendUvarint(out, uint64(m.FileSize))
+
+	// The sealed plaintext is built first because its hash is a public
+	// field: seal_hash sits inside the authenticated range, which is what
+	// makes the sealing key commit to the plaintext as well as the AD.
+	var sealed []byte
+	if inline {
+		if e2ee {
+			sealed = m.Inline
+		} else {
+			out = append(out, m.Inline...)
+		}
+	} else {
+		out = appendUvarint(out, uint64(len(m.Chunks)))
+		for _, c := range m.Chunks {
+			out = append(out, c.ID[:]...)
+			out = appendUvarint(out, uint64(c.Size))
+		}
+		if e2ee {
+			sealed = make([]byte, 0, len(m.Chunks)*IDSize)
+			for _, c := range m.Chunks {
+				sealed = append(sealed, c.PlaintextHash[:]...)
+			}
+		}
+	}
+
+	if e2ee {
+		sealHash := sha256.Sum256(sealed)
+		out = append(out, sealHash[:]...)
+		frame, err := sealSection(ck, domainManifest, out, sealed)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, frame...)
+	}
+
+	if len(out) > MaxManifestBytes {
+		return nil, fmt.Errorf("%w: encoded manifest is %d bytes, above the %d ceiling",
+			ErrEncoding, len(out), MaxManifestBytes)
+	}
+	return out, nil
+}
+
+// DecodeManifest reads a plain library's manifest.
+func DecodeManifest(b []byte) (*Manifest, error) { return decodeManifest(b, nil) }
+
+// DecodeSealedManifest reads an E2EE library's manifest and opens its sealed
+// section.
+func DecodeSealedManifest(b, ck []byte) (*Manifest, error) {
+	if len(ck) == 0 {
+		return nil, fmt.Errorf("store: opening a manifest needs a content key")
+	}
+	return decodeManifest(b, ck)
+}
+
+func decodeManifest(b, ck []byte) (*Manifest, error) {
+	if len(b) > MaxManifestBytes {
+		return nil, fmt.Errorf("%w: manifest is %d bytes, above the %d ceiling",
+			ErrEncoding, len(b), MaxManifestBytes)
+	}
+	if len(b) < 3 {
+		return nil, fmt.Errorf("%w: manifest is %d bytes, too short for a header", ErrEncoding, len(b))
+	}
+	if b[0] != ManifestVersion {
+		return nil, fmt.Errorf("%w: manifest version %d, this build writes %d",
+			ErrEncoding, b[0], ManifestVersion)
+	}
+	flags := b[1]
+	if flags&flagReserved != 0 {
+		return nil, fmt.Errorf("%w: manifest reserved flag bits are set (%#02x)", ErrEncoding, flags)
+	}
+
+	// The expected library type is an input, not something read out of the
+	// object. Locating the tag requires parsing, parsing requires flags, and
+	// under E2EE the tag is what protects flags — so a server flipping bit 0
+	// would get a parse under the wrong layout before any verification ran.
+	// The catalog already says which kind of library this is.
+	e2ee := ck != nil
+	if (flags&flagE2EE != 0) != e2ee {
+		return nil, fmt.Errorf("%w: manifest declares E2EE=%t, library is E2EE=%t",
+			ErrEncoding, flags&flagE2EE != 0, e2ee)
+	}
+
+	p := 2
+	fileSize, n, err := readUvarint(b[p:])
+	if err != nil {
+		return nil, fmt.Errorf("%w: manifest file size", ErrEncoding)
+	}
+	p += n
+	if fileSize > MaxFileSize {
+		return nil, fmt.Errorf("%w: manifest file size %d above the %d ceiling",
+			ErrEncoding, fileSize, uint64(MaxFileSize))
+	}
+	m := &Manifest{FileSize: int64(fileSize)}
+
+	inline := Inlined(m.FileSize)
+	if (flags&flagInline != 0) != inline {
+		return nil, fmt.Errorf("%w: manifest declares inline=%t for a %d-byte file",
+			ErrEncoding, flags&flagInline != 0, m.FileSize)
+	}
+
+	// sealedLen is fixed by the public section in both shapes, so the sealed
+	// section carries no length of its own and trailing bytes have nowhere
+	// to hide.
+	var sealedLen int
+	if inline {
+		sealedLen = int(fileSize)
+		if !e2ee {
+			if len(b[p:]) != int(fileSize) {
+				return nil, fmt.Errorf("%w: inline manifest carries %d bytes, file size says %d",
+					ErrEncoding, len(b[p:]), fileSize)
+			}
+			m.Inline = append([]byte(nil), b[p:]...)
+			return m, nil
+		}
+	} else {
+		count, n, err := readUvarint(b[p:])
+		if err != nil {
+			return nil, fmt.Errorf("%w: manifest chunk count", ErrEncoding)
+		}
+		p += n
+		// A chunk entry is at least IDSize+1 bytes, so a count larger than
+		// the object could hold is refused before anything is allocated for
+		// it. Bounding allocation is the whole job of this check.
+		if count == 0 || count > uint64(len(b)/(IDSize+1)) {
+			return nil, fmt.Errorf("%w: manifest claims %d chunks in %d bytes",
+				ErrEncoding, count, len(b))
+		}
+		m.Chunks = make([]ChunkRef, count)
+		var total int64
+		for i := range m.Chunks {
+			if len(b)-p < IDSize {
+				return nil, fmt.Errorf("%w: manifest ends inside chunk %d", ErrEncoding, i)
+			}
+			copy(m.Chunks[i].ID[:], b[p:p+IDSize])
+			p += IDSize
+			size, n, err := readUvarint(b[p:])
+			if err != nil {
+				return nil, fmt.Errorf("%w: manifest chunk %d size", ErrEncoding, i)
+			}
+			p += n
+			if size == 0 {
+				return nil, fmt.Errorf("%w: manifest chunk %d is zero bytes", ErrEncoding, i)
+			}
+			m.Chunks[i].Size = int64(size)
+			total += int64(size)
+		}
+		if total != m.FileSize {
+			return nil, fmt.Errorf("%w: manifest chunks total %d bytes, file size says %d",
+				ErrEncoding, total, m.FileSize)
+		}
+		if !e2ee {
+			if p != len(b) {
+				return nil, fmt.Errorf("%w: %d bytes past the end of a plain manifest",
+					ErrEncoding, len(b)-p)
+			}
+			return m, nil
+		}
+		sealedLen = len(m.Chunks) * IDSize
+	}
+
+	if len(b)-p < IDSize {
+		return nil, fmt.Errorf("%w: manifest ends before its seal hash", ErrEncoding)
+	}
+	var sealHash ID
+	copy(sealHash[:], b[p:p+IDSize])
+	p += IDSize
+
+	ad := b[:p]
+	if len(b)-p != sealedLen+TagSize {
+		return nil, fmt.Errorf("%w: manifest sealed section is %d bytes, want %d",
+			ErrEncoding, len(b)-p, sealedLen+TagSize)
+	}
+	plain, err := openSection(ck, domainManifest, ad, b[p:])
+	if err != nil {
+		return nil, err
+	}
+	// Redundant against the AEAD, which authenticates seal_hash as part of
+	// the AD — but it catches a broken *writer*, which the tag never can.
+	if sha256.Sum256(plain) != sealHash {
+		return nil, fmt.Errorf("%w: manifest seal hash does not match its sealed section", ErrEncoding)
+	}
+
+	if inline {
+		m.Inline = plain
+		return m, nil
+	}
+	for i := range m.Chunks {
+		copy(m.Chunks[i].PlaintextHash[:], plain[i*IDSize:])
+	}
+	return m, nil
+}
