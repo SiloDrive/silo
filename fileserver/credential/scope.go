@@ -2,10 +2,8 @@
 // docs/auth.md: one row for every secret a client presents to Silo, and one
 // function that verifies any of them.
 //
-// This file is only the scope encoding. It lands before Resolve because the
-// encoding is the part that cannot be changed later: once credentials exist in
-// the field, widening the column means rewriting rows on somebody else's
-// server.
+// This file is the scope encoding: the narrowing half of a credential, and the
+// test for whether a scope reaches a given path.
 package credential
 
 import (
@@ -25,8 +23,11 @@ import (
 //
 // Every scope auth.md writes still means exactly what it says there.
 //
-// A repo id is a UUID and never contains a colon, so the separator is
-// unambiguous and no escaping is needed.
+// The separator needs no escaping: the split takes the first colon, so a repo
+// id cannot contain one by construction, and a path may contain as many as it
+// likes. ParseScope rejects only the shapes a repo id can never have, rather
+// than requiring a UUID, so a caller may hold a scope for a library this
+// server has never heard of.
 type Scope struct {
 	// RepoID is empty for a credential that reaches every library.
 	RepoID string
@@ -34,6 +35,10 @@ type Scope struct {
 	// Path is empty for a credential that reaches a whole library. Otherwise
 	// it is cleaned and rooted ("/photos/2024"), naming a directory that the
 	// credential covers along with everything beneath it.
+	//
+	// A path without a RepoID names nothing: the encoding cannot express it
+	// and String drops it. Build a Scope through ParseScope and the case
+	// cannot arise.
 	Path string
 }
 
@@ -60,9 +65,12 @@ func ParseScope(s string) (Scope, error) {
 		return Scope{RepoID: repoID}, nil
 	}
 
-	// "repo:" is a typo for one of the two forms above and there is no way to
-	// tell which was meant. Refusing it costs a caller nothing and stops a
-	// truncated string from silently widening a credential to a whole library.
+	// "repo:" is a typo. It cannot be a deliberate spelling of either form
+	// above, both of which are available without the trailing colon, so
+	// refusing it costs a caller nothing and tells them they built the string
+	// wrong. Note this is a rule about the empty string, not about the
+	// library root: "repo:/" is a path that cleans to the root, and is
+	// normalised below rather than refused.
 	if rest == "" {
 		return Scope{}, fmt.Errorf("scope %q: colon with no path", s)
 	}
@@ -99,10 +107,14 @@ func (s Scope) String() string {
 // path's ciphertext stable across writes; a fresh salt per write would expire
 // every path-scoped credential on the next commit.
 //
-// The consequence for operators: a path scope in an E2EE library is
-// unreadable in the credential list, so the row's label is the only legible
-// record of what it reaches. auth.md already makes label the thing that turns
-// revocation from a guess into a decision; this is a second reason.
+// Two things still move a path out from under a scope, and both are quiet.
+// Renaming an ancestor leaves every segment ciphertext untouched — store-v2.md
+// is explicit that renaming an ancestor re-encrypts nothing — but the path
+// those segments spell is a different one, exactly as a plaintext path scope
+// stops following a renamed folder. Directory merge is the other way round: it
+// re-encrypts the loser's names, so an unchanged path acquires new ciphertext.
+// Either way the scope goes on matching nothing rather than failing loudly, so
+// a credential can outlive the thing it was cut to reach.
 func (s Scope) Covers(repoID, p string) bool {
 	if s.RepoID == "" {
 		return true

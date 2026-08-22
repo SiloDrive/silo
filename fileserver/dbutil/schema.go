@@ -146,28 +146,26 @@ CREATE INDEX IF NOT EXISTS apitoken_email_idx ON ApiToken (email);
 -- every other table here keys a user by their EmailUser.email. Matching the
 -- doc would mean inventing a table to satisfy a foreign key.
 --
--- scope is NULL for "every library", "<repo-id>" for one library, or
--- "<repo-id>:<path>" for a subtree of one. The subtree form is why the column
--- is TEXT and not CHAR(37): see credential.ParseScope for the encoding, which
--- is pinned before any row exists because widening it afterwards means
--- rewriting rows in the field.
+-- scope is '' for "every library". credential.ParseScope owns the encoding of
+-- the narrower forms. It is TEXT and not CHAR(37) because a scope can name a
+-- folder inside a library, not just the library. Empty rather than NULL so
+-- there is one spelling of "unscoped" rather than two.
 --
--- A row carries a secret hash or a public key, never both. An s3 row carries
--- neither and derives its secret from the master key, which is why the CHECK
--- permits both being NULL.
+-- An s3 row carries neither secret_hash nor public_key — it derives its secret
+-- from the master key — which is why the CHECK permits both being NULL.
 CREATE TABLE IF NOT EXISTS Credential (
-  id          TEXT    PRIMARY KEY,
-  kind        TEXT    NOT NULL,
+  id          TEXT         PRIMARY KEY,
+  kind        TEXT         NOT NULL,
   secret_hash BLOB,
   public_key  BLOB,
-  email       TEXT    NOT NULL,
-  label       TEXT    NOT NULL,
-  scope       TEXT,
-  perm        TEXT    NOT NULL,
+  email       VARCHAR(255) NOT NULL,
+  label       TEXT         NOT NULL,
+  scope       TEXT         NOT NULL DEFAULT '',
+  perm        TEXT         NOT NULL,
   client_id   TEXT,
-  ctime       INTEGER NOT NULL,
-  expires_at  INTEGER,
-  last_used   INTEGER,
+  ctime       BIGINT       NOT NULL,
+  expires_at  BIGINT,
+  last_used   BIGINT,
   CHECK (secret_hash IS NULL OR public_key IS NULL)
 );
 CREATE INDEX IF NOT EXISTS credential_email_idx ON Credential (email);
