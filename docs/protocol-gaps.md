@@ -68,6 +68,14 @@ is missing, because every one of them is, under a new name.
 
 There are two ways out, and they are not equally priced.
 
+> **Superseded.** The verdict below — prefer the wire delta, reject
+> content-defined chunking — is no longer the position.
+> [`chunking.md`](chunking.md) argues the other way on two facts not known when
+> this was written: the wire delta is a bandwidth fix only and never reduces
+> what is stored, and the cross-lane dedup being defended may already be lost.
+> The analysis of rsync's algorithm below stands on its own merits and is worth
+> keeping; the conclusion it feeds is not.
+
 **Content-defined chunking** fixes it at the source and costs the store. New
 boundaries mean new block ids, which means the same file carries two names, a
 SeaDrive upload stops deduping against a Silo one, and both lanes share one

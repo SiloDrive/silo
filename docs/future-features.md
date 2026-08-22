@@ -369,11 +369,103 @@ The larger prize is compressing blocks, which is possible for the same reason
 one level down, but pays nothing on media workloads. Measure first.
 Analysis in [`compression.md`](compression.md).
 
+## Chunking
+
+Silo cuts files at fixed 8 MiB offsets, so a boundary is a function of where
+you are rather than what is there. Insert a byte near the front of a file and
+every block id after it changes; `blocks/missing` will report a file it has
+held for months as entirely absent, because under the new names it is.
+
+Content-defined chunking fixes it at the root, and the objection previously
+raised against it — that it would cost cross-lane dedup — rests on a claim
+about upstream client chunking that nobody has verified. The chunker itself is
+under a hundred lines. The real costs are that its parameters become permanent
+wire protocol, and that smaller blocks force packing, which in turn forces a
+compactor.
+
+[`chunking.md`](chunking.md) has the argument, the test that decides it, and
+the pack and compaction design. It supersedes the opposite verdict in
+[`protocol-gaps.md`](protocol-gaps.md).
+
+Note that the compactor and the per-repo garbage collector above are the same
+project: both need a mark phase that walks live commits, and block liveness is
+a global reachability property that cannot be maintained as a running counter.
+Build them together or build the mark twice.
+
+## Replication and Parity
+
+Pie-in-the-sky, parked deliberately. Nothing here is scheduled, and the first
+step below is worth more than everything under it combined.
+
+The store is already git-shaped. `commitmgr.Commit` carries both `ParentID` and
+`SecondParentID`; `mergeTrees` (`merge.go:21`) is a real three-way merge over
+base/head/remote roots; `fastForwardOrMerge` (`fileop.go:1991`) mints merge
+commits with a second parent and CASes the branch forward. That engine already
+runs on every concurrent client write. Pointing it at a peer rather than at a
+desktop client is a smaller change than "multi-server sync" sounds.
+
+The one genuinely missing piece is the merge base. Today the client hands in
+`base`, because it knows what it last saw. Two servers have to compute their
+common ancestor themselves, by walking the commit DAG — a `git merge-base` walk
+over parent pointers.
+
+### Two products, not one
+
+- **Primary plus N secondaries is durability.** Secondaries pull the DAG and
+  the objects and never mint commits. A replica that cannot write cannot
+  conflict: no merge base to find, no conflict files, no clock skew. Failover
+  is permission to write. This is the piece actually worth building, and it
+  needs none of the merge machinery.
+- **Two people mirroring each other is collaboration.** That one is genuinely
+  bidirectional, and Seafile's answer is already implemented and is the right
+  one: never block. Both edits survive and one is renamed
+  `foo (SFConflict user time)` (`merge.go:348`) — convergence by making the
+  conflict visible rather than by choosing a winner.
+
+Bundled, they give a system that is good at neither. The replica is also the
+transport for the mirror, so build it first and stop there if nothing else is
+wanted.
+
+### Parity fits here better than it fits SnapRAID
+
+SnapRAID's parity is a snapshot: change a file and the parity is stale until
+the next `snapraid sync`. That is the whole reason it is only recommended for
+media libraries — the tool is confined to static data by its own design.
+
+Content addressing removes that constraint. Blocks are immutable, so an edit
+writes new blocks and leaves the old ones untouched, and parity computed over
+blocks is never invalidated by a write. Only deletion disturbs it, which makes
+GC rather than editing the thing parity has to be designed around.
+
+Which lands it on the compactor. The Chunking section above already concludes
+that packing and the mark-phase GC are one project; parity stripes are the same
+unit at the same layer. Parity over *packs* rather than over loose blocks makes
+a sealed pack the stripe and compaction the only event that recomputes
+anything. Content-defined chunking pulls against this, though — shards are
+uniform today only because the block size is fixed.
+
+### What stays out
+
+A group where everyone holds a fraction plus parity and still reads locally is
+two incompatible wishes. Holding 1/N of the blocks means fetching the rest from
+peers, which means being online: a cache with an exotic backing store, and a
+worse experience for a media library than simply storing it. Full peer-to-peer
+parity also needs agreement on which blocks sit in which stripe, and shared
+mutable state across untrusting peers is consensus — at which point this is no
+longer a binary anyone can explain.
+
+The cheap version keeps an authority. The primary owns the stripe map and hands
+secondaries their assignments: subset replicas, no consensus, and the durability
+that matters — a member's disk can die without every member holding everything.
+
 ## Non-Goals
 
 Things we're explicitly *not* going to build, to keep scope honest:
 
-- **Federation / multi-server sync** — one binary, one node.
+- **Peer-to-peer federation** — a mesh of untrusting instances agreeing on
+  shared state is consensus, and consensus is a different project.
+  Replication with a single authority is parked rather than ruled out; see
+  Replication and Parity above.
 - **Plugin system** — if you want custom behaviour, fork.
 - **LDAP / SAML** — OIDC covers the same ground with far less surface to
   implement and to get wrong, and it is planned rather than ruled out; see

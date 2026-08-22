@@ -77,7 +77,7 @@ The interesting tier, and cheaper than it sounds, because of one fact:
 
 `chunkFile` (`fileop.go:2684`) seeks to an offset and reads exactly
 `FixedBlockSize` bytes; the caller steps offsets by the same amount
-(`fileop.go:2554-2560`). The default is `1 << 23`, 8 MiB
+(`fileop.go:2565-2569`). The default is `1 << 23`, 8 MiB
 (`option/option.go:221`). So a block id is:
 
     blockID = sha1(file[offset : offset+8MiB])
@@ -119,8 +119,9 @@ mostly-unchanged tree sends almost nothing.
   wins on unchanged and append-only files, loses on edits in the middle. This
   is inherited from Seafile; content-defined chunking would fix it and would
   also change every block id in existence, so it is not a change to make
-  casually. The cheaper answer is a delta on the wire rather than new
-  boundaries in the store — see the rsync note in
+  casually. It is nonetheless the change now being argued for — a wire delta
+  saves bandwidth and stores the file twice regardless. See
+  [`chunking.md`](chunking.md), which supersedes the rsync note in
   [`protocol-gaps.md`](protocol-gaps.md).
 
 ## Tier 3 — a headless sync agent

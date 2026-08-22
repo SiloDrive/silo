@@ -127,6 +127,16 @@ Repo (UUID)
 ("Seafile object" here is the on-disk name for a file object — a list of block
 IDs. It is the format's term, not a reference to the upstream server.)
 
+**The block line is unverified and contradicts the rest of the docs.**
+`native-client.md` and `protocol.md` both state that chunking is at fixed 8 MiB
+offsets, which is certainly true of everything *Silo* writes — `chunkFile`
+(`fileop.go:2684`) reads `FixedBlockSize` bytes from a computed offset. "Rabin
+CDC chunked, 4KB-8MB" would be a claim about what upstream *clients* produce,
+and nobody has checked it. Silo's read path does assume variable sizes
+(`doFileRange`, `fileop.go:355`, stats every block rather than dividing), which
+is suggestive but not proof. Which document is wrong matters: see the test in
+[`chunking.md`](chunking.md).
+
 ## Go internals
 
 ### Handler pattern
