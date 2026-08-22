@@ -21,7 +21,7 @@ const siloSchema = `
 CREATE TABLE IF NOT EXISTS Binding (email TEXT, peer_id TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS peer_index on Binding (peer_id);
 
-CREATE TABLE IF NOT EXISTS EmailUser (id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, email TEXT, passwd TEXT, is_staff bool NOT NULL, is_active bool NOT NULL, ctime INTEGER, reference_id TEXT);
+CREATE TABLE IF NOT EXISTS EmailUser (id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, email TEXT, passwd TEXT, is_staff bool NOT NULL, is_active bool NOT NULL, ctime INTEGER, reference_id TEXT, account_id BLOB);
 CREATE UNIQUE INDEX IF NOT EXISTS email_index on EmailUser (email);
 CREATE UNIQUE INDEX IF NOT EXISTS reference_id_index on EmailUser (reference_id);
 
@@ -35,8 +35,8 @@ CREATE TABLE IF NOT EXISTS UserRole (email TEXT, role TEXT, is_manual_set INTEGE
 CREATE INDEX IF NOT EXISTS userrole_email_index on UserRole (email);
 CREATE UNIQUE INDEX IF NOT EXISTS userrole_userrole_index on UserRole (email, role);
 
-CREATE TABLE IF NOT EXISTS "Group" (group_id INTEGER PRIMARY KEY AUTOINCREMENT, group_name VARCHAR(255), creator_name VARCHAR(255), timestamp BIGINT, type VARCHAR(32), parent_group_id INTEGER);
-CREATE TABLE IF NOT EXISTS GroupUser (group_id INTEGER, user_name VARCHAR(255), is_staff tinyint);
+CREATE TABLE IF NOT EXISTS "Group" (group_id INTEGER PRIMARY KEY AUTOINCREMENT, group_name VARCHAR(255), creator_name VARCHAR(255), timestamp BIGINT, type VARCHAR(32), parent_group_id INTEGER, creator_account_id BLOB);
+CREATE TABLE IF NOT EXISTS GroupUser (group_id INTEGER, user_name VARCHAR(255), is_staff tinyint, account_id BLOB);
 CREATE UNIQUE INDEX IF NOT EXISTS groupid_username_indx on GroupUser (group_id, user_name);
 CREATE INDEX IF NOT EXISTS username_indx on GroupUser (user_name);
 CREATE TABLE IF NOT EXISTS GroupDNPair (group_id INTEGER, dn VARCHAR(255));
@@ -45,16 +45,16 @@ CREATE TABLE IF NOT EXISTS GroupStructure (group_id INTEGER PRIMARY KEY, path VA
 -- Repositories, shares, tokens, permissions, quotas.
 CREATE TABLE IF NOT EXISTS Branch (name VARCHAR(10), repo_id CHAR(40), commit_id CHAR(40), PRIMARY KEY (repo_id, name));
 CREATE TABLE IF NOT EXISTS Repo (repo_id CHAR(37) PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS RepoOwner (repo_id CHAR(37) PRIMARY KEY, owner_id TEXT);
+CREATE TABLE IF NOT EXISTS RepoOwner (repo_id CHAR(37) PRIMARY KEY, owner_id TEXT, account_id BLOB);
 CREATE INDEX IF NOT EXISTS OwnerIndex ON RepoOwner (owner_id);
 
-CREATE TABLE IF NOT EXISTS RepoGroup (repo_id CHAR(37), group_id INTEGER, user_name TEXT, permission CHAR(15));
+CREATE TABLE IF NOT EXISTS RepoGroup (repo_id CHAR(37), group_id INTEGER, user_name TEXT, permission CHAR(15), account_id BLOB);
 CREATE UNIQUE INDEX IF NOT EXISTS groupid_repoid_indx on RepoGroup (group_id, repo_id);
 CREATE INDEX IF NOT EXISTS repogroup_repoid_index on RepoGroup (repo_id);
 CREATE INDEX IF NOT EXISTS repogroup_username_indx on RepoGroup (user_name);
 CREATE TABLE IF NOT EXISTS InnerPubRepo (repo_id CHAR(37) PRIMARY KEY, permission CHAR(15));
 
-CREATE TABLE IF NOT EXISTS RepoUserToken (repo_id CHAR(37), email VARCHAR(255), token CHAR(41), ctime BIGINT);
+CREATE TABLE IF NOT EXISTS RepoUserToken (repo_id CHAR(37), email VARCHAR(255), token CHAR(41), ctime BIGINT, account_id BLOB);
 CREATE UNIQUE INDEX IF NOT EXISTS repo_token_indx on RepoUserToken (repo_id, token);
 CREATE INDEX IF NOT EXISTS repo_token_email_indx on RepoUserToken (email);
 CREATE TABLE IF NOT EXISTS RepoTokenPeerInfo (token CHAR(41) PRIMARY KEY, peer_id CHAR(41), peer_ip VARCHAR(50), peer_name VARCHAR(255), sync_time BIGINT, client_ver VARCHAR(20));
@@ -89,7 +89,7 @@ CREATE INDEX IF NOT EXISTS RepoInfoTypeIndex on RepoInfo (type);
 
 CREATE TABLE IF NOT EXISTS RepoStorageId (repo_id CHAR(40) NOT NULL, storage_id VARCHAR(255) NOT NULL);
 
-CREATE TABLE IF NOT EXISTS UserQuota (user VARCHAR(255) PRIMARY KEY, quota BIGINT);
+CREATE TABLE IF NOT EXISTS UserQuota (user VARCHAR(255) PRIMARY KEY, quota BIGINT, account_id BLOB);
 CREATE TABLE IF NOT EXISTS UserShareQuota (user VARCHAR(255) PRIMARY KEY, quota BIGINT);
 CREATE TABLE IF NOT EXISTS OrgQuota (org_id INTEGER PRIMARY KEY, quota BIGINT);
 CREATE TABLE IF NOT EXISTS OrgUserQuota (org_id INTEGER, user VARCHAR(255), quota BIGINT, PRIMARY KEY (org_id, user));
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS FileLocks (repo_id CHAR(40) NOT NULL, path TEXT NOT N
 CREATE INDEX IF NOT EXISTS FileLocksIndex ON FileLocks (repo_id);
 CREATE TABLE IF NOT EXISTS FileLockTimestamp (repo_id CHAR(40) PRIMARY KEY, update_time BIGINT NOT NULL);
 
-CREATE TABLE IF NOT EXISTS SharedRepo (repo_id CHAR(37), from_email VARCHAR(255), to_email VARCHAR(255), permission CHAR(15));
+CREATE TABLE IF NOT EXISTS SharedRepo (repo_id CHAR(37), from_email VARCHAR(255), to_email VARCHAR(255), permission CHAR(15), from_account_id BLOB, to_account_id BLOB);
 CREATE INDEX IF NOT EXISTS RepoIdIndex on SharedRepo (repo_id);
 CREATE INDEX IF NOT EXISTS FromEmailIndex on SharedRepo (from_email);
 CREATE INDEX IF NOT EXISTS ToEmailIndex on SharedRepo (to_email);
@@ -134,17 +134,77 @@ CREATE TABLE IF NOT EXISTS SystemInfo (info_key VARCHAR(256), info_value VARCHAR
 -- above is a no-op, leaving ApiToken without an expires_at column — so
 -- indexing it here would fail and abort startup. MigrateSeafileTables adds the
 -- index once the column is guaranteed to exist.
-CREATE TABLE IF NOT EXISTS ApiToken (token CHAR(40) PRIMARY KEY, email VARCHAR(255) NOT NULL, ctime BIGINT, expires_at BIGINT);
+CREATE TABLE IF NOT EXISTS ApiToken (token CHAR(40) PRIMARY KEY, email VARCHAR(255) NOT NULL, ctime BIGINT, expires_at BIGINT, account_id BLOB);
 CREATE INDEX IF NOT EXISTS apitoken_email_idx ON ApiToken (email);
+
+-- The account, and the three things that can identify one. docs/auth.md's
+-- identity split: email stops being the key a user is known by and becomes an
+-- attribute of an opaque account id, so that changing an address is one row
+-- rather than a ten-table migration, an account can hold more than one
+-- address, and an OIDC subject has somewhere to live.
+--
+-- id is a UUIDv7 stored as its 16 raw bytes. v7 leads with a millisecond
+-- timestamp, so consecutive accounts land beside each other in the index
+-- instead of scattering across it the way v4 would.
+--
+-- display is what a human is called, and is deliberately not an identifier.
+CREATE TABLE IF NOT EXISTS Account (
+  id         BLOB    PRIMARY KEY,
+  display    TEXT,
+  is_active  INTEGER NOT NULL DEFAULT 1,
+  is_staff   INTEGER NOT NULL DEFAULT 0,
+  ctime      INTEGER NOT NULL
+);
+
+-- An address belongs to exactly one account, which is what the primary key
+-- says. Addresses are stored lowercased: authmgr.ValidatePassword already
+-- falls back to a lowercased lookup when the exact spelling misses, so one
+-- normalised spelling is today's behaviour with the second path removed
+-- rather than a new rule.
+--
+-- The partial unique index is the one that matters. Without it an account
+-- accumulates two primary addresses and every query that asks "what is this
+-- account's email" starts depending on row order.
+CREATE TABLE IF NOT EXISTS AccountEmail (
+  email       TEXT    PRIMARY KEY,
+  account_id  BLOB    NOT NULL REFERENCES Account(id),
+  is_primary  INTEGER NOT NULL DEFAULT 0,
+  verified_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS account_email_account_idx ON AccountEmail (account_id);
+CREATE UNIQUE INDEX IF NOT EXISTS account_email_primary_idx ON AccountEmail (account_id) WHERE is_primary = 1;
+
+-- An identity asserted by something outside Silo: an LDAP directory, an OIDC
+-- provider. The pair is the key because a subject is only meaningful next to
+-- the issuer that minted it.
+CREATE TABLE IF NOT EXISTS AccountIdentity (
+  issuer     TEXT    NOT NULL,
+  subject    TEXT    NOT NULL,
+  account_id BLOB    NOT NULL REFERENCES Account(id),
+  ctime      INTEGER NOT NULL,
+  PRIMARY KEY (issuer, subject)
+);
+CREATE INDEX IF NOT EXISTS account_identity_account_idx ON AccountIdentity (account_id);
+
+-- Separate from Account because not every account has a password. An
+-- OIDC-only account has none, and a nullable column is how "no password"
+-- turns into "any password will do" -- which is the bug EmailUser guards
+-- against with the sentinel string "!", checked in two places. A row that
+-- does not exist cannot be compared against.
+CREATE TABLE IF NOT EXISTS AccountPassword (
+  account_id BLOB    PRIMARY KEY REFERENCES Account(id),
+  hash       TEXT    NOT NULL,
+  changed_at INTEGER NOT NULL
+);
 
 -- One credential row for every secret a client presents to Silo, replacing the
 -- three separate stores (ApiToken, RepoUserToken, session JWTs) that could not
 -- be revoked together. Both lanes still write their own tables. Nothing reads
 -- this one yet.
 --
--- email rather than docs/auth.md's account_id: there is no Account table, and
--- every other table here keys a user by their EmailUser.email. Matching the
--- doc would mean inventing a table to satisfy a foreign key.
+-- email is the address the credential's owner is known by today. It carries an
+-- account_id beside it during the identity split and loses the email column
+-- when the last query that reads it has moved.
 --
 -- scope is '' for "every library". credential.ParseScope owns the encoding of
 -- the narrower forms. It is TEXT and not CHAR(37) because a scope can name a
@@ -166,6 +226,7 @@ CREATE TABLE IF NOT EXISTS Credential (
   ctime       BIGINT       NOT NULL,
   expires_at  BIGINT,
   last_used   BIGINT,
+  account_id  BLOB,
   CHECK (secret_hash IS NULL OR public_key IS NULL)
 );
 CREATE INDEX IF NOT EXISTS credential_email_idx ON Credential (email);
@@ -231,6 +292,12 @@ func MigrateSiloTables(db *sql.DB, apiTokenTTL time.Duration) error {
 			"UPDATE RepoUserToken SET ctime = ? WHERE ctime IS NULL", now); err != nil {
 			return fmt.Errorf("failed to backfill RepoUserToken.ctime: %v", err)
 		}
+	}
+
+	// The identity split's additive half. It comes last because it reads the
+	// tables above and wants them at whatever shape the migrations left them.
+	if err := migrateAccounts(db); err != nil {
+		return err
 	}
 
 	return nil
