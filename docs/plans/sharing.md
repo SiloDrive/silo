@@ -3,8 +3,8 @@
 Date: 2026-08-22
 Status: **proposed** — depends on [`store-v2.md`](store-v2.md) (E2EE model,
 convergent chunk keys, manifests) and on [`auth.md`](../auth.md)'s credential
-table, which store-v2 phase 3 assumes is landed or landing. Build order at the
-end sequences against both.
+table, which has landed — including the `repo_id:path` scope extension this
+plan needs. Build order at the end sequences against both.
 
 Scope: user accounts and roles, public-read-only libraries, and share links —
 including links out of E2EE libraries, which is the part that needed design
@@ -20,10 +20,10 @@ out (deferred, not rejected; see the end).
 | 3 | `public_read` ⇒ server-readable library. Exclusive with E2EE at creation; converting an E2EE library to public is `silo convert`, the client-side re-encryption operation store-v2 defines — and conversion to public always starts a new history root. |
 | 4 | Anonymous read on public repos covers the **chunk surface** (manifests + chunks), not just `entries/` — porter can mount a public library with no account. |
 | 5 | A share link is a **Credential row**: `kind=link`, path-extended scope, `perm` ceiling `r`. Revocation, listing, labels, `last_used`, expiry, and the `is_active` account join all come from the existing model. |
-| 6 | Content is encrypted **once**; link flavors differ only in where the share key SK comes from. Three flavors on E2EE libraries: **e2e** (SK in URL fragment — default), **password** (SK derived from a password, `curl -u`), **compatible** (SK wrapped to the server — plain `curl`). |
-| 7 | **No password is ever stored.** The password flavor stores a salt and a sealed blob; the compatible flavor stores SK wrapped under a server key; the e2e flavor stores no key material at all. |
+| 6 | Content is encrypted **once**; link flavors differ only in where the share key SK comes from. Three flavors on E2EE libraries: **e2e** (SK in URL fragment — default), **password** (SK wrapped under a password-derived key, `curl -u`), **compatible** (SK wrapped to the server — plain `curl`). |
+| 7 | **No password is ever stored.** The password flavor stores a salt and a sealed blob — the SK wrap; the compatible flavor stores SK wrapped under a server key; the e2e flavor stores no key material at all. |
 | 8 | A minimal **share page ships with links** — one embedded HTML file at `/s/{code}`, WebCrypto decrypt path for e2e and password flavors. |
-| 9 | Accounts are **invite-only**. An invite is a credential (`kind=invite`, single-use, expiring); redemption is where E2EE bootstrap happens. Roles: `admin` / `user` / `guest`. |
+| 9 | Accounts are **invite-only**. An invite is a credential (`kind=invite`, single-use, expiring, **bound to an address**); redemption claims that address's account and is where E2EE bootstrap happens. Roles: `admin` / `user` / `guest`. |
 | 10 | Signed URLs are **not** built here. They arrive when the share page renders media inline, per [`capability-urls.md`](../capability-urls.md), and the tokenstore redirect is never resurrected. |
 
 ## Accounts
@@ -50,10 +50,27 @@ client is guaranteed present:
 3. client uploads the wrapped private key, the published public key, the KDF
    salt, and a recovery-code wrap
 
+**An invite binds the address it was sent to.** The row carries the intended
+email (`label` is display, not binding), and the redeemer does not choose
+their address — delivery of the invite to that inbox *is* the verification
+step. When an account for that address already exists — the identity split
+mints an inactive account for every address that appears in a share without
+a user row — redemption **claims** it: activates the account, attaches the
+password and keys, and inherits whatever was shared to the address before
+its person arrived. Minting a second account beside the tombstone would
+recreate the double-mint bug the split made unrepresentable; claiming an
+*active* account is refused outright. This is the enforcement site for
+auth.md's tombstone-inheritance warning: a lapsed address reassigned to a
+new person inherits the old shares, so the admin minting the invite is
+vouching that the inbox and the person still match.
+
 **Deactivation.** `is_active=false` on the account kills every lane through
 the `Resolve()` join — including share links the account minted, which is a
 property worth a test, not a hope: a departed user's public links must die
-with the account.
+with the account. The anonymous principal needs the same rule stated:
+`CheckPerm` honours an `anon` grant only while the account that owns the
+repo is active, so a departed user's *public library* goes dark with them
+exactly as their links do.
 
 ## The grant model
 
@@ -78,7 +95,8 @@ a *ceiling* over the grant, never a grant itself (auth.md's rule).
 
 - **User/group shares** are `user:`/`group:` grants, exposed on the endpoints
   future-features.md already lists (`/repos/{id}/shares`, `shared-with-me`).
-- **Public-read-only** is `('anon', repo, '/', 'r')` plus a `listed` bit for
+- **Public-read-only** is `('anon', repo, '/', 'r')` plus a `listed` column
+  on the grant row (meaningful only for `anon` principals) for
   discovery: `GET /api/silo/v1/public-repos` enumerates listed anonymous
   grants, no auth required. Unlisted-but-public is a root share link instead —
   same grant, different discovery, which is the whole point of unifying.
@@ -151,7 +169,8 @@ share manifest = the file's (chunk_id, size)* public skeleton plus its K_c
                 treats as a root (below), referenced by the link row
 SK            = the flavor decision:
    e2e         SK travels in the URL fragment (#...) — never sent to the server
-   password    SK = argon2id(password, salt) — derived per use, stored nowhere
+   password    SK wrapped under KEK = argon2id(password, salt) — the wrap is
+               decision 7's sealed blob; SK itself stays random
    compatible  SK wrapped under link.key — a dedicated server key — in the row
 ```
 
@@ -167,8 +186,12 @@ what you cannot yet decrypt), and because the key hashes everything the
 tag covers, seal_hash included, two distinct payloads can never meet the
 same (key, nonce) pair even if an SK were ever reused.
 
-The guardrail stands with its reason updated: **SK is freshly random per
-link, never derived from CK, a file id, or a path.** Under the uniform
+The guardrail is unconditional: **SK is freshly random per link, in every
+flavor.** The password flavor wraps SK under the password-derived KEK
+rather than deriving SK itself — which also makes changing a link's
+password a rewrap of sixteen-odd bytes instead of a rebuild of the share
+manifest. Deriving SK from CK, a file id, or a path stays forbidden for
+its original reasons. Under the uniform
 derivation a reused SK is no longer a cryptographic break — two K_c lists
 give two seal_hashes, two public skeletons, two keys — so the real
 objection to derived SKs is blast radius and revocation: a stable share
@@ -178,7 +201,10 @@ after a leak is a no-op. If stable URLs are ever wanted, they are a lookup
 over link rows, never a key derivation.
 
 The share manifest is built and uploaded by the **sharer's client** (it holds
-CK; the server cannot build this for an E2EE library). For the compatible
+CK; the server cannot build this for an E2EE library). It travels in the
+body of the mint request, and the server holds it to store-v2's manifest
+byte ceiling — at ~67 bytes per chunk that is generous for any single
+file, and a bound stated is a bound enforced. For the compatible
 flavor the client sends SK in the creation request over TLS — acceptable by
 definition, since that flavor's meaning is "the server may read this file
 while the link exists" — and the server wraps and stores it under
@@ -223,6 +249,18 @@ the link — its chunks stay reachable until the link is revoked or expires,
 visible in the links listing the whole time. Deleting the library deletes
 its links in the same transaction.
 
+And the pin runs both ways in time: **a link is a snapshot.** It serves the
+file as it was at mint — the share manifest seals that version's K_c list,
+and a plain link's row records that version's manifest id — so editing the
+file afterwards does not update the link, in any flavor. That is a
+decision, not an accident of the GC rule: the E2EE flavors *cannot* track
+edits (the server cannot rebuild a sealed manifest; only the sharer's
+client could, and silently re-sharing new content under an old URL is a
+misfeature anyway), and the plain flavor matches them so there is one
+behavior to explain instead of two. Say it in the UI at mint time.
+Chunks kept alive only by a link count against the owner's quota — the
+owner controls the link, so the owner carries its bytes.
+
 ### What each flavor honestly claims
 
 | flavor | plain `curl`? | server can read at rest | server can read during request |
@@ -236,7 +274,8 @@ Password mechanics: the password travels in the `Authorization: Basic` header
 logs, `Referer`; headers die with the request). HTTPS-only. Server-side, the
 password and derived keys live in request memory and nowhere else. Browser
 recipients don't send it at all: the share page fetches the sealed blob and
-salt, derives SK client-side (argon2id WASM), and decrypts with WebCrypto —
+salt, derives the KEK client-side (argon2id WASM), unwraps SK, and decrypts
+with WebCrypto —
 same row, two redemption modes, the recipient's tooling decides what the
 server sees.
 
@@ -252,7 +291,7 @@ GET /s/{code}                 content negotiation:
                               browser (Accept: text/html) → the share page
                               otherwise → bytes (plain/compatible),
                                           401 + WWW-Authenticate (password),
-                                          409 pointing at /meta (e2e — the server
+                                          406 pointing at /meta (e2e — the server
                                           cannot serve plaintext; the client must)
 GET /s/{code}/meta            flavor, filename, size, salt, sealed blob / manifest id
 GET /s/{code}/manifest        the sealed share manifest        (e2e, password)
@@ -261,7 +300,11 @@ GET /s/{code}/chunks/{id}     ciphertext chunks, code-gated    (e2e, password)
 
 `Content-Disposition` set on byte responses. The chunk route reuses the
 ordinary chunk-serving path with the link as the credential — no second
-implementation.
+implementation. `406` and not `409` for the e2e byte request:
+[`responses.md`](../responses.md) spent a section giving `409` one meaning
+(a destination collision) and this is not one — `406 Not Acceptable` says
+the server holds no representation it can serve, which is literally the
+situation.
 
 **argon2id on an unauthenticated endpoint is a DoS lever.** Server-side
 password verification is rate-limited per code *and* per IP, with a lockout
@@ -278,6 +321,18 @@ derivation moves client-side and authKey verification drops to a fast hash
 (store-v2), link redemption is the **only** argon2id the server ever runs —
 a pool sized to protect login now exists entirely to serve unauthenticated
 share redeemers, and its sizing should be revisited under that identity.
+
+One honesty line the lockout must not obscure: `/meta` hands the salt and
+the wrapped SK to anyone holding the code — the browser path requires it —
+so a code-holder can guess passwords **offline**, at their own hardware's
+pace, with no server-side counter in the loop. The lockout protects only
+the curl path, where the server does the KDF work. Against a code-holder,
+the password flavor's real strength is argon2id's cost times the
+password's entropy, nothing else. Every client-side-decrypting share
+design has this property; the failure mode is forgetting it and letting
+the rate-limit paragraph above imply more than it delivers. It is also
+why the KDF parameters matter even though the server does no work on the
+browser path.
 
 ### The share page
 
@@ -311,10 +366,11 @@ purity here was already imperfect.
   their own plan.
 - **No per-handler permission checks.** Anything not answered by `CheckPerm`
   over the grant model is a bug, not a shortcut.
-- **SK is never derived — random per link, always.** A derived SK makes
-  every future share of the file open under a leaked fragment and makes
-  revocation structurally impossible; dedupe links in the database, never
-  in the KDF.
+- **SK is never derived — random per link, always, in every flavor.** The
+  password flavor wraps SK under a password-derived KEK; it does not derive
+  SK. A derived SK makes every future share of the file open under a leaked
+  fragment and makes revocation structurally impossible; dedupe links in
+  the database, never in the KDF.
 
 ## Build order
 
@@ -325,8 +381,13 @@ purity here was already imperfect.
    read across entries + manifests + chunks, per-IP rate limiting, read-only
    enforcement on the write surface. porter learns credential-less `ro`
    mounts.
-3. **Links, plain libraries.** `kind=link`, scope extension, mint/list/revoke
-   endpoints, `/s/{code}` byte serving, password-as-verifier option.
+3. **Links, plain libraries.** `kind=link`, mint/list/revoke endpoints,
+   `/s/{code}` byte serving, password-as-verifier option. Mint and revoke
+   append `share.created` / `share.revoked` audit events, and every
+   redemption appends `share.opened` (trace, deliberately un-rate-limited) —
+   [`events.md`](events.md)'s rule that the share surface does not ship
+   without its trail. The E2EE redemption paths in step 4 reuse the same
+   emission points.
 4. **Links, E2EE flavors.** Share manifest build in the shared client
    package, the three SK sources, `/meta` + `/manifest` + `/chunks`
    redemption, `silo get`, lockouts.
@@ -345,8 +406,14 @@ and per-file share manifests; file links first).
 - `capability-urls.md` — status note: the predicted browser-shaped consumer
   arrived (the share page); signed URLs remain deferred and the old mechanism
   remains dead.
-- `auth.md` — kind table gains `link` and `invite`; `scope` format gains the
-  `:path` extension.
+- `auth.md` — kind table gains `link` and `invite`; the tombstone-inheritance
+  warning points at this plan's invite section as its enforcement site. (The
+  `scope` `:path` extension this plan asked for has already landed with the
+  credential table.)
+- `docs/plans/events.md` — the `share.*` events in its taxonomy are minted
+  here; build-order step 3 names the emission points.
+- `responses.md` — `406` gains its row: the e2e byte-request answer, "the
+  server holds no plaintext to serve; go to `/meta`".
 - `encryption.md` — add the share-manifest / SK-wrapping pattern alongside
   the CK member-wrapping section; same indirection, one level down.
 - `backup.md` — `link.key` joins `storage.key` in the must-not-lose set.

@@ -46,6 +46,9 @@ never written, and a description read as a plan gets reimplemented.
 | [`macos-fileprovider-plan.md`](macos-fileprovider-plan.md) | **plan, server half landed.** The macOS File Provider client. For the wire contract as built, read `porter-brief.md` instead |
 | [`compression.md`](compression.md) | **plan.** What is compressed today, why the format is swappable, and where the win actually is. Measure first |
 | [`protocol-frontends.md`](protocol-frontends.md) | **plan.** A survey of what else could front the same store — WebDAV, S3, SFTP — and what each costs |
+| [`plans/store-v2.md`](plans/store-v2.md) | **plan, format closed.** The store that replaces Seafile's object formats: content-defined chunking, SHA-256 ids, manifests, packs, E2EE by default. The object layouts and key derivations are settled to the byte — build against them rather than reopening them |
+| [`plans/sharing.md`](plans/sharing.md) | **plan.** Accounts, roles and invites, public read-only libraries, and share links — including links out of E2EE libraries, which wrap keys rather than re-encrypting content |
+| [`target.md`](target.md) | **plan.** The end state Silo is aiming at — no steps, no dates. Where `future-features.md` is the route, this is the destination |
 | [`plans/events.md`](plans/events.md) | **plan.** An append-only log for the control plane and access, for the questions the schema forgets |
 | [`plans/admin-check.md`](plans/admin-check.md) | **plan.** The `is_staff` gate, which nothing yet consumes |
 
