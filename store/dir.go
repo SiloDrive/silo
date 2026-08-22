@@ -120,6 +120,18 @@ func (d *Directory) encode(ck []byte) ([]byte, error) {
 	}
 	e2ee := ck != nil
 
+	// Plain-library names are the names themselves, so they are held to the
+	// rule that keeps a directory entry from being a path. E2EE names are SIV
+	// ciphertext, which may legitimately contain any byte; the same rule is
+	// applied there by DecryptName, after the name exists.
+	if !e2ee {
+		for i, e := range entries {
+			if err := ValidName(e.Name); err != nil {
+				return nil, fmt.Errorf("%w: entry %d: %v", ErrEncoding, i, err)
+			}
+		}
+	}
+
 	var flags byte
 	if e2ee {
 		flags |= flagE2EE
@@ -253,6 +265,9 @@ func decodeDirectory(b, ck []byte) (*Directory, error) {
 		prev = e.Name
 
 		if !e2ee {
+			if err := ValidName(e.Name); err != nil {
+				return nil, fmt.Errorf("%w: entry %d: %v", ErrEncoding, i, err)
+			}
 			if e.Mtime, e.Mode, p, err = readTimeAndMode(b, p); err != nil {
 				return nil, fmt.Errorf("%w: entry %d: %v", ErrEncoding, i, err)
 			}

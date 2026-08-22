@@ -13,6 +13,7 @@ not yet restated here as bytes.
 | Encoding primitives | specified |
 | Manifests | specified |
 | Content crypto (E2EE) | specified |
+| Names (AES-SIV) | specified |
 | Directory and commit objects | specified |
 | Key wrapping | not yet specified |
 
@@ -575,6 +576,113 @@ a mount point disagrees with itself across platforms.
 `encoded_hex`. The conformance check is round-trip: decode the committed bytes,
 re-encode, and require the same bytes back — which exercises the decoder
 against bytes the build did not just write.
+
+## Names
+
+In an E2EE library each path segment is encrypted with **AES-CMAC-SIV
+(RFC 5297), AES-256 halves**, under a key derived per directory.
+
+SIV is used because this job needs a cipher that is **deterministic by
+design**: `entries/{path}` routes on the ciphertext, so a client must be able
+to compute the same bytes the directory object holds. There is therefore **no
+nonce parameter anywhere in the name API**, and there should never be one — a
+caller wanting randomness would be asking for a different scheme, not a
+different argument. The determinism is Option A's stated and accepted equality
+leak; it is confined to one directory by the key derivation below, not by a
+nonce.
+
+Plain libraries store plaintext names and use none of this.
+
+### Key derivation
+
+```
+name_key = HKDF-SHA256(CK, salt="silo/names/v1", info=dir_salt, L=64)
+```
+
+**L = 64 is a stated constant, not an implication.** RFC 5297 splits a SIV key
+into equal halves — left keys S2V, right keys CTR — so 64 bytes means AES-256
+on both. The RFC's own appendix documents only the 128-bit width (a 32-byte
+key), so a port that reads the examples and stops will build a 32-byte key that
+interoperates with nothing.
+
+Keyed **per directory**, not per library. The job is the equality leak: with
+one library-wide key, `Enc("taxes.pdf")` is the same ciphertext everywhere it
+appears, and the server learns the shape of a filesystem it cannot read.
+
+The honest cost: path construction is **stateful**. A cold resolve of a depth-N
+path is N sequential fetches, because encrypting each segment needs its
+parent's salt. Steady state is fine — clients cache the salt map beside the
+local index — but the cold start is a tree walk, one step toward Option B's
+id-addressed walking rather than away from it. Moving an entry re-encrypts one
+name; renaming an ancestor re-encrypts nothing.
+
+### The construction
+
+Standard RFC 5297 with **no associated data** — the directory is already bound
+by the key. Three points a hand-written port gets wrong, in the order they bite:
+
+1. **CMAC subkeys.** `dbl` is a left shift with `0x87` folded in when the bit
+   shifted off the top was set. A bug here yields a CMAC that is perfectly
+   self-consistent, so it survives every round-trip test and every vector
+   generated from the same code. Check against RFC 4493's *published
+   intermediate values* — `L`, `K1`, `K2` — not only against tags.
+2. **Both S2V branches.** A final component of **16 bytes or more** is XORed
+   into its own end (`xorend`); a **shorter** one is padded with `0x80` and
+   XORed into a doubled accumulator. These produce different output, and the
+   short branch is Silo's hot path — most filenames are under sixteen bytes —
+   while being the branch the RFC's headline example never exercises. The
+   vectors carry lengths 1, 14, 15, 16, 17, 32 and 175.
+3. **The CTR counter clears two bits.** Before counting, `Q = V` with
+   `Q[8] &= 0x7f` and `Q[12] &= 0x7f`. Omit it and everything round-trips
+   against itself while interoperating with nothing.
+
+### Decryption releases nothing unauthenticated
+
+SIV decrypts **before** it can verify: the synthetic IV authenticates the
+plaintext, which does not exist until CTR has run. That ordering is inherent to
+the mode and is the one place its shape invites a leak that GCM's does not. So
+the rule is explicit: recompute S2V, compare with a **constant-time** compare,
+and on mismatch **zero the recovered buffer and return nothing** — not even for
+the caller to inspect.
+
+### Name rules
+
+- **Maximum plaintext name: 175 bytes** in an E2EE library. The arithmetic: the
+  entry name field caps at 255 bytes, SIV prepends a 16-byte synthetic IV, and
+  the URL form is base64url of the whole — `ceil(4(16+n)/3) ≤ 255` gives
+  `n ≤ 175`. Plain libraries keep the full 255.
+- **A name may not be empty, hold `/` or NUL, or be `.` or `..`.** Enforced in
+  both directions: writers refuse to produce one, readers refuse to act on one
+  whose tag verifies. That is how a directory entry becomes a path traversal on
+  whichever client writes it to disk, and in a plain library the server writes
+  these names — the party the threat model calls actively malicious for
+  integrity. In an E2EE library the server cannot write them, but a buggy
+  client could, and the answer is the same.
+- **Directory objects carry raw SIV bytes.** base64url unpadded (RFC 4648 §5)
+  is the URL encoding for `entries/{path}` and nothing else. A port that
+  base64s a name into the object produces different bytes, a different sealing
+  key, and a different object id for an identical tree.
+
+### Test vectors
+
+Two layers, because they catch different failures.
+
+**Published vectors, in the Go tests rather than in `testdata`** — they are
+other people's, and reproducing them is the point:
+
+- RFC 4493 subkey generation and its four AES-128 CMAC examples, plus NIST
+  SP 800-38B's AES-256 examples.
+- RFC 5297 A.1 and A.2, at the **128-bit** width the RFC documents.
+- Two **256-bit-subkey** examples from miscreant's cross-implementation vector
+  set — the production width, cross-checked against an implementation that is
+  not this one.
+
+**This format's own vectors**:
+[`store/testdata/vectors/names.json`](../../store/testdata/vectors/names.json),
+carrying the derived `name_key` for two directory salts and, for each, every
+name at the branch-boundary lengths with its ciphertext and URL form. The two
+directories share every name, so no ciphertext may appear in both — that
+assertion is the per-directory keying, tested.
 
 ## Client rules that ride on the format
 

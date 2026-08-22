@@ -463,6 +463,16 @@ Rules that travel with the layouts:
   are noise the OSes disagree on, and a varying value would mint
   divergent ids for identical trees. A symlink's target length rides the
   manifest's existing bounds; nothing new to bound here.
+- **A name may not be empty, hold `/` or NUL, or be `.` or `..`** — refused
+  by writers and by readers, in plain libraries at parse time and in E2EE
+  libraries at decrypt time (SIV ciphertext may legitimately contain any
+  byte, so the rule applies to the plaintext, wherever that becomes
+  available). This is the one rule the layouts above did not carry and
+  needed: it is how a directory entry becomes a path traversal on whichever
+  client writes it to disk, and in a plain library the server writes these
+  names — the party this document calls actively malicious for integrity.
+  Refusing beats escaping, because escaping is a per-client decision and
+  there are two clients.
 - **Entry order is strictly increasing** bytewise by `name_ct` — not
   merely sorted — so a duplicate name is unrepresentable, rejected by the
   same single pass that validates canonical order, at no cost. Otherwise
@@ -608,7 +618,13 @@ exact byte layouts with vectors; none is left to a port's judgment.
   Storage-layer frames carry their random 12-byte nonce explicitly in the
   pack frame header.
 - **AES-SIV for names** is RFC 5297 AES-CMAC-SIV with AES-256 — a 64-byte
-  key, hence `L = 64` in the name-key derivation. base64url **unpadded**
+  key, hence `L = 64` in the name-key derivation. Stated as a constant in
+  the spec rather than left as an implication, because RFC 5297's own
+  appendix documents only the 128-bit width: a port that reads the examples
+  and stops builds a 32-byte key that interoperates with nothing. The three
+  further traps — CMAC subkey doubling, S2V's two branches either side of
+  sixteen bytes, and the two bits the CTR counter clears — are pinned with
+  their vectors in the spec's Names section. base64url **unpadded**
   (RFC 4648 §5) is the **URL encoding only** — what travels in
   `entries/{path}`. Directory objects carry raw SIV bytes; a port that
   base64s `name_ct` into the object produces different AD bytes, a
@@ -983,8 +999,11 @@ Phases are sequential on the branch; each leaves the tree working.
    [`store/`](../../store) and [`spec/store-format.md`](../spec/store-format.md):
    ids, chunker parameters, the keyed gear table and the cut loop; the
    manifest, directory and commit codecs in both library types; convergent
-   chunk encryption and the sealed-container key derivation; vectors for all
-   of it. Left: AES-SIV names and key wrapping. The chunker, id, manifest, and crypto
+   chunk encryption and the sealed-container key derivation; AES-CMAC-SIV
+   names with an owned CMAC (neither Go nor CryptoKit ships one), checked
+   against RFC 4493, RFC 5297 and an independent implementation's published
+   256-bit-subkey vectors; and this format's own vectors for all of it.
+   Left: key wrapping. The chunker, id, manifest, and crypto
    spec as a document; the Go package; test vectors generated and committed.
    No server changes yet. This is the artifact porter-mac builds against, so
    it lands first.
