@@ -194,9 +194,6 @@ func TestParseErrorsDoNotLeakTheSecret(t *testing.T) {
 }
 
 func transpose(s string) string {
-	if len(s) < 2 {
-		return s
-	}
 	b := []byte(s)
 	i := len(b) - 8 // inside the secret, before the checksum
 	b[i], b[i+1] = b[i+1], b[i]

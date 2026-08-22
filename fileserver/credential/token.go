@@ -41,12 +41,17 @@ func (k Kind) valid() bool {
 const (
 	tokenPrefix = "silo_"
 
-	idBytes     = 10 // 16 base32 characters, no padding, no leftover bits
+	idBytes     = 10 // no padding, no leftover bits
 	secretBytes = 32 // 256 bits, as auth.md specifies
 	checkChars  = 6
+)
 
-	idChars     = 16
-	secretChars = 52 // ceil(32*8/5)
+// The encoded widths of the two halves. Derived rather than written down: a
+// hand-computed length that disagrees with its bytes is a parser that rejects
+// every token it mints, and nothing would fail to compile.
+var (
+	idChars     = b32.EncodedLen(idBytes)
+	secretChars = b32.EncodedLen(secretBytes)
 )
 
 // Lowercase RFC 4648 base32, unpadded. Lowercase because the silo_ prefix and
@@ -191,9 +196,9 @@ func decodeStrict(s string) ([]byte, error) {
 // resolves through the same row and the same function as everything else, and
 // revoking it is the same operation.
 const (
-	legacyChars       = 40
 	legacyIDChars     = 8
 	legacySecretChars = 32
+	legacyChars       = legacyIDChars + legacySecretChars
 )
 
 // ParseLegacyToken reads the forty-hex form. There is no checksum to verify:

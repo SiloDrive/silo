@@ -56,8 +56,10 @@ var (
 	ErrExpired  = errors.New("credential has expired")
 	ErrInactive = errors.New("account is not active")
 
-	// ErrProofUnsupported means the row holds a public key and the request
-	// tried to present a bearer secret, or the reverse.
+	// ErrProofUnsupported means the row carries no proof material at all —
+	// neither a secret hash nor a public key. An s3 row is the intended case:
+	// its secret is derived from the master key and proven by SigV4
+	// elsewhere, so reaching prove() with one is a row in the wrong lane.
 	ErrProofUnsupported = errors.New("credential cannot be proven that way")
 
 	// ErrSignatureNotImplemented marks the proof-of-possession branch, which
@@ -93,9 +95,8 @@ type Credential struct {
 // rather than by signing the request.
 func (c *Credential) Bearer() bool { return len(c.secretHash) > 0 }
 
-// Resolve is the single verification path. Every lane goes through it, which
-// is what makes disabling an account kill every lane at once — the property
-// that could not be retrofitted onto three separate stores.
+// Resolve is the single verification path: every lane goes through it. See
+// accountIsActive for what that buys.
 //
 // It parses the presented credential, verifies its checksum, looks the row up
 // by id, joins the account and checks is_active, checks expiry, proves the
@@ -117,21 +118,21 @@ func Resolve(r *http.Request, kind Kind) (*Credential, error) {
 		return nil, err
 	}
 
-	// The row is looked up by id and the secret is compared against a fixed
-	// 32 bytes, so the secret never appears in a query or a query log.
 	if err := prove(cred, tok); err != nil {
 		return nil, err
 	}
 
-	// Expiry and the account check come after the proof. A caller who cannot
-	// prove the credential learns only ErrInvalid, and in particular does not
-	// learn that an id they guessed belongs to a disabled account.
+	// The stored kind is authoritative. A token whose kind was edited fails
+	// its checksum long before here, so this fires only if the row and the
+	// token were minted inconsistently — but the row is the thing that says
+	// what a credential is allowed to be, so it gets the last word.
 	if cred.Kind != tok.Kind {
-		// The stored kind is authoritative. A token whose kind was edited
-		// fails its checksum long before here, so this only fires if the row
-		// and the token were minted inconsistently.
 		return nil, ErrWrongKind
 	}
+
+	// Expiry and the account check come after the proof, so a caller who
+	// cannot prove the credential does not learn that an id they guessed
+	// belongs to a disabled account.
 	if cred.ExpiresAt != 0 && cred.ExpiresAt <= time.Now().Unix() {
 		return nil, ErrExpired
 	}
@@ -166,20 +167,13 @@ func tokenFromRequest(r *http.Request) (Token, error) {
 	}
 	rest = strings.TrimSpace(rest)
 
+	var parse func(string) (Token, error)
 	switch {
 	case strings.EqualFold(scheme, "Bearer"):
-		tok, err := ParseToken(rest)
-		if err != nil {
-			return Token{}, fmt.Errorf("%w: %v", ErrMalformed, err)
-		}
-		return tok, nil
+		parse = ParseToken
 
 	case strings.EqualFold(scheme, "Token"):
-		tok, err := ParseLegacyToken(rest)
-		if err != nil {
-			return Token{}, fmt.Errorf("%w: %v", ErrMalformed, err)
-		}
-		return tok, nil
+		parse = ParseLegacyToken
 
 	case strings.EqualFold(scheme, "Silo"):
 		// Proof of possession. The credential id travels in the clear and the
@@ -193,6 +187,15 @@ func tokenFromRequest(r *http.Request) (Token, error) {
 	default:
 		return Token{}, ErrMalformed
 	}
+
+	tok, err := parse(rest)
+	if err != nil {
+		// The parser's message says which part of the string was wrong. It
+		// describes the presented text only, so it carries nothing about
+		// whether any credential exists.
+		return Token{}, fmt.Errorf("%w: %v", ErrMalformed, err)
+	}
+	return tok, nil
 }
 
 // zeroHash gives the not-found path something to compare against, so a lookup
@@ -330,18 +333,14 @@ func (c *Credential) EffectivePerm(accountPerm, repoID, path string) string {
 // typo in a column should cost a user their access and be reported, not
 // silently grant more than either side intended.
 func minPerm(a, b string) string {
-	r := permRank(a)
-	if rb := permRank(b); rb < r {
-		r = rb
+	if permRank(b) < permRank(a) {
+		a = b
 	}
-	switch r {
-	case 2:
-		return "rw"
-	case 1:
-		return "r"
-	default:
+	if permRank(a) == 0 {
+		// Unrecognised, so not spellable as anything but no access.
 		return ""
 	}
+	return a
 }
 
 func permRank(p string) int {

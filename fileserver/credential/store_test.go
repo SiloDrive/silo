@@ -15,6 +15,7 @@ import (
 func testDB(t *testing.T) *dbutil.DBPair {
 	t.Helper()
 
+	origTimeout := option.DBOpTimeout
 	if option.DBOpTimeout <= 0 {
 		option.DBOpTimeout = 30 * time.Second
 	}
@@ -26,12 +27,15 @@ func testDB(t *testing.T) *dbutil.DBPair {
 	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
 		t.Fatalf("creating test tables: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = pair.Read.Close()
-		_ = pair.Write.Close()
-	})
 
+	origRead, origWrite := readDB, writeDB
 	Init(pair.Read, pair.Write)
+
+	t.Cleanup(func() {
+		readDB, writeDB = origRead, origWrite
+		option.DBOpTimeout = origTimeout
+		_ = pair.Close()
+	})
 	return pair
 }
 
@@ -109,6 +113,9 @@ func TestResolveAcceptsAValidCredential(t *testing.T) {
 	}
 	if got, want := cred.Scope.String(), "repo-1:/photos"; got != want {
 		t.Errorf("scope = %q, want %q", got, want)
+	}
+	if cred.Perm != "r" {
+		t.Errorf("perm = %q, want %q", cred.Perm, "r")
 	}
 	if !cred.Bearer() {
 		t.Error("credential should be bearer")
