@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/apitokenstore"
 	"github.com/dkam/silo/fileserver/authmgr"
@@ -225,10 +226,6 @@ func loadDatabase() {
 		log.Fatalf("Failed to create tables: %v", err)
 	}
 
-	if err := dbutil.MigrateSiloTables(siloPair.Write, option.APITokenTTL); err != nil {
-		log.Fatalf("Failed to migrate database: %v", err)
-	}
-
 	log.Infof("Using database %s", dbPath)
 }
 
@@ -410,6 +407,7 @@ func Run(args []string) error {
 
 	tokenstore.StartCleanup()
 	keycache.StartReaper()
+	account.Init(siloPair.Read, siloPair.Write)
 	authmgr.Init(siloPair.Read, siloPair.Write)
 	api.Init(siloPair.Read, siloPair.Write)
 	api.StartLoginLimiterCleanup()

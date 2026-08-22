@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/pbkdf2"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/utils"
@@ -100,7 +101,11 @@ func TestValidatePasswdMalformedPBKDF2(t *testing.T) {
 }
 
 func TestGenerateAndValidateSessionToken(t *testing.T) {
-	token, err := GenerateSessionToken("user@example.com")
+	id, err := account.NewID()
+	if err != nil {
+		t.Fatalf("NewID: %v", err)
+	}
+	token, err := GenerateSessionToken(id)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -108,12 +113,12 @@ func TestGenerateAndValidateSessionToken(t *testing.T) {
 		t.Fatal("expected non-empty token")
 	}
 
-	email, err := ValidateSessionToken(token)
+	got, err := ValidateSessionToken(token)
 	if err != nil {
 		t.Fatalf("failed to validate token: %v", err)
 	}
-	if email != "user@example.com" {
-		t.Errorf("expected user@example.com, got %s", email)
+	if got != id {
+		t.Errorf("expected %s, got %s", id, got)
 	}
 }
 
@@ -125,7 +130,11 @@ func TestValidateSessionTokenInvalid(t *testing.T) {
 }
 
 func TestValidateSessionTokenWrongKey(t *testing.T) {
-	token, err := GenerateSessionToken("user@example.com")
+	id, err := account.NewID()
+	if err != nil {
+		t.Fatalf("NewID: %v", err)
+	}
+	token, err := GenerateSessionToken(id)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -142,8 +151,10 @@ func TestValidateSessionTokenWrongKey(t *testing.T) {
 }
 
 func TestSessionTokenDifferentUsers(t *testing.T) {
-	t1, _ := GenerateSessionToken("alice@example.com")
-	t2, _ := GenerateSessionToken("bob@example.com")
+	alice, _ := account.NewID()
+	bob, _ := account.NewID()
+	t1, _ := GenerateSessionToken(alice)
+	t2, _ := GenerateSessionToken(bob)
 	if t1 == t2 {
 		t.Error("expected different tokens for different users")
 	}
@@ -161,12 +172,12 @@ func TestValidateSessionTokenRejectsNotifToken(t *testing.T) {
 		t.Fatalf("failed to generate notif token: %v", err)
 	}
 
-	email, err := ValidateSessionToken(notifTok)
+	got, err := ValidateSessionToken(notifTok)
 	if err == nil {
-		t.Errorf("notification token was accepted as a session token (email=%q)", email)
+		t.Errorf("notification token was accepted as a session token (account=%s)", got)
 	}
-	if email != "" {
-		t.Errorf("expected no email, got %q", email)
+	if !got.IsZero() {
+		t.Errorf("expected no account, got %s", got)
 	}
 }
 
@@ -174,7 +185,7 @@ func TestValidateSessionTokenRejectsNotifToken(t *testing.T) {
 // must not be accepted.
 func TestValidateSessionTokenRejectsMissingAudience(t *testing.T) {
 	claims := SessionClaims{
-		Email: "user@example.com",
+		Sub: "0192f0a0-0000-7000-8000-000000000001",
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
@@ -193,7 +204,7 @@ func TestValidateSessionTokenRejectsMissingAudience(t *testing.T) {
 
 func TestValidateSessionTokenRejectsWrongAudience(t *testing.T) {
 	claims := SessionClaims{
-		Email: "user@example.com",
+		Sub: "0192f0a0-0000-7000-8000-000000000001",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 			Audience:  jwt.ClaimStrings{utils.AudNotif},
@@ -214,7 +225,7 @@ func TestValidateSessionTokenRejectsWrongAudience(t *testing.T) {
 // selects, so a correctly-keyed token under another HMAC variant is refused.
 func TestValidateSessionTokenPinsAlgorithm(t *testing.T) {
 	claims := SessionClaims{
-		Email: "user@example.com",
+		Sub: "0192f0a0-0000-7000-8000-000000000001",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 			Audience:  jwt.ClaimStrings{utils.AudSession},
@@ -231,7 +242,7 @@ func TestValidateSessionTokenPinsAlgorithm(t *testing.T) {
 	}
 }
 
-func TestValidateSessionTokenRejectsEmptyEmail(t *testing.T) {
+func TestValidateSessionTokenRejectsEmptySubject(t *testing.T) {
 	claims := SessionClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
@@ -245,13 +256,13 @@ func TestValidateSessionTokenRejectsEmptyEmail(t *testing.T) {
 	}
 
 	if _, err := ValidateSessionToken(tok); err == nil {
-		t.Error("session token with an empty email was accepted")
+		t.Error("session token with no account claim was accepted")
 	}
 }
 
-func TestGenerateSessionTokenRejectsEmptyEmail(t *testing.T) {
-	if _, err := GenerateSessionToken(""); err == nil {
-		t.Error("expected an error when generating a token with no email")
+func TestGenerateSessionTokenRejectsNoAccount(t *testing.T) {
+	if _, err := GenerateSessionToken(account.Zero); err == nil {
+		t.Error("expected an error when generating a token with no account")
 	}
 }
 
@@ -274,6 +285,7 @@ func authTestDB(t *testing.T) {
 
 	origRead, origWrite := readDB, writeDB
 	Init(pair.Read, pair.Write)
+	account.Init(pair.Read, pair.Write)
 
 	t.Cleanup(func() {
 		readDB, writeDB = origRead, origWrite
@@ -282,19 +294,23 @@ func authTestDB(t *testing.T) {
 	})
 }
 
-func seedUser(t *testing.T, email, storedPasswd string) {
+func seedUser(t *testing.T, email, storedPasswd string) account.ID {
 	t.Helper()
-	if _, err := writeDB.Exec(
-		"INSERT INTO EmailUser (email, passwd, is_staff, is_active, ctime) VALUES (?, ?, 0, 1, ?)",
-		email, storedPasswd, time.Now().Unix()); err != nil {
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	id, _, err := account.Create(ctx, email, storedPasswd, false)
+	if err != nil {
 		t.Fatalf("failed to seed user: %v", err)
 	}
+	return id
 }
 
 func storedHash(t *testing.T, email string) string {
 	t.Helper()
-	var hash string
-	if err := readDB.QueryRow("SELECT passwd FROM EmailUser WHERE email = ?", email).Scan(&hash); err != nil {
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	_, hash, err := account.PasswordHash(ctx, email)
+	if err != nil {
 		t.Fatalf("failed to read stored hash: %v", err)
 	}
 	return hash
@@ -443,12 +459,13 @@ func TestBootstrapAdminGeneratesUsableCredentials(t *testing.T) {
 		t.Errorf("the generated password does not log in: %v", err)
 	}
 
-	var isStaff int
-	if err := readDB.QueryRow("SELECT is_staff FROM EmailUser WHERE email = ?",
-		DefaultAdminEmail).Scan(&isStaff); err != nil {
-		t.Fatalf("failed to read the created user: %v", err)
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	acct, err := account.ByEmail(ctx, DefaultAdminEmail)
+	if err != nil {
+		t.Fatalf("failed to read the created account: %v", err)
 	}
-	if isStaff != 1 {
+	if !acct.IsStaff {
 		t.Error("the bootstrap account was not created as staff")
 	}
 }
@@ -505,8 +522,8 @@ func TestBootstrapAdminLeavesAnExistingUserTableAlone(t *testing.T) {
 		t.Errorf("a password was generated despite an existing user: %q", password)
 	}
 
-	var users int
-	if err := readDB.QueryRow("SELECT COUNT(*) FROM EmailUser").Scan(&users); err != nil {
+	users, err := userCount()
+	if err != nil {
 		t.Fatalf("failed to count users: %v", err)
 	}
 	if users != 1 {

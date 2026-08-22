@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/middleware"
@@ -19,7 +20,7 @@ import (
 )
 
 // loadRepoAndCommit loads the repo and its head commit, with rw permission check.
-func loadRepoAndCommit(w http.ResponseWriter, repoID, user string) (*repomgr.Repo, *commitmgr.Commit, bool) {
+func loadRepoAndCommit(w http.ResponseWriter, repoID string, user account.ID) (*repomgr.Repo, *commitmgr.Commit, bool) {
 	perm := share.CheckPerm(repoID, user)
 	if perm != "rw" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
@@ -119,7 +120,8 @@ func destructiveCollision(srcMode uint32, dst *fsmgr.SeafDirent) string {
 }
 
 func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
+	user := acct.Email
 	repoID := mux.Vars(r)["repoid"]
 
 	if err := r.ParseForm(); err != nil {
@@ -132,7 +134,7 @@ func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, user)
+	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
 	if !ok {
 		return
 	}
@@ -153,7 +155,8 @@ func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 // rename a library it can already create and delete. That is the crossing this
 // lane exists to remove.
 func patchRepoHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
+	user := acct.Email
 	repoID := mux.Vars(r)["repoid"]
 
 	var body struct {
@@ -178,7 +181,7 @@ func patchRepoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, user)
+	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
 	if !ok {
 		return
 	}
@@ -205,7 +208,8 @@ func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, head
 }
 
 func mkdirHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
+	user := acct.Email
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 
@@ -221,7 +225,7 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, user)
+	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
 	if !ok {
 		return
 	}
@@ -253,7 +257,8 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
+	user := acct.Email
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 
@@ -263,7 +268,7 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, user)
+	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
 	if !ok {
 		return
 	}
@@ -305,7 +310,8 @@ func moveHandler(w http.ResponseWriter, r *http.Request) { moveOrCopy(w, r, fals
 func copyHandler(w http.ResponseWriter, r *http.Request) { moveOrCopy(w, r, true) }
 
 func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
+	user := acct.Email
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 
@@ -329,7 +335,7 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 		return
 	}
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, user)
+	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
 	if !ok {
 		return
 	}

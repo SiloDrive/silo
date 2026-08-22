@@ -64,10 +64,11 @@ type batchFailure struct {
 }
 
 func batchHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
+	user := acct.Email
 	repoID := mux.Vars(r)["repoid"]
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, user)
+	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
 	if !ok {
 		return
 	}

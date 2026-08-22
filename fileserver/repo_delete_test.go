@@ -19,9 +19,10 @@ func seedRepo(t *testing.T, repoID, email, token string) {
 	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES (?, ?, ?)",
 		"master", repoID, "0401fc662e3bc87a41f299a907c056aaf8322a27")
 	dbExec(t, "INSERT INTO RepoHead (repo_id, branch_name) VALUES (?, ?)", repoID, "master")
-	dbExec(t, "INSERT INTO RepoOwner (repo_id, owner_id) VALUES (?, ?)", repoID, email)
-	dbExec(t, "INSERT INTO RepoUserToken (repo_id, email, token, ctime) VALUES (?, ?, ?, ?)",
-		repoID, email, token, time.Now().Unix())
+	id := mintAccount(t, email).ID
+	dbExec(t, "INSERT INTO RepoOwner (repo_id, account_id) VALUES (?, ?)", repoID, id)
+	dbExec(t, "INSERT INTO RepoUserToken (repo_id, account_id, token, ctime) VALUES (?, ?, ?, ?)",
+		repoID, id, token, time.Now().Unix())
 }
 
 // Deleting an origin removed its children's VirtualRepo rows but left their

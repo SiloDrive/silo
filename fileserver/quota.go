@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 )
@@ -35,7 +36,7 @@ func checkQuota(repoID string, delta int64) (int, error) {
 		err := fmt.Errorf("failed to get repo owner: %v", err)
 		return -1, err
 	}
-	if user == "" {
+	if user.IsZero() {
 		err := fmt.Errorf("repo %s has no owner", repoID)
 		return -1, err
 	}
@@ -61,9 +62,9 @@ func checkQuota(repoID string, delta int64) (int, error) {
 	return 0, nil
 }
 
-func getUserQuota(user string) (int64, error) {
+func getUserQuota(user account.ID) (int64, error) {
 	var quota int64
-	sqlStr := "SELECT quota FROM UserQuota WHERE user=?"
+	sqlStr := "SELECT quota FROM UserQuota WHERE account_id=?"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 	row := siloPair.Read.QueryRowContext(ctx, sqlStr, user)
@@ -80,12 +81,12 @@ func getUserQuota(user string) (int64, error) {
 	return quota, nil
 }
 
-func getUserUsage(user string) (int64, error) {
+func getUserUsage(user account.ID) (int64, error) {
 	var usage sql.NullInt64
 	sqlStr := "SELECT SUM(size) FROM " +
 		"RepoOwner o LEFT JOIN VirtualRepo v ON o.repo_id=v.repo_id, " +
 		"RepoSize WHERE " +
-		"owner_id=? AND o.repo_id=RepoSize.repo_id " +
+		"o.account_id=? AND o.repo_id=RepoSize.repo_id " +
 		"AND v.repo_id IS NULL"
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)

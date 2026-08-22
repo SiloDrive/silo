@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
@@ -46,8 +47,18 @@ func setupPerms(t *testing.T) {
 		t.Fatalf("create tables: %v", err)
 	}
 
+	account.Init(siloPair.Read, siloPair.Write)
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	for _, email := range []string{ownerUser, rwShareUser, roShareUser, strangerUser} {
+		if _, _, err := account.Create(ctx, email, "", false); err != nil {
+			t.Fatalf("create account %s: %v", email, err)
+		}
+	}
+
 	if _, err := siloPair.Write.Exec(
-		"INSERT INTO RepoOwner (repo_id, owner_id) VALUES (?, ?)", testRepoID, ownerUser); err != nil {
+		"INSERT INTO RepoOwner (repo_id, account_id) VALUES (?, ?)",
+		testRepoID, accountOf(t, ownerUser).ID); err != nil {
 		t.Fatalf("seed RepoOwner: %v", err)
 	}
 	for _, s := range []struct{ user, perm string }{
@@ -55,8 +66,8 @@ func setupPerms(t *testing.T) {
 		{roShareUser, "r"},
 	} {
 		if _, err := siloPair.Write.Exec(
-			"INSERT INTO SharedRepo (repo_id, from_email, to_email, permission) VALUES (?, ?, ?, ?)",
-			testRepoID, ownerUser, s.user, s.perm); err != nil {
+			"INSERT INTO SharedRepo (repo_id, from_account_id, to_account_id, permission) VALUES (?, ?, ?, ?)",
+			testRepoID, accountOf(t, ownerUser).ID, accountOf(t, s.user).ID, s.perm); err != nil {
 			t.Fatalf("seed SharedRepo for %s: %v", s.user, err)
 		}
 	}
@@ -64,6 +75,20 @@ func setupPerms(t *testing.T) {
 	repomgr.Init(siloPair.Read, siloPair.Write)
 	share.Init(siloPair.Read, "Group", false)
 	Init(siloPair.Read, siloPair.Write)
+}
+
+// accountOf resolves one of the test addresses to the account behind it. The
+// tests still name people by address because that is what a reader recognises
+// — but everything below the handler now works in ids.
+func accountOf(t *testing.T, email string) *account.Account {
+	t.Helper()
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	acct, err := account.ByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("no account for %s: %v", email, err)
+	}
+	return acct
 }
 
 // postAccessToken invokes CreateAccessTokenHandler as `user` would, bypassing
@@ -77,7 +102,7 @@ func postAccessToken(t *testing.T, user, repoID, op string) *httptest.ResponseRe
 	}
 
 	req := httptest.NewRequest("POST", "/api/silo/v1/access-tokens", strings.NewReader(string(body)))
-	req = req.WithContext(context.WithValue(req.Context(), middleware.UserEmailKey, user))
+	req = req.WithContext(context.WithValue(req.Context(), middleware.AccountKey, accountOf(t, user)))
 
 	rr := httptest.NewRecorder()
 	CreateAccessTokenHandler(rr, req)
@@ -201,7 +226,7 @@ func TestListReposAnswersEmptyArrayNotNull(t *testing.T) {
 	setupPerms(t)
 
 	req := httptest.NewRequest("GET", "/api/silo/v1/repos", nil)
-	req = req.WithContext(context.WithValue(req.Context(), middleware.UserEmailKey, strangerUser))
+	req = req.WithContext(context.WithValue(req.Context(), middleware.AccountKey, accountOf(t, strangerUser)))
 
 	rr := httptest.NewRecorder()
 	ListReposHandler(rr, req)
@@ -215,7 +240,7 @@ func TestListReposAnswersEmptyArrayNotNull(t *testing.T) {
 
 	// And the populated case still lists, so the fix did not empty the endpoint.
 	req = httptest.NewRequest("GET", "/api/silo/v1/repos", nil)
-	req = req.WithContext(context.WithValue(req.Context(), middleware.UserEmailKey, ownerUser))
+	req = req.WithContext(context.WithValue(req.Context(), middleware.AccountKey, accountOf(t, ownerUser)))
 	rr = httptest.NewRecorder()
 	ListReposHandler(rr, req)
 

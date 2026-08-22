@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/objstore"
@@ -40,6 +41,7 @@ func getTestStore(t *testing.T) string {
 
 	dataDir := filepath.Join(dir, "seafile-data")
 	Init(pair.Read, pair.Write)
+	account.Init(pair.Read, pair.Write)
 	commitmgr.Init(dir, dataDir)
 
 	// Faults are suppressed per (repo, kind) for five minutes, and the map is
@@ -50,6 +52,21 @@ func getTestStore(t *testing.T) string {
 	})
 
 	return dataDir
+}
+
+// testAccount mints the account a test library is owned by.
+func testAccount(t *testing.T) *account.Account {
+	t.Helper()
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	if _, _, err := account.Create(ctx, testOwner, "", false); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	acct, err := account.ByEmail(ctx, testOwner)
+	if err != nil {
+		t.Fatalf("read account: %v", err)
+	}
+	return acct
 }
 
 // A library with no row is the one condition that is a statement about the
@@ -77,7 +94,7 @@ func TestGetWithReasonMissingRowIsNotFound(t *testing.T) {
 func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 	dataDir := getTestStore(t)
 
-	repoID, err := CreateRepo("Porter Test", testOwner)
+	repoID, err := CreateRepo("Porter Test", testAccount(t))
 	if err != nil {
 		t.Fatalf("CreateRepo: %v", err)
 	}

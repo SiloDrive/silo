@@ -118,7 +118,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email, err := authmgr.ValidatePassword(req.Email, req.Password)
+	acct, err := authmgr.ValidatePassword(req.Email, req.Password)
 	if err != nil {
 		loginFailed(r, req.Email)
 		log.Infof("Login failed for %s: %v", req.Email, err)
@@ -127,7 +127,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	loginSucceeded(req.Email)
 
-	token, err := authmgr.GenerateSessionToken(email)
+	token, err := authmgr.GenerateSessionToken(acct.ID)
 	if err != nil {
 		log.Errorf("Failed to generate session token: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -174,7 +174,7 @@ var tokenOps = map[string]string{
 }
 
 func CreateAccessTokenHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
 
 	var req accessTokenRequest
 	if !decodeJSON(w, r, &req) {
@@ -195,13 +195,17 @@ func CreateAccessTokenHandler(w http.ResponseWriter, r *http.Request) {
 	// CheckPerm returns "" for a repo the user can't see and for one that
 	// doesn't exist, so a 403 here also avoids confirming which repo IDs are
 	// real.
-	perm := share.CheckPerm(req.RepoID, user)
+	perm := share.CheckPerm(req.RepoID, acct.ID)
 	if perm == "" || (needed == "rw" && perm != "rw") {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
 
-	token := tokenstore.CreateToken(req.RepoID, req.ObjID, req.Op, user, req.OneTime)
+	// The token carries the address, not the id. It has already been
+	// permission-checked here, and what the upload path does with the string
+	// is write it into a commit as the author — display data, and baked into
+	// a content hash that could never be rewritten anyway.
+	token := tokenstore.CreateToken(req.RepoID, req.ObjID, req.Op, acct.Email, req.OneTime)
 	writeJSON(w, http.StatusOK, accessTokenResponse{Token: token})
 }
 
@@ -253,7 +257,7 @@ func scanRepos(rows *sql.Rows) []repoInfo {
 }
 
 func ListReposHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
 	ctx, cancel := context.WithTimeout(r.Context(), option.DBOpTimeout)
 	defer cancel()
 
@@ -261,7 +265,7 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 		repoSelect("o")+
 			"FROM RepoOwner o LEFT JOIN RepoInfo i ON o.repo_id = i.repo_id "+
 			"LEFT JOIN Branch b ON b.repo_id = o.repo_id AND b.name = 'master' "+
-			"WHERE o.owner_id = ?", user)
+			"WHERE o.account_id = ?", acct.ID)
 	if err != nil {
 		log.Errorf("Failed to query repos: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -279,7 +283,7 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 		repoSelect("s")+
 			"FROM SharedRepo s LEFT JOIN RepoInfo i ON s.repo_id = i.repo_id "+
 			"LEFT JOIN Branch b ON b.repo_id = s.repo_id AND b.name = 'master' "+
-			"WHERE s.to_email = ?", user)
+			"WHERE s.to_account_id = ?", acct.ID)
 	if err != nil {
 		log.Errorf("Failed to query shared repos: %v", err)
 	} else {
@@ -300,17 +304,17 @@ type syncTokenResponse struct {
 }
 
 func CreateRepoSyncTokenHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 
-	perm := share.CheckPerm(repoID, user)
+	perm := share.CheckPerm(repoID, acct.ID)
 	if perm == "" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
 
-	token, err := repomgr.GenerateRepoToken(repoID, user)
+	token, err := repomgr.GenerateRepoToken(repoID, acct.ID)
 	if err != nil {
 		log.Errorf("Failed to generate repo token: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -330,7 +334,7 @@ type createRepoResponse struct {
 }
 
 func CreateRepoHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
 
 	var req createRepoRequest
 	if !decodeJSON(w, r, &req) {
@@ -342,7 +346,7 @@ func CreateRepoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoID, err := repomgr.CreateRepo(req.Name, user)
+	repoID, err := repomgr.CreateRepo(req.Name, acct)
 	if err != nil {
 		log.Errorf("Failed to create repo: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -353,7 +357,7 @@ func CreateRepoHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func DeleteRepoHandler(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserEmail(r)
+	acct := middleware.GetAccount(r)
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 
@@ -363,11 +367,11 @@ func DeleteRepoHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	if owner == "" {
+	if owner.IsZero() {
 		http.Error(w, "Repo not found", http.StatusNotFound)
 		return
 	}
-	if owner != user {
+	if owner != acct.ID {
 		http.Error(w, "Only the repo owner can delete it", http.StatusForbidden)
 		return
 	}

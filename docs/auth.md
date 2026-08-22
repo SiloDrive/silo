@@ -250,6 +250,17 @@ millisecond timestamp, so consecutive inserts land beside each other in the
 index instead of scattering across it. `uuid.NewV7` ships in `google/uuid
 v1.6.0`, which `go.mod` already requires — no new dependency.
 
+**Nine tables carry an account id, not fifteen.** Several of the tables listed
+above are queried by no Go code at all: `Binding`, `UserRole` and `LDAPUsers`
+by nothing, `RepoTrash`, `FileLocks`, `FolderUserPerm` and `FolderGroupPerm`
+because trash, locking and folder-level permissions are unimplemented,
+`UserShareQuota` because only `UserQuota` is read, and all six `Org` tables
+because both callers of the org-aware share functions pass `orgID = -1` and the
+branch reading them is unreachable. They are dropped along with the branch,
+rather than carried. What remains: `RepoOwner`, `RepoGroup`, `GroupUser`,
+`Group`, `UserQuota`, `SharedRepo` (both ends), `RepoUserToken`, `ApiToken` and
+`Credential`.
+
 **A separate password table, because not every account has a password.** An
 OIDC-only account has none, and a nullable `passwd` column is how you end up
 with a code path that reads "no password" as "any password will do". Seafile's
@@ -269,11 +280,23 @@ they send and receive is email:
 All three keep working, because email survives exactly where it belongs: **in
 the API responses, not in the schema.** Each becomes a join.
 
-So the legacy tables take `account_id` and the API layer resolves the address
-on the way out. 59 SQL sites across 16 files, and no migration, because there
-are no deployments. It is a week of mechanical work, and it should land as one
-change — half-normalised is worse than either end, because a query written
-against the half that has not moved yet is silently wrong rather than broken.
+So the legacy tables key on `account_id` and the API layer resolves the address
+on the way out.
+
+**There is no migration, because there is nothing to migrate.** No Silo is
+deployed, and the Seafile data behind the development copies is duplicated and
+disposable. The schema is not evolved into the right shape — it is simply
+written in the right shape, and `EmailUser` is deleted rather than drained.
+That also means no importer: a database from before this point is recreated,
+not upgraded.
+
+It lands as one commit, because half-normalised is worse than either end: a
+query written against the half that has not moved yet is silently wrong rather
+than broken.
+
+This freedom expires the day ShelfLife hosts its first real user. From then on
+every schema change is a migration, and the cost of getting the shape wrong
+stops being an afternoon.
 
 ### The one place email is permanent
 
@@ -685,12 +708,43 @@ rather than configured against it. That retires Seafile's `"!"` sentinel
 (`authmgr.go:39`, `authmgr.go:73`), which exists precisely because a nullable
 column invites a code path that reads "no password" as "any password will do".
 
+There is no algorithm column, and that omission is load-bearing. Every hash
+written here names its own format — `PBKDF2SHA256$iterations$salt$hash` today,
+`argon2id$…` next — because `validatePasswd` dispatches on the prefix and falls
+back to guessing by length. A bare hash with no prefix would be unreadable to
+it. Anything that ever writes this column has to keep that true.
+
 Login resolves the address through `AccountEmail`, case-folded, so every
 address a user owns works. The asymmetry with
 [identity binding](#binding-an-external-identity-to-a-silo-account) is
 deliberate: an unverified address is fine for password login, where the
 password is the proof and the address is only a lookup key, and is not fine for
 linking an external identity, where the address *is* the proof.
+
+### Enrolling into an account that already exists
+
+Sharing a library with an address nobody has enrolled under is a thing people
+do, and it has to mint something for `SharedRepo.to_account_id` to point at:
+an inactive `Account` with the address claimed and no `AccountPassword`, which
+cannot be signed in to. Enrolment then finds the address already taken and
+claims that account rather than colliding with it, which reunites the shares
+with the person they were meant for.
+
+**That is an email-reuse attack surface, and it must be gated.** A corporate or
+university address that lapses and is reassigned hands the new holder every
+share the departed holder was given. So claiming an existing inactive account
+must require verifying the address — a link to it, not merely typing it — and
+never happen on the strength of a password chosen at the signup form. The same
+rule the [identity binding](#binding-an-external-identity-to-a-silo-account)
+step already applies to unverified OIDC email claims applies here, for the same
+reason.
+
+Verification bounds the damage but does not remove it: the new holder does
+control the mailbox. So it is worth deciding, before this ships, whether shares
+older than some threshold are surfaced to whoever granted them — "this library
+is still shared with someone who has just enrolled" — rather than silently
+reattached. That is a product decision, not a security control, and it is the
+one that turns a quiet takeover into a visible event.
 
 ### Close the enumeration oracle
 
@@ -1098,10 +1152,10 @@ ships.
 ## Order of work
 
 1. **The identity split.** `Account` (UUIDv7), `AccountEmail`,
-   `AccountIdentity`, `AccountPassword`, and `account_id` through the fourteen
-   legacy tables, with the API layer joining to produce the email SeaDrive
-   expects. Everything else assumes this, and it is the one step that wants to
-   land whole rather than in pieces.
+   `AccountIdentity`, `AccountPassword`, and `account_id` as the only user key
+   on the nine live tables, with the API layer joining to produce the email
+   SeaDrive expects. `EmailUser` is deleted, not drained. Everything else
+   assumes this, and it lands whole rather than in pieces.
 2. **`Credential`, device credentials, hashed secrets, one `Resolve`** — with
    the `is_active` join that closes findings 1, 2, 5, 6 and 8 at once, and the
    legacy adapter that keeps SeaDrive working through it rather than beside it.
@@ -1129,4 +1183,4 @@ ships.
 10. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
 Steps 1 and 2 are the ones with a deadline: they are free only while there are
-no deployments.
+no deployments. Both are done.

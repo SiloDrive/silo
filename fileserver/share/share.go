@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	log "github.com/sirupsen/logrus"
@@ -18,7 +19,7 @@ import (
 type group struct {
 	id            int
 	groupName     string
-	creatorName   string
+	creator       account.ID
 	timestamp     int64
 	parentGroupID int
 }
@@ -38,7 +39,7 @@ func Init(readDB *sql.DB, grpTableName string, clMode bool) {
 }
 
 // CheckPerm get user's repo permission
-func CheckPerm(repoID string, user string) string {
+func CheckPerm(repoID string, user account.ID) string {
 	var perm string
 	vInfo, err := repomgr.GetVirtualRepoInfo(repoID)
 	if err != nil {
@@ -54,13 +55,13 @@ func CheckPerm(repoID string, user string) string {
 	return perm
 }
 
-func checkVirtualRepoPerm(repoID, originRepoID, user, vPath string) string {
+func checkVirtualRepoPerm(repoID, originRepoID string, user account.ID, vPath string) string {
 	owner, err := repomgr.GetRepoOwner(originRepoID)
 	if err != nil {
 		log.Errorf("Failed to get repo owner: %v", err)
 	}
 	var perm string
-	if owner != "" && owner == user {
+	if !owner.IsZero() && owner == user {
 		perm = "rw"
 		return perm
 	}
@@ -86,7 +87,7 @@ func getUserGroups(sqlStr string, args ...interface{}) ([]group, error) {
 	var g group
 	for rows.Next() {
 		if err := rows.Scan(&g.id, &g.groupName,
-			&g.creatorName, &g.timestamp,
+			&g.creator, &g.timestamp,
 			&g.parentGroupID); err == nil {
 
 			groups = append(groups, g)
@@ -99,13 +100,13 @@ func getUserGroups(sqlStr string, args ...interface{}) ([]group, error) {
 	return groups, nil
 }
 
-func getGroupsByUser(userName string, returnAncestors bool) ([]group, error) {
-	sqlStr := fmt.Sprintf("SELECT g.group_id, group_name, creator_name, timestamp, parent_group_id FROM "+
-		"`%s` g, GroupUser u WHERE g.group_id = u.group_id AND user_name=? ORDER BY g.group_id DESC",
+func getGroupsByUser(user account.ID, returnAncestors bool) ([]group, error) {
+	sqlStr := fmt.Sprintf("SELECT g.group_id, group_name, creator_account_id, timestamp, parent_group_id FROM "+
+		"`%s` g, GroupUser u WHERE g.group_id = u.group_id AND u.account_id=? ORDER BY g.group_id DESC",
 		groupTableName)
-	groups, err := getUserGroups(sqlStr, userName)
+	groups, err := getUserGroups(sqlStr, user)
 	if err != nil {
-		err := fmt.Errorf("failed to get groups by user %s: %v", userName, err)
+		err := fmt.Errorf("failed to get groups by user %s: %v", user, err)
 		return nil, err
 	}
 	if !returnAncestors {
@@ -135,11 +136,11 @@ func getGroupsByUser(userName string, returnAncestors bool) ([]group, error) {
 			log.Errorf("Failed to get group paths: %v", err)
 		}
 		if paths == "" {
-			err := fmt.Errorf("failed to get groups path for user %s", userName)
+			err := fmt.Errorf("failed to get groups path for user %s", user)
 			return nil, err
 		}
 
-		sqlStr = fmt.Sprintf("SELECT g.group_id, group_name, creator_name, timestamp, parent_group_id FROM "+
+		sqlStr = fmt.Sprintf("SELECT g.group_id, group_name, creator_account_id, timestamp, parent_group_id FROM "+
 			"`%s` g WHERE g.group_id IN (%s) ORDER BY g.group_id DESC",
 			groupTableName, paths)
 		groups, err := getUserGroups(sqlStr)
@@ -180,8 +181,8 @@ func getGroupPaths(sqlStr string) (string, error) {
 	return paths, nil
 }
 
-func checkGroupPermByUser(repoID string, userName string) (string, error) {
-	groups, err := getGroupsByUser(userName, false)
+func checkGroupPermByUser(repoID string, user account.ID) (string, error) {
+	groups, err := getGroupsByUser(user, false)
 	if err != nil {
 		return "", err
 	}
@@ -203,7 +204,7 @@ func checkGroupPermByUser(repoID string, userName string) (string, error) {
 	defer cancel()
 	rows, err := db.QueryContext(ctx, sqlBuilder.String(), repoID)
 	if err != nil {
-		err := fmt.Errorf("failed to get group permission by user %s: %v", userName, err)
+		err := fmt.Errorf("failed to get group permission by user %s: %v", user, err)
 		return "", err
 	}
 
@@ -222,18 +223,18 @@ func checkGroupPermByUser(repoID string, userName string) (string, error) {
 	}
 
 	if err := rows.Err(); err != nil {
-		err := fmt.Errorf("failed to get group permission for user %s: %v", userName, err)
+		err := fmt.Errorf("failed to get group permission for user %s: %v", user, err)
 		return "", err
 	}
 
 	return origPerm, nil
 }
 
-func checkSharedRepoPerm(repoID string, email string) (string, error) {
-	sqlStr := "SELECT permission FROM SharedRepo WHERE repo_id=? AND to_email=?"
+func checkSharedRepoPerm(repoID string, to account.ID) (string, error) {
+	sqlStr := "SELECT permission FROM SharedRepo WHERE repo_id=? AND to_account_id=?"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	row := db.QueryRowContext(ctx, sqlStr, repoID, email)
+	row := db.QueryRowContext(ctx, sqlStr, repoID, to)
 
 	var perm string
 	if err := row.Scan(&perm); err != nil {
@@ -262,25 +263,25 @@ func checkInnerPubRepoPerm(repoID string) (string, error) {
 	return perm, nil
 }
 
-func checkRepoSharePerm(repoID string, userName string) string {
+func checkRepoSharePerm(repoID string, user account.ID) string {
 	owner, err := repomgr.GetRepoOwner(repoID)
 	if err != nil {
 		log.Errorf("Failed to get repo owner: %v", err)
 	}
-	if owner != "" && owner == userName {
+	if !owner.IsZero() && owner == user {
 		perm := "rw"
 		return perm
 	}
-	perm, err := checkSharedRepoPerm(repoID, userName)
+	perm, err := checkSharedRepoPerm(repoID, user)
 	if err != nil {
 		log.Errorf("Failed to get shared repo permission: %v", err)
 	}
 	if perm != "" {
 		return perm
 	}
-	perm, err = checkGroupPermByUser(repoID, userName)
+	perm, err = checkGroupPermByUser(repoID, user)
 	if err != nil {
-		log.Errorf("Failed to get group permission by user %s: %v", userName, err)
+		log.Errorf("Failed to get group permission by user %s: %v", user, err)
 	}
 	if perm != "" {
 		return perm
@@ -296,16 +297,16 @@ func checkRepoSharePerm(repoID string, userName string) string {
 	return ""
 }
 
-func getSharedDirsToUser(originRepoID string, toEmail string) (map[string]string, error) {
+func getSharedDirsToUser(originRepoID string, to account.ID) (map[string]string, error) {
 	dirs := make(map[string]string)
 	sqlStr := "SELECT v.path, s.permission FROM SharedRepo s, VirtualRepo v WHERE " +
-		"s.repo_id = v.repo_id AND s.to_email = ? AND v.origin_repo = ?"
+		"s.repo_id = v.repo_id AND s.to_account_id = ? AND v.origin_repo = ?"
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
-	rows, err := db.QueryContext(ctx, sqlStr, toEmail, originRepoID)
+	rows, err := db.QueryContext(ctx, sqlStr, to, originRepoID)
 	if err != nil {
-		err := fmt.Errorf("failed to get shared directories by user %s: %v", toEmail, err)
+		err := fmt.Errorf("failed to get shared directories by user %s: %v", to, err)
 		return nil, err
 	}
 
@@ -319,7 +320,7 @@ func getSharedDirsToUser(originRepoID string, toEmail string) (map[string]string
 		}
 	}
 	if err := rows.Err(); err != nil {
-		err := fmt.Errorf("failed to get shared directories by user %s: %v", toEmail, err)
+		err := fmt.Errorf("failed to get shared directories by user %s: %v", to, err)
 		return nil, err
 	}
 
@@ -387,7 +388,7 @@ func getSharedDirsToGroup(originRepoID string, groups []group) (map[string]strin
 	return dirs, nil
 }
 
-func checkPermOnParentRepo(originRepoID, user, vPath string) string {
+func checkPermOnParentRepo(originRepoID string, user account.ID, vPath string) string {
 	var perm string
 	userPerms, err := getSharedDirsToUser(originRepoID, user)
 	if err != nil {
@@ -437,7 +438,7 @@ type SharedRepo struct {
 }
 
 // GetReposByOwner get repos by owner
-func GetReposByOwner(email string) ([]*SharedRepo, error) {
+func GetReposByOwner(owner account.ID) ([]*SharedRepo, error) {
 	var repos []*SharedRepo
 
 	query := "SELECT o.repo_id, b.commit_id, i.name, " +
@@ -445,7 +446,7 @@ func GetReposByOwner(email string) ([]*SharedRepo, error) {
 		"RepoOwner o LEFT JOIN Branch b ON o.repo_id = b.repo_id " +
 		"LEFT JOIN RepoInfo i ON o.repo_id = i.repo_id " +
 		"LEFT JOIN VirtualRepo v ON o.repo_id = v.repo_id " +
-		"WHERE owner_id=? AND " +
+		"WHERE o.account_id=? AND " +
 		"v.repo_id IS NULL " +
 		"ORDER BY i.update_time DESC, o.repo_id"
 
@@ -457,7 +458,7 @@ func GetReposByOwner(email string) ([]*SharedRepo, error) {
 	}
 	defer func() { _ = stmt.Close() }()
 
-	rows, err := stmt.QueryContext(ctx, email)
+	rows, err := stmt.QueryContext(ctx, owner)
 
 	if err != nil {
 		return nil, err
@@ -498,11 +499,16 @@ func GetReposByOwner(email string) ([]*SharedRepo, error) {
 
 // ListInnerPubRepos get inner public repos
 func ListInnerPubRepos() ([]*SharedRepo, error) {
+	// Owner comes back as an address rather than an id: it is a field in a
+	// JSON response, read by a client that has never heard of an account.
+	// That is the whole shape of the identity split at the edge — the key is
+	// an id everywhere inside, and the address is joined back on the way out.
 	query := "SELECT InnerPubRepo.repo_id, " +
-		"owner_id, permission, commit_id, i.name, " +
+		"ae.email, permission, commit_id, i.name, " +
 		"i.update_time, i.version, i.type " +
 		"FROM InnerPubRepo " +
 		"LEFT JOIN RepoInfo i ON InnerPubRepo.repo_id = i.repo_id, RepoOwner, Branch " +
+		"LEFT JOIN AccountEmail ae ON ae.account_id = RepoOwner.account_id AND ae.is_primary = 1 " +
 		"WHERE InnerPubRepo.repo_id=RepoOwner.repo_id AND " +
 		"InnerPubRepo.repo_id = Branch.repo_id AND Branch.name = 'master'"
 
@@ -524,8 +530,8 @@ func ListInnerPubRepos() ([]*SharedRepo, error) {
 	var repos []*SharedRepo
 	for rows.Next() {
 		repo := new(SharedRepo)
-		var repoName, repoType sql.NullString
-		if err := rows.Scan(&repo.ID, &repo.Owner,
+		var repoName, repoType, owner sql.NullString
+		if err := rows.Scan(&repo.ID, &owner,
 			&repo.Permission, &repo.HeadCommitID, &repoName,
 			&repo.MTime, &repo.Version, &repoType); err == nil {
 
@@ -536,6 +542,7 @@ func ListInnerPubRepos() ([]*SharedRepo, error) {
 				continue
 			}
 			repo.Name = repoName.String
+			repo.Owner = owner.String
 			if repoType.Valid {
 				repo.RepoType = repoType.String
 			}
@@ -550,31 +557,44 @@ func ListInnerPubRepos() ([]*SharedRepo, error) {
 	return repos, nil
 }
 
-// ListShareRepos list share repos by email
-func ListShareRepos(email, columnType string) ([]*SharedRepo, error) {
+// ShareDirection says which end of a share to list from: the libraries an
+// account has shared out, or the ones shared with them. The other end's
+// address comes back in each row, which is why the two cases are not one
+// query with a column name substituted in.
+type ShareDirection string
+
+const (
+	SharedByMe   ShareDirection = "from"
+	SharedWithMe ShareDirection = "to"
+)
+
+// ListShareRepos lists the shares at one end of an account.
+func ListShareRepos(id account.ID, dir ShareDirection) ([]*SharedRepo, error) {
 	var repos []*SharedRepo
 	var query string
-	switch columnType {
-	case "from_email":
-		query = "SELECT sh.repo_id, to_email, " +
+	switch dir {
+	case SharedByMe:
+		query = "SELECT sh.repo_id, ae.email, " +
 			"permission, commit_id, " +
 			"i.name, i.update_time, i.version, i.type FROM " +
-			"SharedRepo sh LEFT JOIN RepoInfo i ON sh.repo_id = i.repo_id, Branch b " +
-			"WHERE from_email=? AND " +
+			"SharedRepo sh LEFT JOIN RepoInfo i ON sh.repo_id = i.repo_id " +
+			"LEFT JOIN AccountEmail ae ON ae.account_id = sh.to_account_id AND ae.is_primary = 1, Branch b " +
+			"WHERE sh.from_account_id=? AND " +
 			"sh.repo_id = b.repo_id AND " +
 			"b.name = 'master' " +
 			"ORDER BY i.update_time DESC, sh.repo_id"
-	case "to_email":
-		query = "SELECT sh.repo_id, from_email, " +
+	case SharedWithMe:
+		query = "SELECT sh.repo_id, ae.email, " +
 			"permission, commit_id, " +
 			"i.name, i.update_time, i.version, i.type FROM " +
-			"SharedRepo sh LEFT JOIN RepoInfo i ON sh.repo_id = i.repo_id, Branch b " +
-			"WHERE to_email=? AND " +
+			"SharedRepo sh LEFT JOIN RepoInfo i ON sh.repo_id = i.repo_id " +
+			"LEFT JOIN AccountEmail ae ON ae.account_id = sh.from_account_id AND ae.is_primary = 1, Branch b " +
+			"WHERE sh.to_account_id=? AND " +
 			"sh.repo_id = b.repo_id AND " +
 			"b.name = 'master' " +
 			"ORDER BY i.update_time DESC, sh.repo_id"
 	default:
-		err := fmt.Errorf("wrong column type: %s", columnType)
+		err := fmt.Errorf("wrong share direction: %s", dir)
 		return nil, err
 	}
 
@@ -587,7 +607,7 @@ func ListShareRepos(email, columnType string) ([]*SharedRepo, error) {
 
 	defer func() { _ = stmt.Close() }()
 
-	rows, err := stmt.QueryContext(ctx, email)
+	rows, err := stmt.QueryContext(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -596,8 +616,8 @@ func ListShareRepos(email, columnType string) ([]*SharedRepo, error) {
 
 	for rows.Next() {
 		repo := new(SharedRepo)
-		var repoName, repoType sql.NullString
-		if err := rows.Scan(&repo.ID, &repo.Owner,
+		var repoName, repoType, other sql.NullString
+		if err := rows.Scan(&repo.ID, &other,
 			&repo.Permission, &repo.HeadCommitID,
 			&repoName, &repo.MTime, &repo.Version, &repoType); err == nil {
 
@@ -608,6 +628,7 @@ func ListShareRepos(email, columnType string) ([]*SharedRepo, error) {
 				continue
 			}
 			repo.Name = repoName.String
+			repo.Owner = other.String
 			if repoType.Valid {
 				repo.RepoType = repoType.String
 			}
@@ -624,7 +645,7 @@ func ListShareRepos(email, columnType string) ([]*SharedRepo, error) {
 }
 
 // GetGroupReposByUser get group repos by user
-func GetGroupReposByUser(user string, orgID int) ([]*SharedRepo, error) {
+func GetGroupReposByUser(user account.ID) ([]*SharedRepo, error) {
 	groups, err := getGroupsByUser(user, true)
 	if err != nil {
 		return nil, err
@@ -634,23 +655,14 @@ func GetGroupReposByUser(user string, orgID int) ([]*SharedRepo, error) {
 	}
 
 	var sqlBuilder strings.Builder
-	if orgID < 0 {
-		sqlBuilder.WriteString("SELECT g.repo_id, " +
-			"user_name, permission, commit_id, " +
-			"i.name, i.update_time, i.version, i.type " +
-			"FROM RepoGroup g " +
-			"LEFT JOIN RepoInfo i ON g.repo_id = i.repo_id, " +
-			"Branch b WHERE g.repo_id = b.repo_id AND " +
-			"b.name = 'master' AND group_id IN (")
-	} else {
-		sqlBuilder.WriteString("SELECT g.repo_id, " +
-			"owner, permission, commit_id, " +
-			"i.name, i.update_time, i.version, i.type " +
-			"FROM OrgGroupRepo g " +
-			"LEFT JOIN RepoInfo i ON g.repo_id = i.repo_id, " +
-			"Branch b WHERE g.repo_id = b.repo_id AND " +
-			"b.name = 'master' AND group_id IN (")
-	}
+	sqlBuilder.WriteString("SELECT g.repo_id, " +
+		"ae.email, permission, commit_id, " +
+		"i.name, i.update_time, i.version, i.type " +
+		"FROM RepoGroup g " +
+		"LEFT JOIN RepoInfo i ON g.repo_id = i.repo_id " +
+		"LEFT JOIN AccountEmail ae ON ae.account_id = g.account_id AND ae.is_primary = 1, " +
+		"Branch b WHERE g.repo_id = b.repo_id AND " +
+		"b.name = 'master' AND group_id IN (")
 
 	for i := 0; i < len(groups); i++ {
 		sqlBuilder.WriteString(strconv.Itoa(groups[i].id))
@@ -671,10 +683,11 @@ func GetGroupReposByUser(user string, orgID int) ([]*SharedRepo, error) {
 	var repos []*SharedRepo
 	for rows.Next() {
 		gRepo := new(SharedRepo)
-		var repoType sql.NullString
-		if err := rows.Scan(&gRepo.ID, &gRepo.Owner,
+		var repoType, sharer sql.NullString
+		if err := rows.Scan(&gRepo.ID, &sharer,
 			&gRepo.Permission, &gRepo.HeadCommitID,
 			&gRepo.Name, &gRepo.MTime, &gRepo.Version, &repoType); err == nil {
+			gRepo.Owner = sharer.String
 			if repoType.Valid {
 				gRepo.RepoType = repoType.String
 			}

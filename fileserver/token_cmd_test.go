@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/apitokenstore"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
@@ -36,26 +37,44 @@ func tokenTestStore(t *testing.T) {
 	option.APITokenTTL = 30 * 24 * time.Hour
 	t.Cleanup(func() { option.APITokenTTL = origTTL })
 
+	victimAcct := mintAccount(t, victim)
+	bystanderAcct := mintAccount(t, bystander)
+
 	now := time.Now().Unix()
 	for _, tok := range []struct {
-		repoID, email, token string
+		repoID string
+		acct   *account.Account
+		token  string
 	}{
-		{sharedRepoID, victim, victimSyncA},
-		{otherRepoID, victim, victimSyncB},
-		{sharedRepoID, bystander, bystanderSync},
+		{sharedRepoID, victimAcct, victimSyncA},
+		{otherRepoID, victimAcct, victimSyncB},
+		{sharedRepoID, bystanderAcct, bystanderSync},
 	} {
-		dbExec(t, "INSERT INTO RepoUserToken (repo_id, email, token, ctime) VALUES (?, ?, ?, ?)",
-			tok.repoID, tok.email, tok.token, now)
+		dbExec(t, "INSERT INTO RepoUserToken (repo_id, account_id, token, ctime) VALUES (?, ?, ?, ?)",
+			tok.repoID, tok.acct.ID, tok.token, now)
 	}
 	for _, tok := range []struct {
-		token, email string
+		token string
+		acct  *account.Account
 	}{
-		{victimAPI, victim},
-		{bystanderAPI, bystander},
+		{victimAPI, victimAcct},
+		{bystanderAPI, bystanderAcct},
 	} {
-		dbExec(t, "INSERT INTO ApiToken (token, email, ctime, expires_at) VALUES (?, ?, ?, ?)",
-			tok.token, tok.email, now, now+86400)
+		dbExec(t, "INSERT INTO ApiToken (token, account_id, ctime, expires_at) VALUES (?, ?, ?, ?)",
+			tok.token, tok.acct.ID, now, now+86400)
 	}
+}
+
+// acctFor resolves one of this file's test addresses.
+func acctFor(t *testing.T, email string) *account.Account {
+	t.Helper()
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	acct, err := account.ByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("no account for %s: %v", email, err)
+	}
+	return acct
 }
 
 func countRows(t *testing.T, query string, args ...interface{}) int {
@@ -74,22 +93,22 @@ func countRows(t *testing.T, query string, args ...interface{}) int {
 func TestRevokeAllTokensRemovesBothKinds(t *testing.T) {
 	tokenTestStore(t)
 
-	if err := revokeAllTokens(victim); err != nil {
+	if err := revokeAllTokens(acctFor(t, victim)); err != nil {
 		t.Fatalf("revokeAllTokens returned %v", err)
 	}
 
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE email = ?", victim); n != 0 {
+	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != 0 {
 		t.Errorf("%d sync tokens survived revocation, want 0", n)
 	}
-	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE email = ?", victim); n != 0 {
+	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, victim).ID); n != 0 {
 		t.Errorf("%d API tokens survived revocation, want 0", n)
 	}
 
 	// Revoking one account must not sign out the rest of the server.
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE email = ?", bystander); n != 1 {
+	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
 		t.Errorf("bystander has %d sync tokens, want 1", n)
 	}
-	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE email = ?", bystander); n != 1 {
+	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
 		t.Errorf("bystander has %d API tokens, want 1", n)
 	}
 }
@@ -99,7 +118,7 @@ func TestRevokeAllTokensRemovesBothKinds(t *testing.T) {
 func TestRevokeOneSyncTokenLeavesTheOthers(t *testing.T) {
 	tokenTestStore(t)
 
-	if err := revokeOneToken(victim, victimSyncA); err != nil {
+	if err := revokeOneToken(acctFor(t, victim), victimSyncA); err != nil {
 		t.Fatalf("revokeOneToken returned %v", err)
 	}
 
@@ -109,7 +128,7 @@ func TestRevokeOneSyncTokenLeavesTheOthers(t *testing.T) {
 	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE token = ?", victimSyncB); n != 1 {
 		t.Errorf("the user's other sync token was removed too")
 	}
-	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE email = ?", victim); n != 1 {
+	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, victim).ID); n != 1 {
 		t.Errorf("the user's API token was removed by a sync-token revocation")
 	}
 }
@@ -117,14 +136,14 @@ func TestRevokeOneSyncTokenLeavesTheOthers(t *testing.T) {
 func TestRevokeOneAPIToken(t *testing.T) {
 	tokenTestStore(t)
 
-	if err := revokeOneToken(victim, victimAPI); err != nil {
+	if err := revokeOneToken(acctFor(t, victim), victimAPI); err != nil {
 		t.Fatalf("revokeOneToken returned %v", err)
 	}
 
 	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE token = ?", victimAPI); n != 0 {
 		t.Errorf("the revoked API token is still present")
 	}
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE email = ?", victim); n != 2 {
+	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != 2 {
 		t.Errorf("sync tokens were removed by an API-token revocation")
 	}
 }
@@ -136,15 +155,15 @@ func TestRevokeOneTokenRefusesAnotherUsersToken(t *testing.T) {
 	tokenTestStore(t)
 
 	for _, token := range []string{bystanderSync, bystanderAPI, unknownTokenID} {
-		if err := revokeOneToken(victim, token); err == nil {
+		if err := revokeOneToken(acctFor(t, victim), token); err == nil {
 			t.Errorf("revokeOneToken(%s, %s) succeeded, want an error", victim, token)
 		}
 	}
 
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE email = ?", bystander); n != 1 {
+	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
 		t.Errorf("bystander's sync token was revoked")
 	}
-	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE email = ?", bystander); n != 1 {
+	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
 		t.Errorf("bystander's API token was revoked")
 	}
 }
@@ -152,10 +171,10 @@ func TestRevokeOneTokenRefusesAnotherUsersToken(t *testing.T) {
 func TestListTokensOnAnAccountWithNone(t *testing.T) {
 	tokenTestStore(t)
 
-	if err := listTokens("nobody@example.com"); err != nil {
+	if err := listTokens(mintAccount(t, "nobody@example.com")); err != nil {
 		t.Errorf("listTokens returned %v for an account with no tokens", err)
 	}
-	if err := listTokens(victim); err != nil {
+	if err := listTokens(acctFor(t, victim)); err != nil {
 		t.Errorf("listTokens returned %v", err)
 	}
 }

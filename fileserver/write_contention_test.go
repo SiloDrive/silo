@@ -49,7 +49,7 @@ func contendedRepoTestDB(t *testing.T) *commitmgr.Commit {
 	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)",
 		contendedRepo, head.CommitID)
 	dbExec(t, "INSERT INTO RepoHead (repo_id, branch_name) VALUES (?, 'master')", contendedRepo)
-	dbExec(t, "INSERT INTO RepoOwner (repo_id, owner_id) VALUES (?, ?)", contendedRepo, repoOwner)
+	dbExec(t, "INSERT INTO RepoOwner (repo_id, account_id) VALUES (?, ?)", contendedRepo, mintAccount(t, repoOwner).ID)
 
 	return head
 }

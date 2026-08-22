@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
@@ -34,6 +35,7 @@ func sqliteTestDB(t *testing.T) {
 	origPair := siloPair
 	origDataDir := absDataDir
 	siloPair = pair
+	account.Init(pair.Read, pair.Write)
 
 	t.Cleanup(func() {
 		siloPair = origPair
@@ -42,6 +44,23 @@ func sqliteTestDB(t *testing.T) {
 		_ = pair.Read.Close()
 		_ = pair.Write.Close()
 	})
+}
+
+// mintAccount gives a test an account to own libraries and hold tokens. The
+// tests still name people by address, which is what a reader recognises; the
+// rows below them hold ids.
+func mintAccount(t *testing.T, email string) *account.Account {
+	t.Helper()
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	if _, _, err := account.Create(ctx, email, "", false); err != nil {
+		t.Fatalf("create account %s: %v", email, err)
+	}
+	acct, err := account.ByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("read account %s: %v", email, err)
+	}
+	return acct
 }
 
 func dbExec(t *testing.T, query string, args ...interface{}) {

@@ -1,10 +1,8 @@
 package dbutil
 
 import (
-	"database/sql"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func schemaTestDB(t *testing.T) *DBPair {
@@ -25,55 +23,78 @@ func schemaTestDB(t *testing.T) *DBPair {
 	return pair
 }
 
-// A caller that reaches the migration without loading options first passes a
-// zero TTL. Backfilling with it would stamp every existing token with
-// expires_at = now and sign out every client, so the migration must refuse
-// rather than trust the caller.
-func TestMigrateRejectsNonPositiveTTL(t *testing.T) {
+// Two spellings of one address reaching two accounts is the failure the
+// identity split exists to prevent, so the rule that stops it is worth
+// pinning rather than leaving to whoever writes the next call site.
+func TestNormalizeEmail(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"dan@example.com", "dan@example.com"},
+		{"Dan@Example.COM", "dan@example.com"},
+		{"  dan@example.com  ", "dan@example.com"},
+		{"DAN@EXAMPLE.COM", "dan@example.com"},
+		{"", ""},
+		{"   ", ""},
+	}
+	for _, tt := range tests {
+		if got := NormalizeEmail(tt.in); got != tt.want {
+			t.Errorf("NormalizeEmail(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// An account with two primary addresses makes "what is this account called"
+// depend on row order. The partial unique index is what stops it, and an index
+// that silently failed to be created would not be noticed any other way.
+func TestAccountEmailAllowsOnePrimary(t *testing.T) {
 	pair := schemaTestDB(t)
+	db := pair.Write
 
-	// Stand in for a database from before expires_at existed: the backfill only
-	// runs in the migration that adds the column, so a table that already has
-	// it is not the case under test.
-	const token = "0401fc662e3bc87a41f299a907c056aaf8322a27"
-	if _, err := pair.Write.Exec("DROP TABLE ApiToken"); err != nil {
-		t.Fatalf("failed to drop ApiToken: %v", err)
+	id := []byte("0123456789abcdef")
+	if _, err := db.Exec(
+		"INSERT INTO Account (id, is_active, is_staff, ctime) VALUES (?, 1, 0, 0)", id); err != nil {
+		t.Fatalf("failed to create an account: %v", err)
 	}
-	if _, err := pair.Write.Exec(
-		"CREATE TABLE ApiToken (token CHAR(40) PRIMARY KEY, email VARCHAR(255) NOT NULL, ctime BIGINT)"); err != nil {
-		t.Fatalf("failed to create legacy ApiToken: %v", err)
-	}
-	if _, err := pair.Write.Exec(
-		"INSERT INTO ApiToken (token, email, ctime) VALUES (?, ?, ?)",
-		token, "user@example.com", time.Now().Unix()); err != nil {
-		t.Fatalf("failed to seed token: %v", err)
+	if _, err := db.Exec(
+		"INSERT INTO AccountEmail (email, account_id, is_primary) VALUES (?, ?, 1)",
+		"dan@example.com", id); err != nil {
+		t.Fatalf("failed to claim an address: %v", err)
 	}
 
-	for _, ttl := range []time.Duration{0, -time.Hour} {
-		if err := MigrateSiloTables(pair.Write, ttl); err == nil {
-			t.Errorf("MigrateSeafileTables accepted a TTL of %v, want refusal", ttl)
+	// A second address is fine — that is what the table is for.
+	if _, err := db.Exec(
+		"INSERT INTO AccountEmail (email, account_id, is_primary) VALUES (?, ?, 0)",
+		"dan@work.example.com", id); err != nil {
+		t.Fatalf("an account could not hold a second address: %v", err)
+	}
+
+	// A second *primary* is not.
+	if _, err := db.Exec(
+		"INSERT INTO AccountEmail (email, account_id, is_primary) VALUES (?, ?, 1)",
+		"dan@other.example.com", id); err == nil {
+		t.Error("an account accepted a second primary address")
+	}
+}
+
+// One address belongs to one account, which is the primary key's whole job.
+func TestAccountEmailIsExclusive(t *testing.T) {
+	pair := schemaTestDB(t)
+	db := pair.Write
+
+	for _, id := range [][]byte{[]byte("0123456789abcdef"), []byte("fedcba9876543210")} {
+		if _, err := db.Exec(
+			"INSERT INTO Account (id, is_active, is_staff, ctime) VALUES (?, 1, 0, 0)", id); err != nil {
+			t.Fatalf("failed to create an account: %v", err)
 		}
-
-		// The refusal has to happen before the migration touches anything, so
-		// the column it would have backfilled should not even exist yet.
-		if _, err := pair.Read.Exec("SELECT expires_at FROM ApiToken LIMIT 0"); err == nil {
-			t.Errorf("TTL %v: migration added expires_at despite the refusal", ttl)
-		}
 	}
 
-	// A real TTL still migrates, so the guard has not broken the happy path.
-	if err := MigrateSiloTables(pair.Write, 30*24*time.Hour); err != nil {
-		t.Fatalf("MigrateSeafileTables rejected a valid TTL: %v", err)
+	if _, err := db.Exec(
+		"INSERT INTO AccountEmail (email, account_id, is_primary) VALUES (?, ?, 1)",
+		"dan@example.com", []byte("0123456789abcdef")); err != nil {
+		t.Fatalf("failed to claim an address: %v", err)
 	}
-	var expiresAt sql.NullInt64
-	if err := pair.Read.QueryRow(
-		"SELECT expires_at FROM ApiToken WHERE token = ?", token).Scan(&expiresAt); err != nil {
-		t.Fatalf("failed to read back token: %v", err)
-	}
-	if !expiresAt.Valid {
-		t.Fatal("valid TTL left expires_at NULL")
-	}
-	if expiresAt.Int64 <= time.Now().Unix() {
-		t.Errorf("backfilled expires_at %d is not in the future", expiresAt.Int64)
+	if _, err := db.Exec(
+		"INSERT INTO AccountEmail (email, account_id, is_primary) VALUES (?, ?, 1)",
+		"dan@example.com", []byte("fedcba9876543210")); err == nil {
+		t.Error("two accounts claimed the same address")
 	}
 }

@@ -6,12 +6,13 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/apitokenstore"
 	log "github.com/sirupsen/logrus"
 )
 
 // RequireAPIToken validates a Seahub/DRF-style "Authorization: Token <token>"
-// header and injects the user email into the request context.
+// header and injects the authenticated account into the request context.
 func RequireAPIToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
@@ -26,7 +27,7 @@ func RequireAPIToken(next http.Handler) http.Handler {
 			return
 		}
 
-		email, err := apitokenstore.Lookup(parts[1])
+		id, err := apitokenstore.Lookup(parts[1])
 		if errors.Is(err, apitokenstore.ErrNotFound) {
 			http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
 			return
@@ -37,7 +38,16 @@ func RequireAPIToken(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), UserEmailKey, email)
+		// The token names an account, so the account is read to get the
+		// address the /api2 responses still speak in — and, on the way, to
+		// find out whether it is still allowed to do anything.
+		acct, err := account.ByID(r.Context(), id)
+		if err != nil || !acct.IsActive {
+			http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), AccountKey, acct)
 		// Carry the token itself so a handler can revoke the exact credential
 		// that authenticated the request without re-parsing the header.
 		ctx = context.WithValue(ctx, APITokenKey, parts[1])

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/apitokenstore"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
@@ -13,7 +14,7 @@ import (
 // RunToken lists and revokes the credentials a user holds.
 //
 // Both stores could already revoke — repomgr.DeleteRepoToken,
-// repomgr.DeleteRepoTokensByEmail and apitokenstore.DeleteByEmail were
+// repomgr.DeleteRepoTokensByAccount and apitokenstore.DeleteByAccount were
 // written for it and documented as the way to invalidate a token — but
 // nothing outside their own tests ever called them. Sync tokens have no
 // expiry by design, because Seafile clients persist them and treat them as
@@ -43,32 +44,43 @@ func RunToken(args []string) error {
 		return err
 	}
 	apitokenstore.Init(siloPair.Read, siloPair.Write)
+	account.Init(siloPair.Read, siloPair.Write)
+
+	// The operator names a person by their address, which is what they know.
+	// It is resolved once, here at the edge, and everything below works in
+	// account ids.
+	ctx, cancel := account.WithTimeout()
+	defer cancel()
+	acct, err := account.ByEmail(ctx, email)
+	if err != nil {
+		return fmt.Errorf("no account for %s", email)
+	}
 
 	switch action {
 	case "list":
-		return listTokens(email)
+		return listTokens(acct)
 	case "revoke":
 		if len(rest) > 2 {
-			return revokeOneToken(email, rest[2])
+			return revokeOneToken(acct, rest[2])
 		}
-		return revokeAllTokens(email)
+		return revokeAllTokens(acct)
 	default:
 		return fmt.Errorf("unknown token subcommand %q; expected list or revoke", action)
 	}
 }
 
-func listTokens(email string) error {
-	syncTokens, err := repomgr.ListRepoTokensByEmail(email)
+func listTokens(acct *account.Account) error {
+	syncTokens, err := repomgr.ListRepoTokensByAccount(acct.ID)
 	if err != nil {
 		return err
 	}
-	apiTokens, err := apitokenstore.ListByEmail(email)
+	apiTokens, err := apitokenstore.ListByAccount(acct.ID)
 	if err != nil {
 		return err
 	}
 
 	if len(syncTokens) == 0 && len(apiTokens) == 0 {
-		fmt.Printf("No tokens for %s.\n", email)
+		fmt.Printf("No tokens for %s.\n", acct.Email)
 		return nil
 	}
 
@@ -95,19 +107,19 @@ func listTokens(email string) error {
 	return nil
 }
 
-func revokeAllTokens(email string) error {
-	syncCount, err := repomgr.DeleteRepoTokensByEmail(email)
+func revokeAllTokens(acct *account.Account) error {
+	syncCount, err := repomgr.DeleteRepoTokensByAccount(acct.ID)
 	if err != nil {
 		return err
 	}
-	apiCount, err := apitokenstore.DeleteByEmail(email)
+	apiCount, err := apitokenstore.DeleteByAccount(acct.ID)
 	if err != nil {
 		return fmt.Errorf("revoked %d sync token%s, but failed to revoke API tokens: %v",
 			syncCount, pluralS(syncCount), err)
 	}
 
 	fmt.Printf("Revoked %d sync token%s and %d API token%s for %s.\n",
-		syncCount, pluralS(syncCount), apiCount, pluralS(apiCount), email)
+		syncCount, pluralS(syncCount), apiCount, pluralS(apiCount), acct.Email)
 	warnAboutServerCache(syncCount + apiCount)
 	return nil
 }
@@ -115,8 +127,8 @@ func revokeAllTokens(email string) error {
 // revokeOneToken revokes a single credential, whichever store it lives in.
 // The token is matched against the user's own tokens rather than deleted by
 // value, so a typo cannot revoke someone else's credential.
-func revokeOneToken(email, token string) error {
-	syncTokens, err := repomgr.ListRepoTokensByEmail(email)
+func revokeOneToken(acct *account.Account, token string) error {
+	syncTokens, err := repomgr.ListRepoTokensByAccount(acct.ID)
 	if err != nil {
 		return err
 	}
@@ -126,18 +138,18 @@ func revokeOneToken(email, token string) error {
 			continue
 		}
 		// One token can appear against several repos.
-		if err := repomgr.DeleteRepoToken(t.RepoID, t.Token, email); err != nil {
+		if err := repomgr.DeleteRepoToken(t.RepoID, t.Token, acct.ID); err != nil {
 			return err
 		}
 		found++
 	}
 	if found > 0 {
-		fmt.Printf("Revoked sync token for %s (%d librar%s).\n", email, found, pluralY(found))
+		fmt.Printf("Revoked sync token for %s (%d librar%s).\n", acct.Email, found, pluralY(found))
 		warnAboutServerCache(int64(found))
 		return nil
 	}
 
-	apiTokens, err := apitokenstore.ListByEmail(email)
+	apiTokens, err := apitokenstore.ListByAccount(acct.ID)
 	if err != nil {
 		return err
 	}
@@ -148,13 +160,13 @@ func revokeOneToken(email, token string) error {
 		if err := apitokenstore.Delete(token); err != nil {
 			return err
 		}
-		fmt.Printf("Revoked API token for %s.\n", email)
+		fmt.Printf("Revoked API token for %s.\n", acct.Email)
 		warnAboutServerCache(1)
 		return nil
 	}
 
 	return fmt.Errorf("no token %q belongs to %s; run \"silo token list %s\" to see what does",
-		token, email, email)
+		token, acct.Email, acct.Email)
 }
 
 // warnAboutServerCache states the window in which a revoked token still
