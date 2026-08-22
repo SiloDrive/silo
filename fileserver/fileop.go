@@ -2102,7 +2102,7 @@ func genMergeDesc(repo *repomgr.Repo, mergedRoot, p1Root, p2Root string) string 
 }
 
 func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	trans, err := siloPair.Write.BeginTx(ctx, nil)
 	if err != nil {

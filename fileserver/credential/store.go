@@ -116,7 +116,7 @@ func Resolve(r *http.Request, kind Kind) (*Credential, error) {
 		return nil, ErrWrongKind
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(r.Context())
 	defer cancel()
 
 	cred, err := load(ctx, tok.ID)
@@ -293,7 +293,7 @@ func stampLastUsed(c *Credential) {
 	// Best effort and deliberately not in the request's context: the client
 	// has already been authenticated, and failing their request because a
 	// bookkeeping write lost a race would be the wrong trade.
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	if _, err := writeDB.ExecContext(ctx,

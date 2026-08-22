@@ -2,13 +2,14 @@ package silod
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
-	"time"
+	"text/tabwriter"
 
 	"golang.org/x/term"
 
@@ -37,6 +38,13 @@ import (
 // is meant to be built on these functions rather than beside them.
 func RunUser(args []string) error {
 	flags := commandFlags("user")
+	// Without this, "silo user -h" prints the flags and never names a
+	// subcommand — which is the one thing somebody typing it wants.
+	flags.Usage = func() {
+		fmt.Fprintln(os.Stderr, userUsage)
+		fmt.Fprintln(os.Stderr, "\nflags:")
+		flags.PrintDefaults()
+	}
 	staff := flags.Bool("staff", false, "with add: give the account the is_staff flag")
 	generate := flags.Bool("generate", false, "with add or passwd: invent a password and print it once")
 	jsonOut := flags.Bool("json", false, "with list: output as JSON")
@@ -49,19 +57,35 @@ func RunUser(args []string) error {
 	}
 	action := rest[0]
 
-	// The invocation is checked before the database is opened. A typo should
-	// answer with the usage text, not create a data directory somewhere the
-	// operator did not mean to point at.
-	var email string
+	// The invocation is resolved to the thing it will run before the database
+	// is opened. A typo should answer with the usage text, not create a data
+	// directory somewhere the operator did not mean to point at.
+	//
+	// One switch rather than two: an earlier version validated the arity in
+	// one switch and dispatched in another, which meant every subcommand was
+	// named twice and a subcommand added to the first but forgotten in the
+	// second fell through the dispatch default and enabled an account.
+	var run func() error
 	switch action {
 	case "list":
+		run = func() error { return listUsers(*jsonOut) }
 	case "add", "passwd", "disable", "enable":
-		// Every other subcommand names one person, and names them by the
-		// address the operator knows rather than the id the tables hold.
+		// Every one of these names one person, and names them by the address
+		// the operator knows rather than the id the tables hold.
 		if len(rest) < 2 {
 			return fmt.Errorf("silo user %s needs an email address\n\n%s", action, userUsage)
 		}
-		email = rest[1]
+		email := rest[1]
+		switch action {
+		case "add":
+			run = func() error { return addUser(email, *staff, *generate) }
+		case "passwd":
+			run = func() error { return passwdUser(email, *generate) }
+		case "disable":
+			run = func() error { return setUserActive(email, false) }
+		case "enable":
+			run = func() error { return setUserActive(email, true) }
+		}
 	default:
 		return fmt.Errorf("unknown user subcommand %q\n\n%s", action, userUsage)
 	}
@@ -71,18 +95,7 @@ func RunUser(args []string) error {
 	}
 	account.Init(siloPair.Read, siloPair.Write)
 
-	switch action {
-	case "list":
-		return listUsers(*jsonOut)
-	case "add":
-		return addUser(email, *staff, *generate)
-	case "passwd":
-		return passwdUser(email, *generate)
-	case "disable":
-		return setUserActive(email, false)
-	default:
-		return setUserActive(email, true)
-	}
+	return run()
 }
 
 // userUsage spells the flags before the subcommand because that is where
@@ -100,7 +113,7 @@ const userUsage = `usage:
 Flags come first: silo user -generate add alice@example.com`
 
 func listUsers(asJSON bool) error {
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	users, err := account.List(ctx)
@@ -116,26 +129,20 @@ func listUsers(asJSON bool) error {
 		return nil
 	}
 
-	// The widest address decides the column, so the flags line up no matter
-	// what the addresses are. A listing an operator has to read with a ruler
-	// is one they will read wrong.
-	width := len("EMAIL")
-	for _, u := range users {
-		if n := len(displayEmail(u)); n > width {
-			width = n
-		}
-	}
-
-	fmt.Printf("%-*s  %-8s  %-6s  %-8s  %s\n", width, "EMAIL", "STATUS", "STAFF", "PASSWORD", "CREATED")
+	// tabwriter measures every column, not just the widest address. A listing
+	// an operator has to read with a ruler is one they will read wrong, and
+	// hand-computed widths only ever measure the column somebody remembered.
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "EMAIL\tSTATUS\tSTAFF\tPASSWORD\tCREATED")
 	for _, u := range users {
 		status := "active"
 		if !u.IsActive {
 			status = "DISABLED"
 		}
-		fmt.Printf("%-*s  %-8s  %-6s  %-8s  %s\n",
-			width, displayEmail(u), status, yesNo(u.IsStaff), yesNo(u.HasPassword), formatTime(u.Ctime))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			displayEmail(u), status, yesNo(u.IsStaff), yesNo(u.HasPassword), formatTime(u.Ctime))
 	}
-	return nil
+	return tw.Flush()
 }
 
 // displayEmail names an account that has no primary address. Create always
@@ -163,27 +170,27 @@ func addUser(email string, staff, generate bool) error {
 
 	// Ask before prompting. Finding out that the address is taken after
 	// typing a password twice is a waste of the operator's time, and hashing
-	// one we are about to throw away costs 600k PBKDF2 iterations. Create
-	// still decides -- this is courtesy, not the guard against a race.
-	ctx, cancel := option.WithDBTimeout()
-	defer cancel()
+	// one we are about to throw away costs 600k PBKDF2 iterations.
+	// authmgr.CreateAccount asks again and still decides — this is courtesy,
+	// not the guard against a race.
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	if existing, err := account.ByEmail(ctx, norm); err == nil {
+		cancel()
 		return fmt.Errorf("%s already exists; use \"silo user passwd %s\" to change the password",
 			existing.Email, existing.Email)
 	}
+	cancel()
 
-	password, generated, err := readNewPassword(generate, "New password for "+norm+": ")
-	if err != nil {
-		return err
-	}
-	hash, err := authmgr.HashPassword(password)
+	password, generated, err := readNewPassword(generate, norm)
 	if err != nil {
 		return err
 	}
 
-	hashCtx, hashCancel := option.WithDBTimeout()
-	defer hashCancel()
-	_, created, err := account.Create(hashCtx, norm, hash, staff)
+	// A fresh context: the read above was bounded before the operator started
+	// typing, and a prompt has no deadline.
+	writeCtx, writeCancel := option.WithDBTimeout(context.Background())
+	defer writeCancel()
+	created, err := authmgr.CreateAccount(writeCtx, norm, password, staff)
 	if err != nil {
 		return err
 	}
@@ -193,35 +200,29 @@ func addUser(email string, staff, generate bool) error {
 		return fmt.Errorf("%s was created by something else while this ran; nothing was changed", norm)
 	}
 
-	what := "Created"
 	if staff {
-		what = "Created staff account"
+		fmt.Printf("Created staff account %s.\n", norm)
+	} else {
+		fmt.Printf("Created %s.\n", norm)
 	}
-	fmt.Printf("%s %s.\n", what, norm)
 	announceGenerated(password, generated)
 	return nil
 }
 
 func passwdUser(email string, generate bool) error {
-	ctx, cancel := option.WithDBTimeout()
-	defer cancel()
-	acct, err := account.ByEmail(ctx, email)
-	if err != nil {
-		return fmt.Errorf("no account for %s", email)
-	}
-
-	password, generated, err := readNewPassword(generate, "New password for "+acct.Email+": ")
-	if err != nil {
-		return err
-	}
-	hash, err := authmgr.HashPassword(password)
+	acct, err := resolveAccount(email)
 	if err != nil {
 		return err
 	}
 
-	setCtx, setCancel := option.WithDBTimeout()
+	password, generated, err := readNewPassword(generate, acct.Email)
+	if err != nil {
+		return err
+	}
+
+	setCtx, setCancel := option.WithDBTimeout(context.Background())
 	defer setCancel()
-	if err := account.SetPassword(setCtx, acct.ID, hash); err != nil {
+	if err := authmgr.SetAccountPassword(setCtx, acct.ID, password); err != nil {
 		return err
 	}
 
@@ -239,20 +240,18 @@ func passwdUser(email string, generate bool) error {
 }
 
 func setUserActive(email string, active bool) error {
-	ctx, cancel := option.WithDBTimeout()
-	defer cancel()
-	acct, err := account.ByEmail(ctx, email)
+	acct, err := resolveAccount(email)
 	if err != nil {
-		return fmt.Errorf("no account for %s", email)
+		return err
 	}
 	if acct.IsActive == active {
 		fmt.Printf("%s is already %s.\n", acct.Email, activeWord(active))
 		return nil
 	}
 
-	setCtx, setCancel := option.WithDBTimeout()
-	defer setCancel()
-	if err := account.SetActive(setCtx, acct.ID, active); err != nil {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	if err := account.SetActive(ctx, acct.ID, active); err != nil {
 		return err
 	}
 
@@ -297,14 +296,14 @@ func announceGenerated(password string, generated bool) {
 // So: -generate invents one, a terminal is prompted twice with echo off, and
 // anything else reads one line from stdin, which is what a script or a
 // password manager pipes in.
-func readNewPassword(generate bool, prompt string) (password string, generated bool, err error) {
+func readNewPassword(generate bool, who string) (password string, generated bool, err error) {
 	if generate {
 		password, err = authmgr.GeneratePassword()
 		return password, true, err
 	}
 
 	if term.IsTerminal(int(stdin.Fd())) {
-		password, err = promptPassword(prompt)
+		password, err = promptPassword("New password for " + who + ": ")
 		return password, false, err
 	}
 
@@ -383,7 +382,7 @@ func printUsersJSON(users []account.Listed) error {
 			IsActive:    u.IsActive,
 			IsStaff:     u.IsStaff,
 			HasPassword: u.HasPassword,
-			Created:     time.Unix(u.Ctime, 0).Format(time.RFC3339),
+			Created:     formatTime(u.Ctime),
 		})
 	}
 	enc := json.NewEncoder(os.Stdout)

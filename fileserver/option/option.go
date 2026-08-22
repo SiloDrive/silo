@@ -590,6 +590,11 @@ func LoadJWTConfig() error {
 // WithDBTimeout is the context a database call would otherwise build for
 // itself. It lives here, beside the deadline it applies, so that reaching for
 // it does not mean importing a package that owns a table.
-func WithDBTimeout() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), DBOpTimeout)
+//
+// It takes the parent rather than assuming context.Background() so that the
+// request-scoped callers can use it too: a query made on behalf of a request
+// should die with the request as well as at the deadline. A helper only half
+// the call sites could adopt would be a second convention, not one rule.
+func WithDBTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, DBOpTimeout)
 }

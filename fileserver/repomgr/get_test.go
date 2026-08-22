@@ -1,6 +1,7 @@
 package repomgr
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -57,7 +58,7 @@ func getTestStore(t *testing.T) string {
 // testAccount mints the account a test library is owned by.
 func testAccount(t *testing.T) *account.Account {
 	t.Helper()
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	if _, _, err := account.Create(ctx, testOwner, "", false); err != nil {
 		t.Fatalf("create account: %v", err)

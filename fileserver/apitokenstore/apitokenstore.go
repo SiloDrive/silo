@@ -8,6 +8,7 @@
 package apitokenstore
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -55,7 +56,7 @@ func Create(id account.ID) (string, error) {
 	token := hex.EncodeToString(b)
 
 	now := time.Now()
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	_, err := writeDB.ExecContext(ctx,
@@ -68,27 +69,42 @@ func Create(id account.ID) (string, error) {
 	return token, nil
 }
 
-// Lookup returns the account a token belongs to, or ErrNotFound if the token
-// is unknown or has expired. Using a token slides its expiry forward.
-func Lookup(token string) (account.ID, error) {
-	ctx, cancel := option.WithDBTimeout()
+// LookupAccount returns the account a token belongs to, or ErrNotFound if the
+// token is unknown or has expired. Using a token slides its expiry forward.
+//
+// The account is joined in rather than left to the caller. This is the /api2
+// lane's auth query and it runs on every request a desktop client makes, so
+// the difference between one statement and two is worth the join — and every
+// column it needs is already indexed for it.
+//
+// A token whose account row is gone resolves to ErrNotFound rather than to a
+// dangling id: deleting a user must not leave their tokens answering.
+func LookupAccount(ctx context.Context, token string) (*account.Account, error) {
+	ctx, cancel := option.WithDBTimeout(ctx)
 	defer cancel()
 
-	var id account.ID
-	var expiresAt int64
-	err := readDB.QueryRowContext(ctx,
-		"SELECT account_id, expires_at FROM ApiToken WHERE token = ?", token,
-	).Scan(&id, &expiresAt)
+	const q = `SELECT a.id, e.email, a.is_active, a.is_staff, t.expires_at
+	           FROM ApiToken t
+	           JOIN Account a ON a.id = t.account_id
+	           JOIN AccountEmail e ON e.account_id = a.id AND e.is_primary = 1
+	           WHERE t.token = ?`
+
+	var (
+		acct      account.Account
+		expiresAt int64
+	)
+	err := readDB.QueryRowContext(ctx, q, token).Scan(
+		&acct.ID, &acct.Email, &acct.IsActive, &acct.IsStaff, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return account.Zero, ErrNotFound
+		return nil, ErrNotFound
 	}
 	if err != nil {
-		return account.Zero, err
+		return nil, err
 	}
 
 	now := time.Now()
 	if now.Unix() >= expiresAt {
-		return account.Zero, ErrNotFound
+		return nil, ErrNotFound
 	}
 
 	// Slide the expiry once the token is more than renewThreshold through its
@@ -98,7 +114,7 @@ func Lookup(token string) (account.ID, error) {
 		renew(token, now)
 	}
 
-	return id, nil
+	return &acct, nil
 }
 
 // renew pushes a token's expiry out by a full TTL. Failures are logged and
@@ -106,7 +122,7 @@ func Lookup(token string) (account.ID, error) {
 // the request because the sliding write failed would turn a transient DB
 // hiccup into a spurious logout.
 func renew(token string, now time.Time) {
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	if _, err := writeDB.ExecContext(ctx,
@@ -128,7 +144,7 @@ type Token struct {
 // ones. Lookup hides expired tokens because they cannot authenticate; an
 // operator deciding what to revoke needs to see what is actually in the table.
 func ListByAccount(id account.ID) ([]Token, error) {
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	rows, err := readDB.QueryContext(ctx,
@@ -151,7 +167,7 @@ func ListByAccount(id account.ID) ([]Token, error) {
 
 // Delete revokes a single token. Used by logout.
 func Delete(token string) error {
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	_, err := writeDB.ExecContext(ctx, "DELETE FROM ApiToken WHERE token = ?", token)
@@ -161,7 +177,7 @@ func Delete(token string) error {
 // DeleteByAccount revokes every token belonging to an account, signing out all
 // of their devices. Returns the number of tokens removed.
 func DeleteByAccount(id account.ID) (int64, error) {
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	res, err := writeDB.ExecContext(ctx, "DELETE FROM ApiToken WHERE account_id = ?", id)
@@ -173,7 +189,7 @@ func DeleteByAccount(id account.ID) (int64, error) {
 
 // DeleteExpired removes rows whose expiry has passed, returning the count.
 func DeleteExpired() (int64, error) {
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	res, err := writeDB.ExecContext(ctx,

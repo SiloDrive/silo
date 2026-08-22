@@ -1,6 +1,7 @@
 package apitokenstore
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -37,7 +38,7 @@ func setupStore(t *testing.T) {
 	Init(pair.Read, pair.Write)
 	account.Init(pair.Read, pair.Write)
 
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	id, _, err := account.Create(ctx, testEmail, "PBKDF2SHA256$1$00$00", false)
 	if err != nil {
@@ -76,19 +77,22 @@ func TestCreateAndLookup(t *testing.T) {
 		t.Errorf("expected a 40-char token, got %d chars", len(token))
 	}
 
-	id, err := Lookup(token)
+	acct, err := LookupAccount(context.Background(), token)
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	if id != testAccount {
-		t.Errorf("expected the account %s holds, got %s", testEmail, id)
+	if acct.ID != testAccount {
+		t.Errorf("expected the account %s holds, got %s", testEmail, acct.ID)
+	}
+	if acct.Email != testEmail {
+		t.Errorf("expected the address joined in, got %q", acct.Email)
 	}
 }
 
 func TestLookupUnknownToken(t *testing.T) {
 	setupStore(t)
 
-	if _, err := Lookup("0000000000000000000000000000000000000000"); !errors.Is(err, ErrNotFound) {
+	if _, err := LookupAccount(context.Background(), "0000000000000000000000000000000000000000"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -103,7 +107,7 @@ func TestLookupRejectsExpiredToken(t *testing.T) {
 	}
 	setExpiry(t, token, time.Now().Add(-time.Minute))
 
-	if _, err := Lookup(token); !errors.Is(err, ErrNotFound) {
+	if _, err := LookupAccount(context.Background(), token); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expired token was accepted (err=%v)", err)
 	}
 }
@@ -128,10 +132,10 @@ func TestTokensArePerLoginNotShared(t *testing.T) {
 	if err := Delete(first); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := Lookup(first); !errors.Is(err, ErrNotFound) {
+	if _, err := LookupAccount(context.Background(), first); !errors.Is(err, ErrNotFound) {
 		t.Errorf("revoked token still works (err=%v)", err)
 	}
-	if _, err := Lookup(second); err != nil {
+	if _, err := LookupAccount(context.Background(), second); err != nil {
 		t.Errorf("revoking one device signed out the other: %v", err)
 	}
 }
@@ -151,7 +155,7 @@ func TestLookupSlidesExpiryPastThreshold(t *testing.T) {
 	nearExpiry := time.Now().Add(option.APITokenTTL / 4)
 	setExpiry(t, token, nearExpiry)
 
-	if _, err := Lookup(token); err != nil {
+	if _, err := LookupAccount(context.Background(), token); err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
 
@@ -170,7 +174,7 @@ func TestLookupDoesNotSlideFreshToken(t *testing.T) {
 	}
 	before := expiryOf(t, token)
 
-	if _, err := Lookup(token); err != nil {
+	if _, err := LookupAccount(context.Background(), token); err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
 
@@ -185,7 +189,7 @@ func TestDeleteByAccountRevokesEveryDevice(t *testing.T) {
 	first, _ := Create(testAccount)
 	second, _ := Create(testAccount)
 
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	bob, _, err := account.Create(ctx, "bob@example.com", "PBKDF2SHA256$1$00$00", false)
 	if err != nil {
@@ -202,11 +206,11 @@ func TestDeleteByAccountRevokesEveryDevice(t *testing.T) {
 	}
 
 	for _, tok := range []string{first, second} {
-		if _, err := Lookup(tok); !errors.Is(err, ErrNotFound) {
+		if _, err := LookupAccount(context.Background(), tok); !errors.Is(err, ErrNotFound) {
 			t.Errorf("token survived a full revoke (err=%v)", err)
 		}
 	}
-	if _, err := Lookup(other); err != nil {
+	if _, err := LookupAccount(context.Background(), other); err != nil {
 		t.Errorf("another user's token was revoked: %v", err)
 	}
 }
@@ -225,7 +229,7 @@ func TestDeleteExpiredSweepsOnlyExpired(t *testing.T) {
 	if n != 1 {
 		t.Errorf("expected 1 row swept, got %d", n)
 	}
-	if _, err := Lookup(live); err != nil {
+	if _, err := LookupAccount(context.Background(), live); err != nil {
 		t.Errorf("sweep removed a live token: %v", err)
 	}
 }

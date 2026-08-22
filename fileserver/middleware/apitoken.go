@@ -11,25 +11,26 @@ import (
 
 // RequireAPIToken validates a Seahub/DRF-style "Authorization: Token <token>"
 // header and injects the authenticated account into the request context.
+//
+// APITokenKey carries the raw token through so a handler can revoke the exact
+// credential that authenticated the request without re-parsing the header.
 func RequireAPIToken(next http.Handler) http.Handler {
-	return requireCredential("token", apiTokenLookup, carryAPIToken)(next)
+	return requireCredential(next, "token", apiTokenLookup, APITokenKey)
 }
 
-// apiTokenLookup separates "no such token" from a store that is unreachable,
-// so a database outage does not masquerade as every client being signed out.
-func apiTokenLookup(secret string) (account.ID, error) {
-	id, err := apitokenstore.Lookup(secret)
+// apiTokenLookup resolves a token and its account in one statement. This is
+// the SeaDrive and desktop-client surface, so it is the busiest authenticated
+// lane there is; the join is the difference between one query per request and
+// two, the same trade credential.load makes.
+//
+// It separates "no such token" from a store that is unreachable, so a database
+// outage does not masquerade as every client being signed out.
+func apiTokenLookup(ctx context.Context, secret string) (*account.Account, error) {
+	acct, err := apitokenstore.LookupAccount(ctx, secret)
 	if errors.Is(err, apitokenstore.ErrNotFound) {
-		return account.Zero, ErrInvalidCredential
+		return nil, ErrInvalidCredential
 	}
-	return id, err
-}
-
-// carryAPIToken puts the token itself on the context so a handler can revoke
-// the exact credential that authenticated the request without re-parsing the
-// header.
-func carryAPIToken(ctx context.Context, secret string) context.Context {
-	return context.WithValue(ctx, APITokenKey, secret)
+	return acct, err
 }
 
 // GetAPIToken returns the API token that authenticated the request, or "" if

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -258,7 +257,7 @@ func scanRepos(rows *sql.Rows) []repoInfo {
 
 func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 	id := middleware.GetAccountID(r)
-	ctx, cancel := context.WithTimeout(r.Context(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(r.Context())
 	defer cancel()
 
 	rows, err := seafileDB.QueryContext(ctx,

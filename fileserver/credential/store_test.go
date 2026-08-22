@@ -1,6 +1,7 @@
 package credential
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,7 @@ func testDB(t *testing.T) *dbutil.DBPair {
 // user an operator has disabled.
 func addUser(t *testing.T, pair *dbutil.DBPair, email string, active bool) account.ID {
 	t.Helper()
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	id, _, err := account.Create(ctx, email, "", false)
 	if err != nil {

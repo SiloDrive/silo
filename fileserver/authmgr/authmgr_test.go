@@ -1,6 +1,7 @@
 package authmgr
 
 import (
+	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
@@ -296,7 +297,7 @@ func authTestDB(t *testing.T) {
 
 func seedUser(t *testing.T, email, storedPasswd string) account.ID {
 	t.Helper()
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	id, _, err := account.Create(ctx, email, storedPasswd, false)
 	if err != nil {
@@ -307,7 +308,7 @@ func seedUser(t *testing.T, email, storedPasswd string) account.ID {
 
 func storedHash(t *testing.T, email string) string {
 	t.Helper()
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	_, hash, err := account.PasswordHash(ctx, email)
 	if err != nil {
@@ -459,7 +460,7 @@ func TestBootstrapAdminGeneratesUsableCredentials(t *testing.T) {
 		t.Errorf("the generated password does not log in: %v", err)
 	}
 
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	acct, err := account.ByEmail(ctx, DefaultAdminEmail)
 	if err != nil {

@@ -1,6 +1,7 @@
 package silod
 
 import (
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -96,7 +97,7 @@ func TestAddUserStoresAHashRatherThanThePassword(t *testing.T) {
 		t.Fatalf("addUser returned %v", err)
 	}
 
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	_, stored, err := account.PasswordHash(ctx, "hashed@example.com")
 	if err != nil {
@@ -123,7 +124,7 @@ func TestAddUserNormalizesTheAddress(t *testing.T) {
 		t.Fatalf("addUser returned %v", err)
 	}
 
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	acct, err := account.ByEmail(ctx, "alice@example.com")
 	if err != nil {
@@ -170,7 +171,7 @@ func TestAddUserStaffFlag(t *testing.T) {
 		t.Fatalf("addUser returned %v", err)
 	}
 
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	acct, err := account.ByEmail(ctx, "boss@example.com")
 	if err != nil {
@@ -316,7 +317,7 @@ func TestListReportsWhatAnOperatorNeedsToDecide(t *testing.T) {
 		t.Fatalf("disable returned %v", err)
 	}
 
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	users, err := account.List(ctx)
 	if err != nil {
@@ -353,7 +354,7 @@ func TestListReportsWhatAnOperatorNeedsToDecide(t *testing.T) {
 func TestListDistinguishesAnAccountWithNoPassword(t *testing.T) {
 	userTestStore(t)
 
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	if _, _, err := account.Create(ctx, "identity-only@example.com", "", false); err != nil {
 		t.Fatalf("create: %v", err)

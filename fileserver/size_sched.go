@@ -145,7 +145,7 @@ func computeRepoSize(args ...interface{}) error {
 }
 
 func setRepoSizeAndFileCount(repoID, newHeadID string, size, fileCount int64) error {
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	trans, err := siloPair.Write.BeginTx(ctx, nil)
 	if err != nil {
@@ -252,7 +252,7 @@ func getOldRepoInfo(repoID string) (*RepoInfo, error) {
 		"s.repo_id=f.repo_id WHERE s.repo_id=?"
 
 	repoInfo := new(RepoInfo)
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	row := siloPair.Read.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&repoInfo.HeadID, &repoInfo.Size, &repoInfo.FileCount); err != nil {

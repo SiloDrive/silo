@@ -51,7 +51,7 @@ func sqliteTestDB(t *testing.T) {
 // rows below them hold ids.
 func mintAccount(t *testing.T, email string) *account.Account {
 	t.Helper()
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	// Create is idempotent — it hands back the existing row when the address
 	// is already claimed — so minting and resolving differ only in whether

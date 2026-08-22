@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -37,7 +38,7 @@ func seedAccount(t *testing.T, email string) *account.Account {
 	}
 	account.Init(pair.Read, pair.Write)
 
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	if _, _, err := account.Create(ctx, email, "PBKDF2SHA256$1$00$00", false); err != nil {
 		t.Fatalf("create account: %v", err)
@@ -180,7 +181,7 @@ func TestRequireAuthRefusesADisabledAccount(t *testing.T) {
 		t.Fatal("handler should not be called")
 	}))
 
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	if err := account.SetActive(ctx, acct.ID, false); err != nil {
 		t.Fatalf("disabling account: %v", err)

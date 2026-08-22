@@ -268,7 +268,7 @@ func reclaim(r *garbageRepo) error {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	if _, err := siloPair.Write.ExecContext(ctx, "DELETE FROM GarbageRepos WHERE repo_id = ?", r.repoID); err != nil {
 		return fmt.Errorf("removed objects but failed to clear GarbageRepos row: %v", err)

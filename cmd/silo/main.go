@@ -127,9 +127,9 @@ Usage:
   silo gc [-delete]               Reclaim disk from deleted libraries
   silo backup-db <dir>            Snapshot the databases (server may be running)
   silo sentry-test                Send a test event to $SILO_SENTRY_DSN and report
-  silo user [-json] list          Show every account
-  silo user [-generate] add <email>       Create an account
-  silo user [-generate] passwd <email>    Set a password
+  silo user list [-json]          Show every account (see "silo user -h")
+  silo user add <email>           Create an account
+  silo user passwd <email>        Set a password
   silo user disable <email>       Stop every credential the account holds
   silo user enable <email>        Undo a disable
   silo token list <email>         Show a user's sync and API tokens
@@ -180,8 +180,9 @@ a healthy server that has had nothing to report.
 passwords and disabling them, none of which had any path before it but editing
 silo.db by hand. Passwords are never taken as flags — a terminal is prompted
 with echo off, a pipe is read from stdin, and -generate invents one and prints
-it once. Flags come before the subcommand: "silo user -generate add a@b.c". Disabling an account stops every credential it holds at once; the
-tokens themselves survive and work again if it is re-enabled.
+it once. Flags come before the subcommand: "silo user -generate add a@b.c".
+Disabling an account stops every credential it holds at once; the tokens
+themselves survive and work again if it is re-enabled.
 
 "silo backup-db" writes a consistent snapshot of silo.db, safely while the
 server runs — copying it with cp loses everything since the last WAL

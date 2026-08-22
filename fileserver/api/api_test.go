@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -47,7 +48,7 @@ func setupPerms(t *testing.T) {
 	}
 
 	account.Init(siloPair.Read, siloPair.Write)
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	for _, email := range []string{ownerUser, rwShareUser, roShareUser, strangerUser} {
 		if _, _, err := account.Create(ctx, email, "", false); err != nil {
@@ -81,7 +82,7 @@ func setupPerms(t *testing.T) {
 // — but everything below the handler now works in ids.
 func accountOf(t *testing.T, email string) *account.Account {
 	t.Helper()
-	ctx, cancel := option.WithDBTimeout()
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	acct, err := account.ByEmail(ctx, email)
 	if err != nil {

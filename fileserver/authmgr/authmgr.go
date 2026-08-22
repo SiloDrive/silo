@@ -49,7 +49,7 @@ func ValidatePassword(email, password string) (*account.Account, error) {
 		return nil, fmt.Errorf("invalid password")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	id, storedPasswd, err := account.PasswordHash(ctx, email)
@@ -288,24 +288,25 @@ func EnsureAdmin(email, password string) error {
 	return err
 }
 
-// ensureAdmin is EnsureAdmin plus the one fact the bootstrap path needs: did
-// this call actually write the row? A generated password is only worth
-// printing if the account it belongs to is the account that was created.
-func ensureAdmin(email, password string) (created bool, err error) {
-	if email == "" || password == "" {
-		return false, nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
-	defer cancel()
-
+// CreateAccount is the plaintext lane: it turns a password an operator typed
+// into a stored account, so that no caller has to know which KDF this is or
+// remember that account.Create takes a hash.
+//
+// The account package only ever sees hashes. That is the invariant this
+// function exists to hold, and it holds it for the CLI, for the bootstrap
+// admin, and for the admin HTTP endpoint docs/future-features.md means to
+// build on these calls rather than beside them.
+//
+// created is false when the address was already claimed, in which case
+// nothing was written and the existing password is still the live one.
+func CreateAccount(ctx context.Context, email, password string, isStaff bool) (created bool, err error) {
 	// Ask before deriving. HashPassword is 600k PBKDF2 iterations by design,
-	// and on every boot after the first the answer is thrown away: account.Create
-	// returns the existing row the moment it finds the address. Checking first
-	// keeps ~80ms of blocking work out of every restart. Create still decides
-	// — this is a fast path, not the guard against a concurrent creator.
+	// and the answer is thrown away whenever the address is taken: account.Create
+	// returns the existing row the moment it finds it. Checking first keeps
+	// ~80ms of work off the common path — on every server restart, and before
+	// an operator has typed a password the CLI would then discard. Create
+	// still decides; this is a fast path, not the guard against a race.
 	if _, err := account.ByEmail(ctx, email); err == nil {
-		log.Infof("Admin user %s already exists", email)
 		return false, nil
 	}
 
@@ -314,7 +315,32 @@ func ensureAdmin(email, password string) (created bool, err error) {
 		return false, err
 	}
 
-	_, created, err = account.Create(ctx, email, hash, true)
+	_, created, err = account.Create(ctx, email, hash, isStaff)
+	return created, err
+}
+
+// SetAccountPassword replaces an account's password, hashing it on the way in
+// for the same reason CreateAccount does.
+func SetAccountPassword(ctx context.Context, id account.ID, password string) error {
+	hash, err := HashPassword(password)
+	if err != nil {
+		return err
+	}
+	return account.SetPassword(ctx, id, hash)
+}
+
+// ensureAdmin is EnsureAdmin plus the one fact the bootstrap path needs: did
+// this call actually write the row? A generated password is only worth
+// printing if the account it belongs to is the account that was created.
+func ensureAdmin(email, password string) (created bool, err error) {
+	if email == "" || password == "" {
+		return false, nil
+	}
+
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+
+	created, err = CreateAccount(ctx, email, password, true)
 	if err != nil {
 		return false, fmt.Errorf("failed to create admin user: %v", err)
 	}
@@ -382,7 +408,7 @@ func BootstrapAdmin(email, password string) (generated string, err error) {
 
 // userCount reports how many accounts exist.
 func userCount() (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	return account.Count(ctx)

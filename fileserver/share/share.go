@@ -74,7 +74,7 @@ func checkVirtualRepoPerm(repoID, originRepoID string, user account.ID, vPath st
 }
 
 func getUserGroups(sqlStr string, args ...interface{}) ([]group, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	rows, err := db.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
@@ -154,7 +154,7 @@ func getGroupsByUser(user account.ID, returnAncestors bool) ([]group, error) {
 
 func getGroupPaths(sqlStr string) (string, error) {
 	var paths string
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	rows, err := db.QueryContext(ctx, sqlStr)
 	if err != nil {
@@ -200,7 +200,7 @@ func checkGroupPermByUser(repoID string, user account.ID) (string, error) {
 	}
 	sqlBuilder.WriteString(")")
 
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	rows, err := db.QueryContext(ctx, sqlBuilder.String(), repoID)
 	if err != nil {
@@ -232,7 +232,7 @@ func checkGroupPermByUser(repoID string, user account.ID) (string, error) {
 
 func checkSharedRepoPerm(repoID string, to account.ID) (string, error) {
 	sqlStr := "SELECT permission FROM SharedRepo WHERE repo_id=? AND to_account_id=?"
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	row := db.QueryRowContext(ctx, sqlStr, repoID, to)
 
@@ -248,7 +248,7 @@ func checkSharedRepoPerm(repoID string, to account.ID) (string, error) {
 
 func checkInnerPubRepoPerm(repoID string) (string, error) {
 	sqlStr := "SELECT permission FROM InnerPubRepo WHERE repo_id=?"
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	row := db.QueryRowContext(ctx, sqlStr, repoID)
 
@@ -302,7 +302,7 @@ func getSharedDirsToUser(originRepoID string, to account.ID) (map[string]string,
 	sqlStr := "SELECT v.path, s.permission FROM SharedRepo s, VirtualRepo v WHERE " +
 		"s.repo_id = v.repo_id AND s.to_account_id = ? AND v.origin_repo = ?"
 
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	rows, err := db.QueryContext(ctx, sqlStr, to, originRepoID)
 	if err != nil {
@@ -362,7 +362,7 @@ func getSharedDirsToGroup(originRepoID string, groups []group) (map[string]strin
 		"s.repo_id = v.repo_id AND v.origin_repo = ? "+
 		"AND s.group_id in (%s)", groupIDs)
 
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	rows, err := db.QueryContext(ctx, sqlStr, originRepoID)
 	if err != nil {
@@ -450,7 +450,7 @@ func GetReposByOwner(owner account.ID) ([]*SharedRepo, error) {
 		"v.repo_id IS NULL " +
 		"ORDER BY i.update_time DESC, o.repo_id"
 
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	stmt, err := db.PrepareContext(ctx, query)
 	if err != nil {
@@ -512,7 +512,7 @@ func ListInnerPubRepos() ([]*SharedRepo, error) {
 		"WHERE InnerPubRepo.repo_id=RepoOwner.repo_id AND " +
 		"InnerPubRepo.repo_id = Branch.repo_id AND Branch.name = 'master'"
 
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	stmt, err := db.PrepareContext(ctx, query)
 	if err != nil {
@@ -578,7 +578,7 @@ func ListSharedWithMe(id account.ID) ([]*SharedRepo, error) {
 		"b.name = 'master' " +
 		"ORDER BY i.update_time DESC, sh.repo_id"
 
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	stmt, err := db.PrepareContext(ctx, query)
 	if err != nil {
@@ -652,7 +652,7 @@ func GetGroupReposByUser(user account.ID) ([]*SharedRepo, error) {
 	}
 	sqlBuilder.WriteString(" ) ORDER BY group_id")
 
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	rows, err := db.QueryContext(ctx, sqlBuilder.String())
 	if err != nil {

@@ -65,7 +65,7 @@ func checkQuota(repoID string, delta int64) (int, error) {
 func getUserQuota(user account.ID) (int64, error) {
 	var quota int64
 	sqlStr := "SELECT quota FROM UserQuota WHERE account_id=?"
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	row := siloPair.Read.QueryRowContext(ctx, sqlStr, user)
 	if err := row.Scan(&quota); err != nil {
@@ -89,7 +89,7 @@ func getUserUsage(user account.ID) (int64, error) {
 		"o.account_id=? AND o.repo_id=RepoSize.repo_id " +
 		"AND v.repo_id IS NULL"
 
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	row := siloPair.Read.QueryRowContext(ctx, sqlStr, user)
 	if err := row.Scan(&usage); err != nil {

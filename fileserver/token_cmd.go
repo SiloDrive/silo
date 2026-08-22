@@ -1,7 +1,9 @@
 package silod
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -49,11 +51,9 @@ func RunToken(args []string) error {
 	// The operator names a person by their address, which is what they know.
 	// It is resolved once, here at the edge, and everything below works in
 	// account ids.
-	ctx, cancel := option.WithDBTimeout()
-	defer cancel()
-	acct, err := account.ByEmail(ctx, email)
+	acct, err := resolveAccount(email)
 	if err != nil {
-		return fmt.Errorf("no account for %s", email)
+		return err
 	}
 
 	switch action {
@@ -175,6 +175,27 @@ func revokeOneToken(acct *account.Account, token string) error {
 // a token nor disabling the account behind one takes effect at once. This
 // being a separate process, there is no way to reach in and purge that cache
 // — only the TTL bounds it.
+// resolveAccount turns the address an operator typed into the account the
+// tables hold, for the commands that act on one person.
+//
+// It distinguishes "no such account" from a store that would not answer. The
+// three copies this replaced all reported a database failure as a missing
+// user, which is the wrong thing to tell somebody whose recovery tool has
+// just failed for a reason they could fix.
+func resolveAccount(email string) (*account.Account, error) {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+
+	acct, err := account.ByEmail(ctx, email)
+	if errors.Is(err, account.ErrNotFound) {
+		return nil, fmt.Errorf("no account for %s", email)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("looking up %s: %v", email, err)
+	}
+	return acct, nil
+}
+
 func warnAboutServerCache(affected int64) {
 	if affected == 0 || option.AuthCacheTTL <= 0 {
 		return
