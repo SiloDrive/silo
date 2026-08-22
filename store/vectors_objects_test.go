@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -15,11 +16,23 @@ const objectVectorFile = "testdata/vectors/objects.json"
 var vectorCK = []byte("silo test content key, not secret")
 
 type objectVectorDoc struct {
-	Format     string            `json:"format"`
-	Note       string            `json:"note"`
-	ContentKey string            `json:"content_key_utf8"`
-	Chunks     []chunkSealVector `json:"chunk_seal"`
-	Manifests  []manifestVector  `json:"manifest"`
+	Format      string            `json:"format"`
+	Note        string            `json:"note"`
+	ContentKey  string            `json:"content_key_utf8"`
+	Chunks      []chunkSealVector `json:"chunk_seal"`
+	Manifests   []manifestVector  `json:"manifest"`
+	Directories []objectVector    `json:"directory"`
+	Commits     []objectVector    `json:"commit"`
+}
+
+// objectVector pins a directory or commit whose fields are literals rather
+// than generated: the description is in the spec, and the bytes are here.
+type objectVector struct {
+	Name       string `json:"name"`
+	Sealed     bool   `json:"sealed"`
+	EncodedLen int    `json:"encoded_len"`
+	Encoded    string `json:"encoded_hex"`
+	ObjectID   string `json:"object_id"`
 }
 
 type chunkSealVector struct {
@@ -142,7 +155,82 @@ func buildObjectVectors(t *testing.T) objectVectorDoc {
 		}
 		doc.Manifests = append(doc.Manifests, v)
 	}
+	for _, sealed := range []bool{false, true} {
+		suffix := "-plain"
+		if sealed {
+			suffix = "-sealed"
+		}
+		doc.Directories = append(doc.Directories,
+			encodedVector(t, "empty"+suffix, sealed, encodeDir(&Directory{
+				Salt: [DirSaltSize]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+			})),
+			encodedVector(t, "three-entries"+suffix, sealed, encodeDir(vectorDir())),
+		)
+		doc.Commits = append(doc.Commits,
+			encodedVector(t, "root-only"+suffix, sealed, encodeCommit(&Commit{Root: id(7)})),
+			encodedVector(t, "two-parents"+suffix, sealed, encodeCommit(vectorCommit())),
+		)
+	}
 	return doc
+}
+
+// vectorDir and vectorCommit are the fixed structures the directory and
+// commit vectors encode. Child ids are byte-repeated so a port can type them
+// out; names, modes and timestamps are literals.
+func vectorDir() *Directory {
+	return &Directory{
+		Salt: [DirSaltSize]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+		Entries: []DirEntry{
+			{ChildID: id(0xaa), Type: NodeFile, Name: []byte("report.pdf"), Mtime: 1700000000, Mode: 0o644},
+			{ChildID: id(0xbb), Type: NodeDir, Name: []byte("photos"), Mtime: 1600000000, Mode: 0o755},
+			{ChildID: id(0xcc), Type: NodeSymlink, Name: []byte("current"), Mtime: 1650000000, Mode: 0o777},
+		},
+	}
+}
+
+func vectorCommit() *Commit {
+	return &Commit{
+		Root:      id(0x42),
+		Parents:   []ID{id(0x01), id(0x02)},
+		CreatedAt: 1700000000,
+		Author:    "vector@silo.invalid",
+		Message:   "a commit for the vectors",
+	}
+}
+
+func encodedVector(t *testing.T, name string, sealed bool, encode func(bool) ([]byte, error)) objectVector {
+	t.Helper()
+	b, err := encode(sealed)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return objectVector{
+		Name:       name,
+		Sealed:     sealed,
+		EncodedLen: len(b),
+		Encoded:    hex.EncodeToString(b),
+		ObjectID:   ObjectID(b).String(),
+	}
+}
+
+func encodeDir(d *Directory) func(bool) ([]byte, error) {
+	return func(sealed bool) ([]byte, error) {
+		if sealed {
+			return d.EncodeSealed(vectorCK)
+		}
+		plain := *d
+		plain.Salt = [DirSaltSize]byte{}
+		return plain.Encode()
+	}
+}
+
+func encodeCommit(c *Commit) func(bool) ([]byte, error) {
+	return func(sealed bool) ([]byte, error) {
+		if sealed {
+			return c.EncodeSealed(vectorCK)
+		}
+		return c.Encode()
+	}
 }
 
 func itoa(n int) string {
@@ -238,6 +326,58 @@ func TestObjectVectorsAreReproducibleFromTheFile(t *testing.T) {
 				}
 			} else if _, err := DecodeManifest(encoded); err != nil {
 				t.Fatalf("the vector's own manifest does not decode: %v", err)
+			}
+		})
+	}
+
+	// Directory and commit vectors are checked from the bytes alone: decode
+	// what the file holds, re-encode it, and require the same object back.
+	// That exercises the decoder against bytes this build did not just write.
+	for _, v := range doc.Directories {
+		t.Run("directory/"+v.Name, func(t *testing.T) {
+			raw, err := hex.DecodeString(v.Encoded)
+			if err != nil || len(raw) != v.EncodedLen || ObjectID(raw).String() != v.ObjectID {
+				t.Fatal("the vector's own bytes do not match its id")
+			}
+			var d *Directory
+			if v.Sealed {
+				d, err = DecodeSealedDirectory(raw, ck)
+			} else {
+				d, err = DecodeDirectory(raw)
+			}
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			again, err := encodeDir(d)(v.Sealed)
+			if err != nil {
+				t.Fatalf("re-encode: %v", err)
+			}
+			if !bytes.Equal(again, raw) {
+				t.Fatal("re-encoding the decoded directory produced different bytes")
+			}
+		})
+	}
+	for _, v := range doc.Commits {
+		t.Run("commit/"+v.Name, func(t *testing.T) {
+			raw, err := hex.DecodeString(v.Encoded)
+			if err != nil || len(raw) != v.EncodedLen || ObjectID(raw).String() != v.ObjectID {
+				t.Fatal("the vector's own bytes do not match its id")
+			}
+			var c *Commit
+			if v.Sealed {
+				c, err = DecodeSealedCommit(raw, ck)
+			} else {
+				c, err = DecodeCommit(raw)
+			}
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			again, err := encodeCommit(c)(v.Sealed)
+			if err != nil {
+				t.Fatalf("re-encode: %v", err)
+			}
+			if !bytes.Equal(again, raw) {
+				t.Fatal("re-encoding the decoded commit produced different bytes")
 			}
 		})
 	}

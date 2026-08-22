@@ -13,7 +13,7 @@ not yet restated here as bytes.
 | Encoding primitives | specified |
 | Manifests | specified |
 | Content crypto (E2EE) | specified |
-| Directory and commit objects | not yet specified |
+| Directory and commit objects | specified |
 | Key wrapping | not yet specified |
 
 Everything here is normative. Where this document and the plan disagree, this
@@ -433,7 +433,162 @@ carry `encoded_hex`; the rest are pinned by `object_id`.
 
 ## Directory and commit objects
 
-*(not yet specified — layouts and flag bits are pinned in the plan.)*
+Both take the same public/sealed split as manifests, for a reason that is not
+obvious: per-object associated data defends the *inside* of one object, and a
+tree is attacked *between* objects. Without a whole-object seal, Option A names
+are deterministic library-wide — `Enc("taxes.pdf")` is the same ciphertext in
+every directory — and a malicious server could swap the child id beside a name,
+or graft a name/id pair from one directory into another, with every object
+still verifying internally.
+
+### Byte layouts
+
+```
+directory object
+version u8 = 1 | flags u8 | entry_count varint
+public:  dir_salt [16]byte                       -- E2EE only
+         (child_id [32]byte, type u8,
+          name_len varint, name bytes,
+          mtime varint, mode varint)*            -- mtime, mode: PLAIN only
+         seal_hash [32]byte                      -- E2EE only
+sealed:  (mtime varint, mode varint)*            -- E2EE only; exactly entry_count pairs
+
+commit object
+version u8 = 1 | flags u8
+public:  root_id [32]byte
+         parent_count varint, (parent_id [32]byte)*
+         created_at varint
+         author_len varint, author bytes,
+         msg_len varint, msg bytes               -- PLAIN only
+         seal_hash [32]byte                      -- E2EE only
+sealed:  author_len varint, author bytes,
+         msg_len varint, msg bytes               -- E2EE only; always present,
+                                                 --   both fields may be empty
+```
+
+Field order **is** the AD. Two implementations that order the public section
+differently produce different keys and different object ids for identical
+trees, and the failure surfaces as "the Swift client cannot read anything the
+Go client wrote".
+
+### Flags
+
+Bit 0 (E2EE) as for manifests. **Bit 1 is the manifest's inline flag and is
+reserved here**; bits 1–7 must be zero and parsers reject if set.
+
+**E2EE is one bit, not a family.** On a commit, bit 0 alone drives all three
+placements — `seal_hash` present, author/message sealed, author/message absent
+from the public section. On a directory it alone drives `dir_salt`,
+`seal_hash`, name encryption, and mtime/mode placement. Spelled as independent
+flags, a port could encode an impossible object — E2EE set, author public —
+that still parses and still hashes.
+
+### Entries
+
+- **`type` is pinned: 0 = file, 1 = directory, 2 = symlink. Anything else
+  rejects.** The field is server-consumed, not client metadata: GC's mark must
+  know whether a child id names a manifest or a directory object to continue
+  the walk — 0 and 2 name manifests, 1 names a directory, a total
+  classification of every edge — so it can never be sealed or demoted later.
+  Reject-on-unknown is the walk's correctness condition, not parser hygiene.
+- A symlink's target bytes are the child manifest's content.
+- `name` is the **raw** bytes: the plaintext name in a plain library, the raw
+  AES-SIV ciphertext in an E2EE one. **Never base64.** base64url unpadded is
+  the URL encoding for `entries/{path}` only; a port that base64s the name into
+  the object produces different bytes, a different key, and a different id for
+  an identical tree.
+- `name_len` ≤ 255, and a zero-length name rejects.
+- **Entry order is strictly increasing bytewise by `name`** — not merely
+  sorted. A duplicate name is therefore unrepresentable, rejected by the same
+  single pass that validates canonical order, at no extra cost. Writers must
+  emit this order (vector); readers must reject its violation (conformance).
+- `mode` carries **permission bits only**; values above `0o7777` reject. File
+  type lives in `type`, never in mode, or two encodings of one fact reappear
+  one field over. **A type-2 entry carries `mode = 0o777`**: writers emit it,
+  readers reject anything else. Symlink permissions are noise the operating
+  systems disagree about, and a varying value would mint divergent ids for
+  identical trees.
+- `mtime` and `created_at` are **unix seconds, UTC, in [0, 2^34)** — through
+  roughly the year 2514. **Writers clamp** into range (pre-epoch mtimes exist
+  on real disks); **parsers reject** anything outside it. One rule for the
+  whole format: two clamping stories for one data type would be a port trap.
+
+### Sealed sections
+
+- A directory's sealed plaintext is `(mtime, mode)` pairs in entry order,
+  **exactly `entry_count` of them**, with trailing bytes rejected. No server
+  can forge that mismatch — it lives under the seal — but a buggy writer can,
+  and two ports must refuse it identically rather than one indexing past the
+  end and one silently truncating.
+- Mtimes and modes are sealed under E2EE because per-file activity timing is a
+  leak the threat model does not concede. They are sync *state*, not display
+  garnish: a client must answer `getattr` with a real `st_mtime`, and a chmod
+  that does not propagate is the same silent divergence one field over.
+- **An empty directory has an empty sealed section**, so its `seal_hash` is
+  `SHA-256("")`. This is safe because the key still derives from the public
+  bytes, and `dir_salt` makes every empty directory distinct from every other.
+- **A commit's sealed section is always present** and always carries both
+  fields, even when both are empty — one shape rather than two, so no port has
+  to decide what an absent sealed section would mean.
+- **The root id is public in both library types, never sealed.** It has to be:
+  the root is the first edge of every server-side walk — GC's mark,
+  `diff.DiffCommitRoots`, `changes?since=` — and a sealed root would leave the
+  server unable to trace an E2EE library at all. The anti-splice property
+  survives because the seal *binds* the root rather than hiding it: root and
+  parent chain sit inside the one authenticated range. The splice worked only
+  while a sealed blob was portable between commits.
+
+### `dir_salt`
+
+16 bytes, generated once at directory creation and **carried forward on every
+rewrite** — the writer reads the current object first, which it must anyway,
+and copies the salt.
+
+A fresh salt per write would change the directory's id on every write, hence
+every ancestor's id, hence the root: `changes?since=` would report the entire
+tree modified on every commit. Consequence to accept: two clients independently
+creating the same path produce different salts, so directory merge picks a
+winner and re-encrypts the loser's names.
+
+### Bounds
+
+Encoded directory ≤ **256 MiB**, encoded commit ≤ **128 KiB**, both checkable
+from `Content-Length`. `parent_count` ≤ 16, `author_len` ≤ 255, `msg_len` ≤
+65536.
+
+An entry-count cap is deliberately *not* a bound: a million entries spans 41 to
+225 MB depending on name lengths, so it would not bound allocation, and
+million-entry directories are legitimate (maildirs, generated data sets).
+`entry_count`'s only job is the consistency check.
+
+### The root directory's own metadata
+
+Every node's mtime and mode live in its parent's dirent, and the root has no
+parent. So: **root mtime = the commit's `created_at`**, and **root mode =
+`0o755`**. Left unpinned, Go returns zero, Swift returns "now", and `ls -ld` on
+a mount point disagrees with itself across platforms.
+
+### Test vectors
+
+`directory` and `commit` in
+[`objects.json`](../../store/testdata/vectors/objects.json), each with full
+`encoded_hex`. The conformance check is round-trip: decode the committed bytes,
+re-encode, and require the same bytes back — which exercises the decoder
+against bytes the build did not just write.
+
+## Client rules that ride on the format
+
+- **porter-fuse mounts `nosuid,nodev` by default.** The format keeps all twelve
+  mode bits, and this is why that is safe: in a plain library mode is public
+  and server-writable, so a hostile server can set `04755` on any file and a
+  faithful client would restore it — a local privilege-escalation path handed
+  to exactly the party the threat model calls actively malicious for integrity.
+  `nosuid` makes the restored bit inert. Under E2EE the same server cannot
+  touch mode at all, since it is sealed.
+- **A client never reads a server-synthesized view of an object.** E2EE clients
+  read the directory *object*; a rendered listing would bypass the tag. The
+  advisory size sidecar accompanies the object, never replaces it, and is never
+  trusted for sync or allocation decisions.
 
 ## Key wrapping
 

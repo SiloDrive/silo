@@ -1,0 +1,335 @@
+package store
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"slices"
+)
+
+// DirVersion is the version byte written into directory objects. Version
+// counters are per object type; this one moves independently of the manifest's.
+const DirVersion = 1
+
+// DirEntry is one child of a directory.
+type DirEntry struct {
+	ChildID ID
+	Type    NodeType
+	// Name is the raw name bytes as they appear in the object: the plaintext
+	// name in a plain library, the AES-SIV ciphertext in an E2EE one. This
+	// codec treats it as opaque — encrypting names is the caller's job, and
+	// keeping it out of here is what lets one encoder serve both library
+	// types.
+	//
+	// Never base64. The URL encoding for entries/{path} is base64url
+	// unpadded, but a port that base64s the name into the object produces
+	// different bytes, a different key and a different id for an identical
+	// tree.
+	Name []byte
+	// Mtime is unix seconds, UTC. Public in a plain library, sealed under
+	// E2EE — per-file activity timing is a leak the threat model does not
+	// concede.
+	Mtime int64
+	// Mode is permission bits only.
+	Mode uint32
+}
+
+// Directory is a directory object: an ordered list of children, plus (in an
+// E2EE library) the salt its child names are encrypted under.
+type Directory struct {
+	// Salt is generated once at directory creation and carried forward on
+	// every rewrite — the writer reads the current object first, which it
+	// must anyway, and copies the salt. A fresh salt per write would change
+	// the directory's id on every write, hence every ancestor's, hence the
+	// root: changes?since= would report the whole tree modified on every
+	// commit.
+	//
+	// Zero in a plain library.
+	Salt [DirSaltSize]byte
+	// Entries are stored in strictly increasing bytewise order by Name.
+	// Encode sorts a copy into that order, so a caller may build the list in
+	// any order — but a duplicate name is refused rather than resolved,
+	// because leaving duplicate handling to each implementation puts an
+	// unstated choice inside an object the client trusts after one tag check.
+	Entries []DirEntry
+}
+
+// Validate reports whether the directory can be encoded at all.
+func (d *Directory) Validate() error {
+	for i, e := range d.Entries {
+		if !e.Type.valid() {
+			return fmt.Errorf("%w: entry %d has type %d", ErrEncoding, i, e.Type)
+		}
+		if len(e.Name) == 0 {
+			return fmt.Errorf("%w: entry %d has no name", ErrEncoding, i)
+		}
+		if len(e.Name) > MaxNameBytes {
+			return fmt.Errorf("%w: entry %d name is %d bytes, above %d",
+				ErrEncoding, i, len(e.Name), MaxNameBytes)
+		}
+		if e.Mode > MaxMode {
+			return fmt.Errorf("%w: entry %d mode %#o above %#o — file type belongs in Type, not Mode",
+				ErrEncoding, i, e.Mode, MaxMode)
+		}
+	}
+	return nil
+}
+
+// canonical returns the entries in the order the object stores them, with the
+// two writer-side normalisations applied: timestamps clamped into range and
+// symlink modes forced to the pinned value.
+func (d *Directory) canonical() ([]DirEntry, error) {
+	entries := slices.Clone(d.Entries)
+	slices.SortFunc(entries, func(a, b DirEntry) int { return bytes.Compare(a.Name, b.Name) })
+	for i := range entries {
+		entries[i].Mtime = clampTimestamp(entries[i].Mtime)
+		if entries[i].Type == NodeSymlink {
+			entries[i].Mode = SymlinkMode
+		}
+		if i > 0 && bytes.Equal(entries[i].Name, entries[i-1].Name) {
+			return nil, fmt.Errorf("%w: two entries share the name %x", ErrEncoding, entries[i].Name)
+		}
+	}
+	return entries, nil
+}
+
+// Encode encodes the directory for a plain library.
+func (d *Directory) Encode() ([]byte, error) { return d.encode(nil) }
+
+// EncodeSealed encodes the directory for an E2EE library, sealing the
+// per-entry mtimes and modes under its content key.
+//
+// What stops a graft — an entry lifted whole out of another directory — is
+// this whole-object seal: inserting or altering an entry means recomputing a
+// tag, which needs the content key. The per-directory name keys are not the
+// graft defence and would not survive being mistaken for it.
+func (d *Directory) EncodeSealed(ck []byte) ([]byte, error) {
+	if len(ck) == 0 {
+		return nil, fmt.Errorf("store: sealing a directory needs a content key")
+	}
+	return d.encode(ck)
+}
+
+func (d *Directory) encode(ck []byte) ([]byte, error) {
+	if err := d.Validate(); err != nil {
+		return nil, err
+	}
+	entries, err := d.canonical()
+	if err != nil {
+		return nil, err
+	}
+	e2ee := ck != nil
+
+	var flags byte
+	if e2ee {
+		flags |= flagE2EE
+	}
+	out := []byte{DirVersion, flags}
+	out = appendUvarint(out, uint64(len(entries)))
+	if e2ee {
+		out = append(out, d.Salt[:]...)
+	}
+
+	var sealed []byte
+	for _, e := range entries {
+		out = append(out, e.ChildID[:]...)
+		out = append(out, byte(e.Type))
+		out = appendUvarint(out, uint64(len(e.Name)))
+		out = append(out, e.Name...)
+		if e2ee {
+			sealed = appendUvarint(sealed, uint64(e.Mtime))
+			sealed = appendUvarint(sealed, uint64(e.Mode))
+		} else {
+			out = appendUvarint(out, uint64(e.Mtime))
+			out = appendUvarint(out, uint64(e.Mode))
+		}
+	}
+
+	if e2ee {
+		sealHash := sha256.Sum256(sealed)
+		out = append(out, sealHash[:]...)
+		frame, err := sealSection(ck, domainDir, out, sealed)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, frame...)
+	}
+
+	if len(out) > MaxDirBytes {
+		return nil, fmt.Errorf("%w: encoded directory is %d bytes, above the %d ceiling",
+			ErrEncoding, len(out), MaxDirBytes)
+	}
+	return out, nil
+}
+
+// DecodeDirectory reads a plain library's directory object.
+func DecodeDirectory(b []byte) (*Directory, error) { return decodeDirectory(b, nil) }
+
+// DecodeSealedDirectory reads an E2EE library's directory object and opens its
+// sealed section.
+func DecodeSealedDirectory(b, ck []byte) (*Directory, error) {
+	if len(ck) == 0 {
+		return nil, fmt.Errorf("store: opening a directory needs a content key")
+	}
+	return decodeDirectory(b, ck)
+}
+
+func decodeDirectory(b, ck []byte) (*Directory, error) {
+	if len(b) > MaxDirBytes {
+		return nil, fmt.Errorf("%w: directory is %d bytes, above the %d ceiling",
+			ErrEncoding, len(b), MaxDirBytes)
+	}
+	if len(b) < 3 {
+		return nil, fmt.Errorf("%w: directory is %d bytes, too short for a header", ErrEncoding, len(b))
+	}
+	if b[0] != DirVersion {
+		return nil, fmt.Errorf("%w: directory version %d, this build writes %d",
+			ErrEncoding, b[0], DirVersion)
+	}
+	flags := b[1]
+	// Bit 1 is the manifest's inline flag and is reserved here; a directory
+	// carrying it is refused rather than tolerated.
+	if flags&^byte(flagE2EE) != 0 {
+		return nil, fmt.Errorf("%w: directory reserved flag bits are set (%#02x)", ErrEncoding, flags)
+	}
+	e2ee := ck != nil
+	if (flags&flagE2EE != 0) != e2ee {
+		return nil, fmt.Errorf("%w: directory declares E2EE=%t, library is E2EE=%t",
+			ErrEncoding, flags&flagE2EE != 0, e2ee)
+	}
+
+	p := 2
+	count, n, err := readUvarint(b[p:])
+	if err != nil {
+		return nil, fmt.Errorf("%w: directory entry count", ErrEncoding)
+	}
+	p += n
+	// The smallest entry is 32 bytes of id, a type, a length, one name byte
+	// and — in a plain library — two more varints.
+	if count > uint64(len(b)/(IDSize+3)) {
+		return nil, fmt.Errorf("%w: directory claims %d entries in %d bytes", ErrEncoding, count, len(b))
+	}
+
+	d := &Directory{}
+	if e2ee {
+		if len(b)-p < DirSaltSize {
+			return nil, fmt.Errorf("%w: directory ends before its salt", ErrEncoding)
+		}
+		copy(d.Salt[:], b[p:p+DirSaltSize])
+		p += DirSaltSize
+	}
+
+	d.Entries = make([]DirEntry, count)
+	var prev []byte
+	for i := range d.Entries {
+		e := &d.Entries[i]
+		if len(b)-p < IDSize+1 {
+			return nil, fmt.Errorf("%w: directory ends inside entry %d", ErrEncoding, i)
+		}
+		copy(e.ChildID[:], b[p:p+IDSize])
+		p += IDSize
+		e.Type = NodeType(b[p])
+		p++
+		if !e.Type.valid() {
+			return nil, fmt.Errorf("%w: entry %d has type %d", ErrEncoding, i, e.Type)
+		}
+		nameLen, n, err := readUvarint(b[p:])
+		if err != nil {
+			return nil, fmt.Errorf("%w: entry %d name length", ErrEncoding, i)
+		}
+		p += n
+		if nameLen == 0 || nameLen > MaxNameBytes || uint64(len(b)-p) < nameLen {
+			return nil, fmt.Errorf("%w: entry %d name length %d", ErrEncoding, i, nameLen)
+		}
+		e.Name = append([]byte(nil), b[p:p+int(nameLen)]...)
+		p += int(nameLen)
+
+		// Strictly increasing, not merely sorted: a duplicate name is
+		// unrepresentable, refused by the same single pass that validates
+		// canonical order, at no extra cost.
+		if prev != nil && bytes.Compare(prev, e.Name) >= 0 {
+			return nil, fmt.Errorf("%w: entry %d is not after the entry before it", ErrEncoding, i)
+		}
+		prev = e.Name
+
+		if !e2ee {
+			if e.Mtime, e.Mode, p, err = readTimeAndMode(b, p); err != nil {
+				return nil, fmt.Errorf("%w: entry %d: %v", ErrEncoding, i, err)
+			}
+			if err := checkMode(e.Type, e.Mode); err != nil {
+				return nil, fmt.Errorf("%w: entry %d: %v", ErrEncoding, i, err)
+			}
+		}
+	}
+
+	if !e2ee {
+		if p != len(b) {
+			return nil, fmt.Errorf("%w: %d bytes past the end of a plain directory",
+				ErrEncoding, len(b)-p)
+		}
+		return d, nil
+	}
+
+	if len(b)-p < IDSize {
+		return nil, fmt.Errorf("%w: directory ends before its seal hash", ErrEncoding)
+	}
+	var sealHash ID
+	copy(sealHash[:], b[p:p+IDSize])
+	p += IDSize
+
+	plain, err := openSection(ck, domainDir, b[:p], b[p:])
+	if err != nil {
+		return nil, err
+	}
+	if sha256.Sum256(plain) != sealHash {
+		return nil, fmt.Errorf("%w: directory seal hash does not match its sealed section", ErrEncoding)
+	}
+
+	// The pair count must equal entry_count and trailing bytes reject — from
+	// inside the tag, where no server can forge a mismatch. A buggy writer
+	// can, though, and two ports must refuse it identically rather than one
+	// indexing past the end and one silently truncating.
+	q := 0
+	for i := range d.Entries {
+		e := &d.Entries[i]
+		var err error
+		if e.Mtime, e.Mode, q, err = readTimeAndMode(plain, q); err != nil {
+			return nil, fmt.Errorf("%w: sealed entry %d: %v", ErrEncoding, i, err)
+		}
+		if err := checkMode(e.Type, e.Mode); err != nil {
+			return nil, fmt.Errorf("%w: sealed entry %d: %v", ErrEncoding, i, err)
+		}
+	}
+	if q != len(plain) {
+		return nil, fmt.Errorf("%w: %d bytes past the end of the sealed section",
+			ErrEncoding, len(plain)-q)
+	}
+	return d, nil
+}
+
+func readTimeAndMode(b []byte, p int) (mtime int64, mode uint32, next int, err error) {
+	mt, n, err := readUvarint(b[p:])
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("mtime")
+	}
+	p += n
+	if mt > MaxTimestamp {
+		return 0, 0, 0, fmt.Errorf("mtime %d above the %d ceiling", mt, uint64(MaxTimestamp))
+	}
+	md, n, err := readUvarint(b[p:])
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("mode")
+	}
+	p += n
+	if md > MaxMode {
+		return 0, 0, 0, fmt.Errorf("mode %#o above %#o", md, MaxMode)
+	}
+	return int64(mt), uint32(md), p, nil
+}
+
+func checkMode(t NodeType, mode uint32) error {
+	if t == NodeSymlink && mode != SymlinkMode {
+		return fmt.Errorf("symlink mode %#o, want %#o", mode, uint32(SymlinkMode))
+	}
+	return nil
+}

@@ -982,9 +982,9 @@ Phases are sequential on the branch; each leaves the tree working.
 1. **Spec + shared package + vectors.** — **building.** Landed in
    [`store/`](../../store) and [`spec/store-format.md`](../spec/store-format.md):
    ids, chunker parameters, the keyed gear table and the cut loop; the
-   manifest codec in both library types; convergent chunk encryption and the
-   sealed-container key derivation; vectors for all of it. Left: the
-   directory and commit codecs, AES-SIV names, and key wrapping. The chunker, id, manifest, and crypto
+   manifest, directory and commit codecs in both library types; convergent
+   chunk encryption and the sealed-container key derivation; vectors for all
+   of it. Left: AES-SIV names and key wrapping. The chunker, id, manifest, and crypto
    spec as a document; the Go package; test vectors generated and committed.
    No server changes yet. This is the artifact porter-mac builds against, so
    it lands first.
