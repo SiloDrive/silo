@@ -217,7 +217,7 @@ func SeaDriveReposHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	add(owned, "repo", acct.Email)
 
-	shared, err := share.ListShareRepos(acct.ID, share.SharedWithMe)
+	shared, err := share.ListSharedWithMe(acct.ID)
 	if err != nil {
 		log.Warnf("Failed to list shared repos for %s: %v", acct.Email, err)
 	} else {

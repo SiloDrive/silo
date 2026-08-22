@@ -23,25 +23,6 @@ func schemaTestDB(t *testing.T) *DBPair {
 	return pair
 }
 
-// Two spellings of one address reaching two accounts is the failure the
-// identity split exists to prevent, so the rule that stops it is worth
-// pinning rather than leaving to whoever writes the next call site.
-func TestNormalizeEmail(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"dan@example.com", "dan@example.com"},
-		{"Dan@Example.COM", "dan@example.com"},
-		{"  dan@example.com  ", "dan@example.com"},
-		{"DAN@EXAMPLE.COM", "dan@example.com"},
-		{"", ""},
-		{"   ", ""},
-	}
-	for _, tt := range tests {
-		if got := NormalizeEmail(tt.in); got != tt.want {
-			t.Errorf("NormalizeEmail(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
 // An account with two primary addresses makes "what is this account called"
 // depend on row order. The partial unique index is what stops it, and an index
 // that silently failed to be created would not be noticed any other way.

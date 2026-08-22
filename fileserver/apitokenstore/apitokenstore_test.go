@@ -37,7 +37,7 @@ func setupStore(t *testing.T) {
 	Init(pair.Read, pair.Write)
 	account.Init(pair.Read, pair.Write)
 
-	ctx, cancel := account.WithTimeout()
+	ctx, cancel := option.WithDBTimeout()
 	defer cancel()
 	id, _, err := account.Create(ctx, testEmail, "PBKDF2SHA256$1$00$00", false)
 	if err != nil {
@@ -179,34 +179,13 @@ func TestLookupDoesNotSlideFreshToken(t *testing.T) {
 	}
 }
 
-// A row predating the migration must not become a permanent credential.
-func TestLookupGivesNullExpiryATTL(t *testing.T) {
-	setupStore(t)
-
-	token, err := Create(testAccount)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := writeDB.Exec(
-		"UPDATE ApiToken SET expires_at = NULL WHERE token = ?", token); err != nil {
-		t.Fatalf("null out expiry: %v", err)
-	}
-
-	if _, err := Lookup(token); err != nil {
-		t.Fatalf("legacy token rejected: %v", err)
-	}
-	if expiryOf(t, token) <= time.Now().Unix() {
-		t.Error("legacy token was not given a future expiry")
-	}
-}
-
 func TestDeleteByAccountRevokesEveryDevice(t *testing.T) {
 	setupStore(t)
 
 	first, _ := Create(testAccount)
 	second, _ := Create(testAccount)
 
-	ctx, cancel := account.WithTimeout()
+	ctx, cancel := option.WithDBTimeout()
 	defer cancel()
 	bob, _, err := account.Create(ctx, "bob@example.com", "PBKDF2SHA256$1$00$00", false)
 	if err != nil {

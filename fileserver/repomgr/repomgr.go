@@ -1007,7 +1007,7 @@ func DeleteRepoTokensByAccount(id account.ID) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete repo tokens: %v", err)
 	}
-	notifyAccount(OnTokensRevoked, id)
+	notify(OnTokensRevoked, id)
 
 	return dbutil.RowsAffected(res), nil
 }
@@ -1020,20 +1020,19 @@ func DeleteRepoToken(repoID, token string, id account.ID) error {
 	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, token, id); err != nil {
 		return fmt.Errorf("failed to delete repo token: %v", err)
 	}
-	notifyAccount(OnTokensRevoked, id)
+	notify(OnTokensRevoked, id)
 	return nil
 }
 
 type RepoToken struct {
-	RepoID  string
-	Account account.ID
-	Token   string
-	Ctime   sql.NullInt64
+	RepoID string
+	Token  string
+	Ctime  sql.NullInt64
 }
 
 // ListRepoTokensByAccount returns all sync tokens for an account.
 func ListRepoTokensByAccount(id account.ID) ([]RepoToken, error) {
-	sqlStr := "SELECT repo_id, account_id, token, ctime FROM RepoUserToken WHERE account_id = ? ORDER BY ctime"
+	sqlStr := "SELECT repo_id, token, ctime FROM RepoUserToken WHERE account_id = ? ORDER BY ctime"
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 	rows, err := seafileDB.QueryContext(ctx, sqlStr, id)
@@ -1048,7 +1047,7 @@ func ListRepoTokensByAccount(id account.ID) ([]RepoToken, error) {
 		// A scan failure is returned rather than skipped: this list is what an
 		// operator revokes from, and silently omitting a row would show a
 		// token as already gone while it still authenticates.
-		if err := rows.Scan(&t.RepoID, &t.Account, &t.Token, &t.Ctime); err != nil {
+		if err := rows.Scan(&t.RepoID, &t.Token, &t.Ctime); err != nil {
 			return nil, fmt.Errorf("failed to read repo token row: %v", err)
 		}
 		tokens = append(tokens, t)
@@ -1220,14 +1219,11 @@ var (
 	OnTokensRevoked func(id account.ID)
 )
 
-func notify(hook func(string), arg string) {
+// notify fires a registered hook, if one is registered. It is generic because
+// the hooks differ only in what they carry — a repo id, an account id — and a
+// copy per argument type is a copy per future hook.
+func notify[T any](hook func(T), arg T) {
 	if hook != nil {
 		hook(arg)
-	}
-}
-
-func notifyAccount(hook func(account.ID), id account.ID) {
-	if hook != nil {
-		hook(id)
 	}
 }

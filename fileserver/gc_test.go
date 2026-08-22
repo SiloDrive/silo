@@ -51,16 +51,15 @@ func sqliteTestDB(t *testing.T) {
 // rows below them hold ids.
 func mintAccount(t *testing.T, email string) *account.Account {
 	t.Helper()
-	ctx, cancel := account.WithTimeout()
+	ctx, cancel := option.WithDBTimeout()
 	defer cancel()
+	// Create is idempotent — it hands back the existing row when the address
+	// is already claimed — so minting and resolving differ only in whether
+	// the account has to exist beforehand. acctFor does the reading part.
 	if _, _, err := account.Create(ctx, email, "", false); err != nil {
 		t.Fatalf("create account %s: %v", email, err)
 	}
-	acct, err := account.ByEmail(ctx, email)
-	if err != nil {
-		t.Fatalf("read account %s: %v", email, err)
-	}
-	return acct
+	return acctFor(t, email)
 }
 
 func dbExec(t *testing.T, query string, args ...interface{}) {

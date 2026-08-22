@@ -90,6 +90,11 @@ type Credential struct {
 
 	secretHash []byte
 	publicKey  []byte
+
+	// accountActive comes from the join in load, not from the Credential row.
+	// It is unexported because it is a fact about the account at the moment of
+	// the read, not a property of the credential worth handing to a caller.
+	accountActive bool
 }
 
 // Bearer reports whether the credential is proven by presenting a secret
@@ -141,12 +146,8 @@ func Resolve(r *http.Request, kind Kind) (*Credential, error) {
 	// The check that could not be retrofitted. Disabling an account has to
 	// kill every lane at once, and it only does if every lane asks — which is
 	// what having one Resolve buys, and what three separate token stores made
-	// impossible.
-	active, err := account.IsActive(ctx, cred.AccountID)
-	if err != nil {
-		return nil, err
-	}
-	if !active {
+	// impossible. load read it alongside the credential row.
+	if !cred.accountActive {
 		return nil, ErrInactive
 	}
 
@@ -210,9 +211,15 @@ func tokenFromRequest(r *http.Request) (Token, error) {
 var zeroHash = make([]byte, sha256.Size)
 
 func load(ctx context.Context, id string) (*Credential, error) {
-	const q = `SELECT id, kind, secret_hash, public_key, account_id, label, scope, perm,
-	                  client_id, ctime, expires_at, last_used
-	           FROM Credential WHERE id = ?`
+	// account_id is a declared foreign key with an index, so is_active comes
+	// out of the same row read rather than a second round trip. Resolve is the
+	// path every request takes, so the join is the difference between one
+	// query per authenticated call and two.
+	const q = `SELECT c.id, c.kind, c.secret_hash, c.public_key, c.account_id, c.label,
+	                  c.scope, c.perm, c.client_id, c.ctime, c.expires_at, c.last_used,
+	                  a.is_active
+	           FROM Credential c JOIN Account a ON a.id = c.account_id
+	           WHERE c.id = ?`
 
 	var (
 		c        Credential
@@ -224,7 +231,7 @@ func load(ctx context.Context, id string) (*Credential, error) {
 	)
 	err := readDB.QueryRowContext(ctx, q, id).Scan(
 		&c.ID, &kind, &c.secretHash, &c.publicKey, &c.AccountID, &c.Label, &scope, &c.Perm,
-		&clientID, &c.Ctime, &expires, &lastUsed)
+		&clientID, &c.Ctime, &expires, &lastUsed, &c.accountActive)
 	if err == sql.ErrNoRows {
 		subtle.ConstantTimeCompare(zeroHash, zeroHash)
 		return nil, ErrInvalid
@@ -286,7 +293,7 @@ func stampLastUsed(c *Credential) {
 	// Best effort and deliberately not in the request's context: the client
 	// has already been authenticated, and failing their request because a
 	// bookkeeping write lost a race would be the wrong trade.
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	ctx, cancel := option.WithDBTimeout()
 	defer cancel()
 
 	if _, err := writeDB.ExecContext(ctx,

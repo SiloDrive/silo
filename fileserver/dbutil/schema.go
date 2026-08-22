@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS GCID (repo_id CHAR(36) PRIMARY KEY, gc_id VARCHAR(10)
 CREATE TABLE IF NOT EXISTS LastGCID (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id CHAR(36) NOT NULL, client_id VARCHAR(128) NOT NULL, gc_id VARCHAR(10) NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS lastgcid_repoid_clientid_idx ON LastGCID (repo_id, client_id);
 
-CREATE TABLE IF NOT EXISTS ApiToken (token CHAR(40) PRIMARY KEY, account_id BLOB NOT NULL REFERENCES Account(id), ctime BIGINT, expires_at BIGINT);
+CREATE TABLE IF NOT EXISTS ApiToken (token CHAR(40) PRIMARY KEY, account_id BLOB NOT NULL REFERENCES Account(id), ctime BIGINT, expires_at BIGINT NOT NULL);
 CREATE INDEX IF NOT EXISTS apitoken_account_idx ON ApiToken (account_id);
 CREATE INDEX IF NOT EXISTS apitoken_expires_idx ON ApiToken (expires_at);
 

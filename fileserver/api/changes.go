@@ -77,7 +77,7 @@ type change struct {
 // client that wants the server to do less should ask more often, not for
 // smaller pages.
 func ChangesHandler(w http.ResponseWriter, r *http.Request) {
-	acct := middleware.GetAccount(r)
+	id := middleware.GetAccountID(r)
 	repoID := mux.Vars(r)["repoid"]
 
 	limit, ok := parseLimit(w, r)
@@ -106,7 +106,7 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if perm := share.CheckPerm(repoID, acct.ID); perm == "" {
+	if perm := share.CheckPerm(repoID, id); perm == "" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}

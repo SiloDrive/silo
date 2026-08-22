@@ -68,7 +68,7 @@ func tokenTestStore(t *testing.T) {
 // acctFor resolves one of this file's test addresses.
 func acctFor(t *testing.T, email string) *account.Account {
 	t.Helper()
-	ctx, cancel := account.WithTimeout()
+	ctx, cancel := option.WithDBTimeout()
 	defer cancel()
 	acct, err := account.ByEmail(ctx, email)
 	if err != nil {

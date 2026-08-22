@@ -110,6 +110,17 @@ type tokenInfo struct {
 	expireTime int64
 }
 
+// permKey identifies one cached permission decision. It is a struct rather
+// than a formatted string so a cache hit — the common case on every sync
+// request from every always-on client — costs a map lookup and no formatting,
+// and so invalidateRepoAuth can compare the repo id rather than trusting that
+// one never contains a colon.
+type permKey struct {
+	repo string
+	user account.ID
+	op   string
+}
+
 // permInfo is a cached "this check passed", nothing more. The permission
 // string itself is not kept: the cache key already carries the operation it
 // was checked for, so a hit is only ever asked whether it is still fresh.
@@ -149,19 +160,12 @@ func syncAPIInit() {
 	calFsIdPool = workerpool.CreateWorkerPool(getFsId, fsIdWorkers)
 }
 
-// calResult is how the worker pool hands a request's outcome back to the
-// handler waiting on it. Only the error crosses: the caller already has the
-// request.
-type calResult struct {
-	err *appError
-}
-
 func getFsId(args ...interface{}) error {
 	if len(args) < 3 {
 		return nil
 	}
 
-	resChan := args[0].(chan *calResult)
+	resChan := args[0].(chan *appError)
 	rsp := args[1].(http.ResponseWriter)
 	r := args[2].(*http.Request)
 
@@ -171,7 +175,7 @@ func getFsId(args ...interface{}) error {
 	if !utils.IsObjectIDValid(serverHead) {
 		msg := "Invalid server-head parameter."
 		appErr := &appError{nil, msg, http.StatusBadRequest}
-		resChan <- &calResult{appErr}
+		resChan <- appErr
 		return nil
 	}
 
@@ -179,7 +183,7 @@ func getFsId(args ...interface{}) error {
 	if clientHead != "" && !utils.IsObjectIDValid(clientHead) {
 		msg := "Invalid client-head parameter."
 		appErr := &appError{nil, msg, http.StatusBadRequest}
-		resChan <- &calResult{appErr}
+		resChan <- appErr
 		return nil
 	}
 
@@ -193,19 +197,19 @@ func getFsId(args ...interface{}) error {
 	repoID := vars["repoid"]
 	user, appErr := validateToken(r, repoID, false)
 	if appErr != nil {
-		resChan <- &calResult{appErr}
+		resChan <- appErr
 		return nil
 	}
 	appErr = checkPermission(repoID, user.ID, "download", false)
 	if appErr != nil {
-		resChan <- &calResult{appErr}
+		resChan <- appErr
 		return nil
 	}
 	repo := repomgr.Get(repoID)
 	if repo == nil {
 		err := fmt.Errorf("failed to find repo %.8s", repoID)
 		appErr := &appError{err, "", http.StatusInternalServerError}
-		resChan <- &calResult{appErr}
+		resChan <- appErr
 		return nil
 	}
 	ret, err := calculateSendObjectList(r.Context(), repo, serverHead, clientHead, dirOnly)
@@ -213,11 +217,11 @@ func getFsId(args ...interface{}) error {
 		if !errors.Is(err, context.Canceled) {
 			err := fmt.Errorf("failed to get fs id list: %w", err)
 			appErr := &appError{err, "", http.StatusInternalServerError}
-			resChan <- &calResult{appErr}
+			resChan <- appErr
 			return nil
 		}
 		appErr := &appError{nil, "", http.StatusInternalServerError}
-		resChan <- &calResult{appErr}
+		resChan <- appErr
 		return nil
 	}
 
@@ -226,7 +230,7 @@ func getFsId(args ...interface{}) error {
 		objList, err = json.Marshal(ret)
 		if err != nil {
 			appErr := &appError{err, "", http.StatusInternalServerError}
-			resChan <- &calResult{appErr}
+			resChan <- appErr
 			return nil
 		}
 	} else {
@@ -238,7 +242,7 @@ func getFsId(args ...interface{}) error {
 	rsp.WriteHeader(http.StatusOK)
 	_, _ = rsp.Write(objList)
 
-	resChan <- &calResult{nil}
+	resChan <- nil
 
 	return nil
 }
@@ -398,7 +402,7 @@ func getAccessibleRepoListCB(rsp http.ResponseWriter, r *http.Request) *appError
 		repoObjects = append(repoObjects, repo)
 	}
 
-	repos, err = share.ListShareRepos(user.ID, share.SharedWithMe)
+	repos, err = share.ListSharedWithMe(user.ID)
 	if err != nil {
 		err := fmt.Errorf("failed to get share repos by user %s: %v", user.Email, err)
 		return &appError{err, "", http.StatusInternalServerError}
@@ -828,11 +832,10 @@ func getJWTTokenCB(rsp http.ResponseWriter, r *http.Request) *appError {
 }
 
 func getFsObjIDCB(rsp http.ResponseWriter, r *http.Request) *appError {
-	recvChan := make(chan *calResult)
+	recvChan := make(chan *appError)
 
 	calFsIdPool.AddTask(recvChan, rsp, r)
-	result := <-recvChan
-	return result.err
+	return <-recvChan
 }
 
 func headCommitOperCB(rsp http.ResponseWriter, r *http.Request) *appError {
@@ -1356,7 +1359,7 @@ func getHeadCommit(rsp http.ResponseWriter, r *http.Request) *appError {
 }
 
 func checkPermission(repoID string, user account.ID, op string, skipCache bool) *appError {
-	key := fmt.Sprintf("%s:%s:%s", repoID, user, op)
+	key := permKey{repo: repoID, user: user, op: op}
 	if !skipCache {
 		if value, ok := permCache.Load(key); ok {
 			// The expiry is checked here, not only by the sweeper. A hit used
@@ -1482,7 +1485,7 @@ func authCacheExpiry() (int64, bool) {
 func invalidateRepoAuth(repoID string) {
 	deleteCachedTokens(func(info *tokenInfo) bool { return info.repoID == repoID })
 	permCache.Range(func(key, value interface{}) bool {
-		if k, ok := key.(string); ok && strings.HasPrefix(k, repoID+":") {
+		if k, ok := key.(permKey); ok && k.repo == repoID {
 			permCache.Delete(key)
 		}
 		return true

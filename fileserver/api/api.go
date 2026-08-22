@@ -257,7 +257,7 @@ func scanRepos(rows *sql.Rows) []repoInfo {
 }
 
 func ListReposHandler(w http.ResponseWriter, r *http.Request) {
-	acct := middleware.GetAccount(r)
+	id := middleware.GetAccountID(r)
 	ctx, cancel := context.WithTimeout(r.Context(), option.DBOpTimeout)
 	defer cancel()
 
@@ -265,7 +265,7 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 		repoSelect("o")+
 			"FROM RepoOwner o LEFT JOIN RepoInfo i ON o.repo_id = i.repo_id "+
 			"LEFT JOIN Branch b ON b.repo_id = o.repo_id AND b.name = 'master' "+
-			"WHERE o.account_id = ?", acct.ID)
+			"WHERE o.account_id = ?", id)
 	if err != nil {
 		log.Errorf("Failed to query repos: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -283,7 +283,7 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 		repoSelect("s")+
 			"FROM SharedRepo s LEFT JOIN RepoInfo i ON s.repo_id = i.repo_id "+
 			"LEFT JOIN Branch b ON b.repo_id = s.repo_id AND b.name = 'master' "+
-			"WHERE s.to_account_id = ?", acct.ID)
+			"WHERE s.to_account_id = ?", id)
 	if err != nil {
 		log.Errorf("Failed to query shared repos: %v", err)
 	} else {
@@ -304,17 +304,17 @@ type syncTokenResponse struct {
 }
 
 func CreateRepoSyncTokenHandler(w http.ResponseWriter, r *http.Request) {
-	acct := middleware.GetAccount(r)
+	id := middleware.GetAccountID(r)
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 
-	perm := share.CheckPerm(repoID, acct.ID)
+	perm := share.CheckPerm(repoID, id)
 	if perm == "" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
 
-	token, err := repomgr.GenerateRepoToken(repoID, acct.ID)
+	token, err := repomgr.GenerateRepoToken(repoID, id)
 	if err != nil {
 		log.Errorf("Failed to generate repo token: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -357,7 +357,7 @@ func CreateRepoHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func DeleteRepoHandler(w http.ResponseWriter, r *http.Request) {
-	acct := middleware.GetAccount(r)
+	id := middleware.GetAccountID(r)
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 
@@ -371,7 +371,7 @@ func DeleteRepoHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Repo not found", http.StatusNotFound)
 		return
 	}
-	if owner != acct.ID {
+	if owner != id {
 		http.Error(w, "Only the repo owner can delete it", http.StatusForbidden)
 		return
 	}

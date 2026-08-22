@@ -292,13 +292,23 @@ func ensureAdmin(email, password string) (created bool, err error) {
 		return false, nil
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
+	defer cancel()
+
+	// Ask before deriving. hashPassword is 600k PBKDF2 iterations by design,
+	// and on every boot after the first the answer is thrown away: account.Create
+	// returns the existing row the moment it finds the address. Checking first
+	// keeps ~80ms of blocking work out of every restart. Create still decides
+	// — this is a fast path, not the guard against a concurrent creator.
+	if _, err := account.ByEmail(ctx, email); err == nil {
+		log.Infof("Admin user %s already exists", email)
+		return false, nil
+	}
+
 	hash, err := hashPassword(password)
 	if err != nil {
 		return false, err
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
-	defer cancel()
 
 	_, created, err = account.Create(ctx, email, hash, true)
 	if err != nil {

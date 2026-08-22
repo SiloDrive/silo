@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -48,7 +47,7 @@ func setupPerms(t *testing.T) {
 	}
 
 	account.Init(siloPair.Read, siloPair.Write)
-	ctx, cancel := account.WithTimeout()
+	ctx, cancel := option.WithDBTimeout()
 	defer cancel()
 	for _, email := range []string{ownerUser, rwShareUser, roShareUser, strangerUser} {
 		if _, _, err := account.Create(ctx, email, "", false); err != nil {
@@ -82,7 +81,7 @@ func setupPerms(t *testing.T) {
 // — but everything below the handler now works in ids.
 func accountOf(t *testing.T, email string) *account.Account {
 	t.Helper()
-	ctx, cancel := account.WithTimeout()
+	ctx, cancel := option.WithDBTimeout()
 	defer cancel()
 	acct, err := account.ByEmail(ctx, email)
 	if err != nil {
@@ -102,7 +101,7 @@ func postAccessToken(t *testing.T, user, repoID, op string) *httptest.ResponseRe
 	}
 
 	req := httptest.NewRequest("POST", "/api/silo/v1/access-tokens", strings.NewReader(string(body)))
-	req = req.WithContext(context.WithValue(req.Context(), middleware.AccountKey, accountOf(t, user)))
+	req = middleware.WithAccount(req, accountOf(t, user))
 
 	rr := httptest.NewRecorder()
 	CreateAccessTokenHandler(rr, req)
@@ -226,7 +225,7 @@ func TestListReposAnswersEmptyArrayNotNull(t *testing.T) {
 	setupPerms(t)
 
 	req := httptest.NewRequest("GET", "/api/silo/v1/repos", nil)
-	req = req.WithContext(context.WithValue(req.Context(), middleware.AccountKey, accountOf(t, strangerUser)))
+	req = middleware.WithAccount(req, accountOf(t, strangerUser))
 
 	rr := httptest.NewRecorder()
 	ListReposHandler(rr, req)
@@ -240,7 +239,7 @@ func TestListReposAnswersEmptyArrayNotNull(t *testing.T) {
 
 	// And the populated case still lists, so the fix did not empty the endpoint.
 	req = httptest.NewRequest("GET", "/api/silo/v1/repos", nil)
-	req = req.WithContext(context.WithValue(req.Context(), middleware.AccountKey, accountOf(t, ownerUser)))
+	req = middleware.WithAccount(req, accountOf(t, ownerUser))
 	rr = httptest.NewRecorder()
 	ListReposHandler(rr, req)
 

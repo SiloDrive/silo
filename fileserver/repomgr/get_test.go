@@ -57,7 +57,7 @@ func getTestStore(t *testing.T) string {
 // testAccount mints the account a test library is owned by.
 func testAccount(t *testing.T) *account.Account {
 	t.Helper()
-	ctx, cancel := account.WithTimeout()
+	ctx, cancel := option.WithDBTimeout()
 	defer cancel()
 	if _, _, err := account.Create(ctx, testOwner, "", false); err != nil {
 		t.Fatalf("create account: %v", err)

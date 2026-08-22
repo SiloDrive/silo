@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +21,7 @@ func postNotifyToken(t *testing.T, user, repoID string) *httptest.ResponseRecord
 	t.Helper()
 
 	req := httptest.NewRequest("POST", "/api/silo/v1/repos/"+repoID+"/notify-token", nil)
-	req = req.WithContext(context.WithValue(req.Context(), middleware.AccountKey, accountOf(t, user)))
+	req = middleware.WithAccount(req, accountOf(t, user))
 	req = mux.SetURLVars(req, map[string]string{"repoid": repoID})
 
 	rr := httptest.NewRecorder()

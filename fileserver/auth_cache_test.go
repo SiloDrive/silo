@@ -109,11 +109,11 @@ func TestInvalidateRepoAuthDropsOnlyThatRepo(t *testing.T) {
 	if _, appErr := validateToken(tokenRequest(victimSyncA), sharedRepoID, false); appErr != nil {
 		t.Fatalf("validateToken returned %d: %v", appErr.Code, appErr.Message)
 	}
-	victimID := acctFor(t, victim).ID.String()
-	permCache.Store(sharedRepoID+":"+victimID+":upload", &permInfo{
+	victimID := acctFor(t, victim).ID
+	permCache.Store(permKey{repo: sharedRepoID, user: victimID, op: "upload"}, &permInfo{
 		expireTime: time.Now().Add(time.Hour).Unix(),
 	})
-	permCache.Store(otherRepoID+":"+victimID+":upload", &permInfo{
+	permCache.Store(permKey{repo: otherRepoID, user: victimID, op: "upload"}, &permInfo{
 		expireTime: time.Now().Add(time.Hour).Unix(),
 	})
 	virtualRepoInfoCache.Store(sharedRepoID, &virtualRepoInfo{storeID: sharedRepoID})
@@ -123,13 +123,13 @@ func TestInvalidateRepoAuthDropsOnlyThatRepo(t *testing.T) {
 	if _, ok := tokenCache.Load(victimSyncA); ok {
 		t.Error("the deleted repo's token is still cached")
 	}
-	if _, ok := permCache.Load(sharedRepoID + ":" + victimID + ":upload"); ok {
+	if _, ok := permCache.Load(permKey{repo: sharedRepoID, user: victimID, op: "upload"}); ok {
 		t.Error("the deleted repo's permission is still cached")
 	}
 	if _, ok := virtualRepoInfoCache.Load(sharedRepoID); ok {
 		t.Error("the deleted repo's store id is still cached")
 	}
-	if _, ok := permCache.Load(otherRepoID + ":" + victimID + ":upload"); !ok {
+	if _, ok := permCache.Load(permKey{repo: otherRepoID, user: victimID, op: "upload"}); !ok {
 		t.Error("another repo's permission was dropped")
 	}
 }

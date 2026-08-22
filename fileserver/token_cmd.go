@@ -49,7 +49,7 @@ func RunToken(args []string) error {
 	// The operator names a person by their address, which is what they know.
 	// It is resolved once, here at the edge, and everything below works in
 	// account ids.
-	ctx, cancel := account.WithTimeout()
+	ctx, cancel := option.WithDBTimeout()
 	defer cancel()
 	acct, err := account.ByEmail(ctx, email)
 	if err != nil {
@@ -97,9 +97,9 @@ func listTokens(acct *account.Account) error {
 		fmt.Printf("API tokens (%d) — /api2/ credentials, expiry slides on use:\n", len(apiTokens))
 		now := time.Now().Unix()
 		for _, t := range apiTokens {
-			state := "expires " + formatUnix(t.ExpiresAt)
-			if t.ExpiresAt.Valid && t.ExpiresAt.Int64 <= now {
-				state = "EXPIRED " + formatUnix(t.ExpiresAt)
+			state := "expires " + formatTime(t.ExpiresAt)
+			if t.ExpiresAt <= now {
+				state = "EXPIRED " + formatTime(t.ExpiresAt)
 			}
 			fmt.Printf("  %s  created %s  %s\n", t.Token, formatUnix(t.Ctime), state)
 		}
@@ -183,10 +183,17 @@ func warnAboutServerCache(revoked int64) {
 }
 
 func formatUnix(v sql.NullInt64) string {
-	if !v.Valid || v.Int64 == 0 {
+	if !v.Valid {
 		return "unknown"
 	}
-	return time.Unix(v.Int64, 0).Format(time.RFC3339)
+	return formatTime(v.Int64)
+}
+
+func formatTime(sec int64) string {
+	if sec == 0 {
+		return "unknown"
+	}
+	return time.Unix(sec, 0).Format(time.RFC3339)
 }
 
 func pluralS(n int64) string {

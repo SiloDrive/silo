@@ -1,6 +1,7 @@
 package option
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -584,4 +585,11 @@ func LoadJWTConfig() error {
 	}
 
 	return nil
+}
+
+// WithDBTimeout is the context a database call would otherwise build for
+// itself. It lives here, beside the deadline it applies, so that reaching for
+// it does not mean importing a package that owns a table.
+func WithDBTimeout() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), DBOpTimeout)
 }

@@ -557,46 +557,26 @@ func ListInnerPubRepos() ([]*SharedRepo, error) {
 	return repos, nil
 }
 
-// ShareDirection says which end of a share to list from: the libraries an
-// account has shared out, or the ones shared with them. The other end's
-// address comes back in each row, which is why the two cases are not one
-// query with a column name substituted in.
-type ShareDirection string
-
-const (
-	SharedByMe   ShareDirection = "from"
-	SharedWithMe ShareDirection = "to"
-)
-
-// ListShareRepos lists the shares at one end of an account.
-func ListShareRepos(id account.ID, dir ShareDirection) ([]*SharedRepo, error) {
+// ListSharedWithMe lists the libraries shared with an account, with the
+// sharer's address on each row.
+//
+// There is deliberately no "shared by me" counterpart. One existed and no
+// caller ever reached it, so it was a second query kept correct through every
+// schema change on the strength of a symmetry argument alone. The outgoing
+// direction is `sh.from_account_id = ?` with the join moved to
+// `sh.to_account_id`, and is worth writing against the schema of the day
+// something actually asks for it.
+func ListSharedWithMe(id account.ID) ([]*SharedRepo, error) {
 	var repos []*SharedRepo
-	var query string
-	switch dir {
-	case SharedByMe:
-		query = "SELECT sh.repo_id, ae.email, " +
-			"permission, commit_id, " +
-			"i.name, i.update_time, i.version, i.type FROM " +
-			"SharedRepo sh LEFT JOIN RepoInfo i ON sh.repo_id = i.repo_id " +
-			"LEFT JOIN AccountEmail ae ON ae.account_id = sh.to_account_id AND ae.is_primary = 1, Branch b " +
-			"WHERE sh.from_account_id=? AND " +
-			"sh.repo_id = b.repo_id AND " +
-			"b.name = 'master' " +
-			"ORDER BY i.update_time DESC, sh.repo_id"
-	case SharedWithMe:
-		query = "SELECT sh.repo_id, ae.email, " +
-			"permission, commit_id, " +
-			"i.name, i.update_time, i.version, i.type FROM " +
-			"SharedRepo sh LEFT JOIN RepoInfo i ON sh.repo_id = i.repo_id " +
-			"LEFT JOIN AccountEmail ae ON ae.account_id = sh.from_account_id AND ae.is_primary = 1, Branch b " +
-			"WHERE sh.to_account_id=? AND " +
-			"sh.repo_id = b.repo_id AND " +
-			"b.name = 'master' " +
-			"ORDER BY i.update_time DESC, sh.repo_id"
-	default:
-		err := fmt.Errorf("wrong share direction: %s", dir)
-		return nil, err
-	}
+	const query = "SELECT sh.repo_id, ae.email, " +
+		"permission, commit_id, " +
+		"i.name, i.update_time, i.version, i.type FROM " +
+		"SharedRepo sh LEFT JOIN RepoInfo i ON sh.repo_id = i.repo_id " +
+		"LEFT JOIN AccountEmail ae ON ae.account_id = sh.from_account_id AND ae.is_primary = 1, Branch b " +
+		"WHERE sh.to_account_id=? AND " +
+		"sh.repo_id = b.repo_id AND " +
+		"b.name = 'master' " +
+		"ORDER BY i.update_time DESC, sh.repo_id"
 
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()

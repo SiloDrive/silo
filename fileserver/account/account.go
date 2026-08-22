@@ -19,12 +19,12 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/fileserver/option"
 )
 
 var (
@@ -105,9 +105,16 @@ type Account struct {
 	IsStaff  bool
 }
 
-// Normalize is the single spelling rule for an address. See
-// dbutil.NormalizeEmail for the argument.
-func Normalize(email string) string { return dbutil.NormalizeEmail(email) }
+// Normalize is the single spelling rule for an address.
+//
+// The whole string is lowercased, not just the domain. RFC 5321 says the local
+// part is case-sensitive and no mail provider has behaved that way in decades,
+// but the argument here is narrower than that: an address is what a human
+// types into a login form, and two spellings of one address reaching two
+// different accounts is the failure the identity split exists to prevent.
+// AccountEmail's primary key is this form, so the rule is enforced by the
+// schema rather than by everyone remembering it.
+func Normalize(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
 
 const selectAccount = `SELECT a.id, e.email, a.is_active, a.is_staff
                        FROM Account a JOIN AccountEmail e ON e.account_id = a.id`
@@ -141,77 +148,6 @@ func ByID(ctx context.Context, id ID) (*Account, error) {
 	}
 	return scanOne(readDB.QueryRowContext(ctx,
 		selectAccount+" WHERE a.id = ? AND e.is_primary = 1", id))
-}
-
-// EmailOf returns an account's primary address, for the responses and commit
-// authors that still speak in addresses.
-//
-// An id with no primary address returns the empty string rather than an
-// error. That case is a tombstone -- an account minted for a share whose user
-// was deleted -- and a listing that names one should show a blank owner, not
-// fail.
-func EmailOf(ctx context.Context, id ID) (string, error) {
-	if id.IsZero() {
-		return "", nil
-	}
-	var email string
-	err := readDB.QueryRowContext(ctx,
-		"SELECT email FROM AccountEmail WHERE account_id = ? AND is_primary = 1", id).Scan(&email)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("reading an address: %v", err)
-	}
-	return email, nil
-}
-
-// EmailsOf resolves several ids at once, for a listing that would otherwise
-// run one query per row.
-func EmailsOf(ctx context.Context, ids []ID) (map[ID]string, error) {
-	out := make(map[ID]string, len(ids))
-	if len(ids) == 0 {
-		return out, nil
-	}
-
-	// The ids are the package's own sixteen-byte keys, never anything a client
-	// sent, so the placeholder list is built rather than parameterised only
-	// because IN wants one per value.
-	args := make([]any, 0, len(ids))
-	placeholders := make([]byte, 0, 2*len(ids))
-	seen := make(map[ID]bool, len(ids))
-	for _, id := range ids {
-		if id.IsZero() || seen[id] {
-			continue
-		}
-		seen[id] = true
-		args = append(args, id)
-		if len(placeholders) > 0 {
-			placeholders = append(placeholders, ',')
-		}
-		placeholders = append(placeholders, '?')
-	}
-	if len(args) == 0 {
-		return out, nil
-	}
-
-	rows, err := readDB.QueryContext(ctx,
-		"SELECT account_id, email FROM AccountEmail WHERE is_primary = 1 AND account_id IN ("+
-			string(placeholders)+")", args...)
-	if err != nil {
-		return nil, fmt.Errorf("reading addresses: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var id ID
-		var email string
-		if err := rows.Scan(&id, &email); err != nil {
-			return nil, fmt.Errorf("reading addresses: %v", err)
-		}
-		out[id] = email
-	}
-	return out, rows.Err()
 }
 
 // Create makes an account for an address, or reports that one already exists.
@@ -323,26 +259,6 @@ func SetPassword(ctx context.Context, id ID, hash string) error {
 	return nil
 }
 
-// IsActive reports whether an account may still do anything at all.
-//
-// A missing account is inactive rather than an error: deleting a user must not
-// leave their credentials working.
-func IsActive(ctx context.Context, id ID) (bool, error) {
-	if id.IsZero() {
-		return false, nil
-	}
-	var active bool
-	err := readDB.QueryRowContext(ctx,
-		"SELECT is_active FROM Account WHERE id = ?", id).Scan(&active)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("checking an account: %v", err)
-	}
-	return active, nil
-}
-
 // SetActive enables or disables an account. Disabling it is what stops every
 // lane at once: credential.Resolve, the session middleware and the sync token
 // path all ask.
@@ -369,10 +285,4 @@ func Count(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("counting accounts: %v", err)
 	}
 	return n, nil
-}
-
-// WithTimeout is the context every call in this package would otherwise build
-// for itself.
-func WithTimeout() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), option.DBOpTimeout)
 }
