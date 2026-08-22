@@ -136,6 +136,42 @@ CREATE TABLE IF NOT EXISTS SystemInfo (info_key VARCHAR(256), info_value VARCHAR
 -- index once the column is guaranteed to exist.
 CREATE TABLE IF NOT EXISTS ApiToken (token CHAR(40) PRIMARY KEY, email VARCHAR(255) NOT NULL, ctime BIGINT, expires_at BIGINT);
 CREATE INDEX IF NOT EXISTS apitoken_email_idx ON ApiToken (email);
+
+-- One credential row for every secret a client presents to Silo, replacing the
+-- three separate stores (ApiToken, RepoUserToken, session JWTs) that could not
+-- be revoked together. Both lanes still write their own tables. Nothing reads
+-- this one yet.
+--
+-- email rather than docs/auth.md's account_id: there is no Account table, and
+-- every other table here keys a user by their EmailUser.email. Matching the
+-- doc would mean inventing a table to satisfy a foreign key.
+--
+-- scope is NULL for "every library", "<repo-id>" for one library, or
+-- "<repo-id>:<path>" for a subtree of one. The subtree form is why the column
+-- is TEXT and not CHAR(37): see credential.ParseScope for the encoding, which
+-- is pinned before any row exists because widening it afterwards means
+-- rewriting rows in the field.
+--
+-- A row carries a secret hash or a public key, never both. An s3 row carries
+-- neither and derives its secret from the master key, which is why the CHECK
+-- permits both being NULL.
+CREATE TABLE IF NOT EXISTS Credential (
+  id          TEXT    PRIMARY KEY,
+  kind        TEXT    NOT NULL,
+  secret_hash BLOB,
+  public_key  BLOB,
+  email       TEXT    NOT NULL,
+  label       TEXT    NOT NULL,
+  scope       TEXT,
+  perm        TEXT    NOT NULL,
+  client_id   TEXT,
+  ctime       INTEGER NOT NULL,
+  expires_at  INTEGER,
+  last_used   INTEGER,
+  CHECK (secret_hash IS NULL OR public_key IS NULL)
+);
+CREATE INDEX IF NOT EXISTS credential_email_idx ON Credential (email);
+CREATE INDEX IF NOT EXISTS credential_expires_idx ON Credential (expires_at);
 `
 
 // CreateSiloTables creates all tables if they don't exist.
