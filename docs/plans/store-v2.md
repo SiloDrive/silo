@@ -19,7 +19,7 @@ neither doc silently drifts out of date.
 | 1 | Chunking is keyed FastCDC, ~256 KiB / 1 MiB / 4 MiB min/target/max | decided — G1 confirms, see Gate results |
 | 2 | Chunker parameters are **per-library data** in the catalog, not constants | decided |
 | 3 | No "mostly media / mostly files" knob at creation | decided |
-| 4 | Address hash is SHA-256 | **confirmed** — G2 x86 run 2026-08-22, appended to `result.md` |
+| 4 | Address hash is SHA-256 | **confirmed** — G2 x86 run 2026-08-22, see [`store-v2-hash-bench.md`](store-v2-hash-bench.md) |
 | 5 | File objects become binary manifests: ordered `(chunk id, size)` + inline data under 64 KiB | decided |
 | 6 | Packs, borg/restic-style: ~512 MB, append-only, sealed, compacted by rewrite | decided |
 | 7 | Pack indexes are per-pack local files, mmap'd — never SQLite, never remote | decided |
@@ -38,7 +38,7 @@ neither doc silently drifts out of date.
   is right and whether a second chunk profile is ever worth exposing.
   `find` + a small histogram script over a real library; the discipline
   [`compression.md`](../compression.md) asks for.
-- **G2 — hash on the x86 server.** [`../../result.md`](../../result.md) settled
+- **G2 — hash on the x86 server.** [`store-v2-hash-bench.md`](store-v2-hash-bench.md) settled
   arm64: hardware SHA-256 at ~2.35 GB/s beats every Go BLAKE3 binding 3.5×,
   because neither Go binding has NEON assembly. The bench is self-contained;
   run it on the deployment box. `grep sha_ni /proc/cpuinfo` is the decisive
@@ -59,7 +59,7 @@ this x86 outright — but in Go it spans 0.66 GB/s (M1, no NEON asm) to
 5.15 GB/s (Zen 3), an 8× spread, while SHA-256 is within 8% of itself on both
 machines with zero dependencies and CryptoKit parity. The selection rule —
 uniformly hardware-fast and boring everywhere, since nothing is hash-bound —
-picks SHA-256. Full table appended to [`result.md`](../../result.md). Rerun
+picks SHA-256. Full table appended to [`store-v2-hash-bench.md`](store-v2-hash-bench.md). Rerun
 only if the deployment server lacks both SHA-NI and ARMv8 crypto extensions.
 
 **G1 — closed, parameters confirmed.** Measured on the real workload
@@ -530,10 +530,19 @@ exact byte layouts with vectors; none is left to a port's judgment.
 - **Gear table PRF.** Gear = `HKDF-SHA256(seed, salt="silo/gear/v1",
   info="", L=2048)`, read as 256 little-endian uint64. Plain libraries use
   the published constant seed; E2EE seeds derive per the Chunking section.
-- **FastCDC, fully.** Normalisation level 2; small/large masks constructed
-  from the target's bit count per the FastCDC paper; boundary test
+- **FastCDC, fully.** Normalisation level 2; boundary test
   `(h & mask) == 0`; forced cut at max; the trailing partial chunk is a
   chunk. All constants land in the spec and in the per-library params.
+  The masks are the **top `target_bits ± normalisation` bits of the 64-bit
+  gear hash** — a departure from the paper, which publishes hand-picked
+  masks for an 8 KiB average with their set bits spread through the middle
+  of the word. Those constants do not generalise to another target size,
+  and what two ports need is a rule rather than a table to transcribe. High
+  bits rather than low because with `h = (h<<1) + gear[b]` bit *j* has been
+  fed by the last *j+1* bytes: a low-bit mask would cut on the last byte
+  alone and lose the content-defined property outright. Pinned with the
+  rest of the cut loop — including its two off-by-ones — in
+  [`spec/store-format.md`](../spec/store-format.md#chunking).
 - **Canonical encoding.** Varints are shortest-form and parsers reject
   non-canonical — without this, two encoders produce different AD bytes for
   identical content.
@@ -943,9 +952,14 @@ Mostly unchanged in shape — that was the point of content addressing:
 
 Phases are sequential on the branch; each leaves the tree working.
 
-0. **Gates G1, G2.** Plus the two paper decisions: confirm default-on E2EE and
-   AES-GCM. Cheap, do first, everything downstream hardens.
-1. **Spec + shared package + vectors.** The chunker, id, manifest, and crypto
+0. **Gates G1, G2.** — **done, 2026-08-22.** Plus the two paper decisions:
+   confirm default-on E2EE and AES-GCM. Cheap, do first, everything
+   downstream hardens.
+1. **Spec + shared package + vectors.** — **building.** Ids, chunker
+   parameters, the keyed gear table, the cut loop and its vectors have
+   landed in [`store/`](../../store) and
+   [`spec/store-format.md`](../spec/store-format.md); manifests, the
+   directory/commit codecs and the content crypto are next. The chunker, id, manifest, and crypto
    spec as a document; the Go package; test vectors generated and committed.
    No server changes yet. This is the artifact porter-mac builds against, so
    it lands first.
@@ -1011,7 +1025,8 @@ ones from this plan:
   are cited here.
 - `backup.md` — add `storage.key` and `link.key` (sharing.md) as the first
   items in the must-not-lose set.
-- `result.md` — the G2 x86 run is appended (2026-08-22).
+- `store-v2-hash-bench.md` — the G2 x86 run is appended (2026-08-22); the file
+  moved here from the repo root, where the plan cited it but git did not have it.
 - `target.md` — S3 is promoted from "does not get a vote in any decision" to
   a planned tier of this plan; the ruling sentence gets amended to point
   here.
