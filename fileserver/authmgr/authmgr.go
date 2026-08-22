@@ -223,7 +223,11 @@ func ValidateSessionToken(tokenString string) (account.ID, error) {
 // weaker than this one.
 const PBKDF2Iterations = 600000
 
-func hashPassword(password string) (string, error) {
+// HashPassword derives a storable hash from a plaintext password, in the
+// self-describing format validatePasswd dispatches on. It is exported for
+// "silo user add" and "silo user passwd", which mint accounts and passwords
+// outside any request.
+func HashPassword(password string) (string, error) {
 	salt := make([]byte, 32)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("failed to generate salt: %v", err)
@@ -265,7 +269,7 @@ func upgradeHash(ctx context.Context, acct *account.Account, password string) {
 	if writeDB == nil {
 		return
 	}
-	hash, err := hashPassword(password)
+	hash, err := HashPassword(password)
 	if err != nil {
 		log.Warnf("Failed to rehash password for %s: %v", acct.Email, err)
 		return
@@ -295,7 +299,7 @@ func ensureAdmin(email, password string) (created bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout)
 	defer cancel()
 
-	// Ask before deriving. hashPassword is 600k PBKDF2 iterations by design,
+	// Ask before deriving. HashPassword is 600k PBKDF2 iterations by design,
 	// and on every boot after the first the answer is thrown away: account.Create
 	// returns the existing row the moment it finds the address. Checking first
 	// keeps ~80ms of blocking work out of every restart. Create still decides
@@ -305,7 +309,7 @@ func ensureAdmin(email, password string) (created bool, err error) {
 		return false, nil
 	}
 
-	hash, err := hashPassword(password)
+	hash, err := HashPassword(password)
 	if err != nil {
 		return false, err
 	}
@@ -359,7 +363,7 @@ func BootstrapAdmin(email, password string) (generated string, err error) {
 		return "", nil
 	}
 
-	password, err = generatePassword()
+	password, err = GeneratePassword()
 	if err != nil {
 		return "", err
 	}
@@ -394,8 +398,10 @@ const passwordAlphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456
 // still short enough to retype.
 const generatedPasswordLen = 20
 
-// generatePassword returns a random password drawn from passwordAlphabet.
-func generatePassword() (string, error) {
+// GeneratePassword returns a random password. It is what the bootstrap admin
+// gets, and what "silo user add --generate" offers an operator who would
+// otherwise invent one by hand.
+func GeneratePassword() (string, error) {
 	buf := make([]byte, generatedPasswordLen)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("failed to generate password: %v", err)

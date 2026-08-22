@@ -286,3 +286,51 @@ func Count(ctx context.Context) (int, error) {
 	}
 	return n, nil
 }
+
+// Listed is one account as an operator listing them wants to see it: the
+// account, plus the two facts a request handler never asks for.
+type Listed struct {
+	Account
+	Ctime int64
+
+	// HasPassword distinguishes an account that can sign in with a password
+	// from one that cannot -- an identity-only account, or a tombstone minted
+	// for a share to an address nobody has enrolled. Both are active rows
+	// that no password will ever open, and an operator debugging "why can
+	// this person not log in" should not have to infer that.
+	HasPassword bool
+}
+
+// List returns every account, oldest first. It is the operator's view: there
+// is no paging because there is no request behind it, and no filtering
+// because deciding what to hide is the caller's business.
+func List(ctx context.Context) ([]Listed, error) {
+	// LEFT JOIN on the address, not an inner one. Create always writes a
+	// primary address, so an account without one should not exist -- which is
+	// exactly why a listing that silently omitted it would be the wrong tool
+	// to find out with.
+	const q = `SELECT a.id, e.email, a.is_active, a.is_staff, a.ctime,
+	                  p.account_id IS NOT NULL
+	           FROM Account a
+	           LEFT JOIN AccountEmail e ON e.account_id = a.id AND e.is_primary = 1
+	           LEFT JOIN AccountPassword p ON p.account_id = a.id
+	           ORDER BY a.ctime, e.email`
+
+	rows, err := readDB.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("listing accounts: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Listed
+	for rows.Next() {
+		var l Listed
+		var email sql.NullString
+		if err := rows.Scan(&l.ID, &email, &l.IsActive, &l.IsStaff, &l.Ctime, &l.HasPassword); err != nil {
+			return nil, fmt.Errorf("listing accounts: %v", err)
+		}
+		l.Email = email.String
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}

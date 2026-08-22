@@ -18,6 +18,7 @@ require (
 	github.com/json-iterator/go v1.1.12
 	github.com/sirupsen/logrus v1.9.3
 	golang.org/x/crypto v0.49.0
+	golang.org/x/term v0.41.0
 	golang.org/x/text v0.37.0
 	gopkg.in/ini.v1 v1.55.0
 	modernc.org/sqlite v1.48.2

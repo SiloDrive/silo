@@ -1,0 +1,392 @@
+package silod
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+
+	"golang.org/x/term"
+
+	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/authmgr"
+	"github.com/dkam/silo/fileserver/option"
+)
+
+// RunUser is the account lifecycle, on the host, without a running server.
+//
+// Until now an account could be created two ways -- SILO_ADMIN_EMAIL with a
+// password beside it, or the bootstrap admin the server mints when the table
+// is empty -- and changed no way at all. Everything after the first account
+// meant opening silo.db and writing SQL, which is a poor thing to ask of an
+// operator and a worse thing for them to get wrong: the password column wants
+// a hash in a particular format, and the address is a foreign key in nine
+// places.
+//
+// It is a CLI rather than an API for the same two reasons "silo token" is.
+// There is no admin role in the API layer yet to gate such an endpoint with,
+// and the moment this is most needed is the one where nobody can log in --
+// the IdP is down, or the only password is lost. Anyone who can run this
+// already owns the data directory, so it grants nothing they did not have.
+//
+// docs/future-features.md's admin API is the same operations over HTTP, and
+// is meant to be built on these functions rather than beside them.
+func RunUser(args []string) error {
+	flags := commandFlags("user")
+	staff := flags.Bool("staff", false, "with add: give the account the is_staff flag")
+	generate := flags.Bool("generate", false, "with add or passwd: invent a password and print it once")
+	jsonOut := flags.Bool("json", false, "with list: output as JSON")
+	rest, done, err := parseCommandArgs("user", flags, args)
+	if err != nil || done {
+		return err
+	}
+	if len(rest) == 0 {
+		return errors.New(userUsage)
+	}
+	action := rest[0]
+
+	// The invocation is checked before the database is opened. A typo should
+	// answer with the usage text, not create a data directory somewhere the
+	// operator did not mean to point at.
+	var email string
+	switch action {
+	case "list":
+	case "add", "passwd", "disable", "enable":
+		// Every other subcommand names one person, and names them by the
+		// address the operator knows rather than the id the tables hold.
+		if len(rest) < 2 {
+			return fmt.Errorf("silo user %s needs an email address\n\n%s", action, userUsage)
+		}
+		email = rest[1]
+	default:
+		return fmt.Errorf("unknown user subcommand %q\n\n%s", action, userUsage)
+	}
+
+	if err := openStores(); err != nil {
+		return err
+	}
+	account.Init(siloPair.Read, siloPair.Write)
+
+	switch action {
+	case "list":
+		return listUsers(*jsonOut)
+	case "add":
+		return addUser(email, *staff, *generate)
+	case "passwd":
+		return passwdUser(email, *generate)
+	case "disable":
+		return setUserActive(email, false)
+	default:
+		return setUserActive(email, true)
+	}
+}
+
+// userUsage spells the flags before the subcommand because that is where
+// parseCommandArgs insists they go, for the reason its own comment gives: a
+// flag written after the positionals is not a parse error, it is ignored, and
+// a command that changes a password against the wrong data directory without
+// saying so is worse than one that refuses.
+const userUsage = `usage:
+  silo user [-json] list                      Show every account
+  silo user [-staff] [-generate] add <email>  Create an account
+  silo user [-generate] passwd <email>        Set a password
+  silo user disable <email>                   Stop every credential it holds
+  silo user enable <email>                    Undo a disable
+
+Flags come first: silo user -generate add alice@example.com`
+
+func listUsers(asJSON bool) error {
+	ctx, cancel := option.WithDBTimeout()
+	defer cancel()
+
+	users, err := account.List(ctx)
+	if err != nil {
+		return err
+	}
+
+	if asJSON {
+		return printUsersJSON(users)
+	}
+	if len(users) == 0 {
+		fmt.Println("No accounts. The server will mint a bootstrap admin on its next start.")
+		return nil
+	}
+
+	// The widest address decides the column, so the flags line up no matter
+	// what the addresses are. A listing an operator has to read with a ruler
+	// is one they will read wrong.
+	width := len("EMAIL")
+	for _, u := range users {
+		if n := len(displayEmail(u)); n > width {
+			width = n
+		}
+	}
+
+	fmt.Printf("%-*s  %-8s  %-6s  %-8s  %s\n", width, "EMAIL", "STATUS", "STAFF", "PASSWORD", "CREATED")
+	for _, u := range users {
+		status := "active"
+		if !u.IsActive {
+			status = "DISABLED"
+		}
+		fmt.Printf("%-*s  %-8s  %-6s  %-8s  %s\n",
+			width, displayEmail(u), status, yesNo(u.IsStaff), yesNo(u.HasPassword), formatTime(u.Ctime))
+	}
+	return nil
+}
+
+// displayEmail names an account that has no primary address. Create always
+// writes one, so this should never print -- which is the reason it says
+// something rather than leaving a blank column that reads as a formatting bug.
+func displayEmail(u account.Listed) string {
+	if u.Email == "" {
+		return "(no address: " + u.ID.String() + ")"
+	}
+	return u.Email
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+func addUser(email string, staff, generate bool) error {
+	norm := account.Normalize(email)
+	if norm == "" {
+		return errors.New("no email address given")
+	}
+
+	// Ask before prompting. Finding out that the address is taken after
+	// typing a password twice is a waste of the operator's time, and hashing
+	// one we are about to throw away costs 600k PBKDF2 iterations. Create
+	// still decides -- this is courtesy, not the guard against a race.
+	ctx, cancel := option.WithDBTimeout()
+	defer cancel()
+	if existing, err := account.ByEmail(ctx, norm); err == nil {
+		return fmt.Errorf("%s already exists; use \"silo user passwd %s\" to change the password",
+			existing.Email, existing.Email)
+	}
+
+	password, generated, err := readNewPassword(generate, "New password for "+norm+": ")
+	if err != nil {
+		return err
+	}
+	hash, err := authmgr.HashPassword(password)
+	if err != nil {
+		return err
+	}
+
+	hashCtx, hashCancel := option.WithDBTimeout()
+	defer hashCancel()
+	_, created, err := account.Create(hashCtx, norm, hash, staff)
+	if err != nil {
+		return err
+	}
+	if !created {
+		// Somebody else claimed the address between the check above and here.
+		// Their password is the real one; ours was never stored.
+		return fmt.Errorf("%s was created by something else while this ran; nothing was changed", norm)
+	}
+
+	what := "Created"
+	if staff {
+		what = "Created staff account"
+	}
+	fmt.Printf("%s %s.\n", what, norm)
+	announceGenerated(password, generated)
+	return nil
+}
+
+func passwdUser(email string, generate bool) error {
+	ctx, cancel := option.WithDBTimeout()
+	defer cancel()
+	acct, err := account.ByEmail(ctx, email)
+	if err != nil {
+		return fmt.Errorf("no account for %s", email)
+	}
+
+	password, generated, err := readNewPassword(generate, "New password for "+acct.Email+": ")
+	if err != nil {
+		return err
+	}
+	hash, err := authmgr.HashPassword(password)
+	if err != nil {
+		return err
+	}
+
+	setCtx, setCancel := option.WithDBTimeout()
+	defer setCancel()
+	if err := account.SetPassword(setCtx, acct.ID, hash); err != nil {
+		return err
+	}
+
+	fmt.Printf("Password set for %s.\n", acct.Email)
+	announceGenerated(password, generated)
+
+	// Said plainly because it is the opposite of what a password change
+	// usually means. auth.md wants a password change to revoke every session
+	// credential, but sessions are JWTs signed against a server-wide secret
+	// today: there is nothing per-account to revoke, and the sync tokens the
+	// desktop clients hold were never tied to the password at all.
+	fmt.Printf("\nExisting tokens still work: a password change does not revoke them. Run\n"+
+		"\"silo token revoke %s\" as well if the old password was compromised.\n", acct.Email)
+	return nil
+}
+
+func setUserActive(email string, active bool) error {
+	ctx, cancel := option.WithDBTimeout()
+	defer cancel()
+	acct, err := account.ByEmail(ctx, email)
+	if err != nil {
+		return fmt.Errorf("no account for %s", email)
+	}
+	if acct.IsActive == active {
+		fmt.Printf("%s is already %s.\n", acct.Email, activeWord(active))
+		return nil
+	}
+
+	setCtx, setCancel := option.WithDBTimeout()
+	defer setCancel()
+	if err := account.SetActive(setCtx, acct.ID, active); err != nil {
+		return err
+	}
+
+	if active {
+		fmt.Printf("Enabled %s. The tokens they held still work; disabling never revoked them.\n", acct.Email)
+		return nil
+	}
+
+	// Disabling is the one operation that stops every lane at once, which is
+	// worth saying out loud: it is why an operator reaches for this instead
+	// of revoking tokens one store at a time.
+	fmt.Printf("Disabled %s. Every credential they hold stops working — sync tokens, API\n"+
+		"tokens and sessions alike — and starts again if the account is re-enabled.\n", acct.Email)
+	warnAboutServerCache(1)
+	return nil
+}
+
+func activeWord(active bool) string {
+	if active {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func announceGenerated(password string, generated bool) {
+	if !generated {
+		return
+	}
+	fmt.Printf("\nGenerated password: %s\n", password)
+	fmt.Println("This is the only time it is shown. It is not stored anywhere in this form.")
+}
+
+// readNewPassword gets a password without one ever appearing on a command
+// line.
+//
+// There is deliberately no -password flag. auth.md's finding 9 is about
+// SILO_ADMIN_PASSWORD sitting in docker-compose.yml and in the environment of
+// a running container; a flag would be the same mistake in a shorter-lived
+// place, readable by every other process on the host through /proc and kept
+// in the operator's shell history afterwards.
+//
+// So: -generate invents one, a terminal is prompted twice with echo off, and
+// anything else reads one line from stdin, which is what a script or a
+// password manager pipes in.
+func readNewPassword(generate bool, prompt string) (password string, generated bool, err error) {
+	if generate {
+		password, err = authmgr.GeneratePassword()
+		return password, true, err
+	}
+
+	if term.IsTerminal(int(stdin.Fd())) {
+		password, err = promptPassword(prompt)
+		return password, false, err
+	}
+
+	password, err = readPasswordLine(stdin)
+	return password, false, err
+}
+
+// stdin is where a password comes from when it is not being generated. It is
+// a variable so that a test can hand these commands a pipe and exercise the
+// same path an operator's shell does; nothing in the program reassigns it.
+var stdin = os.Stdin
+
+func promptPassword(prompt string) (string, error) {
+	fmt.Print(prompt)
+	first, err := term.ReadPassword(int(stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return "", fmt.Errorf("reading password: %v", err)
+	}
+
+	fmt.Print("Again: ")
+	second, err := term.ReadPassword(int(stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return "", fmt.Errorf("reading password: %v", err)
+	}
+
+	return confirmPassword(string(first), string(second))
+}
+
+// confirmPassword is the part of the prompt that has a decision in it, split
+// out from the terminal handling so it can be tested without one.
+func confirmPassword(first, second string) (string, error) {
+	if first != second {
+		return "", errors.New("the two passwords do not match; nothing was changed")
+	}
+	if first == "" {
+		return "", errors.New("an empty password would leave an account no password can open; use -generate instead")
+	}
+	return first, nil
+}
+
+// readPasswordLine takes one line, and only strips the line ending. Leading
+// and trailing spaces are part of a password if somebody chose them, and a
+// password manager that emits one should not have it silently changed here
+// into something that will not log in.
+func readPasswordLine(r io.Reader) (string, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("reading password from stdin: %v", err)
+	}
+	line = strings.TrimRight(line, "\r\n")
+	if line == "" {
+		return "", errors.New("no password on stdin; pipe one in or pass -generate")
+	}
+	return line, nil
+}
+
+// userJSON is the listing's wire shape, named here rather than inlined so
+// that a field cannot be renamed by accident.
+type userJSON struct {
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	IsActive    bool   `json:"is_active"`
+	IsStaff     bool   `json:"is_staff"`
+	HasPassword bool   `json:"has_password"`
+	Created     string `json:"created"`
+}
+
+func printUsersJSON(users []account.Listed) error {
+	out := make([]userJSON, 0, len(users))
+	for _, u := range users {
+		out = append(out, userJSON{
+			ID:          u.ID.String(),
+			Email:       u.Email,
+			IsActive:    u.IsActive,
+			IsStaff:     u.IsStaff,
+			HasPassword: u.HasPassword,
+			Created:     time.Unix(u.Ctime, 0).Format(time.RFC3339),
+		})
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}

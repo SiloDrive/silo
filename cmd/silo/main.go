@@ -68,6 +68,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "user":
+		if err := silod.RunUser(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "backup-db":
 		if err := silod.RunBackupDB(rest); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -122,6 +127,11 @@ Usage:
   silo gc [-delete]               Reclaim disk from deleted libraries
   silo backup-db <dir>            Snapshot the databases (server may be running)
   silo sentry-test                Send a test event to $SILO_SENTRY_DSN and report
+  silo user [-json] list          Show every account
+  silo user [-generate] add <email>       Create an account
+  silo user [-generate] passwd <email>    Set a password
+  silo user disable <email>       Stop every credential the account holds
+  silo user enable <email>        Undo a disable
   silo token list <email>         Show a user's sync and API tokens
   silo token revoke <email> [tok] Revoke every token a user holds, or just one
   silo tui [url]                  Launch the interactive terminal UI
@@ -165,6 +175,13 @@ the server first: nothing locks the data directory.
 "silo sentry-test" sends one error and one transaction to the configured DSN
 and reports what the receiver said, so a silent tracker can be told apart from
 a healthy server that has had nothing to report.
+
+"silo user" is the account lifecycle on the host: creating people, setting
+passwords and disabling them, none of which had any path before it but editing
+silo.db by hand. Passwords are never taken as flags — a terminal is prompted
+with echo off, a pipe is read from stdin, and -generate invents one and prints
+it once. Flags come before the subcommand: "silo user -generate add a@b.c". Disabling an account stops every credential it holds at once; the
+tokens themselves survive and work again if it is re-enabled.
 
 "silo backup-db" writes a consistent snapshot of silo.db, safely while the
 server runs — copying it with cp loses everything since the last WAL

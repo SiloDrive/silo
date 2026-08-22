@@ -397,9 +397,9 @@ func TestValidatePasswordDoesNotRehashOnFailure(t *testing.T) {
 func TestValidatePasswordLeavesCurrentHashAlone(t *testing.T) {
 	authTestDB(t)
 
-	before, err := hashPassword("correct-password")
+	before, err := HashPassword("correct-password")
 	if err != nil {
-		t.Fatalf("hashPassword returned %v", err)
+		t.Fatalf("HashPassword returned %v", err)
 	}
 	seedUser(t, "current@example.com", before)
 
@@ -414,9 +414,9 @@ func TestValidatePasswordLeavesCurrentHashAlone(t *testing.T) {
 // New hashes have to be written at the current work factor, or the rehash
 // path would rewrite every hash on every login.
 func TestHashPasswordUsesCurrentWorkFactor(t *testing.T) {
-	hash, err := hashPassword("pw")
+	hash, err := HashPassword("pw")
 	if err != nil {
-		t.Fatalf("hashPassword returned %v", err)
+		t.Fatalf("HashPassword returned %v", err)
 	}
 	if needsRehash(hash) {
 		t.Errorf("a freshly generated hash reports as needing a rehash: %.30s...", hash)
@@ -508,9 +508,9 @@ func TestBootstrapAdminWithSuppliedPasswordGeneratesNothing(t *testing.T) {
 func TestBootstrapAdminLeavesAnExistingUserTableAlone(t *testing.T) {
 	authTestDB(t)
 
-	hash, err := hashPassword("their-password")
+	hash, err := HashPassword("their-password")
 	if err != nil {
-		t.Fatalf("hashPassword returned %v", err)
+		t.Fatalf("HashPassword returned %v", err)
 	}
 	seedUser(t, "existing@example.com", hash)
 
@@ -556,9 +556,9 @@ func TestBootstrapAdminIsIdempotent(t *testing.T) {
 func TestGeneratePassword(t *testing.T) {
 	seen := make(map[string]bool, 100)
 	for i := 0; i < 100; i++ {
-		password, err := generatePassword()
+		password, err := GeneratePassword()
 		if err != nil {
-			t.Fatalf("generatePassword returned %v", err)
+			t.Fatalf("GeneratePassword returned %v", err)
 		}
 		if len(password) != generatedPasswordLen {
 			t.Fatalf("password length is %d, want %d", len(password), generatedPasswordLen)
@@ -572,7 +572,7 @@ func TestGeneratePassword(t *testing.T) {
 			}
 		}
 		if seen[password] {
-			t.Fatalf("generatePassword repeated itself: %q", password)
+			t.Fatalf("GeneratePassword repeated itself: %q", password)
 		}
 		seen[password] = true
 	}

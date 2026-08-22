@@ -1160,7 +1160,15 @@ ships.
    the `is_active` join that closes findings 1, 2, 5, 6 and 8 at once, and the
    legacy adapter that keeps SeaDrive working through it rather than beside it.
 3. **A real user CLI** (`silo user add | disable | passwd`), which step 1 makes
-   possible and `future-features.md`'s admin API then builds on.
+   possible and `future-features.md`'s admin API then builds on. Done, with
+   `list` and `enable` alongside — a `disable` with no way back is a one-way
+   door, and an operator cannot use any of the others without first being able
+   to see what addresses exist. Passwords are never taken as a flag, for
+   [finding 9](#9-smaller-things)'s reason one scope smaller: a flag is
+   readable through `/proc` by every other process on the host and kept in the
+   operator's shell history afterwards. A terminal is prompted twice with echo
+   off, a pipe is read from stdin, and `-generate` invents one and prints it
+   once.
 4. **Password login as enrolment** — the credential-minting login response, the
    `AccountPassword` table, Argon2id behind a concurrency semaphore, the
    dummy-hash fix for finding 7, and setup credentials in place of
@@ -1183,4 +1191,13 @@ ships.
 10. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
 Steps 1 and 2 are the ones with a deadline: they are free only while there are
-no deployments. Both are done.
+no deployments. Both are done, and so is step 3.
+
+Two things step 3 surfaced rather than fixed, both belonging to step 4. A
+password change does not revoke anything: sessions are JWTs signed against a
+server-wide secret, so there is nothing per-account to revoke, and the sync
+tokens the desktop clients hold were never tied to the password at all. `silo
+user passwd` says so on the way out and points at `silo token revoke`, which
+is honest rather than sufficient. And `is_staff` can be set when an account is
+created but not afterwards, which is fine only until
+[`plans/admin-check.md`](plans/admin-check.md) makes the flag mean something.

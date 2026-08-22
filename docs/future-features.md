@@ -4,14 +4,20 @@ Rough roadmap for Silo. Ordered loosely by priority, but nothing here is committ
 
 ## User Management
 
-Users can only be created at startup — `SILO_ADMIN_EMAIL` / `SILO_ADMIN_PASSWORD`,
-or the bootstrap admin the server mints and logs when the user table is empty —
-or by writing to the database directly. There is one account and no lifecycle.
-We need a proper admin-gated API.
+There is a lifecycle now, on the host: `silo user list | add | passwd | disable
+| enable`. [`auth.md`](auth.md) put that CLI ahead of this API on the grounds
+that the identity split makes it possible and it is what the API would be built
+on anyway, and it has landed — `fileserver/user_cmd.go`, over
+`account.Create`, `account.SetPassword` and `account.SetActive`.
 
-[`auth.md`](auth.md) puts a CLI (`silo user add | disable | passwd`) ahead of
-this API, on the grounds that the identity split makes it possible and it is
-what the API would be built on anyway.
+What is still missing is doing any of it over HTTP, which is what a web UI or a
+remote operator needs. These endpoints should call the same `account` functions
+the CLI does rather than reimplement them beside it.
+
+Two gaps the CLI left, both deliberate. `is_staff` can be set at creation and
+not changed afterwards, because nothing reads it yet; the admin check below is
+what makes it worth a command. And there is no delete, because "delete a user"
+has no answer yet — see the soft-delete question under Prerequisites.
 
 ### Endpoints
 
@@ -44,9 +50,10 @@ For "consumer" deployments where only the admin curates libraries and other
 users sync shared ones, we need a flag (per-user or global) that makes
 `CreateRepoHandler` return 403 for non-staff.
 
-Likely shape: a `role` column on `EmailUser` (`admin` / `user` / `guest`) and
+Likely shape: a `role` column on `Account` (`admin` / `user` / `guest`) and
 a config key `allow_user_create_repo = true|false`. Guest == can't create, can
-only access shared repos.
+only access shared repos. (This said `EmailUser`, which the identity split
+deleted; `Account` is where per-user flags live now, beside `is_staff`.)
 
 ## Repo Sharing
 
