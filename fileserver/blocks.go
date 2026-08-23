@@ -7,9 +7,12 @@ import (
 
 	"github.com/dkam/silo/fileserver/blockmgr"
 	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/utils"
+	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
@@ -72,18 +75,43 @@ func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, id := range body.Blocks {
-		if !utils.IsObjectIDValid(id) {
-			http.Error(w, "Not a block id: "+id, http.StatusBadRequest)
+	var missing []string
+	if repo.IsStoreV2() {
+		ids := make([]store.ID, 0, len(body.Blocks))
+		for _, raw := range body.Blocks {
+			id, err := store.ParseID(raw)
+			if err != nil {
+				http.Error(w, "Not a chunk id: "+raw, http.StatusBadRequest)
+				return
+			}
+			ids = append(ids, id)
+		}
+		st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+		if err != nil {
+			log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
-	}
-
-	missing, _, err := blockInventory(repo.StoreID, body.Blocks)
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory blocks in repo %s", repo.ID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
+		missing, _, err = chunkInventory(st, ids)
+		if err != nil {
+			log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory chunks in repo %s", repo.ID)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		for _, id := range body.Blocks {
+			if !utils.IsObjectIDValid(id) {
+				http.Error(w, "Not a block id: "+id, http.StatusBadRequest)
+				return
+			}
+		}
+		var err error
+		missing, _, err = blockInventory(repo.StoreID, body.Blocks)
+		if err != nil {
+			log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory blocks in repo %s", repo.ID)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	writeEntryJSON(w, http.StatusOK, map[string]any{"missing": missing})
@@ -103,6 +131,47 @@ func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
 // would come back as "not present", the client would upload the block again,
 // and the second write would fail the same way with the cause now two steps
 // removed from where it happened.
+// chunkInventory is blockInventory for a store-v2 library: the same question
+// asked of the chunk store instead of the block store.
+//
+// Separate rather than a branch inside blockInventory because the id spaces
+// are separate — a forty-character SHA-1 block and a sixty-four-character
+// SHA-256 chunk are not the same object under two names — and a single
+// function taking either would have to decide which store to ask from the
+// shape of a string, which is the kind of inference that is right until
+// somebody offers a mixed list.
+//
+// The size it returns is the STORED size, which under E2EE is sixteen bytes
+// per chunk larger than the plaintext. That is correct for what this answers —
+// how many bytes the client is about to not have to send — and it is why this
+// number must never reach quota, which is logical size at head.
+func chunkInventory(st *objmgr.Store, ids []store.ID) (missing []string, size int64, err error) {
+	// Never nil: an empty list has to encode as [] and not null.
+	missing = []string{}
+	seen := make(map[store.ID]int64, len(ids))
+	for _, id := range ids {
+		known, ok := seen[id]
+		if !ok {
+			data, err := st.GetChunk(id)
+			if err != nil {
+				if errors.Is(err, objstore.ErrNotFound) {
+					seen[id] = -1
+					missing = append(missing, id.String())
+					continue
+				}
+				return nil, 0, fmt.Errorf("failed to read chunk %s: %w", id, err)
+			}
+			known = int64(len(data))
+			seen[id] = known
+		}
+		if known < 0 {
+			continue
+		}
+		size += known
+	}
+	return missing, size, nil
+}
+
 func blockInventory(storeID string, ids []string) (missing []string, size int64, err error) {
 	// Never nil: an empty list has to encode as [] and not null, for the same
 	// reason GET /repos does. See docs/bugs/fixed/.

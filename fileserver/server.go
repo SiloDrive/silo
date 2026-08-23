@@ -709,6 +709,15 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/repos/{repoid}/batch", batchHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}/blocks/missing", blocksMissingHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}/blocks/{id:[0-9a-f]{40}}", putBlockHandler).Methods("PUT")
+	// The id-addressed surface, store-v2 only. A chunk id is sixty-four hex
+	// characters and a Seafile block id is forty, so the two PUT routes cannot
+	// collide however the library is stored — the width is the format, not a
+	// convention. See objects.go.
+	apiRouter.HandleFunc("/repos/{repoid}/blocks/{id:[0-9a-f]{64}}", getChunkHandler).Methods("GET", "HEAD")
+	apiRouter.HandleFunc("/repos/{repoid}/blocks/{id:[0-9a-f]{64}}", putChunkHandler).Methods("PUT")
+	apiRouter.HandleFunc("/repos/{repoid}/objects/{id:[0-9a-f]{64}}", getObjectHandler).Methods("GET", "HEAD")
+	apiRouter.HandleFunc("/repos/{repoid}/objects/{id:[0-9a-f]{64}}", putObjectHandler).Methods("PUT")
+	apiRouter.HandleFunc("/repos/{repoid}/head", putHeadHandler).Methods("PUT")
 	// The entries surface. One route, all methods: entriesHandler answers a
 	// bad method with 405 and an Allow header, which mux would otherwise turn
 	// into a 404 that reads as "wrong path".
