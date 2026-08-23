@@ -12,7 +12,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// notifyTokenTTL matches what the Seafile-lane endpoint issues, because it is
+// notifyTokenTTL matches what the deleted sync-lane endpoint issued, because it is
 // the same token. A holder is expected to re-mint rather than keep one for the
 // life of a process.
 const notifyTokenTTL = 72 * time.Hour
@@ -23,7 +23,7 @@ type notifyTokenResponse struct {
 }
 
 // CreateNotifyTokenHandler handles POST /api/silo/v1/repos/{repoid}/notify-token.
-// It mints the same notification JWT as the Seafile-lane /repo/{id}/jwt-token
+// It mints the same notification JWT the deleted /repo/{id}/jwt-token
 // route, but authorizes the session user against share.CheckPerm instead of
 // requiring a repo token — so a Silo-lane client never has to touch the
 // compatibility surface to get onto the notification socket.

@@ -83,7 +83,7 @@ func moveHead(t *testing.T, repo *Repo, st *objmgr.Store, newRoot storefmt.ID) {
 	}
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx,
+	if _, err := writeDB.ExecContext(ctx,
 		"UPDATE Branch SET commit_id = ?, root_id = ? WHERE repo_id = ? AND name = 'master'",
 		commitID.String(), newRoot.String(), repo.ID); err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestUsageFallsBackToAFullWalkWhenTheOldTreeIsGone(t *testing.T) {
 	gone := storefmt.ID{1, 2, 3}
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx,
+	if _, err := writeDB.ExecContext(ctx,
 		"UPDATE RepoUsage SET root_id = ?, size = 999999, file_count = 42 WHERE repo_id = ?",
 		gone.String(), repo.ID); err != nil {
 		t.Fatal(err)

@@ -159,7 +159,7 @@ func Resolve(r *http.Request, kind Kind) (*Credential, error) {
 // the database.
 //
 //	Authorization: Bearer silo_<kind>_…   every Silo client
-//	Authorization: Token  <40 hex>        SeaDrive and Seafile Desktop on /api2
+//	Authorization: Token  <40 hex>        legacy clients; no route mounts this
 //	Authorization: Silo   <credential-id> proof of possession, signature below
 func tokenFromRequest(r *http.Request) (Token, error) {
 	h := r.Header.Get("Authorization")

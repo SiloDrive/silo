@@ -103,7 +103,7 @@ func TestABatchAppliesInOrderAndCommitsOnce(t *testing.T) {
 }
 
 // mkdir of a directory that already exists is 409 on a store-v2 library, where
-// the Seafile lane treats it as satisfied and carries on.
+// the lane this replaced treated it as satisfied and carried on.
 //
 // Pinned because it is a divergence between the two lanes rather than an
 // accident, and because it has a consequence worth knowing: a batch is not

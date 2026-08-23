@@ -85,7 +85,7 @@ func TestLoadedTTLIsAlwaysPositive(t *testing.T) {
 		got := loadWithTTL(t, raw)
 		if got <= 0 {
 			t.Errorf("SILO_API_TOKEN_TTL=%q produced a non-positive TTL (%s), "+
-				"which MigrateSeafileTables would refuse", raw, got)
+				"which the schema would refuse", raw, got)
 		}
 	}
 }

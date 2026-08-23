@@ -15,7 +15,7 @@ import (
 	"github.com/dkam/silo/fileserver/repomgr"
 )
 
-// sqliteTestDB points the package's seafile connection at a throwaway SQLite
+// sqliteTestDB points the package's database connection at a throwaway SQLite
 // file and its object stores at a throwaway directory, and restores whatever
 // was there when the test finishes.
 //

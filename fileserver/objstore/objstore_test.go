@@ -20,8 +20,8 @@ const (
 // TestMain has no access to) so this package's object store is its own and
 // does not collide with the other packages' tests when they run in parallel.
 // testFile lives under it too, rather than being written into the package dir.
-var seafileConfPath string
-var seafileDataDir string
+var confPath string
+var dataDir string
 var testFile string
 
 func createFile() error {
@@ -40,8 +40,8 @@ func createFile() error {
 }
 
 func delFile() error {
-	// testFile lives under seafileConfPath, so one RemoveAll covers both.
-	err := os.RemoveAll(seafileConfPath)
+	// testFile lives under confPath, so one RemoveAll covers both.
+	err := os.RemoveAll(confPath)
 	if err != nil {
 		return err
 	}
@@ -51,13 +51,13 @@ func delFile() error {
 
 func TestMain(m *testing.M) {
 	var err error
-	seafileConfPath, err = os.MkdirTemp("", "silo-objstore-test")
+	confPath, err = os.MkdirTemp("", "silo-objstore-test")
 	if err != nil {
 		fmt.Printf("Failed to create test dir : %v\n", err)
 		os.Exit(1)
 	}
-	seafileDataDir = filepath.Join(seafileConfPath, "seafile-data")
-	testFile = filepath.Join(seafileConfPath, "output.data")
+	dataDir = filepath.Join(confPath, "storage-data")
+	testFile = filepath.Join(confPath, "output.data")
 
 	err = createFile()
 	if err != nil {
@@ -80,7 +80,7 @@ func testWrite(t *testing.T) {
 	}
 	defer func() { _ = inputFile.Close() }()
 
-	bend := New(seafileConfPath, seafileDataDir, "commit")
+	bend := New(confPath, dataDir, "commit")
 	_ = bend.Write(repoID, objID, inputFile, true)
 }
 
@@ -91,7 +91,7 @@ func testRead(t *testing.T) {
 	}
 	defer func() { _ = outputFile.Close() }()
 
-	bend := New(seafileConfPath, seafileDataDir, "commit")
+	bend := New(confPath, dataDir, "commit")
 	err = bend.Read(repoID, objID, outputFile)
 	if err != nil {
 		t.Errorf("Failed to read backend : %s\n", err)
@@ -99,13 +99,13 @@ func testRead(t *testing.T) {
 }
 
 func testExists(t *testing.T) {
-	bend := New(seafileConfPath, seafileDataDir, "commit")
+	bend := New(confPath, dataDir, "commit")
 	ret, _ := bend.Exists(repoID, objID)
 	if !ret {
 		t.Errorf("File is not exist\n")
 	}
 
-	filePath := path.Join(seafileDataDir, "storage", "commit", repoID, objID[:2], objID[2:])
+	filePath := path.Join(dataDir, "storage", "commit", repoID, objID[:2], objID[2:])
 	fileInfo, _ := os.Stat(filePath)
 	if fileInfo.Size() != 130 {
 		t.Errorf("File is exist, but the size of file is incorrect.\n")
@@ -125,8 +125,8 @@ func TestObjStore(t *testing.T) {
 // calling it present tells the client the block is already uploaded and it is
 // never sent again, which is what turns a lost write into permanent damage.
 func TestObjStoreZeroLengthObjectIsAbsent(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "seafile-data")
-	bend := New(seafileConfPath, dataDir, "blocks")
+	dataDir := filepath.Join(t.TempDir(), "storage-data")
+	bend := New(confPath, dataDir, "blocks")
 
 	if err := bend.Write(repoID, objID, strings.NewReader(""), true); err != nil {
 		t.Fatalf("Write() returned %v", err)
@@ -144,8 +144,8 @@ func TestObjStoreZeroLengthObjectIsAbsent(t *testing.T) {
 // Exists distinguishes "not there" from "could not tell": a missing object is
 // not an error, and no failure reports the object as present.
 func TestObjStoreExistsOnMissingObject(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "seafile-data")
-	bend := New(seafileConfPath, dataDir, "blocks")
+	dataDir := filepath.Join(t.TempDir(), "storage-data")
+	bend := New(confPath, dataDir, "blocks")
 
 	exists, err := bend.Exists(repoID, objID)
 	if err != nil {
@@ -160,10 +160,10 @@ func TestObjStoreExistsOnMissingObject(t *testing.T) {
 // fsyncs each one it had to create. Writing into a store that has never seen
 // the repo before is the case where those syncs run.
 func TestObjStoreSyncWriteIntoNewRepoDir(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "seafile-data")
+	dataDir := filepath.Join(t.TempDir(), "storage-data")
 
 	for _, objType := range []string{"blocks", "commit", "fs"} {
-		bend := New(seafileConfPath, dataDir, objType)
+		bend := New(confPath, dataDir, objType)
 		if err := bend.Write(repoID, objID, strings.NewReader("payload"), true); err != nil {
 			t.Fatalf("Write(%s) into a new repo dir returned %v", objType, err)
 		}
@@ -214,7 +214,7 @@ func TestObjStoreRejectsInvalidObjectID(t *testing.T) {
 		"0401fc662e3bc87a41f299a907c056aaf8322g27",  // non-hex
 	}
 
-	bend := New(seafileConfPath, seafileDataDir, "commit")
+	bend := New(confPath, dataDir, "commit")
 	for _, id := range bad {
 		// Each of these would panic rather than return if the guard were gone.
 		if err := bend.Read(repoID, id, io.Discard); err == nil {
@@ -245,7 +245,7 @@ func writeTestObject(t *testing.T, s *ObjectStore, id, content string) {
 }
 
 func TestBothIDWidthsAreStorable(t *testing.T) {
-	s := New(seafileConfPath, seafileDataDir, "widths")
+	s := New(confPath, dataDir, "widths")
 	for _, id := range []string{objID, sha256ObjID} {
 		writeTestObject(t, s, id, "content for "+id)
 		var got strings.Builder
@@ -261,7 +261,7 @@ func TestBothIDWidthsAreStorable(t *testing.T) {
 // The ranged read is the whole reason the seam changed shape: a chunk read
 // becomes a read of one byte range out of the pack holding it.
 func TestReadAtReturnsOneRange(t *testing.T) {
-	s := New(seafileConfPath, seafileDataDir, "readat")
+	s := New(confPath, dataDir, "readat")
 	writeTestObject(t, s, objID, "0123456789abcdef")
 
 	for _, tc := range []struct {
@@ -289,7 +289,7 @@ func TestReadAtReturnsOneRange(t *testing.T) {
 // known offset and length has to be able to tell "the pack is shorter than
 // the index says" from "the read happened to be short".
 func TestReadAtPastTheEndReportsEOF(t *testing.T) {
-	s := New(seafileConfPath, seafileDataDir, "readat-eof")
+	s := New(confPath, dataDir, "readat-eof")
 	writeTestObject(t, s, objID, "0123456789")
 
 	p := make([]byte, 8)
@@ -309,7 +309,7 @@ func TestReadAtPastTheEndReportsEOF(t *testing.T) {
 // One sentinel for absence, whichever backend answered. The tiering logic
 // above this asks "is it here" once rather than once per backend.
 func TestAMissingObjectIsErrNotFound(t *testing.T) {
-	s := New(seafileConfPath, seafileDataDir, "notfound")
+	s := New(confPath, dataDir, "notfound")
 	missing := "1111111111111111111111111111111111111111"
 
 	if _, err := s.Stat(repoID, missing); !errors.Is(err, ErrNotFound) {
@@ -329,7 +329,7 @@ func TestAMissingObjectIsErrNotFound(t *testing.T) {
 }
 
 func TestListYieldsEveryObjectWithItsSize(t *testing.T) {
-	s := New(seafileConfPath, seafileDataDir, "list")
+	s := New(confPath, dataDir, "list")
 	want := map[string]int64{
 		objID:           4,
 		sha256ObjID:     11,
@@ -359,7 +359,7 @@ func TestListYieldsEveryObjectWithItsSize(t *testing.T) {
 // A repo with no objects and a repo that never existed are the same answer,
 // and neither is an error.
 func TestListOfAnEmptyRepoIsEmptyNotAnError(t *testing.T) {
-	s := New(seafileConfPath, seafileDataDir, "list-empty")
+	s := New(confPath, dataDir, "list-empty")
 	n := 0
 	if err := s.List("00000000-0000-0000-0000-000000000000", func(string, int64) error {
 		n++
@@ -376,10 +376,10 @@ func TestListOfAnEmptyRepoIsEmptyNotAnError(t *testing.T) {
 // objects. It is not a pack: nothing references it, and reporting it as one
 // would have the caller asking a pack index about an id it never held.
 func TestListSkipsTheDebrisOfAnInterruptedWrite(t *testing.T) {
-	s := New(seafileConfPath, seafileDataDir, "list-debris")
+	s := New(confPath, dataDir, "list-debris")
 	writeTestObject(t, s, objID, "good")
 
-	fanout := filepath.Join(TypeDir(seafileDataDir, "list-debris"), repoID, objID[:2])
+	fanout := filepath.Join(TypeDir(dataDir, "list-debris"), repoID, objID[:2])
 	if err := os.WriteFile(filepath.Join(fanout, objID[2:]+".123456"), []byte("partial"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestListSkipsTheDebrisOfAnInterruptedWrite(t *testing.T) {
 }
 
 func TestListStopsOnTheCallbacksError(t *testing.T) {
-	s := New(seafileConfPath, seafileDataDir, "list-stop")
+	s := New(confPath, dataDir, "list-stop")
 	writeTestObject(t, s, objID, "one")
 	writeTestObject(t, s, sha256ObjID, "two")
 
@@ -418,7 +418,7 @@ func TestListStopsOnTheCallbacksError(t *testing.T) {
 // Deletion is idempotent because compaction has to be interruptible at every
 // step: a retry that finds the pack already gone must carry on, not stop.
 func TestRemoveIsIdempotent(t *testing.T) {
-	s := New(seafileConfPath, seafileDataDir, "remove")
+	s := New(confPath, dataDir, "remove")
 	writeTestObject(t, s, objID, "doomed")
 
 	for i := range 2 {
@@ -435,7 +435,7 @@ func TestRemoveIsIdempotent(t *testing.T) {
 }
 
 func TestRemoveRepoTakesEverythingAndIsIdempotent(t *testing.T) {
-	s := New(seafileConfPath, seafileDataDir, "remove-repo")
+	s := New(confPath, dataDir, "remove-repo")
 	writeTestObject(t, s, objID, "one")
 	writeTestObject(t, s, sha256ObjID, "two")
 
@@ -461,7 +461,7 @@ func TestAStoreWithNoBackendReportsWhy(t *testing.T) {
 	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := New(seafileConfPath, blocked, "commits")
+	s := New(confPath, blocked, "commits")
 
 	if err := s.Read(repoID, objID, io.Discard); err == nil {
 		t.Error("Read on a store with no backend returned nil")

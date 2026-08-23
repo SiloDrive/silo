@@ -133,12 +133,9 @@ func resolvePaths() error {
 
 	if configFile == "" {
 		if xdgConf, err := xdg.ConfigHome("silo"); err == nil {
-			for _, name := range []string{"silo.conf", "seafile.conf"} {
-				candidate := filepath.Join(xdgConf, name)
-				if _, err := os.Stat(candidate); err == nil {
-					configFile = candidate
-					break
-				}
+			candidate := filepath.Join(xdgConf, "silo.conf")
+			if _, err := os.Stat(candidate); err == nil {
+				configFile = candidate
 			}
 		}
 	}
@@ -202,15 +199,8 @@ func openStores() error {
 // the data directory.
 const DatabaseName = "silo.db"
 
-// legacyDatabaseNames are the two files Silo used before it had one database.
-// They are never opened — only refused, by checkLegacyDatabases.
-var legacyDatabaseNames = []string{"ccnet.db", "seafile.db"}
-
 func loadDatabase() {
 	dbPath := filepath.Join(absDataDir, DatabaseName)
-	if err := checkLegacyDatabases(absDataDir, dbPath); err != nil {
-		log.Fatal(err)
-	}
 
 	var err error
 	siloPair, err = dbutil.OpenSQLite(dbPath)
@@ -223,59 +213,6 @@ func loadDatabase() {
 	}
 
 	log.Infof("Using database %s", dbPath)
-}
-
-// checkLegacyDatabases refuses to start on a data directory written by a
-// version that kept users and repositories in two separate SQLite files.
-//
-// Opening silo.db regardless would succeed, create every table empty, and
-// present a server with no users and no libraries next to a directory that
-// still holds all of them — indistinguishable, from the outside, from having
-// lost the lot. Failing with the recipe below costs one command and cannot be
-// mistaken for anything.
-//
-// Once silo.db exists the old files are ignored: whatever is in them has
-// either been folded in already or was deliberately left behind.
-func checkLegacyDatabases(dir, dbPath string) error {
-	if _, err := os.Stat(dbPath); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("failed to stat %s: %v", dbPath, err)
-	}
-
-	var found, foundNames []string
-	for _, name := range legacyDatabaseNames {
-		p := filepath.Join(dir, name)
-		if _, err := os.Stat(p); err == nil {
-			found = append(found, p)
-			foundNames = append(foundNames, name)
-		}
-	}
-	if len(found) == 0 {
-		return nil
-	}
-
-	// The checkpoints are the part that is easy to leave out and impossible
-	// to notice: both databases run in WAL mode, so a dump taken without one
-	// silently omits every transaction since the last checkpoint.
-	var recipe strings.Builder
-	for _, p := range found {
-		fmt.Fprintf(&recipe, "  sqlite3 %s 'PRAGMA wal_checkpoint(TRUNCATE)'\n", p)
-	}
-	recipe.WriteString("  { ")
-	for i, p := range found {
-		if i > 0 {
-			recipe.WriteString("; ")
-		}
-		fmt.Fprintf(&recipe, "sqlite3 %s .dump", p)
-	}
-	fmt.Fprintf(&recipe, "; } | sqlite3 %s\n", dbPath)
-
-	return fmt.Errorf("%s holds %s from a version that used two databases, and there is no %s.\n"+
-		"Silo now keeps users, groups and repositories in one database. No table name is\n"+
-		"shared between the old pair, so they concatenate directly:\n\n%s\n"+
-		"Then start the server again — it adds anything the schema has gained since.",
-		dir, strings.Join(foundNames, " and "), DatabaseName, recipe.String())
 }
 
 func writePidFile(pid_file_path string) error {
@@ -398,8 +335,8 @@ func Run(args []string) error {
 	// if it is not and there are no users at all. A server nobody can log in
 	// to is not a useful server, and until now that was what `silo serve` gave
 	// anyone who had not set the two variables before the first boot.
-	adminEmail := option.EnvWithFallback("SILO_ADMIN_EMAIL", "SEAFILE_ADMIN_EMAIL")
-	adminPassword := option.EnvWithFallback("SILO_ADMIN_PASSWORD", "SEAFILE_ADMIN_PASSWORD")
+	adminEmail := os.Getenv("SILO_ADMIN_EMAIL")
+	adminPassword := os.Getenv("SILO_ADMIN_PASSWORD")
 	if adminEmail == "" {
 		adminEmail = authmgr.DefaultAdminEmail
 	}
@@ -419,7 +356,7 @@ func Run(args []string) error {
 
 	httpServer = new(http.Server)
 	httpServer.Addr = fmt.Sprintf("%s:%d", option.Host, option.Port)
-	var handler = middleware.StripSeafhttpPrefix(router)
+	var handler http.Handler = router
 	if debugLog {
 		handler = middleware.DebugLogger(handler)
 	}
@@ -445,9 +382,11 @@ func Run(args []string) error {
 		scheme = "https"
 		// Pinned rather than left to the default so that the floor is a
 		// property of this server and not of whichever Go version built it.
-		// 1.2 rather than 1.3 because Silo exists to keep existing Seafile
-		// clients working, and their TLS comes from whatever OpenSSL the
-		// platform shipped.
+		// 1.2 rather than 1.3 is now a floor with no client left to justify
+		// it: it was set for the desktop clients whose lanes have been
+		// deleted, and porter is the only thing that talks to this server.
+		// Raising it to 1.3 is a one-line change and wants a decision rather
+		// than a drift.
 		httpServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	// Bind before reporting, and before backgrounding the serve loop. A
@@ -632,7 +571,7 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/repos/{repoid}/batch", batchHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}/blocks/missing", blocksMissingHandler).Methods("POST")
 	// The id-addressed surface, store-v2 only. A chunk id is sixty-four hex
-	// characters and a Seafile block id is forty, so the two PUT routes cannot
+	// characters, so the id and the route regex cannot
 	// collide however the library is stored — the width is the format, not a
 	// convention. See objects.go.
 	apiRouter.HandleFunc("/repos/{repoid}/blocks/{id:[0-9a-f]{64}}", getChunkHandler).Methods("GET", "HEAD")

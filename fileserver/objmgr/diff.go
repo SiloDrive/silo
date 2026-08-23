@@ -208,7 +208,7 @@ func compareNames(a, b []byte) int {
 
 // detectMoves pairs a delete and a create of the same object into one move.
 //
-// Content addressing makes this exact where Seafile's diff had to guess: two
+// Content addressing makes this exact where a path-based diff has to guess: two
 // entries with the same id ARE the same bytes, so a delete of an id and a
 // create of that id in the same diff is a rename, not a coincidence worth
 // heuristics. It matters because the alternative tells a client to delete and

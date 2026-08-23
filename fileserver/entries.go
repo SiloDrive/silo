@@ -48,8 +48,8 @@ import (
 //
 // Every operation is one request, authenticated by the bearer header on that
 // request. Reads stream the bytes back and writes carry them up; neither
-// redirects to a URL bearing a credential the way the Seafile lane does, and
-// docs/capability-urls.md records why that difference is deliberate.
+// redirects to a URL bearing a credential, and docs/capability-urls.md
+// records why that is deliberate.
 //
 // Where an operation already had an implementation, these handlers resolve and
 // validate and then delegate to it rather than reimplementing the commit
@@ -62,11 +62,10 @@ import (
 // that validate against a body shape that no longer exists.
 const etagPrefix = "v1-"
 
-// siloTextCharset is empty on purpose: this lane declares no charset for text
-// files. The server does not know how a file it is handing back is encoded, and
-// the Seafile lane's inherited "gbk" is a guess that mangles anything else. Not
-// saying is the only honest answer available.
-const siloTextCharset = ""
+// No charset is declared for text files, on purpose. The server does not know
+// how a file it is handing back is encoded; the inherited answer was a fixed
+// "gbk", which is a guess that mangles anything else. Not saying is the only
+// honest answer available.
 
 // entriesHandler dispatches on method. Registered for one route so that an
 // unsupported method gets a 405 naming what is allowed, rather than a 404
@@ -225,7 +224,7 @@ func isPaged(r *http.Request) bool {
 }
 
 // serveFile streams a file's bytes on this request, rather than redirecting to
-// a one-time capability URL the way Seafile did.
+// a one-time capability URL.
 //
 // That redirect existed because its consumers — a browser following a download
 // link, a document server fetching a file — cannot set an Authorization header,
@@ -269,7 +268,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileI
 	if parseContentType(fileName) == "image/svg+xml" {
 		w.Header().Set("Content-Security-Policy", "sandbox")
 	}
-	setCommonHeaders(w, r, "download", fileName, siloTextCharset)
+	setCommonHeaders(w, r, "download", fileName)
 
 	byteRanges := strings.Join(r.Header["Range"], "")
 	if byteRanges == "" {
@@ -414,9 +413,9 @@ func preconditionResult(etag, ifMatch, ifNoneMatch string) bool {
 //
 // Replacing is what PUT means: the request says what the resource should
 // contain afterwards, so sending it twice leaves one file, not a file and a
-// "file (1)" beside it — which is what the Seafile lane's upload does, because
-// it is modelled on a person dragging things into a folder rather than on a
-// client asserting a desired state.
+// "file (1)" beside it — which is what an upload endpoint modelled on a person
+// dragging things into a folder does, rather than one modelled on a client
+// asserting a desired state.
 //
 // The body streams straight into the chunker rather than through a spool file:
 // WriteFile chunks a stream and the manifest records what it found, so nothing
@@ -942,20 +941,11 @@ func parseContentType(fileName string) string {
 
 // setCommonHeaders sets the content type and disposition for a file response.
 //
-// textCharset is appended to a text/* content type. The Seafile lane passes
-// "gbk", which is what upstream has always sent and is therefore what its
-// clients expect; the Silo lane passes "" and sends no charset at all, because
-// the server does not know the encoding of a file it is handing back. Guessing
-// wrong is worse than not saying: a client that trusts the declaration will
-// mangle text that was fine.
-func setCommonHeaders(rsp http.ResponseWriter, r *http.Request, operation, fileName, textCharset string) {
+// No charset is declared, even on text/*: see the note above the constants.
+func setCommonHeaders(rsp http.ResponseWriter, r *http.Request, operation, fileName string) {
 	fileType := parseContentType(fileName)
 	if fileType != "" {
-		contentType := fileType
-		if textCharset != "" && strings.Contains(fileType, "text") {
-			contentType = fileType + "; charset=" + textCharset
-		}
-		rsp.Header().Set("Content-Type", contentType)
+		rsp.Header().Set("Content-Type", fileType)
 	} else {
 		rsp.Header().Set("Content-Type", "application/octet-stream")
 	}

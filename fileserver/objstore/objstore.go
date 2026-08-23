@@ -64,20 +64,20 @@ const (
 var Types = []string{TypeCommits, TypeFS, TypeBlocks, TypeChunks, TypeObjects}
 
 // Root returns the directory holding every object store.
-func Root(seafileDataDir string) string {
-	return filepath.Join(seafileDataDir, "storage")
+func Root(dataDir string) string {
+	return filepath.Join(dataDir, "storage")
 }
 
 // TypeDir returns the directory holding one object type's stores.
-func TypeDir(seafileDataDir, objType string) string {
-	return filepath.Join(Root(seafileDataDir), objType)
+func TypeDir(dataDir, objType string) string {
+	return filepath.Join(Root(dataDir), objType)
 }
 
 // RepoDir returns the directory holding one repository's objects of one type.
 // The store id is not always the repo's own id — a virtual repo's objects live
 // in its origin's store — so callers pass whichever they mean.
-func RepoDir(seafileDataDir, objType, storeID string) string {
-	return filepath.Join(TypeDir(seafileDataDir, objType), storeID)
+func RepoDir(dataDir, objType, storeID string) string {
+	return filepath.Join(TypeDir(dataDir, objType), storeID)
 }
 
 // ObjectStore is a container to access storage backend
@@ -158,9 +158,9 @@ type storageBackend interface {
 // cutover — so widening their signatures now costs a ripple through server.go
 // for code with a known end date. What this does fix is the nil dereference
 // the ignored error used to produce: the failure now says what happened.
-func New(seafileConfPath string, seafileDataDir string, objType string) *ObjectStore {
+func New(confPath string, dataDir string, objType string) *ObjectStore {
 	obj := &ObjectStore{ObjType: objType}
-	backend, err := newFSBackend(seafileDataDir, objType)
+	backend, err := newFSBackend(dataDir, objType)
 	if err != nil {
 		obj.initErr = fmt.Errorf("objstore: no %s store: %w", objType, err)
 		return obj

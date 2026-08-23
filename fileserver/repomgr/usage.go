@@ -92,7 +92,7 @@ func readUsage(repoID string) (objmgr.Usage, string, error) {
 	var at string
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx,
+	row := readDB.QueryRowContext(ctx,
 		"SELECT size, file_count, root_id FROM RepoUsage WHERE repo_id = ?", repoID)
 	switch err := row.Scan(&u.Size, &u.FileCount, &at); {
 	case err == sql.ErrNoRows:
@@ -113,7 +113,7 @@ func readUsage(repoID string) (objmgr.Usage, string, error) {
 func writeUsage(repoID string, u objmgr.Usage, from, to string) error {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	_, err := seafileWriteDB.ExecContext(ctx,
+	_, err := writeDB.ExecContext(ctx,
 		"INSERT INTO RepoUsage (repo_id, size, file_count, root_id) VALUES (?, ?, ?, ?) "+
 			"ON CONFLICT(repo_id) DO UPDATE SET size = excluded.size, "+
 			"file_count = excluded.file_count, root_id = excluded.root_id "+
@@ -140,7 +140,7 @@ func writeUsage(repoID string, u objmgr.Usage, from, to string) error {
 func AccountUsage(id account.ID) (objmgr.Usage, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	rows, err := seafileDB.QueryContext(ctx,
+	rows, err := readDB.QueryContext(ctx,
 		"SELECT o.repo_id, b.root_id, u.size, u.file_count, u.root_id "+
 			"FROM RepoOwner o "+
 			"JOIN Branch b ON b.repo_id = o.repo_id AND b.name = 'master' "+
@@ -199,7 +199,7 @@ func AccountQuota(id account.ID) (int64, error) {
 	var quota int64
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, "SELECT quota FROM UserQuota WHERE account_id = ?", id)
+	row := readDB.QueryRowContext(ctx, "SELECT quota FROM UserQuota WHERE account_id = ?", id)
 	if err := row.Scan(&quota); err != nil && err != sql.ErrNoRows {
 		return 0, fmt.Errorf("failed to read quota: %w", err)
 	}

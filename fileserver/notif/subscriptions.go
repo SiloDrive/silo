@@ -1,14 +1,12 @@
-// Package notif implements the in-process Seafile notification server.
+// Package notif implements the in-process notification server.
 //
-// It exposes a WebSocket endpoint that SeaDrive and Seafile Desktop can
-// connect to so they receive push events when a repo's head commit changes,
-// avoiding the default ~30s polling interval.
+// It exposes a WebSocket endpoint a client connects to so it receives push
+// events when a library's head commit changes, instead of polling on a ~30s
+// interval.
 //
-// The package is a simplified port of the upstream
-// haiwen/seafile-server notification-server, collapsed to run inside the
-// silo fileserver process. It currently only handles "repo-update" events
-// because silo does not yet ship file locking, sharing API, or comments —
-// the other upstream event types have no producer.
+// It handles "repo-update" events and nothing else, because nothing else has a
+// producer: file locking, a sharing API and comments are the event types the
+// design it descends from also carried, and Silo ships none of them.
 package notif
 
 import (

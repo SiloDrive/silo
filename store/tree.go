@@ -16,7 +16,7 @@ const (
 	// NodeDir names a directory object.
 	NodeDir NodeType = 1
 	// NodeSymlink names a manifest too — the link's target bytes are the
-	// manifest's content, which is Seafile's own representation. A client
+	// manifest's content, which is the representation this inherited. A client
 	// that had nowhere to put a symlink would have to either follow it,
 	// duplicating bytes and looping on cycles, or silently drop it; a
 	// filesystem may do neither.

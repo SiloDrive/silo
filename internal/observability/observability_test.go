@@ -66,7 +66,6 @@ func TestUntraced(t *testing.T) {
 		want     bool
 	}{
 		{"GET /notification", true},
-		{"GET /seafhttp/notification", true},
 		{"GET /debug/pprof/heap", true},
 		{"GET /protocol-version", true},
 		{"GET /repo/7c8a1f2e-3b4d-4c5a-9e6f-0a1b2c3d4e5f/commit/HEAD", false},

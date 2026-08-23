@@ -337,8 +337,8 @@ func TestPanicWithErrorBecomesException(t *testing.T) {
 // Every credential Silo accepts is a bearer token in a header or a query
 // parameter, and an error tracker holding one is a credential leak. The SDK
 // scrubs on a substring deny list that happens to cover all of them today;
-// this pins that down, because the day it stops covering Seafile-Repo-Token is
-// the day sync tokens start arriving in the issue list.
+// this pins that down, because the day it stops covering a token-bearing
+// header is the day credentials start arriving in the issue list.
 func TestCredentialsAreScrubbedFromReports(t *testing.T) {
 	stub := newSentryStub(t)
 	enable(t, stub)
@@ -346,12 +346,12 @@ func TestCredentialsAreScrubbedFromReports(t *testing.T) {
 	handler := observability.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")
 	}))
-	req := httptest.NewRequest(http.MethodPost, "/repo/abc/block/def?token=querysecret&op=upload",
+	req := httptest.NewRequest(http.MethodPost, "/api/silo/v1/repos/abc/blocks/def?token=querysecret",
 		strings.NewReader("the contents of somebody's file"))
 	req.Header.Set("Authorization", "Bearer jwtsecret")
-	req.Header.Set("Seafile-Repo-Token", "synctokensecret")
+	req.Header.Set("X-Repo-Token", "synctokensecret")
 	req.Header.Set("Cookie", "sessionid=cookiesecret")
-	req.Header.Set("User-Agent", "Seafile/9.0.0")
+	req.Header.Set("User-Agent", "porter/1.0")
 
 	func() {
 		defer func() { _ = recover() }()
@@ -387,11 +387,11 @@ func TestCredentialsAreScrubbedFromReports(t *testing.T) {
 	if request == nil {
 		t.Fatal("event carries no request at all")
 	}
-	if !strings.Contains(request["url"].(string), "/repo/abc/block/def") {
+	if !strings.Contains(request["url"].(string), "/api/silo/v1/repos/abc/blocks/def") {
 		t.Errorf("request url = %v, want the path", request["url"])
 	}
 	headers, _ := request["headers"].(map[string]any)
-	if headers["User-Agent"] != "Seafile/9.0.0" {
+	if headers["User-Agent"] != "porter/1.0" {
 		t.Errorf("User-Agent = %v, want it kept", headers["User-Agent"])
 	}
 }
@@ -503,7 +503,7 @@ func TestUntracedEndpointsProduceNoTransaction(t *testing.T) {
 	handler := observability.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	for _, path := range []string{"/notification", "/seafhttp/notification", "/debug/pprof/heap"} {
+	for _, path := range []string{"/notification", "/debug/pprof/heap"} {
 		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
 	}
 	observability.Flush()

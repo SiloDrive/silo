@@ -120,7 +120,7 @@ func password() string {
 }
 
 func printUsage(w *os.File) {
-	_, _ = fmt.Fprint(w, `silo — Seafile-compatible server and client in one binary
+	_, _ = fmt.Fprint(w, `silo — file sync server and client in one binary
 
 Usage:
   silo serve [-b addr] [flags]    Run the file server daemon

@@ -57,7 +57,7 @@ func ClientIP(r *http.Request, trustProxyHeaders bool) string {
 
 func HttpCommon(method, url string, header map[string][]string, reader io.Reader) (int, []byte, error) {
 	header["Content-Type"] = []string{"application/json"}
-	header["User-Agent"] = []string{"Seafile Server"}
+	header["User-Agent"] = []string{"Silo"}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)

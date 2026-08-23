@@ -50,7 +50,7 @@ type change struct {
 // find out what moved. The server already holds both trees and already has the
 // diff, so the client issues one request instead of walking commits, fetching
 // fs objects and comparing them itself — which is the difference between a few
-// hundred lines of client and the tens of thousands SeaDrive carries to do the
+// hundred lines of client and the tens of thousands a full sync daemon carries to do the
 // same job without server cooperation.
 //
 // A directory appears as its own change only when it is empty. One that arrives

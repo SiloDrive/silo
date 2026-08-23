@@ -85,7 +85,7 @@ func countRows(t *testing.T, query string, args ...interface{}) int {
 	return n
 }
 
-// A sync token has no expiry — Seafile clients persist it and treat it as
+// A sync token has no expiry — the clients it was for persist it and treat it as
 // durable — so revocation is the only thing that can ever invalidate one. It
 // had no reachable caller, which left a token copied off a stolen device with
 // permanent read/write access that a password change did not touch.

@@ -50,7 +50,7 @@ type prepOp struct {
 
 // batchV2 applies a whole batch to a store-v2 library and commits it once.
 //
-// The shape the Seafile lane has to build by hand — a working root that each
+// The shape a per-operation commit loop has to build by hand — a working root that each
 // operation advances, committed only if every one of them succeeded — is what
 // mutateTree's closure already is. So the batch runs inside one attempt: if
 // the head moves underneath it, the entire batch re-applies to the head that
@@ -140,7 +140,7 @@ func prepBatch(w http.ResponseWriter, st *objmgr.Store, ops []batchOp) ([]prepOp
 		// The name an operation creates is checked here rather than left to
 		// the mutation layer, because objmgr.SplitPath rejects only "." and
 		// "..". Length, encoding and the ignore list are this package's rule,
-		// and validEntryName is where it lives — the Seafile batch calls it,
+		// and validEntryName is where it lives —
 		// and every single-op v2 handler is called with it already applied.
 		// Without this the batch is the one route by which a name nothing
 		// downstream expects enters a store-v2 library.

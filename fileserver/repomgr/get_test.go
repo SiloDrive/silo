@@ -37,10 +37,10 @@ func getTestStore(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = pair.Close() })
 	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
-		t.Fatalf("create seafile tables: %v", err)
+		t.Fatalf("create tables: %v", err)
 	}
 
-	dataDir := filepath.Join(dir, "seafile-data")
+	dataDir := filepath.Join(dir, "storage-data")
 	Init(pair.Read, pair.Write, dataDir)
 	account.Init(pair.Read, pair.Write)
 
@@ -106,7 +106,7 @@ func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 	head := repo.HeadCommitID
 
 	// Exactly the damage the accident caused: the row stays, the object goes.
-	// A store-v2 commit lives in the objects store, not the Seafile commits
+	// A store-v2 commit lives in the objects store, not the old commits
 	// one.
 	if err := os.RemoveAll(objstore.RepoDir(dataDir, objstore.TypeObjects, repoID)); err != nil {
 		t.Fatalf("remove object store: %v", err)
@@ -147,12 +147,12 @@ func TestGetWithReasonEmptyHeadIsCorrupted(t *testing.T) {
 	getTestStore(t)
 
 	f := DefaultFormat(false)
-	if _, err := seafileWriteDB.Exec(
+	if _, err := writeDB.Exec(
 		"INSERT INTO Repo (repo_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		testRepoID, f.Chunker, f.MinSize, f.TargetSize, f.MaxSize, f.Normalization, f.E2EE); err != nil {
 		t.Fatalf("seed Repo: %v", err)
 	}
-	if _, err := seafileWriteDB.Exec(
+	if _, err := writeDB.Exec(
 		"INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, '')", testRepoID); err != nil {
 		t.Fatalf("seed Branch: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestGetWithReasonDeadDatabaseIsUnavailable(t *testing.T) {
 
 	// Closing the read handle is the closest stand-in for the database being
 	// away that does not need one to be running.
-	if err := seafileDB.Close(); err != nil {
+	if err := readDB.Close(); err != nil {
 		t.Fatalf("close read handle: %v", err)
 	}
 

@@ -282,10 +282,6 @@ func untraced(spanName string) bool {
 	if _, rest, ok := strings.Cut(spanName, " "); ok {
 		path = rest
 	}
-	// Sync clients reach the same handlers through the /seafhttp prefix that
-	// reverse-proxied Seafile deployments use, and the transaction is named
-	// before StripSeafhttpPrefix runs.
-	path = strings.TrimPrefix(path, "/seafhttp")
 	for _, p := range untracedPaths {
 		if path == p || strings.HasPrefix(path, p+"/") {
 			return true

@@ -17,7 +17,7 @@ import (
 // already has, and don't start over when a transfer dies".
 //
 //	POST /api/silo/v1/repos/{repo}/blocks/missing              {"blocks":[…]} -> {"missing":[…]}
-//	PUT  /api/silo/v1/repos/{repo}/blocks/{sha1}               the block's bytes
+//	PUT  /api/silo/v1/repos/{repo}/blocks/{id}                 the chunk's bytes
 //	PUT  /api/silo/v1/repos/{repo}/entries/{path}?type=blocks  {"blocks":[…]}
 //
 // Whole-file PUT still exists and is still the right call for one small file:
@@ -26,20 +26,16 @@ import (
 // all three matter to a sync client the moment a file is large or a link is
 // unreliable.
 //
-// This works because a client can compute block ids without asking. Chunking
-// is at fixed option.FixedBlockSize offsets and a block's id is the SHA-1 of
-// its bytes, so any client with stdlib SHA-1 and a loop arrives at exactly the
-// names the server would. That is what makes "which of these do you have?" a
-// question a client can pose before transferring anything.
+// This works because a client can compute chunk ids without asking. The
+// library's chunker parameters are in the catalog and reported to the client,
+// and a chunk's id is the SHA-256 of its bytes, so a client that chunks the
+// same way arrives at exactly the names the server would. That is what makes
+// "which of these do you have?" a question a client can pose before
+// transferring anything.
 //
-// It is check-blocks re-spelled in this lane's idiom rather than something new
-// — the value is not the mechanism, it is that a Silo-native client no longer
-// has to mint a second credential and cross into the frozen Seafile lane to
-// perform the single most common operation a sync client performs.
-//
-// The limit inherited from fixed-offset chunking is real: inserting a byte
-// near the front of a file shifts every boundary after it and nothing dedups.
-// See docs/protocol-gaps.md.
+// Content-defined boundaries are why this dedups where a fixed-offset scheme
+// did not: inserting a byte near the front of a file used to shift every
+// boundary after it, so nothing matched and the whole file went up again.
 
 // maxBlockListBody bounds a block-id list. At roughly 43 bytes per quoted id
 // and comma this is some 380,000 blocks, which at the default block size is

@@ -11,7 +11,7 @@ import (
 // The Silo database schema.
 //
 // Users, groups and repositories used to live in two separate SQLite files
-// (ccnet.db and seafile.db), inherited from upstream's two server processes.
+// (one for accounts, one for libraries), inherited from two server processes.
 // Silo is one process, so they are one database: no table name collides
 // between the two halves, and a share permission check that has to read a
 // group and a repository can now do it in a single statement.
@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS Branch (name VARCHAR(10), repo_id CHAR(40), commit_id
 -- whose parameters came from whatever the schema happened to say.
 --
 -- e2ee is the library's own answer to "can the server read this", and it is
--- not seafile's is_encrypted: that was a password over a server-side key, and
+-- not the old is_encrypted: that was a password over a server-side key, and
 -- it is being deleted along with the columns that fed it.
 CREATE TABLE IF NOT EXISTS Repo (
   repo_id      CHAR(37) PRIMARY KEY,

@@ -64,7 +64,7 @@ func TestCreateNotifyTokenPermissions(t *testing.T) {
 }
 
 // TestCreateNotifyTokenClaims checks the minted token is the same token the
-// Seafile-lane endpoint issues — the notification server verifies a signature,
+// deleted sync-lane endpoint issued — the notification server verifies a signature,
 // an audience and a repo id, and has never known how the holder authenticated.
 func TestCreateNotifyTokenClaims(t *testing.T) {
 	setupPerms(t)

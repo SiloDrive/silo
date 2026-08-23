@@ -342,7 +342,7 @@ func TestNeedsRehash(t *testing.T) {
 }
 
 // Nothing upgraded a stored hash before, so an account created against an old
-// Seafile kept unsalted SHA1 — or SHA256 with a salt that is a public
+// The scheme this inherited kept unsalted SHA1 — or SHA256 with a salt that is a public
 // constant — indefinitely. A successful login is the only moment the
 // plaintext is in hand and known good.
 func TestValidatePasswordUpgradesLegacyHashes(t *testing.T) {

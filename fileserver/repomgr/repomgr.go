@@ -69,18 +69,18 @@ type VRepoInfo struct {
 	BaseCommitID string
 }
 
-var seafileDB *sql.DB      // read handle
-var seafileWriteDB *sql.DB // write handle
-var dataDir string         // where object stores live
+var readDB *sql.DB  // read handle
+var writeDB *sql.DB // write handle
+var dataDir string  // where object stores live
 
 // Init initialize status of repomgr package.
 //
 // dataDir is here because creating a library now writes objects as well as
 // rows: a store-v2 library's first commit and its empty root are real objects
 // that have to exist before the branch can point at them.
-func Init(readDB, writeDB *sql.DB, dir string) {
-	seafileDB = readDB
-	seafileWriteDB = writeDB
+func Init(read, write *sql.DB, dir string) {
+	readDB = read
+	writeDB = write
 	dataDir = dir
 }
 
@@ -224,7 +224,7 @@ func scanRepoRow(rows *sql.Rows, id string, repo *Repo) error {
 func GetWithReason(id string) (*Repo, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	stmt, err := seafileDB.PrepareContext(ctx, repoSelect)
+	stmt, err := readDB.PrepareContext(ctx, repoSelect)
 	if err != nil {
 		return nil, fault(id, ErrRepoUnavailable, "failed to prepare sql %s: %v", repoSelect, err)
 	}
@@ -272,9 +272,10 @@ func GetWithReason(id string) (*Repo, error) {
 // checkHeadPresent verifies a store-v2 library's head commit object is
 // actually there.
 //
-// Nothing else does any more, and that is the point. A Seafile library's head
-// was read on every load by loadSeafileCrypto, so a missing object surfaced as
-// corruption for free; a store-v2 head is never read here, because there is
+// Nothing else does any more, and that is the point. The head used to be
+// decoded on every load to fill in fields that no longer exist, so a missing
+// object surfaced as corruption for free; the head is never read here now,
+// because there is
 // nothing in it this function needs. Without this check a library whose head
 // object had gone would load clean and fail later, somewhere further from the
 // cause — and the reason that matters is the one on GetWithReason's errors: a
@@ -393,7 +394,7 @@ func GetEx(id string) *Repo {
 	repo := new(Repo)
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	stmt, err := seafileDB.PrepareContext(ctx, repoSelect)
+	stmt, err := readDB.PrepareContext(ctx, repoSelect)
 	if err != nil {
 		repo.IsCorrupted = true
 		return repo
@@ -449,7 +450,7 @@ func GetVirtualRepoInfo(repoID string) (*VRepoInfo, error) {
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID)
+	row := readDB.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&vRepoInfo.RepoID, &vRepoInfo.OriginRepoID, &vRepoInfo.Path, &vRepoInfo.BaseCommitID); err != nil {
 		if err != sql.ErrNoRows {
 			return nil, err
@@ -466,7 +467,7 @@ func GetVirtualRepoInfoByOrigin(originRepo string) ([]*VRepoInfo, error) {
 	var vRepos []*VRepoInfo
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row, err := seafileDB.QueryContext(ctx, sqlStr, originRepo)
+	row, err := readDB.QueryContext(ctx, sqlStr, originRepo)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +493,7 @@ func GetAccountByToken(repoID string, token string) (account.ID, error) {
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID, token)
+	row := readDB.QueryRowContext(ctx, sqlStr, repoID, token)
 	if err := row.Scan(&id); err != nil {
 		if err != sql.ErrNoRows {
 			return account.Zero, err
@@ -513,7 +514,7 @@ func GetAccountForToken(token string) (account.ID, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
-	row := seafileDB.QueryRowContext(ctx,
+	row := readDB.QueryRowContext(ctx,
 		"SELECT account_id FROM RepoUserToken WHERE token = ?", token)
 	if err := row.Scan(&id); err != nil {
 		if err == sql.ErrNoRows {
@@ -535,7 +536,7 @@ func GetRepoStatus(repoID string) (int, error) {
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID)
+	row := readDB.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&status); err != nil {
 		if err != sql.ErrNoRows {
 			return status, err
@@ -549,7 +550,7 @@ func GetRepoStatus(repoID string) (int, error) {
 
 	// Then, check repo's own status.
 	sqlStr = "SELECT status FROM RepoInfo WHERE repo_id=?"
-	row = seafileDB.QueryRowContext(ctx, sqlStr, repoID)
+	row = readDB.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&status); err != nil {
 		if err != sql.ErrNoRows {
 			return status, err
@@ -565,7 +566,7 @@ func TokenPeerInfoExists(token string) (bool, error) {
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, token)
+	row := readDB.QueryRowContext(ctx, sqlStr, token)
 	if err := row.Scan(&exists); err != nil {
 		if err != sql.ErrNoRows {
 			return false, err
@@ -582,7 +583,7 @@ func AddTokenPeerInfo(token, peerID, peerIP, peerName, clientVer string, syncTim
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, token, peerID, peerIP, peerName, syncTime, clientVer); err != nil {
+	if _, err := writeDB.ExecContext(ctx, sqlStr, token, peerID, peerIP, peerName, syncTime, clientVer); err != nil {
 		return err
 	}
 	return nil
@@ -594,7 +595,7 @@ func UpdateTokenPeerInfo(token, peerID, clientVer string, syncTime int64) error 
 		"peer_ip=?, sync_time=?, client_ver=? WHERE token=?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, peerID, syncTime, clientVer, token); err != nil {
+	if _, err := writeDB.ExecContext(ctx, sqlStr, peerID, syncTime, clientVer, token); err != nil {
 		return err
 	}
 	return nil
@@ -648,7 +649,7 @@ func RecordHeadMove(ctx context.Context, tx *sql.Tx, repoID, modifier string, wh
 func SetRepoName(repoID, name string) error {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	res, err := seafileWriteDB.ExecContext(ctx,
+	res, err := writeDB.ExecContext(ctx,
 		"UPDATE RepoInfo SET name=? WHERE repo_id=?", name, repoID)
 	if err != nil {
 		return err
@@ -664,7 +665,7 @@ func SetVirtualRepoBaseCommitPath(repoID, baseCommitID, newPath string) error {
 	sqlStr := "UPDATE VirtualRepo SET base_commit=?, path=? WHERE repo_id=?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, baseCommitID, newPath, repoID); err != nil {
+	if _, err := writeDB.ExecContext(ctx, sqlStr, baseCommitID, newPath, repoID); err != nil {
 		return err
 	}
 	return nil
@@ -678,7 +679,7 @@ func GetVirtualRepoIDsByOrigin(repoID string) ([]string, error) {
 	var ids []string
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row, err := seafileDB.QueryContext(ctx, sqlStr, repoID)
+	row, err := readDB.QueryContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return nil, err
 	}
@@ -705,7 +706,7 @@ func DelVirtualRepo(repoID string, cloudMode bool) error {
 	sqlStr := "DELETE FROM VirtualRepo WHERE repo_id = ?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	_, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
+	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return err
 	}
@@ -717,12 +718,12 @@ func removeVirtualRepoOndisk(repoID string, cloudMode bool) error {
 	sqlStr := "DELETE FROM Repo WHERE repo_id = ?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	_, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
+	_, err := writeDB.ExecContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return err
 	}
 	sqlStr = "SELECT name, repo_id, commit_id FROM Branch WHERE repo_id=?"
-	rows, err := seafileDB.QueryContext(ctx, sqlStr, repoID)
+	rows, err := readDB.QueryContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return err
 	}
@@ -735,61 +736,61 @@ func removeVirtualRepoOndisk(repoID string, cloudMode bool) error {
 			}
 		}
 		sqlStr := "DELETE FROM RepoHead WHERE branch_name = ? AND repo_id = ?"
-		_, err := seafileWriteDB.ExecContext(ctx, sqlStr, name, id)
+		_, err := writeDB.ExecContext(ctx, sqlStr, name, id)
 		if err != nil {
 			return err
 		}
 		sqlStr = "DELETE FROM Branch WHERE name=? AND repo_id=?"
-		_, err = seafileWriteDB.ExecContext(ctx, sqlStr, name, id)
+		_, err = writeDB.ExecContext(ctx, sqlStr, name, id)
 		if err != nil {
 			return err
 		}
 	}
 
 	sqlStr = "DELETE FROM RepoOwner WHERE repo_id = ?"
-	_, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
+	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return err
 	}
 
 	sqlStr = "DELETE FROM SharedRepo WHERE repo_id = ?"
-	_, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
+	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return err
 	}
 
 	sqlStr = "DELETE FROM RepoGroup WHERE repo_id = ?"
-	_, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
+	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return err
 	}
 	if !cloudMode {
 		sqlStr = "DELETE FROM InnerPubRepo WHERE repo_id = ?"
-		_, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
+		_, err := writeDB.ExecContext(ctx, sqlStr, repoID)
 		if err != nil {
 			return err
 		}
 	}
 
 	sqlStr = "DELETE FROM RepoUserToken WHERE repo_id = ?"
-	_, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
+	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return err
 	}
 
 	sqlStr = "DELETE FROM RepoValidSince WHERE repo_id = ?"
-	_, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
+	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return err
 	}
 
 	sqlStr = "DELETE FROM RepoUsage WHERE repo_id = ?"
-	_, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
+	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return err
 	}
 
-	_, err = seafileWriteDB.ExecContext(ctx, dbutil.InsertOrIgnore("GarbageRepos", "repo_id"), repoID)
+	_, err = writeDB.ExecContext(ctx, dbutil.InsertOrIgnore("GarbageRepos", "repo_id"), repoID)
 	if err != nil {
 		return err
 	}
@@ -804,7 +805,7 @@ func IsVirtualRepo(repoID string) (bool, error) {
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID)
+	row := readDB.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&exists); err != nil {
 		if err != sql.ErrNoRows {
 			return false, err
@@ -822,7 +823,7 @@ func GetRepoOwner(repoID string) (account.ID, error) {
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID)
+	row := readDB.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&owner); err != nil {
 		if err != sql.ErrNoRows {
 			return account.Zero, err
@@ -838,7 +839,7 @@ func HasLastGCID(repoID, clientID string) (bool, error) {
 	var exist int
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID, clientID)
+	row := readDB.QueryRowContext(ctx, sqlStr, repoID, clientID)
 	if err := row.Scan(&exist); err != nil {
 		if err != sql.ErrNoRows {
 			return false, err
@@ -856,7 +857,7 @@ func GetLastGCID(repoID, clientID string) (string, error) {
 	var gcID sql.NullString
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID, clientID)
+	row := readDB.QueryRowContext(ctx, sqlStr, repoID, clientID)
 	if err := row.Scan(&gcID); err != nil {
 		if err != sql.ErrNoRows {
 			return "", err
@@ -872,7 +873,7 @@ func GetCurrentGCID(repoID string) (string, error) {
 	var gcID sql.NullString
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID)
+	row := readDB.QueryRowContext(ctx, sqlStr, repoID)
 	if err := row.Scan(&gcID); err != nil {
 		if err != sql.ErrNoRows {
 			return "", err
@@ -886,7 +887,7 @@ func RemoveLastGCID(repoID, clientID string) error {
 	sqlStr := "DELETE FROM LastGCID WHERE repo_id = ? AND client_id = ?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, clientID); err != nil {
+	if _, err := writeDB.ExecContext(ctx, sqlStr, repoID, clientID); err != nil {
 		return err
 	}
 	return nil
@@ -901,12 +902,12 @@ func SetLastGCID(repoID, clientID, gcID string) error {
 	defer cancel()
 	if exist {
 		sqlStr := "UPDATE LastGCID SET gc_id = ? WHERE repo_id = ? AND client_id = ?"
-		if _, err = seafileWriteDB.ExecContext(ctx, sqlStr, gcID, repoID, clientID); err != nil {
+		if _, err = writeDB.ExecContext(ctx, sqlStr, gcID, repoID, clientID); err != nil {
 			return err
 		}
 	} else {
 		sqlStr := "INSERT INTO LastGCID (repo_id, client_id, gc_id) VALUES (?, ?, ?)"
-		if _, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID, clientID, gcID); err != nil {
+		if _, err = writeDB.ExecContext(ctx, sqlStr, repoID, clientID, gcID); err != nil {
 			return err
 		}
 	}
@@ -919,12 +920,12 @@ func SetLastGCID(repoID, clientID, gcID string) error {
 // A new token is minted on every call rather than reusing an existing one for
 // the same (repo, user). That is intentional: each client install gets its own
 // token, so revoking one device does not stop the others syncing. Upstream
-// Seahub's get_repo_token_nonnull collapses these to one token per user per
+// The scheme this inherited collapses these to one token per user per
 // repo; Silo does not, because the device identity that makes per-device
 // revocation useful (client_id, bound to the token at first permission-check)
 // is not available here at mint time.
 //
-// Sync tokens deliberately have no expiry. Seafile and SeaDrive persist them
+// Sync tokens deliberately have no expiry. The clients they were for persist them
 // in local config and treat them as durable, so ageing them out would stop
 // sync silently at the TTL. Revocation is the intended way to invalidate one.
 func GenerateRepoToken(repoID string, id account.ID) (string, error) {
@@ -936,7 +937,7 @@ func GenerateRepoToken(repoID string, id account.ID) (string, error) {
 	sqlStr := "INSERT INTO RepoUserToken (repo_id, account_id, token, ctime) VALUES (?, ?, ?, ?)"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, id, token, time.Now().Unix()); err != nil {
+	if _, err := writeDB.ExecContext(ctx, sqlStr, repoID, id, token, time.Now().Unix()); err != nil {
 		return "", fmt.Errorf("failed to insert repo token: %v", err)
 	}
 
@@ -949,7 +950,7 @@ func DeleteRepoTokensByAccount(id account.ID) (int64, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
-	res, err := seafileWriteDB.ExecContext(ctx,
+	res, err := writeDB.ExecContext(ctx,
 		"DELETE FROM RepoUserToken WHERE account_id = ?", id)
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete repo tokens: %v", err)
@@ -964,7 +965,7 @@ func DeleteRepoToken(repoID, token string, id account.ID) error {
 	sqlStr := "DELETE FROM RepoUserToken WHERE repo_id = ? AND token = ? AND account_id = ?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, token, id); err != nil {
+	if _, err := writeDB.ExecContext(ctx, sqlStr, repoID, token, id); err != nil {
 		return fmt.Errorf("failed to delete repo token: %v", err)
 	}
 	notify(OnTokensRevoked, id)
@@ -982,7 +983,7 @@ func ListRepoTokensByAccount(id account.ID) ([]RepoToken, error) {
 	sqlStr := "SELECT repo_id, token, ctime FROM RepoUserToken WHERE account_id = ? ORDER BY ctime"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	rows, err := seafileDB.QueryContext(ctx, sqlStr, id)
+	rows, err := readDB.QueryContext(ctx, sqlStr, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list repo tokens: %v", err)
 	}
@@ -1061,7 +1062,7 @@ func CreateRepo(name string, owner *account.Account, format Format) (string, err
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
-	tx, err := seafileWriteDB.BeginTx(ctx, nil)
+	tx, err := writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to begin transaction: %v", err)
 	}
@@ -1121,7 +1122,7 @@ func DeleteRepo(repoID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout*2)
 	defer cancel()
 
-	tx, err := seafileWriteDB.BeginTx(ctx, nil)
+	tx, err := writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %v", err)
 	}
@@ -1170,7 +1171,7 @@ func listVirtualRepoIDs(repoID string) ([]string, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
-	rows, err := seafileDB.QueryContext(ctx,
+	rows, err := readDB.QueryContext(ctx,
 		"SELECT repo_id FROM VirtualRepo WHERE origin_repo = ?", repoID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list virtual repos of %s: %v", repoID, err)

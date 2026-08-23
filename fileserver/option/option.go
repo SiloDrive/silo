@@ -134,7 +134,7 @@ var (
 	// known: a client that does not re-authenticate on 401 would stop working
 	// at the TTL, and an operator who hits that needs a way to raise it
 	// without a rebuild. Sync tokens (RepoUserToken) deliberately have no
-	// equivalent — Seafile clients persist those and treat them as durable.
+	// equivalent — sync clients persist those and treat them as durable.
 	APITokenTTL time.Duration
 
 	// VerifyFSObjectHashes checks that an uploaded fs object hashes to the id
@@ -258,7 +258,7 @@ func envBool(def bool, names ...string) bool {
 	return def
 }
 
-// LoadFileServerOptions loads seafile.conf from the given path. An empty
+// LoadFileServerOptions loads silo.conf from the given path. An empty
 // path or a missing file is fine — Silo then runs entirely on compiled
 // defaults plus environment variable overrides.
 func LoadFileServerOptions(configFile string) {
@@ -349,10 +349,10 @@ func LoadFileServerOptions(configFile string) {
 	}
 
 	// Environment overrides for bind address.
-	if envHost := EnvWithFallback("SILO_HOST", "SEAFILE_FILESERVER_HOST"); envHost != "" {
+	if envHost := os.Getenv("SILO_HOST"); envHost != "" {
 		Host = envHost
 	}
-	if envPort := EnvWithFallback("SILO_PORT", "SEAFILE_FILESERVER_PORT"); envPort != "" {
+	if envPort := os.Getenv("SILO_PORT"); envPort != "" {
 		if port, err := strconv.ParseUint(envPort, 10, 32); err == nil {
 			Port = uint32(port)
 		}
@@ -367,7 +367,7 @@ func LoadFileServerOptions(configFile string) {
 
 	loadCacheOptionFromEnv()
 
-	GroupTableName = EnvWithFallback("SILO_GROUP_TABLE_NAME", "SEAFILE_MYSQL_DB_GROUP_TABLE_NAME")
+	GroupTableName = os.Getenv("SILO_GROUP_TABLE_NAME")
 	if GroupTableName == "" {
 		GroupTableName = "Group"
 	}

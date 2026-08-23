@@ -19,7 +19,7 @@ import (
 // repomgr.DeleteRepoTokensByAccount and apitokenstore.DeleteByAccount were
 // written for it and documented as the way to invalidate a token — but
 // nothing outside their own tests ever called them. Sync tokens have no
-// expiry by design, because Seafile clients persist them and treat them as
+// expiry by design, because the clients they were for persist them and treat them as
 // durable, so with no reachable revocation a token copied off a stolen laptop
 // kept read/write access to the library forever. A password change did not
 // touch it. The only remedy was editing SQLite by hand.
@@ -85,7 +85,7 @@ func listTokens(acct *account.Account) error {
 	}
 
 	if len(syncTokens) > 0 {
-		fmt.Printf("Sync tokens (%d) — used by Seafile Desktop and SeaDrive, no expiry:\n", len(syncTokens))
+		fmt.Printf("Sync tokens (%d) — legacy, no expiry, nothing validates them:\n", len(syncTokens))
 		for _, t := range syncTokens {
 			fmt.Printf("  %s  repo %s  created %s\n", t.Token, t.RepoID, formatUnix(t.Ctime))
 		}

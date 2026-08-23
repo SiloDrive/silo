@@ -31,7 +31,7 @@ func Init(siloReadDB, siloWriteDB *sql.DB) {
 	writeDB = siloWriteDB
 }
 
-// Legacy fixed salt used by old Seafile SHA256 password hashing.
+// Legacy fixed salt, from the SHA256 password hashing this inherited.
 var legacySalt = []byte{0xdb, 0x91, 0x45, 0xc3, 0x06, 0xc7, 0xcc, 0x26}
 
 // ValidatePassword checks an address and password against the account behind
@@ -208,7 +208,7 @@ func ValidateSessionToken(tokenString string) (account.ID, error) {
 
 // PBKDF2Iterations is the work factor for new password hashes, at OWASP's
 // current recommendation for PBKDF2-HMAC-SHA256. The previous value, 10,000,
-// dates from a Seafile of some years ago and is now sixty times too cheap:
+// dates from some years ago and is now sixty times too cheap:
 // it puts a stolen AccountPassword table within reach of ordinary offline
 // cracking.
 //
@@ -241,7 +241,7 @@ func HashPassword(password string) (string, error) {
 // password behind it is known to be correct.
 //
 // Nothing ever upgraded a hash before, so an account created against an old
-// Seafile kept its original one indefinitely — unsalted SHA1, or SHA256 with
+// The scheme this inherited kept its original one indefinitely — unsalted SHA1, or SHA256 with
 // a salt that is a public constant a few lines up in this file. Neither
 // survives contact with a stolen database. A successful login is the only
 // moment the plaintext is in hand and known good, so it is the only chance to

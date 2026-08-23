@@ -72,7 +72,7 @@ func TestParseTokenRejectsMalformed(t *testing.T) {
 	}{
 		{"empty", ""},
 		{"no prefix", strings.TrimPrefix(valid, "silo_")},
-		{"wrong prefix", "seaf_" + strings.TrimPrefix(valid, "silo_")},
+		{"wrong prefix", "xyzz_" + strings.TrimPrefix(valid, "silo_")},
 		{"too few fields", "silo_device_" + strings.Repeat("a", 68)},
 		{"unknown kind", strings.Replace(valid, "_device_", "_wat_", 1)},
 		{"truncated", valid[:len(valid)-1]},

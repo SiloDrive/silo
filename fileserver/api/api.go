@@ -16,10 +16,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var seafileDB *sql.DB // read handle
+var readDB *sql.DB // read handle
 
-func Init(readDB, _ *sql.DB) {
-	seafileDB = readDB
+func Init(read, _ *sql.DB) {
+	readDB = read
 }
 
 type siloServerInfo struct {
@@ -320,7 +320,7 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := option.WithDBTimeout(r.Context())
 	defer cancel()
 
-	rows, err := seafileDB.QueryContext(ctx,
+	rows, err := readDB.QueryContext(ctx,
 		repoSelect("o")+
 			"FROM RepoOwner o LEFT JOIN RepoInfo i ON o.repo_id = i.repo_id "+
 			"LEFT JOIN Branch b ON b.repo_id = o.repo_id AND b.name = 'master' "+
@@ -339,7 +339,7 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 		seen[r.ID] = true
 	}
 
-	sharedRows, err := seafileDB.QueryContext(ctx,
+	sharedRows, err := readDB.QueryContext(ctx,
 		repoSelect("s")+
 			"FROM SharedRepo s LEFT JOIN RepoInfo i ON s.repo_id = i.repo_id "+
 			"LEFT JOIN Branch b ON b.repo_id = s.repo_id AND b.name = 'master' "+

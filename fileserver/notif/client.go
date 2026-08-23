@@ -36,7 +36,7 @@ const (
 type Client struct {
 	ID uint64
 
-	// User is the authenticated Seafile username, set on the first
+	// User is the authenticated username, set on the first
 	// successful subscribe from the JWT claims. It is unused today (only
 	// repo-update events flow, and those fan out to every subscriber of a
 	// repo), but will be needed when per-user events like

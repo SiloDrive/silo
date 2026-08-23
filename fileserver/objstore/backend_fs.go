@@ -27,13 +27,13 @@ type fsBackend struct {
 	tmpDir  string
 }
 
-func newFSBackend(seafileDataDir string, objType string) (*fsBackend, error) {
-	objDir := TypeDir(seafileDataDir, objType)
+func newFSBackend(dataDir string, objType string) (*fsBackend, error) {
+	objDir := TypeDir(dataDir, objType)
 	err := os.MkdirAll(objDir, os.ModePerm)
 	if err != nil {
 		return nil, err
 	}
-	tmpDir := path.Join(seafileDataDir, "tmpfiles")
+	tmpDir := path.Join(dataDir, "tmpfiles")
 	err = os.MkdirAll(tmpDir, os.ModePerm)
 	if err != nil {
 		return nil, err

@@ -95,7 +95,7 @@ func NewID() (ID, error) {
 
 // Account is a user, and the primary address they are known by.
 //
-// Email is carried alongside the id because it is still the thing SeaDrive is
+// Email is carried alongside the id because it is still the thing a client is
 // shown, the thing a commit records as its author, and the thing a log line
 // should name. What it is no longer is the key any of those are looked up by.
 type Account struct {

@@ -25,7 +25,7 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: go test
-        # -p 1: several fileserver test packages share /tmp/conf/seafile-data
+        # -p 1: several fileserver test packages share a fixed temp data directory
         # with the same repo ID, so parallel package execution races. Proper
         # fix is t.TempDir() in those tests.
         run: go test -p 1 ./...

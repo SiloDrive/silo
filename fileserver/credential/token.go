@@ -17,7 +17,7 @@ const (
 	KindDevice  Kind = "device"  // Porter, the File Provider extension
 	KindSession Kind = "session" // the TUI, the CLI
 	KindAccess  Kind = "access"  // capability URLs
-	KindLegacy  Kind = "legacy"  // SeaDrive, Seafile Desktop
+	KindLegacy  Kind = "legacy"  // legacy clients; nothing validates these now
 	KindS3      Kind = "s3"      // an S3 frontend, if it is ever built
 )
 

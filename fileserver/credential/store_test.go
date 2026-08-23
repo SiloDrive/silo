@@ -303,7 +303,7 @@ func TestResolveLegacyToken(t *testing.T) {
 	}
 	if _, err := pair.Write.Exec(
 		`INSERT INTO Credential (id, kind, secret_hash, account_id, label, perm, ctime)
-		 VALUES (?, 'legacy', ?, ?, 'seadrive', 'rw', ?)`,
+		 VALUES (?, 'legacy', ?, ?, 'legacy-client', 'rw', ?)`,
 		tok.ID, tok.SecretHash(), dan, time.Now().Unix()); err != nil {
 		t.Fatalf("inserting credential: %v", err)
 	}

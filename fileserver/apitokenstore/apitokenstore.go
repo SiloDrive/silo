@@ -1,5 +1,5 @@
-// Package apitokenstore persists SeaDrive/Seahub-style API tokens (40-char hex
-// strings) in the seafile DB so they survive server restarts. Each token maps
+// Package apitokenstore persists API tokens (40-char hex strings) in the
+// database so they survive server restarts. Each token maps
 // to an account and carries an expiry.
 //
 // Tokens are minted per login and never deduplicated: two devices logging in

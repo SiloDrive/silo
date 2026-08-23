@@ -115,14 +115,14 @@ const defaultFileMode = 0o644
 
 // defaultDirMode is the mode a server-created directory gets. Permission bits
 // only — a store-v2 dirent records the entry's type in NodeType, so the
-// S_IFDIR the Seafile lane ors in here has no place in it.
+// S_IFDIR that a stat-shaped mode ors in here has no place in it.
 const defaultDirMode = 0o755
 
 // mutateTree applies one change to a store-v2 library's tree and moves the
 // head to a commit describing it, retrying if it loses the race for the head.
 //
 // This is the store-v2 replacement for GenNewCommit and its friends, and the
-// difference worth naming is what it does NOT do. The Seafile lane, on losing
+// difference worth naming is what it does NOT do. The lane this replaced, on losing
 // the head, merged: it read both trees and reconciled them. That cannot exist
 // here, because merging trees means reading names, and in an E2EE library the
 // server cannot. So a lost race re-applies the same mutation to the new root
@@ -221,7 +221,7 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 		// rather than holding a connection for half a minute.
 		time.Sleep(contentionBackoff(attempt))
 	}
-	// Wrapped in the sentinel the Seafile lane's own bounded loop uses, so
+	// Wrapped in a sentinel rather than left bare, so
 	// writeCommitErr classifies this as contention rather than breakage: the
 	// caller lost a race, nothing was applied, and the identical request will
 	// usually succeed. Left bare it fell to the default arm — a 500 with no
@@ -291,7 +291,7 @@ func writeCommitErr(w http.ResponseWriter, r *http.Request, err error, what stri
 // headMove is a proposed new head: the commit, the root it names, and who
 // moved it when.
 //
-// It exists so that updateBranch takes facts rather than a Seafile commit
+// It exists so that updateBranch takes facts rather than a commit
 // object. Those four values are all it ever read out of one, and a store-v2
 // commit has the same four — so the compare-and-swap, the GC generation check
 // and the catalog record are written once and serve both formats, rather than
