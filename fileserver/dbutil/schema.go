@@ -18,6 +18,19 @@ import (
 const siloSchema = `
 -- Accounts. An account is an opaque id, and an address is something it has.
 --
+-- Five tables and three jobs: what you are called (AccountEmail,
+-- AccountIdentity), what proves it per request (Credential), and what
+-- bootstraps the rest (AccountPassword). They stay apart because those jobs
+-- have different rules. An address and an OIDC subject carry no proof material
+-- at all -- the mailbox and the IdP do the proving -- so a row in the
+-- credential table that can verify nothing would be a row in the wrong table.
+-- A password is one per account, enforced by a primary key rather than by a
+-- partial index somebody has to remember, and it is verified under a slow
+-- memory-hard KDF while a 256-bit credential is verified under one SHA-256:
+-- see docs/auth.md, "Why tokens want a fast hash, and passwords do not". One
+-- secret_hash column invites one verification path, and it would be the wrong
+-- one for whichever of the two lost the argument.
+--
 -- id is a UUIDv7 stored as its 16 raw bytes. v7 leads with a millisecond
 -- timestamp, so accounts created together land together in the index instead
 -- of scattering across it the way v4 would.
@@ -62,6 +75,13 @@ CREATE INDEX IF NOT EXISTS account_identity_account_idx ON AccountIdentity (acco
 -- Separate from Account because not every account has a password. An
 -- OIDC-only account has none, and a nullable column is how "no password"
 -- turns into "any password will do".
+--
+-- These are not the argon2 parameters in store/kdf.go, and the two get
+-- confused because both stretch "the password" with argon2id. The client
+-- stretches the password into authKey under the parameters store.KDFParams
+-- carries; the server stretches the authKey it receives into this column under
+-- its own. Two KDFs, two parameter sets, one living in each schema -- neither
+-- is vestigial and raising one does not raise the other.
 --
 -- There is no algorithm column, and that is load-bearing rather than an
 -- omission: every hash written here is self-describing, either the

@@ -871,12 +871,47 @@ Every wrap binds itself to who and what it is for, as associated data.
 - **holder** — the account's id in **canonical lowercase hyphenated UUID text**
   (`3f2a1c58-9b0d-4e77-8a61-5c2d0e4f9ab3`). It must be **immutable for the life
   of the account**: changing it makes every blob the account holds unopenable.
-  An email address must not be used for this, for exactly that reason.
+  An email address must not be used for this, for exactly that reason — an
+  address is mutable and an account may hold several.
 - **library** — the library's UUID, same spelling.
 
-Both are bounded at 255 bytes and neither may be empty: a wrap that binds to
-nothing binds nothing. They are refused rather than truncated — a truncated
-holder still binds, just to the wrong person.
+Neither may be empty: a wrap that binds to nothing binds nothing. They are
+refused rather than truncated — a truncated holder still binds, just to the
+wrong person.
+
+**The holder spelling is enforced, not merely requested**, on the way in and on
+the way out. It is exactly 36 characters: lower-case hexadecimal digits with
+hyphens at offsets 8, 13, 18 and 23, and nothing else. Not the 32-character
+unhyphenated form, not `{braced}`, not `urn:uuid:`-prefixed, not upper case — a
+permissive UUID parser accepts every one of those, and they are all different
+byte strings. Since the holder is associated data, two clients that disagree
+about the spelling seal blobs neither can open, and the only error either sees
+is that the key was wrong.
+
+So this is a *spelling* rule rather than a parse: handing the text to a
+platform UUID type and reading it back is not the check, because a permissive
+parser reports success on all six spellings above. The version and variant
+nibbles are deliberately not examined — Silo mints UUIDv7, but which flavour an
+account id is drawn from is the server's business, not something a blob should
+refuse to open over. The **nil UUID**
+(`00000000-0000-0000-0000-000000000000`) is refused for the reason the empty
+string is: it is well formed and names nobody. `keys.json`'s `holders_refused`
+commits every case a port has to reject.
+
+**`library` carries no spelling rule today.** It is bounded at 255 bytes and
+required to be non-empty, and that is all — the id a library is created with is
+client-supplied, and tightening it is a separate decision with its own vector
+regeneration. The asymmetry is recorded here rather than left to be discovered:
+a reader that assumes both identifiers are validated the same way is wrong
+about one of them.
+
+**A wrap that has no holder is a different kind, not a holder-bearing blob with
+the field left out.** `sharing.md`'s *compatible* link flavor wraps a share key
+`SK` to the server, and the server is not an account — it has no UUID, and
+inventing one for it would mean either an exception carved into the rule above
+or a sentinel that binds to nothing. Whenever that wrap is specified it takes
+its own kind byte and its own AD domain (`silo/wrap/sk/...`), and it does not
+carry a holder field at all. The rule above stays total.
 
 ### Wrapped identity blob
 
@@ -897,8 +932,10 @@ same 32 bytes.
 +------------------------------------+
 ```
 
-`params_len` is bounded at **128 bytes** and `holder_len` at **255**; a reader
-enforces both before it allocates. The longest parameter string this format can
+`params_len` is bounded at **128 bytes** and `holder_len` is exactly **36** —
+the width of a canonical UUID, since that is the only thing a holder may be; a
+reader enforces both before it allocates, and then applies the holder spelling
+rule above to the 36 bytes it read. The longest parameter string this format can
 write is 57 bytes — `$argon2id$v=19$` plus `m=1048576,t=16,p=16` at the
 ceilings, a separator, and a 16-byte salt in unpadded base64 — so 128 is that
 with room for a longer future parameter set. A reader that takes `params_len`
@@ -1057,13 +1094,18 @@ and a non-ASCII password; identity keypairs; identity, content-key and recovery
 wraps with the salt and ephemeral key fixed so the blobs are reproducible; and
 every spelling of one recovery code with its normalized form.
 
-Two things in that file are not like the others:
+Three things in that file are not like the others:
 
 - **`kdf_refused` is the half a port passes every other vector without.** Twelve
   parameter strings that must be refused, each labelled with *where* — at the
   parser or at the bounds — including `m=19455`, one KiB under the floor. A port
   that omits the floor check reproduces every derivation and every blob in this
   file and is still broken.
+- **`holders_refused` is the same shape for the account id.** Ten spellings that
+  must not be wrapped to, including the upper-case, unhyphenated, braced and
+  `urn:uuid:` forms a permissive UUID parser accepts. Both arrays are described
+  rather than stored: what must not happen is a blob existing at all, so there
+  is no blob to commit.
 - **The argon2id argument order is checked against the reference
   implementation**, in the Go tests rather than in `testdata`, because
   reproducing somebody else's numbers is the point. `IDKey` takes *time* before

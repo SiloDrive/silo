@@ -1295,6 +1295,21 @@ Phases are sequential on the branch; each leaves the tree working.
    content crypto in the shared package, TUI and porter-fuse reading/writing
    encrypted libraries.
 
+   **The account side of this has no schema and no route**, found 2026-08-23
+   and written up as
+   [auth.md § The client's KDF is not this one](../auth.md#the-clients-kdf-is-not-this-one-and-it-needs-four-columns)
+   rather than left to be discovered mid-phase, the way `CreateRepo` refusing
+   E2EE libraries was. Phase 1 pinned the wire format and auth.md pinned the
+   account model, and nothing connects them: four schema items — the published
+   X25519 public key, the kind-1 wrapped identity blob, the kind-2 recovery
+   blobs as individually deletable rows (that granularity is forced by the
+   redemption rule, so it is a constraint rather than a choice), and the
+   client's `KDFParams` — plus the "salt endpoint" above, which today is a name
+   with no route and no backing column. The endpoint is the one with teeth: it
+   is unauthenticated, so it is finding 7's enumeration oracle in a new place,
+   and its answer is attacker-influenced input to the client's KDF, which is
+   what `store`'s parameter ceiling was written to survive.
+
    The split existed to keep each step small, and it was written assuming the
    phases would ship in order to somebody. There is nobody: no installs, no
    upgrade path, and decision 9 makes E2EE the default, so the plain-only case

@@ -45,7 +45,12 @@ const WrapSaltSize = 16
 // each one takes, because two clients that spell an account id differently
 // produce blobs neither can open.
 const (
-	MaxWrapHolderBytes  = 255
+	// HolderBytes is the width of an account id in canonical UUID text, which
+	// is the only thing a holder may be — so it is a width, not a ceiling, and
+	// checkHolder refuses anything else a moment after readBounded has stopped
+	// a hostile length from allocating.
+	HolderBytes = 36
+
 	MaxWrapLibraryBytes = 255
 
 	// MaxKDFParamsBytes bounds the parameter string a wrapped identity
@@ -116,8 +121,9 @@ func (i *Identity) Public() [X25519KeySize]byte {
 // WrapIdentity seals a private identity key under a password-derived wrapKey.
 //
 // The blob is what the server stores per account, opaque to it. holder is the
-// account it belongs to, bound as associated data so a server cannot hand one
-// account's blob to another and watch what happens.
+// account it belongs to — its id in canonical lower-case hyphenated UUID text,
+// and nothing else; see checkHolder — bound as associated data so a server
+// cannot hand one account's blob to another and watch what happens.
 //
 // The parameters ride inside the blob rather than beside it. Self-describing
 // is how every other stretched secret in this system is stored, and the
@@ -237,7 +243,7 @@ func wrapCKWith(eph *ecdh.PrivateKey, pub *ecdh.PublicKey, library string, ck []
 	if len(ck) != CKSize {
 		return nil, fmt.Errorf("%w: content key is %d bytes, want %d", ErrWrap, len(ck), CKSize)
 	}
-	if err := checkLabel(library, MaxWrapLibraryBytes, "library"); err != nil {
+	if err := checkLibrary(library); err != nil {
 		return nil, err
 	}
 	ss, err := sharedSecret(eph, pub)
@@ -286,7 +292,7 @@ func UnwrapCK(id *Identity, library string, blob []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkLabel(got, MaxWrapLibraryBytes, "library"); err != nil {
+	if err := checkLibrary(got); err != nil {
 		return nil, err
 	}
 	if got != library {
@@ -360,7 +366,7 @@ type wrapFields struct {
 // salt, same wrapKey, two different private keys, one nonce. Two ciphertexts
 // XOR to the two plaintexts and both keys fall out.
 func wrapSecret(secret []byte, domain string, kind byte, salt [WrapSaltSize]byte, params, holder string, plaintext []byte) ([]byte, error) {
-	if err := checkLabel(holder, MaxWrapHolderBytes, "holder"); err != nil {
+	if err := checkHolder(holder); err != nil {
 		return nil, err
 	}
 	if len(plaintext) != X25519KeySize {
@@ -407,13 +413,15 @@ func parseWrap(blob []byte) (wrapFields, error) {
 	if f.params, err = readBounded(blob, &p, MaxKDFParamsBytes, ErrWrap, "blob", "parameters"); err != nil {
 		return wrapFields{}, err
 	}
-	if f.holder, err = readBounded(blob, &p, MaxWrapHolderBytes, ErrWrap, "blob", "holder"); err != nil {
+	if f.holder, err = readBounded(blob, &p, HolderBytes, ErrWrap, "blob", "holder"); err != nil {
 		return wrapFields{}, err
 	}
-	// "Neither may be empty" is a rule of the format, so it is applied where a
-	// blob is read as well as where one is written — checkLabel is the same
-	// check WrapIdentity and WrapForRecovery run before they seal.
-	if err := checkLabel(f.holder, MaxWrapHolderBytes, "holder"); err != nil {
+	// The spelling rule is applied where a blob is read as well as where one is
+	// written — checkHolder is the same check WrapIdentity and WrapForRecovery
+	// run before they seal. A reader that takes the holder as it finds it will
+	// happily compare one spelling of an account id against another and report
+	// only that the blob belongs to somebody else.
+	if err := checkHolder(f.holder); err != nil {
 		return wrapFields{}, err
 	}
 	if len(blob)-p < X25519KeySize+TagSize {
@@ -461,14 +469,71 @@ func unwrapIdentity(secret []byte, domain string, kind byte, holder string, blob
 	return out, nil
 }
 
-// checkLabel bounds the identifiers a wrap binds to. They are refused rather
-// than truncated: a truncated holder still binds, just to the wrong person.
-func checkLabel(s string, max int, what string) error {
-	if s == "" {
-		return fmt.Errorf("%w: %s is empty, and a wrap that binds to nothing binds nothing", ErrWrap, what)
+// nilUUID names no account. It is account.Zero on the server, the id a handler
+// holds when it has lost the user somewhere upstream.
+const nilUUID = "00000000-0000-0000-0000-000000000000"
+
+// checkHolder applies this format's spelling rule for an account id.
+//
+// Canonical lowercase hyphenated UUID text — 8-4-4-4-12 lowercase hex digits —
+// and nothing else. Not the thirty-two character unhyphenated form, not braces,
+// not a "urn:uuid:" prefix, not upper case: a permissive UUID parser accepts
+// every one of those and they are all different byte strings. The holder is
+// associated data, so two clients that disagree about the spelling seal blobs
+// neither can open, and the error at that point says only that the key was
+// wrong.
+//
+// It is written out rather than handed to a UUID library on purpose. This is a
+// spelling rule, not a parse — a library that reads the id back correctly has
+// still not told you whether the text was canonical — and what a port has to
+// implement is exactly the loop below, on a platform whose own UUID type is
+// permissive in its own way.
+//
+// The version and variant nibbles are deliberately not checked. Silo mints
+// UUIDv7, but which UUID an account id is drawn from is the server's business
+// and not something a blob should refuse to open over.
+//
+// The nil UUID is refused for the reason the empty string is: it is well formed
+// and names nobody, so a wrap bound to it binds to nothing while looking like
+// it binds to something.
+func checkHolder(holder string) error {
+	if holder == "" {
+		return fmt.Errorf("%w: holder is empty, and a wrap that binds to nothing binds nothing", ErrWrap)
 	}
-	if len(s) > max {
-		return fmt.Errorf("%w: %s is %d bytes, above %d", ErrWrap, what, len(s), max)
+	if len(holder) != HolderBytes {
+		return fmt.Errorf("%w: holder %q is %d bytes, and an account id is %d",
+			ErrWrap, holder, len(holder), HolderBytes)
+	}
+	for i := range len(holder) {
+		switch c := holder[i]; i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return fmt.Errorf("%w: holder %q wants a hyphen at %d", ErrWrap, holder, i)
+			}
+		default:
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return fmt.Errorf("%w: holder %q is not lower-case hexadecimal at %d", ErrWrap, holder, i)
+			}
+		}
+	}
+	if holder == nilUUID {
+		return fmt.Errorf("%w: holder is the nil UUID, which names no account", ErrWrap)
+	}
+	return nil
+}
+
+// checkLibrary bounds the library a wrap binds to. It is refused rather than
+// truncated: a truncated id still binds, just to the wrong library.
+//
+// The spec spells a library id as a UUID too, and this does not yet enforce
+// that the way checkHolder does — see the note in the spec's Key wrapping
+// section about which identifiers carry a spelling rule today.
+func checkLibrary(library string) error {
+	if library == "" {
+		return fmt.Errorf("%w: library is empty, and a wrap that binds to nothing binds nothing", ErrWrap)
+	}
+	if len(library) > MaxWrapLibraryBytes {
+		return fmt.Errorf("%w: library is %d bytes, above %d", ErrWrap, len(library), MaxWrapLibraryBytes)
 	}
 	return nil
 }

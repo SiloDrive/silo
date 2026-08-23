@@ -4,12 +4,19 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 )
 
 const (
-	testHolder = "account:7"
+	// The two account ids every wrap test binds to, in the one spelling this
+	// format accepts: canonical lower-case hyphenated UUID text. They are
+	// UUIDv7 because that is what account.NewID mints, though checkHolder does
+	// not look at the version.
+	testHolder      = "0192f0a1-3c5d-7e4b-8f26-9a7d5c3e1b04"
+	testOtherHolder = "0193c48b-2e19-7a6f-b3d0-4e8c1f7a2960"
+
 	// The two libraries every wrap test binds to. They are UUIDs because the
 	// spec says a library id is one; the vectors bind these exact strings, so a
 	// second spelling of either is a blob that opens against nothing.
@@ -89,22 +96,22 @@ func TestABlobCannotBeMovedBetweenAccounts(t *testing.T) {
 	shared := testWrapKey(t)
 	mine, theirs := testIdentity(t), testIdentity(t)
 
-	myBlob, err := WrapIdentity(shared, "account:7", cheapParams(), mine.Private())
+	myBlob, err := WrapIdentity(shared, testHolder, cheapParams(), mine.Private())
 	if err != nil {
 		t.Fatal(err)
 	}
-	theirBlob, err := WrapIdentity(shared, "account:9", cheapParams(), theirs.Private())
+	theirBlob, err := WrapIdentity(shared, testOtherHolder, cheapParams(), theirs.Private())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Same wrap key — the two accounts really do share a password — and the
 	// blob still refuses to open as the wrong account.
-	if _, err := UnwrapIdentity(shared, "account:7", theirBlob); !errors.Is(err, ErrWrap) {
-		t.Fatalf("account 9's blob opened as account 7: %v", err)
+	if _, err := UnwrapIdentity(shared, testHolder, theirBlob); !errors.Is(err, ErrWrap) {
+		t.Fatalf("the second account's blob opened as the first: %v", err)
 	}
-	if _, err := UnwrapIdentity(shared, "account:9", myBlob); !errors.Is(err, ErrWrap) {
-		t.Fatalf("account 7's blob opened as account 9: %v", err)
+	if _, err := UnwrapIdentity(shared, testOtherHolder, myBlob); !errors.Is(err, ErrWrap) {
+		t.Fatalf("the first account's blob opened as the second: %v", err)
 	}
 }
 
@@ -297,19 +304,58 @@ func TestALowOrderPublicKeyIsRefused(t *testing.T) {
 func TestAWrapRefusesAnIdentifierItCannotBind(t *testing.T) {
 	id := testIdentity(t)
 	wrapKey := testWrapKey(t)
-	long := string(bytes.Repeat([]byte{'x'}, MaxWrapHolderBytes+1))
 
-	if _, err := WrapIdentity(wrapKey, "", cheapParams(), id.Private()); !errors.Is(err, ErrWrap) {
-		t.Error("wrapped to an empty holder")
+	for _, tc := range []struct{ what, holder string }{
+		{"an empty holder", ""},
+		{"an over-long holder", string(bytes.Repeat([]byte{'a'}, HolderBytes+1))},
+		{"an upper-case UUID", strings.ToUpper(testHolder)},
+		{"the unhyphenated form", strings.ReplaceAll(testHolder, "-", "")},
+		{"a braced UUID", "{" + testHolder + "}"},
+		{"a urn-prefixed UUID", "urn:uuid:" + testHolder},
+		{"a holder with a trailing space", testHolder + " "},
+		{"a hyphen in the wrong place", "0192f0a13-c5d-7e4b-8f26-9a7d5c3e1b04"},
+		{"a non-hex digit", strings.Replace(testHolder, "f", "g", 1)},
+		{"the nil UUID", nilUUID},
+		{"an account-scheme id", "account:7"},
+		{"an email address", "person@example.com"},
+	} {
+		if _, err := WrapIdentity(wrapKey, tc.holder, cheapParams(), id.Private()); !errors.Is(err, ErrWrap) {
+			t.Errorf("wrapped to %s (%q): %v", tc.what, tc.holder, err)
+		}
 	}
-	if _, err := WrapIdentity(wrapKey, long, cheapParams(), id.Private()); !errors.Is(err, ErrWrap) {
-		t.Error("wrapped to an over-long holder")
-	}
+
 	if _, err := WrapCK(id.Public(), "", bytes.Repeat([]byte{1}, CKSize)); !errors.Is(err, ErrWrap) {
 		t.Error("wrapped a content key to no library")
 	}
 	if _, err := WrapCK(id.Public(), testLibrary, []byte("short")); !errors.Is(err, ErrWrap) {
 		t.Error("wrapped a content key of the wrong width")
+	}
+}
+
+// The spelling rule has to hold on the way in as well as on the way out, and
+// this is the case that proves it: a holder is fixed-width, so a blob carrying
+// a mis-spelled one is structurally identical to a good blob and a reader that
+// only compares strings would report nothing worse than "belongs to somebody
+// else". Splicing rather than wrapping is the only way to build one, because
+// wrapSecret now refuses to.
+func TestABlobCarryingAMisspelledHolderIsRefusedOnRead(t *testing.T) {
+	id := testIdentity(t)
+	wrapKey := testWrapKey(t)
+	blob, err := WrapIdentity(wrapKey, testHolder, cheapParams(), id.Private())
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := bytes.Index(blob, []byte(testHolder))
+	if at < 0 {
+		t.Fatal("the holder is not in the blob it is meant to bind")
+	}
+
+	for _, spelling := range []string{strings.ToUpper(testHolder), nilUUID} {
+		spliced := bytes.Clone(blob)
+		copy(spliced[at:], spelling)
+		if _, err := UnwrapIdentity(wrapKey, spelling, spliced); !errors.Is(err, ErrWrap) {
+			t.Errorf("a blob holding %q was read: %v", spelling, err)
+		}
 	}
 }
 

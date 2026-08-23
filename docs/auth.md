@@ -786,6 +786,90 @@ deliberate: an unverified address is fine for password login, where the
 password is the proof and the address is only a lookup key, and is not fine for
 linking an external identity, where the address *is* the proof.
 
+### The client's KDF is not this one, and it needs four columns
+
+Once [`plans/store-v2.md`](plans/store-v2.md)'s split-derivation login lands
+there are **two** argon2id derivations per password and they are constantly
+mistaken for one. The client stretches the password into `authKey` under
+parameters it fetches before logging in; the server stretches the `authKey` it
+receives into `AccountPassword.hash` under its own. Two KDFs, two parameter
+sets, one living in each schema — neither is vestigial, and raising one does
+not raise the other. (The server's half also gets *cheaper* when this lands: by
+this document's own rule a 256-bit `authKey` needs no memory-hard KDF at all,
+so the semaphore above stops being the constraint it is today.)
+
+Silo has designed the client half twice — [`spec/store-format.md`](spec/store-format.md)
+pins the wire format, this document pins the account model — and connected them
+nowhere. Nothing in the schema stores any of the key material, and the endpoint
+that hands out the client's parameters has no route and no backing column. That
+is a gap between two finished designs rather than an unfinished one, which is
+why it is written down here before something implements against its absence.
+
+**Four schema items.** The shapes below are a starting point, not settled DDL:
+
+```sql
+ALTER TABLE AccountPassword
+  ADD COLUMN client_kdf_params TEXT;      -- $argon2id$v=19$m=...,t=..,p=..$<salt>
+
+CREATE TABLE AccountIdentityKey (         -- exactly one per account
+  account_id  BLOB PRIMARY KEY REFERENCES Account(id),
+  public_key  BLOB NOT NULL,              -- X25519, 32 bytes, published
+  wrapped_key BLOB NOT NULL,              -- store wrap kind 1, sealed under wrapKey
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE AccountRecoveryWrap (        -- ten per account
+  account_id  BLOB    NOT NULL REFERENCES Account(id),
+  ordinal     INTEGER NOT NULL,           -- which of the set; never the code
+  wrapped_key BLOB    NOT NULL,           -- store wrap kind 2
+  ctime       INTEGER NOT NULL,
+  PRIMARY KEY (account_id, ordinal)
+);
+```
+
+- **`client_kdf_params` sits on `AccountPassword`** because it governs how a
+  password becomes `authKey`, and an account with no password has none. It is
+  the PHC string `store.KDFParams.String()` writes, carrying the per-user salt,
+  so there is no separate salt column — the same self-describing argument the
+  hash column already makes. Deliberately adjacent to `hash`, with a comment,
+  because two argon2 parameter sets far apart and unexplained is how the next
+  reader concludes one of them is dead.
+- **`public_key` is a column, not a derivation.** It is what another member's
+  client wraps a content key to, so it is read by people who are not its owner
+  and must be servable without unwrapping anything.
+- **Recovery wraps are rows, and the row granularity is forced.** Redeeming a
+  code deletes its blob and leaves the rest of the set standing — the spec is
+  explicit that regenerating the set on redemption is the tidier-looking rule
+  and the worse one, because it invalidates the codes a person is still holding
+  at the moment they have proved they lost their device. One deletable row per
+  code is that rule expressed as a schema constraint. A single blob column
+  holding a serialised set would make partial redemption a read-modify-write.
+  `ordinal` names the row; the server never learns a code, so redemption is the
+  client fetching the set and trying each blob.
+- **`holder` is `Account.id` in canonical lower-case hyphenated UUID text**,
+  which is exactly what `account.ID.String()` already renders. It is bound into
+  every wrap as associated data and the store package now refuses any other
+  spelling, so nothing has to remember the rule — but note that it makes the
+  account id load-bearing in a new way. It was already immutable; now changing
+  it would make every blob unopenable rather than merely breaking joins.
+
+**The pre-login parameters endpoint** is the sharp one, because a client cannot
+log in without it: `authKey` is a function of parameters only the server knows.
+Given an address it returns that account's `client_kdf_params`. Two constraints
+it must satisfy, neither of which falls out of writing the obvious handler:
+
+- **It is unauthenticated and therefore an enumeration oracle by default** —
+  [finding 7](#7-login-says-which-accounts-exist) in a new place. An unknown
+  address has to receive plausible parameters rather than a 404, and the same
+  ones every time, or the difference between two requests answers the question.
+  Derive them from `HMAC(server_secret, normalized_address)` so they are stable
+  without being stored, exactly as the dummy-hash fix works.
+- **The answer is attacker-influenced input to the client's KDF**, which is
+  what `store`'s ceiling exists for: a server answering `m=4 GiB` does not
+  weaken anything, it takes the device down. The client validates against
+  `store.KDFParams.Validate` before deriving — it already does — and this is
+  the request that makes that guard load-bearing rather than theoretical.
+
 ### Enrolling into an account that already exists
 
 Sharing a library with an address nobody has enrolled under is a thing people
@@ -1237,7 +1321,12 @@ ships.
 4. **Password login as enrolment** — the credential-minting login response, the
    `AccountPassword` table, Argon2id behind a concurrency semaphore, the
    dummy-hash fix for finding 7, and setup credentials in place of
-   `SILO_ADMIN_PASSWORD`.
+   `SILO_ADMIN_PASSWORD`. This is also where
+   [the client's KDF](#the-clients-kdf-is-not-this-one-and-it-needs-four-columns)
+   lands — the four schema items and the pre-login parameters endpoint — because
+   split-derivation login *is* password login, and building the server half
+   first means building it twice. It is sequenced by
+   [`plans/store-v2.md`](plans/store-v2.md) phase 2, which needs it.
 5. **`SILO_AUTH=none`** — a synthetic credential from `Resolve`, the
    non-loopback refusal, and the `server-info` field. Cheap, and worth having
    early, because it is what makes the next three steps pleasant to develop
