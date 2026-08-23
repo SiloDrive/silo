@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
+	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
@@ -131,33 +134,43 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 	// changes the diff the offset indexes into, and items shift across the page
 	// boundary in both directions.
 	target, targetRoot := repo.HeadCommitID, repo.RootID
-	if pinned != "" {
-		targetCommit, err := commitmgr.Load(repoID, pinned)
+	var changes []change
+
+	if repo.IsStoreV2() {
+		target, changes, err = storeV2Changes(repo, since, pinned)
 		if err != nil {
-			http.Error(w, "the commit this cursor was issued against is no longer reachable; start again from since", http.StatusGone)
+			writeChangesErr(w, err, since, target, repoID)
 			return
 		}
-		target, targetRoot = pinned, targetCommit.RootID
-	}
+	} else {
+		if pinned != "" {
+			targetCommit, err := commitmgr.Load(repoID, pinned)
+			if err != nil {
+				http.Error(w, "the commit this cursor was issued against is no longer reachable; start again from since", http.StatusGone)
+				return
+			}
+			target, targetRoot = pinned, targetCommit.RootID
+		}
 
-	// Commits live in the repo's own store; fs objects live in StoreID, which
-	// differs for a virtual repo. Mixing them up would diff the wrong tree.
-	sinceCommit, err := commitmgr.Load(repoID, since)
-	if err != nil {
-		http.Error(w, "since is no longer reachable; enumerate from scratch", http.StatusGone)
-		return
-	}
+		// Commits live in the repo's own store; fs objects live in StoreID,
+		// which differs for a virtual repo. Mixing them up would diff the
+		// wrong tree.
+		sinceCommit, err := commitmgr.Load(repoID, since)
+		if err != nil {
+			http.Error(w, "since is no longer reachable; enumerate from scratch", http.StatusGone)
+			return
+		}
 
-	var entries []*diff.DiffEntry
-	// foldDirDiff false: a client maintaining per-item identity needs every
-	// path that changed, not a directory standing in for its contents.
-	if err := diff.DiffCommitRoots(repo.StoreID, sinceCommit.RootID, targetRoot, &entries, false); err != nil {
-		log.Errorf("Failed to diff %s..%s in repo %s: %v", since, target, repoID, err)
-		http.Error(w, "Failed to compute changes", http.StatusInternalServerError)
-		return
+		var entries []*diff.DiffEntry
+		// foldDirDiff false: a client maintaining per-item identity needs every
+		// path that changed, not a directory standing in for its contents.
+		if err := diff.DiffCommitRoots(repo.StoreID, sinceCommit.RootID, targetRoot, &entries, false); err != nil {
+			log.Errorf("Failed to diff %s..%s in repo %s: %v", since, target, repoID, err)
+			http.Error(w, "Failed to compute changes", http.StatusInternalServerError)
+			return
+		}
+		changes = changesFromDiff(entries)
 	}
-
-	changes := changesFromDiff(entries)
 
 	// Sorted so the order is a property of the data rather than of the tree
 	// walk that produced it. Paging indexes into this list from a separate
@@ -178,6 +191,80 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 		page.Anchor = target
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+// errHistoryCut reports a since or a cursor target the library can no longer
+// resolve. It is 410 Gone rather than a 404: the commit is not wrong, it is
+// merely no longer reachable — collected under a retention limit, or from a
+// library that was reset — and the caller's recovery is to enumerate from
+// scratch. That is a different instruction from "retry", so it gets a
+// different status.
+var errHistoryCut = errors.New("history cut")
+
+// storeV2Changes computes the diff for a store-v2 library, keylessly.
+//
+// It works on an E2EE library, which is the point: the commits give up their
+// roots through the public decoder, the directories give up their edges the
+// same way, and the paths come back as base64url of the SIV ciphertext —
+// exactly what entries/{path} routes on. The server answers what changed
+// without learning what any of it is called.
+func storeV2Changes(repo *repomgr.Repo, since, pinned string) (string, []change, error) {
+	st, err := repo.Store()
+	if err != nil {
+		return "", nil, err
+	}
+
+	target, targetRoot := repo.HeadCommitID, repo.RootID
+	if pinned != "" {
+		id, err := store.ParseID(pinned)
+		if err != nil {
+			return "", nil, fmt.Errorf("%w: %v", errHistoryCut, err)
+		}
+		commit, err := st.GetCommitPublic(id)
+		if err != nil {
+			return "", nil, fmt.Errorf("%w: %v", errHistoryCut, err)
+		}
+		target, targetRoot = pinned, commit.Root.String()
+	}
+
+	sinceID, err := store.ParseID(since)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: %v", errHistoryCut, err)
+	}
+	sinceCommit, err := st.GetCommitPublic(sinceID)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: %v", errHistoryCut, err)
+	}
+	newRoot, err := store.ParseID(targetRoot)
+	if err != nil {
+		return "", nil, err
+	}
+
+	diffs, err := st.Diff(sinceCommit.Root, newRoot)
+	if err != nil {
+		return "", nil, err
+	}
+
+	changes := make([]change, 0, len(diffs))
+	for _, d := range diffs {
+		c := change{Op: d.Op, Path: d.Path, OldPath: d.OldPath, Size: d.Size, IsDir: d.IsDir}
+		if d.Op != "delete" {
+			c.ID = d.ID.String()
+		}
+		changes = append(changes, c)
+	}
+	return target, changes, nil
+}
+
+// writeChangesErr answers a failed diff. A baseline the library can no longer
+// resolve is 410 with the head to start again from; anything else is damage.
+func writeChangesErr(w http.ResponseWriter, err error, since, target, repoID string) {
+	if errors.Is(err, errHistoryCut) {
+		http.Error(w, "since is no longer reachable; enumerate from scratch", http.StatusGone)
+		return
+	}
+	log.Errorf("Failed to diff %s..%s in repo %s: %v", since, target, repoID, err)
+	http.Error(w, "Failed to compute changes", http.StatusInternalServerError)
 }
 
 // changesFromDiff translates the diff package's vocabulary into the one a sync
