@@ -647,10 +647,14 @@ the caller to inspect.
 
 ### Name rules
 
-- **Maximum plaintext name: 175 bytes** in an E2EE library. The arithmetic: the
-  entry name field caps at 255 bytes, SIV prepends a 16-byte synthetic IV, and
-  the URL form is base64url of the whole — `ceil(4(16+n)/3) ≤ 255` gives
-  `n ≤ 175`. Plain libraries keep the full 255.
+- **Maximum plaintext name: 175 bytes** in an E2EE library. The arithmetic
+  applies the 255-byte name ceiling twice, and the second application is the
+  binding one: the base64url form in `entries/{path}` is itself a path
+  segment, so it is held to 255 as well. `ceil(4m/3) ≤ 255` caps the name
+  ciphertext at `m ≤ 191`, and SIV prepends a 16-byte synthetic IV, so the
+  plaintext caps at `n ≤ 175`. Reading only the first application gives
+  `n ≤ 239` and a port that interoperates with nothing. Plain libraries keep
+  the full 255, because their names are not wrapped in anything.
 - **A name may not be empty, hold `/` or NUL, or be `.` or `..`.** Enforced in
   both directions: writers refuse to produce one, readers refuse to act on one
   whose tag verifies. That is how a directory entry becomes a path traversal on
@@ -700,4 +704,317 @@ assertion is the per-directory keying, tested.
 
 ## Key wrapping
 
-*(not yet specified.)*
+Three secrets, in the order one opens the next:
+
+```
+password ──argon2id──▶ master ──HKDF──▶ authKey   (goes to the server)
+                              └─HKDF──▶ wrapKey   (never leaves the device)
+                                           │
+                                           ▼ opens
+                              identity private key (X25519, one per user)
+                                           │
+                                           ▼ opens
+                              CK, one per library ──▶ chunks, manifests, names
+```
+
+The server holds two opaque blobs per account — the identity key wrapped under
+`wrapKey`, and one wrapped under each recovery code — plus one CK wrap per
+(library, member) pair. It can read none of them.
+
+### The password split
+
+```
+master  = argon2id(password, salt, params)
+authKey = HKDF-SHA256(master, salt="silo/auth/v1", info="", L=32)
+wrapKey = HKDF-SHA256(master, salt="silo/wrap/v1", info="", L=32)
+```
+
+All three steps run **on the client**. `authKey` is sent to the server as the
+password and hashed there like any other; `wrapKey` never leaves the device —
+not to the server, not into a log, not into a crash report.
+
+The trap this closes: Silo's login sends the raw password to the server. If
+that same password also wrapped the identity key, the server would see the
+wrapping secret at every login and the end-to-end encryption would be
+decoration.
+
+One argon2id call feeding two HKDFs, not two argon2id calls: two would double
+the cost of every login for no gain, and turning one strong secret into several
+independent ones is precisely HKDF's job. The two halves are independent in the
+sense that matters — recovering `wrapKey` from `authKey` means inverting HKDF —
+but not independent *of the password*. A password weak enough to guess yields
+both, which is what argon2id and the floor below are for.
+
+### Parameters are data, with a floor
+
+Parameters are **stored, not fixed**: a constant can never be raised, and this
+format will outlive the hardware its default was chosen on.
+
+| | memory (KiB) | passes | lanes |
+|---|---|---|---|
+| floor | 19456 | 2 | 1 |
+| **default** | **65536** | **3** | **4** |
+| ceiling | 1048576 | 16 | 16 |
+
+The floor is OWASP's published minimum for argon2id, chosen because a bound
+wants a citation behind it rather than an opinion. The default is Bitwarden's
+client-side parameters — the closest published prior art to what this does.
+
+The **ceiling** is the same attack from the other end and is easy to forget: a
+server answering with `m=4 GiB` weakens nothing and takes the device down
+trying.
+
+**Where the bounds are enforced, and why it is both places.** Parameters are
+attacker-influenced — whoever writes a blob picks the cost at which the key
+that opens it was derived — so the check runs on **every derivation**: when a
+client asks the server for parameters pre-login, *and* when it opens a stored
+blob on a new device. A port that checks only the first still derives under
+whatever a blob says at bootstrap, which is the one flow that matters.
+
+**The attack shape, stated honestly.** Weak parameters do not unlock blobs that
+already exist: different parameters give a different `wrapKey`, and the wrap
+simply fails to open. What they do is weaken blobs *created* under them — an
+attacker who controls the parameters at enrolment or at password change gets a
+`wrapKey` that is cheap to brute-force from the resulting blob. That is why the
+floor applies at derivation time, every time, rather than being validated once
+when a blob is stored.
+
+Parsing and validating are **separate operations**. `ParseKDFParams` reads
+out-of-bounds parameters without complaint, because finding out what is wrong
+with a blob has to be possible; only the derivation paths refuse them.
+
+### The parameter string
+
+An argon2 encoded string, minus the hash — self-describing, like every other
+stretched secret in this system, and parsed already by every argon2 library on
+every platform:
+
+```
+$argon2id$v=19$m=65536,t=3,p=4$euXxiPNB85FEQSnDUgO5Dw
+```
+
+`v=19` is argon2's own version (0x13), not this format's. Salt is exactly
+**16 bytes**, rendered **unpadded standard base64** — standard, not URL: the
+one base64url in this format is `NameToURL`.
+
+Parsing is strict: exact field order, no whitespace, no unknown cost fields, no
+leading zeros or `+` on a number, one algorithm. Two spellings of one number is
+one too many for a string that has to round-trip byte for byte, and a parser
+that shrugs at a field it does not recognise is a parser that derives the wrong
+key and reports success.
+
+### Identity keys
+
+One **X25519** keypair per user, not per device. The private key is 32 bytes;
+the public key is published as a resource and is what a CK is wrapped to.
+
+A device gets the *unwrapped* private key at enrolment and stores it in the
+platform key store — Keychain, keyring, or a `0600` file on a headless host
+with no key store, stated plainly rather than pretended otherwise. The wrapped
+blob on the server exists for one moment: bootstrapping a new device, which is
+the one time the password is typed again.
+
+Any 32 bytes are a valid private key. X25519 clamping forces bit 254 set and
+the low three bits clear, and no scalar of that shape is a multiple of the
+group order, so even an all-zero input yields an ordinary public key rather
+than the identity point. There is nothing to refuse on this side; the
+degenerate case is a hostile **public** key, and it is refused below.
+
+### The two identifiers a wrap binds to
+
+Every wrap binds itself to who and what it is for, as associated data.
+
+- **holder** — the account's id in **canonical lowercase hyphenated UUID text**
+  (`3f2a1c58-9b0d-4e77-8a61-5c2d0e4f9ab3`). It must be **immutable for the life
+  of the account**: changing it makes every blob the account holds unopenable.
+  An email address must not be used for this, for exactly that reason.
+- **library** — the library's UUID, same spelling.
+
+Both are bounded at 255 bytes and neither may be empty: a wrap that binds to
+nothing binds nothing. They are refused rather than truncated — a truncated
+holder still binds, just to the wrong person.
+
+### Wrapped identity blob
+
+Written under `wrapKey` (kind 1) or under a recovery code (kind 2). The two
+kinds are not interchangeable in either direction, even though both seal the
+same 32 bytes.
+
+```
+ 0        1        2                18
++--------+--------+------------------+
+| version| kind   |   wrap_salt[16]  |
++--------+--------+------------------+
+| params_len varint | params bytes   |   <- empty for kind 2
++-------------------+----------------+
+| holder_len varint | holder bytes   |
++-------------------+----------------+
+| ciphertext (32) ‖ tag (16)         |
++------------------------------------+
+```
+
+```
+AD = bytes 0 .. start of ciphertext
+K  = HKDF-SHA256(secret, salt=<domain>, info=SHA-256(AD), L=32)
+     domain = "silo/wrap/idkey/v1"     (kind 1, secret = wrapKey)
+              "silo/wrap/recovery/v1"  (kind 2, secret = the 20 code bytes)
+blob = AD ‖ AES-256-GCM(K, zero nonce, private_key, AD)
+```
+
+**`wrap_salt` is 16 fresh random bytes per wrap, and it is what makes the zero
+nonce correct here.** This differs from the sealed containers in Manifests
+above, and the difference is worth being precise about: there, the public
+section carries `seal_hash`, so the key commits to the plaintext and no two
+plaintexts can meet one key. Here there is **no `seal_hash`** — publishing
+SHA-256 of a private key would hand out a confirmation oracle for it — and
+freshness comes from the salt instead.
+
+Without it, one live case reuses a nonce: re-wrapping a *different* identity
+key under an *unchanged* password gives the same `wrapKey`, the same key, the
+same zero nonce and two plaintexts. The two ciphertexts XOR to the two private
+keys.
+
+### Wrapped content key blob
+
+```
+ 0        1                    33                   65
++--------+---------------------+--------------------+
+| version|  ephemeral_pk[32]   |  recipient_pk[32]  |
++--------+---------------------+--------------------+
+| library_len varint | library bytes                |
++--------------------+------------------------------+
+| ciphertext (32) ‖ tag (16)                        |
++---------------------------------------------------+
+```
+
+```
+(esk, epk) = X25519 keygen                  -- fresh, every wrap
+ss         = X25519(esk, recipient_pk)      -- refused if all-zero
+AD         = bytes 0 .. start of ciphertext
+K          = HKDF-SHA256(ss, salt="silo/wrap/ck/v1", info=SHA-256(AD), L=32)
+blob       = AD ‖ AES-256-GCM(K, zero nonce, CK, AD)
+```
+
+CK is **32 random bytes generated client-side at library creation**, never
+password-derived: a derived key could not be shared without sharing the
+password, and could not survive a password change.
+
+This is **HPKE's shape — ephemeral DH, then a KDF over a context that includes
+both public keys — without claiming to be HPKE.** RFC 9180 ships in neither
+Go's standard library nor CryptoKit, so conformance would mean hand-porting its
+whole KEM/KDF/AEAD negotiation into Swift: a far larger correctness surface
+than these forty lines, for a wire nobody outside Silo will ever read. What the
+shape is borrowed *for* is the property — binding both public keys into the
+derivation is what stops a wrap being replayed at a different recipient.
+
+**The all-zero shared secret must be refused.** Go's `crypto/ecdh` rejects the
+low-order points that produce it, so the check never fires there and exists for
+the ports. Where it is not free: every wrap made against a low-order "public
+key" derives the same key, and whoever published that key reads all of them.
+
+**Freshness.** A new ephemeral keypair per wrap, always — including two wraps
+of one CK to one member, and one CK to two members. Reusing an ephemeral reuses
+a (key, nonce) pair, the one thing the zero nonce cannot survive.
+
+Sharing a library is one more call. A password change re-wraps only the
+member's own identity key and touches **no** content key at all.
+
+### The zero nonce, once, for the whole format
+
+**This format never varies a nonce.** Every AEAD invocation in it — chunks,
+sealed containers, all three wraps — uses the all-zero 96-bit nonce, and
+freshness comes from the *key* every time. What supplies it differs by
+construction and is stated with each: the plaintext hash for chunks, `seal_hash`
+in the AD for sealed containers, `wrap_salt` for the identity wraps, the
+ephemeral key for content-key wraps.
+
+State it as one rule because it is one conformance check: a port that finds
+itself writing nonce-handling code has misread something.
+
+### Recovery codes
+
+**160 bits, Crockford base32, 32 characters, displayed in four groups of eight:**
+
+```
+7ZQD-8M4X-0RKB-VN3W-PGHJ-0123-4567-89AB
+```
+
+160 bits is the number that lets the wrap **skip a password KDF entirely**. A
+code this size is not guessable, so the secret goes straight into HKDF;
+stretching it would cost the user seconds of argon2id at the worst possible
+moment — the one where they have already lost something — and buy nothing.
+32 characters is exactly 160 bits at five bits each, so **no padding case
+exists and none is defined**.
+
+Crockford's alphabet is `0123456789ABCDEFGHJKMNPQRSTVWXYZ` — no I, L, O or U.
+
+**A set holds 10 codes**, generated together and shown once. The server stores
+one wrapped blob per code and never sees a code.
+
+**Redemption is single-use, and the rest of the set stands.** Using a code
+deletes its blob and nothing else; the remaining codes keep working. The format
+makes that possible by wrapping once per code — the blobs are independent.
+Regenerating the whole set on every use is the tidier-looking rule and the
+worse one: it invalidates the codes a person is still holding at the exact
+moment they have proved they lost something.
+
+**Normalization, pinned, because forgiveness only works if two clients forgive
+identically.** Applied before decoding, in this order:
+
+1. ASCII space, tab and `-` are separators and are **removed**, wherever they
+   appear — not only where the display groups put them.
+2. Letters are **upper-cased**.
+3. `I` and `L` become `1`; `O` becomes `0`. After upper-casing, so a lower-case
+   `l` is covered.
+4. What remains must be **32 characters**, all in the alphabet.
+
+Nothing else is forgiven. **`U` is not remapped to `V`** — it is not in the
+alphabet, so a code containing one was mistyped, and a decoder that guesses
+turns a typo into a wrong key and an authentication failure the user cannot
+tell from a wrong code.
+
+### What the wraps do not vouch for
+
+A CK wrap binds the recipient's public key, which stops blob-swapping and
+cross-library replay. It does **not** vouch that the public key is the person's.
+
+If the server hands Alice a substituted public key for Bob at share time, Alice
+faithfully binds the wrap to the wrong key and the binding defends the attack
+perfectly. The server then holds a CK for a library it was never a member of.
+Nothing in the crypto above closes this, and no amount of binding can: it is
+key distribution, not key wrapping.
+
+**The resolution: the member's public key travels in the `member.granted` audit
+payload**, so chain-head pinning ([`events.md`](../plans/events.md) phase 3)
+makes a substitution evident after the fact — a client that later sees a
+different key for the same member in a chain it has pinned knows the server
+rewrote history. This costs one payload field and this paragraph now, and wires
+up when the audit chain lands.
+
+It is **tamper-evident, not tamper-proof**, and the distinction is the honest
+part: detection is after the fact, and a member who never re-checks the chain
+never detects it. Out-of-band fingerprint verification is what closes it
+outright, and remains available to anyone who wants it. This matches how the
+rest of the system already treats rollback — the chain does not prevent a
+malicious server, it makes what the server did visible.
+
+### Test vectors
+
+[`store/testdata/vectors/keys.json`](../../store/testdata/vectors/keys.json):
+the bounds as numbers; four `authKey`/`wrapKey` derivations including an empty
+and a non-ASCII password; identity keypairs; identity, content-key and recovery
+wraps with the salt and ephemeral key fixed so the blobs are reproducible; and
+every spelling of one recovery code with its normalized form.
+
+Two things in that file are not like the others:
+
+- **`kdf_refused` is the half a port passes every other vector without.** Twelve
+  parameter strings that must be refused, each labelled with *where* — at the
+  parser or at the bounds — including `m=19455`, one KiB under the floor. A port
+  that omits the floor check reproduces every derivation and every blob in this
+  file and is still broken.
+- **The argon2id argument order is checked against the reference
+  implementation**, in the Go tests rather than in `testdata`, because
+  reproducing somebody else's numbers is the point. `IDKey` takes *time* before
+  *memory*; swapping them derives 32 bytes that agree with nothing, and every
+  vector here would still be internally consistent.

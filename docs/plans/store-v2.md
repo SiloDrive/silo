@@ -28,7 +28,7 @@ neither doc silently drifts out of date.
 | 10 | E2EE content: convergent per-chunk AEAD under the library key; chunk ids are hashes of ciphertext | decided |
 | 11 | AEAD is AES-256-GCM (content and storage layers) | decided — see rationale |
 | 12 | Names in E2EE libraries: Option A (deterministic per-segment encryption), B kept reachable | decided (carried from encryption.md) |
-| 13 | One user password, split client-side into authKey + wrapKey via argon2id | decided; couples to auth.md |
+| 13 | One user password, split client-side into authKey + wrapKey via argon2id | **specified** — phase 1, `store/kdf.go`; endpoints couple to auth.md |
 | 14 | Backends: local fs (hot tier), NAS fs and S3 (durable tiers), same pack format byte-for-byte | decided |
 
 ### Gates — measure before freezing
@@ -798,6 +798,50 @@ in one place.
 - Recovery codes are a required feature, not an afterthought: a second wrap of
   the private key under a generated high-entropy code, printed once.
 
+**Pinned in phase 1**, with the bytes and vectors in
+[`spec/store-format.md`](../spec/store-format.md) § Key wrapping:
+
+- **The wrap construction is owned, HPKE-shaped, and does not claim to be
+  HPKE.** Ephemeral X25519, then HKDF-SHA256 over a context carrying both
+  public keys, then AES-256-GCM. RFC 9180 ships in neither Go's standard
+  library nor CryptoKit, so conformance would mean hand-porting its whole
+  KEM/KDF/AEAD negotiation into Swift — a larger correctness surface than the
+  forty lines it replaces, for a wire nobody outside Silo reads. Same reasoning
+  that put SIV in the package.
+- **argon2id parameters are data with a floor and a ceiling**, not constants: a
+  constant can never be raised, and a served parameter is a downgrade lever.
+  Floor is OWASP's published minimum (m=19456 KiB, t=2, p=1), default is
+  Bitwarden's client-side set (m=65536, t=3, p=4), ceiling exists because
+  `m=4 GiB` takes a device down without weakening anything. The parameters ride
+  **inside** the wrapped blob, argon2-encoded-string style, and the bound is
+  enforced in the shared package on **every derivation** — at enrolment and at
+  open — because a client that checks only when it asks the server still
+  derives under whatever a blob says at new-device bootstrap. Committed
+  rejection vectors, because a port that omits the guard passes every other
+  vector in the file.
+- **Recovery codes: 160 bits, Crockford base32, 32 characters, ten to a set,
+  single-use.** Redemption deletes one blob and the rest of the set stands —
+  regenerating the whole set on every use punishes the person who just proved
+  they lost something. No KDF stretch: at 160 bits the secret goes straight
+  into HKDF. Normalization is pinned to the byte (case-folded, separators
+  stripped, `I`/`L`→`1`, `O`→`0`, `U` refused rather than guessed at) with
+  unnormalized-input vectors, because forgiveness only interoperates if two
+  clients forgive identically.
+- **Every wrap binds who and what it is for** — holder and library as
+  associated data, both immutable UUID text — so a server can neither move a
+  blob between accounts nor replay a content-key wrap into another library.
+- **What the wraps do not vouch for, stated rather than left to be
+  rediscovered.** Binding the recipient's public key stops blob-swapping; it
+  does not vouch that the key is the person's. A server substituting a public
+  key at share time gets a wrap the sharer built correctly for the wrong
+  recipient. The resolution is **tamper-evidence, not prevention**: the
+  member's public key travels in the `member.granted` audit payload, so
+  chain-head pinning ([`events.md`](events.md) phase 3) makes a substitution
+  evident after the fact. Costs one payload field, wires up when the audit
+  chain lands, and matches how this system already treats rollback — the chain
+  does not stop a malicious server, it makes what it did visible. Out-of-band
+  fingerprint comparison remains what closes it outright.
+
 ### Content — amendments to the sketch
 
 Two parts of encryption.md's content section defeat the sync design and are
@@ -995,18 +1039,18 @@ Phases are sequential on the branch; each leaves the tree working.
 0. **Gates G1, G2.** — **done, 2026-08-22.** Plus the two paper decisions:
    confirm default-on E2EE and AES-GCM. Cheap, do first, everything
    downstream hardens.
-1. **Spec + shared package + vectors.** — **building.** Landed in
-   [`store/`](../../store) and [`spec/store-format.md`](../spec/store-format.md):
-   ids, chunker parameters, the keyed gear table and the cut loop; the
+1. **Spec + shared package + vectors.** — **done, 2026-08-23.** The whole
+   format, as a document in [`spec/store-format.md`](../spec/store-format.md)
+   and as Go in [`store/`](../../store), with committed vectors for every
+   piece: ids, chunker parameters, the keyed gear table and the cut loop; the
    manifest, directory and commit codecs in both library types; convergent
    chunk encryption and the sealed-container key derivation; AES-CMAC-SIV
    names with an owned CMAC (neither Go nor CryptoKit ships one), checked
    against RFC 4493, RFC 5297 and an independent implementation's published
-   256-bit-subkey vectors; and this format's own vectors for all of it.
-   Left: key wrapping. The chunker, id, manifest, and crypto
-   spec as a document; the Go package; test vectors generated and committed.
-   No server changes yet. This is the artifact porter-mac builds against, so
-   it lands first.
+   256-bit-subkey vectors; and key wrapping — the argon2id password split,
+   X25519 content-key wraps, recovery codes.
+   No server changes, by design. This is the artifact porter-mac builds
+   against, so it lands first and alone.
 2. **Server store cutover, loose chunks.** New ids, manifests, per-library
    params in the catalog, keyed chunker — on the existing fs backend,
    write-temp-rename, no packs yet. Delete the Seafile object formats, the

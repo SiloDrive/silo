@@ -63,7 +63,7 @@ release — an unknown name in the table is a bug, not an extension point.
 | Event | Class | Payload (JSON) |
 |---|---|---|
 | `library.created` / `library.deleted` / `library.converted` | audit | repo_id, name¹, e2ee flag |
-| `member.granted` / `member.changed` / `member.revoked` | audit | repo_id, grantee, permission |
+| `member.granted` / `member.changed` / `member.revoked` | audit | repo_id, grantee, permission, grantee public key³ |
 | `credential.created` / `credential.revoked` / `credential.expired` | audit | credential id, kind, label, scope² |
 | `share.created` / `share.revoked` | audit | share id, flavor, repo_id |
 | `quota.changed`, `user.deactivated`, `user.reactivated` | audit | before/after, target |
@@ -75,6 +75,18 @@ release — an unknown name in the table is a bug, not an extension point.
 ¹ Library names are server-visible metadata in both library types today.
 ² A scope in an E2EE library is ciphertext here exactly as it is in the
 Credential row — the log stores the stored form, unreadable and honest.
+³ The grantee's X25519 identity public key, recorded because the log is the
+only thing that can vouch for it. A content key is wrapped *to* that key, and
+the wrap binds it — so a server that substitutes its own key at share time gets
+a wrap the sharer built correctly for the wrong recipient, and the binding
+defends the attack perfectly. Nothing in the wrapping can close that; it is key
+distribution, not key wrapping. Carrying the key in the audit payload makes a
+substitution **evident** to a client that pins the chain head: a different key
+for the same member in a chain already pinned is a server rewriting history.
+Tamper-evident, not tamper-proof — detection is after the fact, and out-of-band
+fingerprint comparison remains the thing that closes it outright. See
+[`spec/store-format.md`](../spec/store-format.md) § What the wraps do not vouch
+for.
 
 `credential.used` is rate-limited **per credential id, one event per
 hour**, because a mounted filesystem authenticates at the rate of `stat`,
@@ -232,6 +244,10 @@ waits for evidence anyone needs it.
   membership) is *evident* to clients that pin the audit chain head;
   content rollback remains accepted." The reserved-bits rule's candidate
   list gains the sealed commit-head hook beside xattrs.
+- `docs/spec/store-format.md` — already written against this plan: the Key
+  wrapping section names `member.granted`'s public key field as the answer to
+  public-key substitution at share time. The field is specified here; the
+  format ships without it and gains the property when this plan lands.
 - `docs/auth.md` — `last_used` is documented as a derived cache of
   `credential.used`, and the revocation section points at the log as the
   answer to "what did it touch first".
