@@ -235,3 +235,58 @@ func TestMalformedCommitsAreRefused(t *testing.T) {
 		t.Errorf("a plain commit opened as E2EE: %v", err)
 	}
 }
+
+func TestACommitGivesUpItsRootWithoutTheKey(t *testing.T) {
+	c := &Commit{
+		Root:      id(0x11),
+		Parents:   []ID{id(0x22), id(0x33)},
+		CreatedAt: 1755950400,
+		Author:    "someone@example.com",
+		Message:   "a message that says what changed",
+	}
+	sealed, err := c.EncodeSealed(testCK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := DecodeCommitPublic(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pub.E2EE {
+		t.Error("the commit did not declare itself sealed")
+	}
+	if pub.Root != c.Root {
+		t.Errorf("root %s, want %s", pub.Root, c.Root)
+	}
+	if len(pub.Parents) != 2 || pub.Parents[0] != c.Parents[0] || pub.Parents[1] != c.Parents[1] {
+		t.Errorf("parents %v, want %v", pub.Parents, c.Parents)
+	}
+	if pub.CreatedAt != c.CreatedAt {
+		t.Errorf("created_at %d, want %d", pub.CreatedAt, c.CreatedAt)
+	}
+
+	// The whole sealed section stays shut. A PublicCommit has nowhere to put
+	// an author or a message, which is the point: a server path written
+	// against this type cannot come to depend on reading one.
+	if bytes.Contains(sealed, []byte(c.Author)) || bytes.Contains(sealed, []byte(c.Message)) {
+		t.Error("the sealed commit carries its attribution in the clear")
+	}
+}
+
+func TestThePublicCommitReadReportsTheSameFieldsForAPlainLibrary(t *testing.T) {
+	c := &Commit{Root: id(0x44), CreatedAt: 1755950400, Author: "a@b.c", Message: "hello"}
+	encoded, err := c.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := DecodeCommitPublic(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub.E2EE {
+		t.Error("a plain commit declared itself sealed")
+	}
+	if pub.Root != c.Root || pub.CreatedAt != c.CreatedAt || len(pub.Parents) != 0 {
+		t.Errorf("public read = %+v, want the root, no parents and the timestamp", pub)
+	}
+}
