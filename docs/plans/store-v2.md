@@ -1338,6 +1338,69 @@ Phases are sequential on the branch; each leaves the tree working.
    moved into its own subtree detaches from the root. Remove takes the subtree
    without complaint — older commits still reach every object, and the
    collector reclaims what nothing can.
+
+   **The key-free readers, completed 2026-08-23.** Step 3 found that a server
+   could not enumerate an E2EE manifest's chunks and added
+   `DecodeManifestPublic`. Scoping the handlers found the same hole in the
+   other two object types, and the commit was the bad one: the root id lives in
+   the head commit, so a server that cannot open a sealed commit cannot find
+   the tree at all. `DecodeDirectoryPublic` and `DecodeCommitPublic` close it,
+   each sharing its parser with the keyed decoder. The set is now what it
+   should always have been described as — not a manifest feature but **the
+   server's view of the format**: chunk lists, tree edges, roots and parents,
+   which is exactly enough to store, serve, trace and reclaim an encrypted
+   library and not enough to read one.
+
+   **Step 6 — the cutover, scoped 2026-08-23.** Five decisions, written down
+   before anything is cut, because each one was found by reading the code
+   rather than by reading this plan:
+
+   *The frozen lanes go first, and take auto-merge with them.* `fileop.go`,
+   `sync_api.go`, `merge.go`, `diff/`, `virtual_repo.go`, the SeaDrive
+   handlers and their routes — roughly 7000 lines, and
+   [`target.md`](../target.md) already gave up Seafile wire compatibility and
+   named `seafile-compat-end` as the tag to revert to. Server-side three-way
+   merge goes with them, and that is forced rather than chosen:
+   `GenNewCommit`'s contention path merges trees, merging trees means reading
+   names, and an E2EE library has none the server can read. `target.md`
+   already pins the replacement — `If-Match` compare-and-swap on the branch
+   head, and a writer that loses re-reads rather than having its edit merged
+   for it.
+
+   *`entries/{path}` is a plain-library surface.* The server cannot resolve a
+   path, list a directory or name a file in an E2EE library: names are
+   ciphertext under a per-directory key derived from CK. The path-addressed
+   API therefore refuses encrypted libraries outright. This is not a gap to
+   close later — it is the threat model arriving in the route table, and a
+   version of it that worked would mean the server held the key.
+
+   *So the write shape for an E2EE library is by id, and it is the one both
+   types share.* `POST blocks/missing`, `PUT blocks/{id}` and batched
+   `pack-blocks` for content; `PUT objects/{id}` for manifests, directories
+   and commits, where the server verifies that the id is the SHA-256 of the
+   bytes and that the object decodes through its public reader, and verifies
+   nothing else because it can verify nothing else; then `PUT head` with
+   `If-Match: <current head commit id>`, where the server checks that the new
+   commit's parent is the head it was handed. `entries/{path}` writes survive
+   as the server-side convenience for the web UI and for curl, on plain
+   libraries only.
+
+   *Library metadata moves out of commits and into the catalog.* Seafile keeps
+   a library's name, description, last modifier and last modification time
+   inside every commit, and `repomgr.GetWithReason` reads the head commit to
+   fill them in. Under E2EE the author and message are sealed and the name has
+   nowhere to live at all, so the server would be reading fields it cannot
+   read. `Repo` gains those columns; `store.Commit` carries none of them. The
+   head commit keeps exactly one server-facing job — supplying the root id,
+   through `DecodeCommitPublic`. Storing the last modifier server-side is not
+   a concession: the server authenticated the writer, so it already knows, and
+   sealing a fact the server established would be theatre.
+
+   *`utils.IsObjectIDValid` narrows to 64 characters at the deletion, not
+   before.* It is 40-only today and has ten callers. Widening it to accept
+   both would create a window in which a SHA-1 id is accepted on a route that
+   can no longer serve one; cutting straight from 40 to 64 alongside the
+   deletion has no such window.
 3. **E2EE.** — **folded into phase 2, 2026-08-23.** Identity keys, salt
    endpoint, split-derivation login (with or after auth.md's rewrite), CK
    wrapping, library creation with client UUIDs, Option A names, convergent
