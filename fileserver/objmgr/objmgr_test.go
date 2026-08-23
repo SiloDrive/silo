@@ -570,3 +570,64 @@ func TestIdenticalContentConvergesOnOneManifest(t *testing.T) {
 		})
 	}
 }
+
+func TestTheServerViewReadsEdgesAndRootsWithoutTheKey(t *testing.T) {
+	dir := t.TempDir()
+	client, err := New(Config{
+		DataDir: dir, StoreID: testStoreID, E2EE: true, CK: testCK,
+		Params: store.DefaultParams(store.ChunkerSeed(testCK)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := buildTree(t, client)
+	head, err := client.PutCommit(&store.Commit{
+		Root: root, CreatedAt: 1755950400, Author: "a@b.c", Message: "the first commit",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := serverView(t, dir)
+
+	// Where every server-side walk starts, and the one thing the head commit
+	// is still for.
+	pc, err := srv.GetCommitPublic(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc.Root != root {
+		t.Errorf("root %s, want %s", pc.Root, root)
+	}
+	if !pc.E2EE {
+		t.Error("the commit did not declare itself sealed")
+	}
+
+	// And one step further, which is what the collector needs and what List
+	// refuses to give it.
+	pd, err := srv.GetDirectoryPublic(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pd.Entries) != 2 {
+		t.Fatalf("%d edges out of the root, want 2", len(pd.Entries))
+	}
+	for _, e := range pd.Entries {
+		if e.Mtime != 0 || e.Mode != 0 {
+			t.Errorf("a keyless read gave up mtime %d mode %#o", e.Mtime, e.Mode)
+		}
+	}
+	if _, err := srv.List(root); !errors.Is(err, ErrNoContentKey) {
+		t.Errorf("List: %v, want ErrNoContentKey — the names are still shut", err)
+	}
+}
+
+func TestAnEncryptedLibraryCannotBeOpenedOnThePlainSeed(t *testing.T) {
+	_, err := New(Config{
+		DataDir: t.TempDir(), StoreID: testStoreID, E2EE: true,
+		Params: store.DefaultParams(store.PlainSeed()),
+	})
+	if err == nil {
+		t.Fatal("a server view of an E2EE library accepted the published seed")
+	}
+}

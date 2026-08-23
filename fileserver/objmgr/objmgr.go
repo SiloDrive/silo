@@ -101,6 +101,17 @@ func New(cfg Config) (*Store, error) {
 		if cfg.Params.Seed != store.PlainSeed() {
 			return nil, errors.New("objmgr: a plain library must chunk under the published seed")
 		}
+	default:
+		// An E2EE library with no key here: the seed cannot be checked
+		// against a content key there isn't one of, but it can still be
+		// checked against the one value it must never be. A server view
+		// carrying the published seed would be a store that could chunk an
+		// encrypted library, which is the oracle the case above exists to
+		// prevent — reachable by assembling a Config from a plain library's
+		// parameters and an E2EE flag.
+		if cfg.Params.Seed == store.PlainSeed() {
+			return nil, errors.New("objmgr: an E2EE library must not chunk under the published seed")
+		}
 	}
 
 	s := &Store{
@@ -239,6 +250,31 @@ func (s *Store) GetManifestPublic(id store.ID) (*store.PublicManifest, error) {
 		return nil, err
 	}
 	return store.DecodeManifestPublic(encoded)
+}
+
+// GetDirectoryPublic reads a directory's edges without a content key: which
+// objects it points at and what kind each one is. Under E2EE the names come
+// back as ciphertext and the mtimes and modes come back zero, because they are
+// sealed.
+//
+// This is the server's half of a tree walk, and the only half it will ever
+// have on an encrypted library. It is what the tracing collector marks from.
+func (s *Store) GetDirectoryPublic(id store.ID) (*store.PublicDirectory, error) {
+	encoded, err := s.GetObject(id)
+	if err != nil {
+		return nil, err
+	}
+	return store.DecodeDirectoryPublic(encoded)
+}
+
+// GetCommitPublic reads a commit's root, parents and timestamp without a
+// content key. It is where every server-side walk starts.
+func (s *Store) GetCommitPublic(id store.ID) (*store.PublicCommit, error) {
+	encoded, err := s.GetObject(id)
+	if err != nil {
+		return nil, err
+	}
+	return store.DecodeCommitPublic(encoded)
 }
 
 // PutDirectory encodes a directory object for this library's type and stores it.
