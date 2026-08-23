@@ -591,7 +591,9 @@ PUT is an end-to-end integrity check and not merely an acknowledgement.
 `blocks/missing` answer has gone stale under you.
 
 **Encrypted libraries are excluded** (**400**). Their blocks are ciphertext, so
-you cannot name one without doing the encryption yourself.
+you cannot name one without doing the encryption yourself. Under store-v2 that
+stops being an exclusion and becomes the normal case — the client *does* do the
+encryption, and names the ciphertext. See *What store-v2 changes* below.
 
 ## Gaps — read this before planning M4
 
@@ -620,6 +622,172 @@ since the server would not be decrypting anything.
 
 For Porter: `encrypted: true` in the library listing means unusable. Grey it out
 at enumeration rather than discovering it one 400 per file.
+
+That is true of today's server and of Seafile-format libraries permanently. The
+Silo-native scheme mentioned above is no longer a sketch — it is specified,
+implemented as a Go package, and being wired in now. *What store-v2 changes*,
+below, is what to build against.
+
+## What store-v2 changes — read this before writing anything you would hate to unwind
+
+Everything above describes the server as it runs today. A branch is replacing
+the storage format underneath it, and enough of that is now pinned that
+building against it is cheaper than building around it.
+
+**Status, honestly.** The format itself is done and committed: spec in
+[`spec/store-format.md`](spec/store-format.md), Go in
+[`store/`](../store), with test vectors for every piece. The server handlers
+are being cut over now, and nothing in this section answers on a running server
+yet. The plan and its build order are in
+[`plans/store-v2.md`](plans/store-v2.md).
+
+**porter-fuse should import `store/`, not reimplement it.** It is a Go package
+in this module with no server dependencies — it holds the chunker, the ids, the
+manifest/directory/commit codecs, the content crypto, name encryption and key
+wrapping, and it is deliberately free of logging and of anything that assumes a
+server around it, because it is meant to ship inside a client. porter-mac ports
+it to Swift against the shared vectors; a second Go implementation would be a
+second thing to keep in step with the vectors for no gain.
+
+### The four wire changes
+
+**Ids become 64 hex characters.** SHA-256 of the stored bytes, everywhere a
+40-character SHA-1 appears today: blocks, objects, commits, `head_commit_id`,
+`since` anchors, ETags. Anything holding a width of 40 — a route regex, a
+column, a validator, a fixed-size buffer — breaks.
+
+**`server-info`'s `block_size` dies, and chunking becomes per-library.** The
+library listing serves that library's chunker parameters — algorithm, minimum,
+target, maximum, normalisation — frozen at creation. The warning attached to
+`block_size` today gets sharper rather than softer: chunk with anything but the
+library's own parameters and the upload succeeds, dedups against nothing, and
+never tells you. The number is now per-library, so a client that caches one
+globally is wrong the moment a second library exists.
+
+**Boundaries are content-defined, and the chunker is keyed.** FastCDC, so
+inserting a byte near the front of a file no longer shifts every boundary after
+it — the dedup gap named under Gaps above is what this closes. The seed is
+derived from the library's content key, so the same file cut in two different
+encrypted libraries lands on different boundaries. That is deliberate; it stops
+a server confirming what a file is from its boundary fingerprint. For you it
+means **the boundary cache is per-library**, never shared across them.
+
+**Small files inline.** Below a threshold the bytes live inside the manifest
+and there are no chunks at all, so a directory of ten thousand small files
+costs one fetch each rather than three. Whether a file inlines is decided by
+its size and never by the writer: two clients disagreeing about a 30 KB file
+would mint two ids for identical content, and every reader downstream would see
+a file that changed when it did not. `store.Inlined(size)` is the one answer;
+do not carry a second.
+
+### The part that changes the shape of the client: E2EE
+
+End-to-end encryption is **on by default** for new libraries, and it splits the
+API in a way worth designing for now.
+
+- **A plain library** works exactly as documented above. `entries/{path}`,
+  ranged GETs, conditional writes, the block surface, the delta endpoint.
+- **An E2EE library refuses `entries/{path}` outright.** Not "no ranges" and
+  not "not yet" — the server cannot resolve a path at all, because names are
+  AES-SIV ciphertext under a per-directory key derived from the content key,
+  and the server never holds that key. Everything in an encrypted library is
+  addressed by id.
+
+This is the threat model showing up in the route table rather than a gap
+somebody will close. Build **one interface with two implementations** — the
+thing that answers *list this directory*, *read this file*, *write these
+bytes* — rather than branching on `e2ee` at each call site. The plain
+implementation is what exists today; the encrypted one is below.
+
+**Reading an E2EE library, by id:**
+
+```
+GET  repos/{repo}                      → head_commit_id
+GET  repos/{repo}/objects/{commit}     → decode → root directory id
+GET  repos/{repo}/objects/{dir}        → decrypt names → child ids and types
+GET  repos/{repo}/objects/{manifest}   → chunk list, or the inline bytes
+GET  repos/{repo}/blocks/{id}          → chunk ciphertext → decrypt
+```
+
+**Resolving a depth-N path is N sequential fetches**, and no amount of
+cleverness removes it: encrypting a path segment needs its parent directory's
+salt, so the parent has to be read before the child can be named. Cache the
+salt map beside your local index — a cold resolve is a tree walk, and that is
+why the local index earns its keep here in a way it does not on a plain
+library.
+
+**Writing, and this shape is the same for both library types:**
+
+```
+POST repos/{repo}/blocks/missing       {"blocks":[id,…]} → {"missing":[id,…]}
+PUT  repos/{repo}/blocks/{id}          the chunk's bytes  (or batched pack-blocks)
+PUT  repos/{repo}/objects/{id}         manifest, then each directory up the spine,
+                                       then the commit
+PUT  repos/{repo}/head                 If-Match: <current head commit id>
+```
+
+The server verifies that each object's id is the SHA-256 of the bytes and that
+it decodes, and verifies nothing else, because on an encrypted library there is
+nothing else it can check.
+
+**A write rewrites the spine, and under E2EE that is now your job.** Changing
+one file means a new manifest, a new parent directory, a new grandparent, up to
+a new root and a new commit. Three rules the server used to enforce and now
+cannot:
+
+- **Carry the salt forward.** A rewritten directory keeps the salt of the
+  object it replaces. Mint a fresh one and its id changes, so every ancestor's
+  does, so the root does — and the delta endpoint reports the entire library
+  modified on every commit.
+- **Only the directory whose entry list changed gets a new mtime**, and that
+  mtime lives one level up, in its parent's entry for it. Stamping the whole
+  spine makes every commit look like it touched everything between the change
+  and the root.
+- **The mutation's timestamp is not the file's mtime.** You preserve a file's
+  mtime, which may be years old; the directory it lands in changed just now.
+
+**Server-side merge is gone.** Today a write that loses the race for the branch
+head is merged for you. It cannot be: merging trees means reading names.
+`PUT head` is a compare-and-swap, and a writer that loses gets a refusal, not a
+merge — re-read the head, rebuild your change on the new root, retry. Write
+that loop deliberately; it is not the 503-and-retry described under *What a 503
+on a write means*, because the root you built on is stale rather than the
+server being busy.
+
+**Libraries are created with a client-supplied UUID.** Key wrapping binds to
+the library id, so the client mints it and the server accepts it rather than
+assigning one.
+
+### Keys, in one paragraph
+
+The password splits client-side: an auth key that goes to the server and a
+wrap key that never leaves the device. The wrap key unwraps your X25519
+identity key; the identity key unwraps each library's content key. **Store the
+identity key in the platform key store and discard both the password and the
+wrap key** — which is the same instruction the blockquote under
+*Authentication* gives, arriving from the other direction. `store/` has the
+whole path: `DeriveCredentials`, `OpenIdentityWithPassword`, `UnwrapCK`.
+
+### Things that will never be added, so do not wait for them
+
+- **No password-to-the-server endpoint for an encrypted library.** The
+  server-side key cache that today's 400 mentions is being deleted, not
+  completed.
+- **No path-addressed API on an E2EE library**, per above.
+- **No pack ids or offsets on the wire.** Chunks live in packs on the server;
+  compaction moves them, so a pack id in a response would be a lie by the time
+  you used it. Address chunks by id and nothing else.
+- **No chunk-parameter renegotiation.** A library's parameters are frozen at
+  creation; changing them is a full rewrite, done deliberately or not at all.
+
+### The Seafile lanes are being deleted
+
+`/repo/…`, `/seafhttp/…`, `/api2/…` and `/api/v2.1/…` go away in this same
+work. Nothing in this brief depends on them, but if anything in porter still
+reaches for one — `check-blocks` and `commit/HEAD` are the two that used to be
+tempting — move it to `/api/silo/v1` now. `seafile-compat-end` is the tag to
+revert to if that turns out to be wrong, and [`target.md`](target.md) records
+why it will not be.
 
 ## The delta endpoint
 
