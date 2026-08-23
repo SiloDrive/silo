@@ -1307,6 +1307,18 @@ Phases are sequential on the branch; each leaves the tree working.
    key. It also needed `store.DecodeManifestPublic`, which did not exist —
    without it a server cannot enumerate an E2EE library's chunks at all, and a
    server that cannot enumerate them can never reclaim one.
+
+   **Step 4 landed 2026-08-23**: the tree layer — resolve, list, read-by-path,
+   and `Walk` for reachability, plus `PutDir`/`NewDirSalt` as their inverse.
+   Name encryption is where the two library types stop being one code path
+   with a flag: the cipher is built once per directory, and lookup encrypts
+   the segment to match on ciphertext rather than decrypting every entry.
+   Resolving a depth-N path under E2EE is now demonstrably N sequential
+   fetches — encrypting a segment needs its parent's salt — which is the cost
+   the Names section predicted, arriving on schedule. `.` and `..` are refused
+   rather than resolved. The server's view can enumerate chunks but cannot
+   walk an encrypted tree at all, and there is no version of this where it
+   can. Still wired to nothing; the handlers come next.
 3. **E2EE.** — **folded into phase 2, 2026-08-23.** Identity keys, salt
    endpoint, split-derivation login (with or after auth.md's rewrite), CK
    wrapping, library creation with client UUIDs, Option A names, convergent
