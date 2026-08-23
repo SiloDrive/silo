@@ -342,3 +342,61 @@ func TestObjectVectorsAreReproducibleFromTheFile(t *testing.T) {
 		})
 	}
 }
+
+// Every committed manifest, read the way a server reads it: no content key,
+// and the chunk list has to come back correct in both library types. If this
+// diverges from the keyed decode, garbage collection and the client disagree
+// about which chunks a file references — and the collector is the one holding
+// the delete.
+func TestEveryManifestVectorIsReadableWithoutTheKey(t *testing.T) {
+	var doc objectVectorDoc
+	loadVectors(t, objectVectorFile, &doc)
+
+	checked := 0
+	for _, v := range doc.Manifests {
+		if v.Encoded == "" {
+			continue // the large cases carry only a length and an id
+		}
+		encoded := mustHex(t, v.Encoded)
+
+		pub, err := DecodeManifestPublic(encoded)
+		if err != nil {
+			t.Errorf("%s: %v", v.Name, err)
+			continue
+		}
+		if pub.E2EE != v.Sealed {
+			t.Errorf("%s: public reader says E2EE=%v, vector says %v", v.Name, pub.E2EE, v.Sealed)
+		}
+		if len(pub.Chunks) != v.ChunkCount {
+			t.Errorf("%s: public reader found %d chunks, vector says %d",
+				v.Name, len(pub.Chunks), v.ChunkCount)
+		}
+
+		// And it agrees with the keyed decode, which is the assertion that
+		// matters: same ids, same sizes, same order.
+		var keyed *Manifest
+		if v.Sealed {
+			keyed, err = DecodeSealedManifest(encoded, vectorCK)
+		} else {
+			keyed, err = DecodeManifest(encoded)
+		}
+		if err != nil {
+			t.Errorf("%s: keyed decode: %v", v.Name, err)
+			continue
+		}
+		if len(keyed.Chunks) != len(pub.Chunks) {
+			t.Errorf("%s: keyed decode found %d chunks, public reader %d",
+				v.Name, len(keyed.Chunks), len(pub.Chunks))
+			continue
+		}
+		for i := range keyed.Chunks {
+			if keyed.Chunks[i].ID != pub.Chunks[i].ID || keyed.Chunks[i].Size != pub.Chunks[i].Size {
+				t.Errorf("%s: chunk %d differs between the two readers", v.Name, i)
+			}
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("no manifest vector carried encoded bytes to check")
+	}
+}

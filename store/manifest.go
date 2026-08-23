@@ -331,3 +331,126 @@ func decodeManifest(b, ck []byte) (*Manifest, error) {
 	}
 	return m, nil
 }
+
+// PublicChunk is one entry of a manifest's public chunk list.
+type PublicChunk struct {
+	ID   ID
+	Size int64
+}
+
+// PublicManifest is everything a manifest says without its content key: the
+// library type, the file size, and — for a chunked file — the ordered chunk
+// ids and their stored sizes.
+//
+// It carries no inline bytes and no plaintext hashes. In a plain library those
+// are readable anyway, through DecodeManifest; in an E2EE library they are the
+// sealed section, and there is no key here to open it.
+type PublicManifest struct {
+	E2EE     bool
+	Inlined  bool
+	FileSize int64
+	Chunks   []PublicChunk
+}
+
+// DecodeManifestPublic reads the public section of a manifest of either
+// library type, without a content key.
+//
+// This is what makes garbage collection possible on a server that cannot read
+// its own libraries. Chunk ids and sizes are public **by design** — the
+// argument is in the plan's Manifests section — precisely so that tracing
+// which chunks are still referenced does not require the key. A server that
+// could not enumerate them could never reclaim anything in an E2EE library.
+//
+// **A client must not use this.** The public section of an E2EE manifest is
+// covered by the AEAD tag, but nothing here checks it, because checking it
+// needs the key. A holder of CK calls DecodeSealedManifest and gets the chunk
+// list authenticated; a server calls this and gets it unverified, which is the
+// correct trade for the one party the threat model already calls actively
+// malicious for integrity. The values are safe for the server's own
+// bookkeeping and are never a statement to a client about what a file is.
+func DecodeManifestPublic(b []byte) (*PublicManifest, error) {
+	if len(b) > MaxManifestBytes {
+		return nil, fmt.Errorf("%w: manifest is %d bytes, above the %d ceiling",
+			ErrEncoding, len(b), MaxManifestBytes)
+	}
+	if len(b) < 3 {
+		return nil, fmt.Errorf("%w: manifest is %d bytes, too short for a header", ErrEncoding, len(b))
+	}
+	if b[0] != ManifestVersion {
+		return nil, fmt.Errorf("%w: manifest version %d, this build writes %d",
+			ErrEncoding, b[0], ManifestVersion)
+	}
+	flags := b[1]
+	if flags&flagReserved != 0 {
+		return nil, fmt.Errorf("%w: manifest reserved flag bits are set (%#02x)", ErrEncoding, flags)
+	}
+
+	m := &PublicManifest{
+		E2EE:    flags&flagE2EE != 0,
+		Inlined: flags&flagInline != 0,
+	}
+
+	p := 2
+	fileSize, n, err := readUvarint(b[p:])
+	if err != nil {
+		return nil, fmt.Errorf("%w: manifest file size", ErrEncoding)
+	}
+	p += n
+	if fileSize > MaxFileSize {
+		return nil, fmt.Errorf("%w: manifest file size %d above the %d ceiling",
+			ErrEncoding, fileSize, MaxFileSize)
+	}
+	m.FileSize = int64(fileSize)
+
+	// The flag and the size have to agree, and this is the one place a server
+	// can check it: a manifest claiming to be inline at 4 GiB, or chunked at
+	// 12 bytes, is malformed whichever bit was flipped to make it so.
+	if m.Inlined != Inlined(m.FileSize) {
+		return nil, fmt.Errorf("%w: manifest says inline=%t for a %d-byte file",
+			ErrEncoding, m.Inlined, m.FileSize)
+	}
+	if m.Inlined {
+		return m, nil
+	}
+
+	count, n, err := readUvarint(b[p:])
+	if err != nil {
+		return nil, fmt.Errorf("%w: manifest chunk count", ErrEncoding)
+	}
+	p += n
+	if count == 0 {
+		return nil, fmt.Errorf("%w: a %d-byte file has no chunks", ErrEncoding, m.FileSize)
+	}
+	if count > uint64(MaxManifestBytes/IDSize) {
+		return nil, fmt.Errorf("%w: manifest claims %d chunks", ErrEncoding, count)
+	}
+
+	var total int64
+	m.Chunks = make([]PublicChunk, 0, count)
+	for i := uint64(0); i < count; i++ {
+		if len(b)-p < IDSize {
+			return nil, fmt.Errorf("%w: manifest ends inside chunk %d's id", ErrEncoding, i)
+		}
+		var c PublicChunk
+		copy(c.ID[:], b[p:p+IDSize])
+		p += IDSize
+
+		size, n, err := readUvarint(b[p:])
+		if err != nil {
+			return nil, fmt.Errorf("%w: manifest chunk %d size", ErrEncoding, i)
+		}
+		p += n
+		if size == 0 || size > uint64(MaxFileSize) {
+			return nil, fmt.Errorf("%w: manifest chunk %d is %d bytes", ErrEncoding, i, size)
+		}
+		c.Size = int64(size)
+		total += c.Size
+		m.Chunks = append(m.Chunks, c)
+	}
+
+	if total != m.FileSize {
+		return nil, fmt.Errorf("%w: chunks total %d bytes, file size says %d",
+			ErrEncoding, total, m.FileSize)
+	}
+	return m, nil
+}

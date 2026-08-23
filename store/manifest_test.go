@@ -314,3 +314,178 @@ func TestChunkSizesMustAccountForTheWholeFile(t *testing.T) {
 		t.Error("chunks that do not total the file size were accepted")
 	}
 }
+
+// The server holds no content key and still has to enumerate a manifest's
+// chunks, or it could never reclaim anything in an E2EE library. This is that
+// path, and what it must agree with is the keyed one.
+func TestThePublicChunkListIsReadableWithoutTheKey(t *testing.T) {
+	for _, sealed := range []bool{false, true} {
+		chunks := []ChunkRef{
+			{ID: id(1), Size: 300000, PlaintextHash: id(11)},
+			{ID: id(2), Size: 700000, PlaintextHash: id(12)},
+			{ID: id(3), Size: 100000, PlaintextHash: id(13)},
+		}
+		m := &Manifest{FileSize: 1100000, Chunks: chunks}
+
+		var encoded []byte
+		var err error
+		if sealed {
+			encoded, err = m.EncodeSealed(testCK)
+		} else {
+			for i := range m.Chunks {
+				m.Chunks[i].PlaintextHash = ID{}
+			}
+			encoded, err = m.Encode()
+		}
+		if err != nil {
+			t.Fatalf("sealed=%v: %v", sealed, err)
+		}
+
+		pub, err := DecodeManifestPublic(encoded)
+		if err != nil {
+			t.Fatalf("sealed=%v: %v", sealed, err)
+		}
+		if pub.E2EE != sealed {
+			t.Errorf("sealed=%v: reported E2EE=%v", sealed, pub.E2EE)
+		}
+		if pub.Inlined {
+			t.Errorf("sealed=%v: a 1.1 MB file reported as inline", sealed)
+		}
+		if pub.FileSize != 1100000 {
+			t.Errorf("sealed=%v: file size %d", sealed, pub.FileSize)
+		}
+		if len(pub.Chunks) != len(chunks) {
+			t.Fatalf("sealed=%v: %d chunks, want %d", sealed, len(pub.Chunks), len(chunks))
+		}
+		for i, c := range pub.Chunks {
+			if c.ID != chunks[i].ID || c.Size != chunks[i].Size {
+				t.Errorf("sealed=%v: chunk %d = (%s, %d)", sealed, i, c.ID, c.Size)
+			}
+		}
+	}
+}
+
+// What it must NOT yield. H_p is the sealed section's whole content, and a
+// public reader that leaked it would hand the server the one value it needs to
+// derive a chunk's key.
+func TestThePublicReaderYieldsNoPlaintextHashes(t *testing.T) {
+	m := &Manifest{FileSize: 900000, Chunks: []ChunkRef{
+		{ID: id(1), Size: 500000, PlaintextHash: id(0xaa)},
+		{ID: id(2), Size: 400000, PlaintextHash: id(0xbb)},
+	}}
+	encoded, err := m.EncodeSealed(testCK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hp := range []ID{id(0xaa), id(0xbb)} {
+		if bytes.Contains(encoded, hp[:]) {
+			t.Fatal("a plaintext hash appears in the clear in the encoded manifest")
+		}
+	}
+	// And the public struct has nowhere to put one, which is the real
+	// guarantee — this is a compile-time property, asserted here so that
+	// adding a field to PublicChunk has to come past this test.
+	pub, err := DecodeManifestPublic(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pub.Chunks) != 2 {
+		t.Fatalf("got %d chunks", len(pub.Chunks))
+	}
+}
+
+func TestThePublicReaderSeesAnInlineFileAsInline(t *testing.T) {
+	for _, sealed := range []bool{false, true} {
+		data := pseudoRandom("public/inline", 1000)
+		m := &Manifest{FileSize: int64(len(data)), Inline: data}
+		var encoded []byte
+		var err error
+		if sealed {
+			encoded, err = m.EncodeSealed(testCK)
+		} else {
+			encoded, err = m.Encode()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub, err := DecodeManifestPublic(encoded)
+		if err != nil {
+			t.Fatalf("sealed=%v: %v", sealed, err)
+		}
+		if !pub.Inlined || len(pub.Chunks) != 0 || pub.FileSize != int64(len(data)) {
+			t.Fatalf("sealed=%v: %+v", sealed, pub)
+		}
+	}
+}
+
+// The inline flag and the file size must agree, and the server is the one
+// party that can check it without a key. Either bit having been flipped makes
+// the object malformed.
+func TestThePublicReaderRefusesAnInlineFlagThatDisagreesWithTheSize(t *testing.T) {
+	m := &Manifest{FileSize: 900000, Chunks: []ChunkRef{{ID: id(1), Size: 900000}}}
+	encoded, err := m.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := bytes.Clone(encoded)
+	tampered[1] |= flagInline
+	if _, err := DecodeManifestPublic(tampered); !errors.Is(err, ErrEncoding) {
+		t.Fatalf("a chunked manifest flagged inline was accepted: %v", err)
+	}
+
+	small := &Manifest{FileSize: 10, Inline: pseudoRandom("public/small", 10)}
+	encoded, err = small.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered = bytes.Clone(encoded)
+	tampered[1] &^= flagInline
+	if _, err := DecodeManifestPublic(tampered); !errors.Is(err, ErrEncoding) {
+		t.Fatalf("an inline manifest flagged chunked was accepted: %v", err)
+	}
+}
+
+func TestThePublicReaderRefusesMalformedManifests(t *testing.T) {
+	m := &Manifest{FileSize: 800000, Chunks: []ChunkRef{
+		{ID: id(1), Size: 500000},
+		{ID: id(2), Size: 300000},
+	}}
+	encoded, err := m.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		what string
+		in   []byte
+	}{
+		{"empty", nil},
+		{"header only", encoded[:2]},
+		{"truncated inside a chunk id", encoded[:len(encoded)-20]},
+		{"wrong version", append([]byte{9}, encoded[1:]...)},
+		{"reserved bits set", append([]byte{encoded[0], encoded[1] | 0x80}, encoded[2:]...)},
+	} {
+		if _, err := DecodeManifestPublic(tc.in); !errors.Is(err, ErrEncoding) {
+			t.Errorf("%s: accepted (%v)", tc.what, err)
+		}
+	}
+
+	// A chunk list whose sizes do not add up to the file size is the check
+	// that catches a server rewriting one entry, which is otherwise the one
+	// public field it could edit without the tag noticing at this layer.
+	//
+	// The size varint is located rather than computed: it sits after a
+	// file_size varint and a chunk_count varint, both of which change width
+	// with their values, so an arithmetic offset here is a test that tampers
+	// with whatever happens to be at that byte.
+	first := id(1)
+	at := bytes.Index(encoded, first[:])
+	if at < 0 {
+		t.Fatal("could not find the first chunk id in the encoded manifest")
+	}
+	tampered := bytes.Clone(encoded)
+	tampered[at+IDSize] ^= 0x01
+	if _, err := DecodeManifestPublic(tampered); !errors.Is(err, ErrEncoding) {
+		t.Errorf("chunk sizes that do not total the file size were accepted: %v", err)
+	}
+}

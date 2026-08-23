@@ -372,6 +372,43 @@ does not merely fail the tag — it fails to produce a key that could ever have
 made that ciphertext. Ordering and membership integrity live here; chunks
 themselves stay position-free.
 
+### Reading the public section without a key
+
+The public section is byte-identical in shape across both library types up to
+the end of the chunk list, so it can be parsed with no content key:
+
+```
+version u8 | flags u8 | file_size varint | chunk_count varint | (id[32], size varint)*
+```
+
+This is what lets a server garbage-collect a library it cannot read. Chunk ids
+and sizes are public **by design** — the argument is in the plan's Manifests
+section — precisely so that tracing which chunks are still referenced does not
+require the key. A server that could not enumerate them could never reclaim
+anything in an E2EE library.
+
+Two rules go with it.
+
+**A key-free reader is for servers. A client must not use one.** The public
+section of an E2EE manifest *is* covered by the AEAD tag, but a key-free parse
+does not check it, because checking it needs the key. A holder of CK reads the
+chunk list through the sealed decode and gets it authenticated; a server reads
+it unverified, which is the correct trade for the one party already assumed
+hostile to integrity. What a key-free reader produces is the server's own
+bookkeeping, never a statement to a client about what a file is.
+
+**It yields no plaintext hashes and no inline bytes.** Those are the sealed
+section. H_p in particular is what a chunk's content key derives from, so a
+public reader that exposed it would hand the server the one value it is missing.
+
+A key-free reader must still enforce every public-section rule: version, the
+reserved flag bits, the bounds, that `chunk_count` matches the list, and that
+the chunk sizes total `file_size`. That last one is the only public field a
+server could rewrite whose damage this layer can catch on its own, so it is
+checked here rather than left to the tag.
+
+Go: `DecodeManifestPublic`.
+
 ### Bounds
 
 An encoded manifest is at most **1 GiB**, checkable from `Content-Length`
