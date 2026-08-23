@@ -1534,6 +1534,22 @@ Phases are sequential on the branch; each leaves the tree working.
    can no longer serve one; cutting straight from 40 to 64 alongside the
    deletion has no such window.
 
+   **The order reversed, 2026-08-23** — recorded because the first decision
+   above says the lanes go first, and the build now runs the other way:
+   creation, reads, writes, the id-addressed surface, and the deletion last.
+   "Each phase leaves the tree working" won. The kept `entries/{path}` write
+   path commits through `postFilesAndGenCommit` in `fileop.go`, so deleting
+   the lanes first breaks the one route being kept before its replacement
+   exists; deleting last means every replacement lands against a tree that
+   builds and serves throughout. What made lanes-first look forced was
+   auto-merge, and that concern does not survive inspection: the CAS write
+   path never routes into `GenNewCommit`'s contention merge, and a fresh
+   instance has no Seafile client to drive the old lanes into it. Two things
+   the reversal does not touch: the lanes stay frozen — nothing new lands in
+   them while they wait — and the 40→64 narrowing still moves with the
+   deletion as one motion, because the window rule above is about the two id
+   widths coexisting, not about when the cut happens.
+
    **Step 6a landed 2026-08-23: the catalog is the authority.** A library's
    name, last modifier and modification time were fields inside every commit,
    mirrored into `RepoInfo` on each head move, with the commit as the source of
