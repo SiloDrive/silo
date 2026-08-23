@@ -372,42 +372,74 @@ does not merely fail the tag — it fails to produce a key that could ever have
 made that ciphertext. Ordering and membership integrity live here; chunks
 themselves stay position-free.
 
-### Reading the public section without a key
+### Reading without a key — the server's whole view
 
-The public section is byte-identical in shape across both library types up to
-the end of the chunk list, so it can be parsed with no content key:
+Every object type has a public section that parses with no content key, and
+together they are exactly what a server can see of an end-to-end encrypted
+library: **chunk lists, tree edges, roots and parents. Enough to store, serve,
+trace and reclaim a library; not enough to read one.**
+
+That is a design commitment, not a leak. A server that could not enumerate an
+E2EE library's chunks could never reclaim one, and a server that could not walk
+from a commit to those chunks could not enumerate them at all — the walk runs
+commit → directory → manifest → chunk, so a key-free reader is needed at every
+step or at none.
+
+**Manifest.** The public section is byte-identical in shape across both library
+types up to the end of the chunk list:
 
 ```
 version u8 | flags u8 | file_size varint | chunk_count varint | (id[32], size varint)*
 ```
 
-This is what lets a server garbage-collect a library it cannot read. Chunk ids
-and sizes are public **by design** — the argument is in the plan's Manifests
-section — precisely so that tracing which chunks are still referenced does not
-require the key. A server that could not enumerate them could never reclaim
-anything in an E2EE library.
+Yield: file size and the ordered chunk list. Never the plaintext hashes and
+never the inline bytes — those are the sealed section, and H_p in particular is
+what a chunk's content key derives from, so a public reader that exposed it
+would hand the server the one value it is missing.
 
-Two rules go with it.
+**Directory.** Yield: `dir_salt`, and for every entry its child id, its node
+type, and its stored name. The child id and the node type have to be public —
+a marker that cannot classify an edge cannot follow it, and the type is what
+says whether a child id names another directory or a manifest. The stored name
+is opaque: SIV ciphertext under E2EE, and the entry order is bytewise over that
+ciphertext, so **the order says nothing about the names**. Never the per-entry
+mtimes and modes; a key-free read reports them as zero, and a reader that took
+those for real values would date every entry in the library to the epoch.
+
+**Commit.** Yield: root, parents, `created_at`. The root has to be public in
+both library types — it is the first edge of every server-side walk, and a
+sealed root would leave a server unable to trace an E2EE library at all.
+**Never the author and never the message**, in *either* library type. They are
+sealed under E2EE and plainly readable through the keyed decode in a plain
+library, and a public reader that reported them where it could would let a
+server path written against it come to depend on a library being unencrypted.
+
+Three rules go with all of them.
 
 **A key-free reader is for servers. A client must not use one.** The public
-section of an E2EE manifest *is* covered by the AEAD tag, but a key-free parse
-does not check it, because checking it needs the key. A holder of CK reads the
-chunk list through the sealed decode and gets it authenticated; a server reads
-it unverified, which is the correct trade for the one party already assumed
-hostile to integrity. What a key-free reader produces is the server's own
-bookkeeping, never a statement to a client about what a file is.
+section of a sealed object *is* covered by the AEAD tag, but a key-free parse
+does not check it, because checking it needs the key. A holder of CK reads
+through the sealed decode and gets the same fields authenticated; a server
+reads them unverified, which is the correct trade for the one party already
+assumed hostile to integrity. What a key-free reader produces is the server's
+own bookkeeping, never a statement to a client about what an object is.
 
-**It yields no plaintext hashes and no inline bytes.** Those are the sealed
-section. H_p in particular is what a chunk's content key derives from, so a
-public reader that exposed it would hand the server the one value it is missing.
+**A key-free reader still enforces every public-section rule**: the version,
+the reserved flag bits, the bounds, and every internal agreement the public
+bytes can be checked against on their own — that `chunk_count` matches the
+list and the chunk sizes total `file_size`, that a directory's entries are
+strictly increasing by stored name, that a commit's parent count is within
+bounds. Those are the only fields a server could rewrite whose damage this
+layer can catch by itself, so they are checked here rather than left to the
+tag.
 
-A key-free reader must still enforce every public-section rule: version, the
-reserved flag bits, the bounds, that `chunk_count` matches the list, and that
-the chunk sizes total `file_size`. That last one is the only public field a
-server could rewrite whose damage this layer can catch on its own, so it is
-checked here rather than left to the tag.
+**One parser per object type, shared with the keyed decode.** The public
+section is not a second format; it is a prefix of the one format. Each object's
+keyed decoder parses it through the same code and then continues into the seal
+hash and the sealed section. Two hand-written parsers of one pinned layout are
+two things a port has to implement and keep in step, and they drift.
 
-Go: `DecodeManifestPublic`.
+Go: `DecodeManifestPublic`, `DecodeDirectoryPublic`, `DecodeCommitPublic`.
 
 ### Bounds
 
