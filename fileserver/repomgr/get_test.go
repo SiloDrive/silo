@@ -265,3 +265,82 @@ func TestTheServerWillNotCreateAnEncryptedLibrary(t *testing.T) {
 		t.Fatalf("the server created an E2EE library: %v", err)
 	}
 }
+
+// The library's display metadata and its root come out of the catalog now, not
+// out of the head commit. Everything this asserts used to be read back from a
+// commit object on every load.
+func TestALibrarysMetadataComesFromTheCatalog(t *testing.T) {
+	getTestStore(t)
+	owner := testAccount(t)
+
+	repoID, err := CreateRepo("Holiday photos", owner, DefaultFormat(false))
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	repo, err := GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.Name != "Holiday photos" {
+		t.Errorf("name = %q, want %q", repo.Name, "Holiday photos")
+	}
+	if repo.LastModifier != owner.Email {
+		t.Errorf("last modifier = %q, want %q", repo.LastModifier, owner.Email)
+	}
+	if repo.LastModificationTime == 0 {
+		t.Error("no modification time")
+	}
+	if repo.RootID == "" {
+		t.Error("no root id — the head's root has to come from the same row as the head")
+	}
+	if repo.HeadCommitID == "" {
+		t.Error("no head commit id")
+	}
+}
+
+// A rename is a catalog UPDATE and moves no head. The old spelling wrote a
+// commit whose only change was the name it carried, so every client saw a new
+// head, fetched it, and diffed two identical roots.
+func TestRenamingALibraryDoesNotMoveItsHead(t *testing.T) {
+	getTestStore(t)
+
+	repoID, err := CreateRepo("Before", testAccount(t), DefaultFormat(false))
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	before, err := GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetRepoName(repoID, "After"); err != nil {
+		t.Fatalf("SetRepoName: %v", err)
+	}
+
+	after, err := GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Name != "After" {
+		t.Errorf("name = %q, want %q", after.Name, "After")
+	}
+	if after.HeadCommitID != before.HeadCommitID {
+		t.Errorf("the head moved on a rename: %s -> %s", before.HeadCommitID, after.HeadCommitID)
+	}
+	if after.RootID != before.RootID {
+		t.Errorf("the root changed on a rename: %s -> %s", before.RootID, after.RootID)
+	}
+}
+
+// A store-v2 library has no Seafile key ceremony to read and no commit the old
+// decoder could parse, so nothing must try. The head id's width is what says
+// which format a library is in.
+func TestAStoreV2HeadIsNotHandedToTheSeafileCommitDecoder(t *testing.T) {
+	repo := &Repo{ID: "does-not-matter", HeadCommitID: strings.Repeat("a", 64)}
+	if err := loadSeafileCrypto(repo); err != nil {
+		t.Fatalf("a 64-character head went looking for a Seafile commit: %v", err)
+	}
+	if repo.IsEncrypted || repo.Version != 0 {
+		t.Error("a store-v2 head filled in the vestigial fields")
+	}
+}

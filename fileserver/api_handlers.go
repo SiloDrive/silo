@@ -121,7 +121,6 @@ func destructiveCollision(srcMode uint32, dst *fsmgr.SeafDirent) string {
 
 func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
-	user := acct.Email
 	repoID := mux.Vars(r)["repoid"]
 
 	if err := r.ParseForm(); err != nil {
@@ -134,11 +133,13 @@ func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
-	if !ok {
+	// A rename touches no object, so the head commit is not needed and is not
+	// loaded: the permission check and the catalog row are the whole of it.
+	repo := entryRepo(w, repoID, acct.ID, true)
+	if repo == nil {
 		return
 	}
-	if !renameRepo(w, r, repo, head, user, newName) {
+	if !renameRepo(w, r, repo, newName) {
 		return
 	}
 
@@ -156,7 +157,6 @@ func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 // lane exists to remove.
 func patchRepoHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
-	user := acct.Email
 	repoID := mux.Vars(r)["repoid"]
 
 	var body struct {
@@ -181,29 +181,33 @@ func patchRepoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
-	if !ok {
+	repo := entryRepo(w, repoID, acct.ID, true)
+	if repo == nil {
 		return
 	}
-	if !renameRepo(w, r, repo, head, user, name) {
+	if !renameRepo(w, r, repo, name) {
 		return
 	}
 
 	writeEntryJSON(w, http.StatusOK, map[string]any{"id": repo.ID, "name": name})
 }
 
-// renameRepo gives a library a new name and commits it, answering the request
+// renameRepo gives a library a new name, answering the request
 // itself on failure. It reports whether the caller should carry on.
-func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, head *commitmgr.Commit, user, newName string) bool {
-	repo.Name = newName
-	desc := fmt.Sprintf("Renamed library to \"%s\"", newName)
-	// No gc check: this commit names the root it was handed, and writes no fs
-	// object a GC could reclaim between here and the commit. Every handler that
-	// builds a new tree takes a gc id first; this one has nothing to protect.
-	if _, err := GenNewCommit(repo, head, head.RootID, user, desc, false, "", false); err != nil {
-		writeCommitErr(w, r, err, "library rename")
+// renameRepo changes a library's display name.
+//
+// It is one UPDATE and mints no commit. The old spelling wrote a commit whose
+// only change was the name it carried, which moved the head for a change that
+// was not in the tree: every client saw a new head, fetched it, diffed two
+// identical roots and found nothing. The name is catalog data now, and under
+// E2EE the server could not write that commit at all.
+func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, newName string) bool {
+	if err := repomgr.SetRepoName(repo.ID, newName); err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("library rename failed")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return false
 	}
+	repo.Name = newName
 	return true
 }
 

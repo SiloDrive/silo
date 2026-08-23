@@ -758,6 +758,28 @@ server being busy.
 the library id, so the client mints it and the server accepts it rather than
 assigning one.
 
+### Where the encryption boundary is
+
+**What is in a library is private; that the library exists and what it is
+called is not.** E2EE covers a library's content and the names of the files
+inside it. A library's own display name and description are server-plaintext,
+permanently and by decision: the server has to sort them, search them and put
+them in `GET /repos` for a client that has not unlocked anything — including a
+client that holds no key for that library at all. Sealing them would produce a
+listing of untitled libraries, or a second name kept in the clear beside the
+sealed one, which is the same disclosure with an extra step.
+
+Two more things the server knows and does not pretend otherwise about: **who
+wrote last, and when.** The account is the one that authenticated when the head
+moved and the timestamp is the server's clock at that moment, and they are
+recorded outside the commit. They may differ from the author and `created_at`
+you sealed inside it — you may seal whatever attribution you like — and that is
+the intended relationship rather than a bug. They answer different questions:
+what the library's members say happened, and what the server witnessed.
+
+Surface the sealed pair where you show history and the server pair where you
+show sync state; do not try to reconcile them.
+
 ### Keys, in one paragraph
 
 The password splits client-side: an auth key that goes to the server and a

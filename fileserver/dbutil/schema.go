@@ -103,7 +103,18 @@ CREATE INDEX IF NOT EXISTS groupuser_account_indx on GroupUser (account_id);
 CREATE TABLE IF NOT EXISTS GroupStructure (group_id INTEGER PRIMARY KEY, path VARCHAR(1024));
 
 -- Repositories, shares, tokens, permissions, quotas.
-CREATE TABLE IF NOT EXISTS Branch (name VARCHAR(10), repo_id CHAR(40), commit_id CHAR(40), PRIMARY KEY (repo_id, name));
+-- The head of a library's history: which commit it is on, and the root that
+-- commit names.
+--
+-- root_id sits here rather than being read back out of the commit because the
+-- two are one fact -- where the library is now -- and they move together in
+-- one UPDATE. Keeping them in one row is what makes that atomic for free, and
+-- it takes an object-store read off the path every request goes down.
+--
+-- It is also the only way it can work at all on an end-to-end encrypted
+-- library, where the server can open a commit's public section but is doing so
+-- on every load to learn something it wrote itself.
+CREATE TABLE IF NOT EXISTS Branch (name VARCHAR(10), repo_id CHAR(40), commit_id CHAR(64), root_id CHAR(64), PRIMARY KEY (repo_id, name));
 -- A library, and how its bytes are made.
 --
 -- The chunker parameters are stored per library rather than compiled in,
@@ -155,6 +166,34 @@ CREATE TABLE IF NOT EXISTS RepoFileCount (repo_id CHAR(36) PRIMARY KEY, file_cou
 
 CREATE TABLE IF NOT EXISTS WebUploadTempFiles (repo_id CHAR(40) NOT NULL, file_path TEXT NOT NULL, tmp_file_path TEXT NOT NULL);
 
+-- A library's display metadata, and the authority for it.
+--
+-- These used to be a cache of fields copied out of the head commit on every
+-- head move, with the commit as the source of truth. That is inverted: the
+-- commit carries none of them, and this table is where they live.
+--
+-- The inversion is forced by end-to-end encryption. A sealed commit's author
+-- and message are inside the seal, and a library's display name has nowhere
+-- to live in one at all, so a server reading its own library's metadata out of
+-- a commit would be reading fields it cannot read.
+--
+-- **Every column here is a server-observed fact, not a claim copied from a
+-- client.** last_modifier is the account that was authenticated when the head
+-- moved; update_time is the server's clock at that moment. On an E2EE library
+-- these can differ from the author and created_at sealed inside the commit --
+-- a client may seal any attribution it likes -- and that is correct rather
+-- than a discrepancy to reconcile later. They answer different questions: the
+-- sealed pair is what the library's members say happened, and these are what
+-- the server witnessed. Where they disagree, this table is the one that is
+-- not a claim.
+--
+-- **name is therefore permanently server-plaintext**, and so is any
+-- description beside it. E2EE covers a library's content and the names of the
+-- files inside it; it does not cover the library's own display name, which the
+-- server has to sort, search and show in a listing to a client that has not
+-- unlocked anything. Recorded as a boundary rather than a gap: see the
+-- guardrails in docs/plans/store-v2.md.
+--
 -- last_modifier holds an address rather than an account id, and stays that
 -- way. It is display data of the same kind as a commit author: a record of
 -- what someone was called at the time, not a key anything is resolved from.

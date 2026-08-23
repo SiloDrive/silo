@@ -1401,6 +1401,43 @@ Phases are sequential on the branch; each leaves the tree working.
    both would create a window in which a SHA-1 id is accepted on a route that
    can no longer serve one; cutting straight from 40 to 64 alongside the
    deletion has no such window.
+
+   **Step 6a landed 2026-08-23: the catalog is the authority.** A library's
+   name, last modifier and modification time were fields inside every commit,
+   mirrored into `RepoInfo` on each head move, with the commit as the source of
+   truth. That is inverted: the commit carries none of them, `RepoInfo` is
+   where they live, and `Branch` gains `root_id` so the head and the root it
+   names are one row read in one query — which also takes an object-store read
+   off the path every request goes down.
+
+   Two things fell out that are worth more than the move itself.
+
+   *Every catalog column here is a server-observed fact.* `last_modifier` is
+   the account that was authenticated when the head moved and `update_time` is
+   the server's clock at that moment — not values copied from a commit. On an
+   E2EE library they may differ from the author and `created_at` sealed inside
+   it, because a client may seal any attribution it likes, and that is the
+   intended relationship rather than a discrepancy to reconcile later. They
+   answer different questions: the sealed pair is what the library's members
+   say happened, and the catalog is what the server witnessed. Where they
+   disagree, the catalog is the one that is not a claim.
+
+   *A rename is an UPDATE and moves no head.* It used to mint a commit whose
+   only change was the name it carried, so every client saw a new head, fetched
+   it, diffed two identical roots and found nothing — and under E2EE the server
+   could not write that commit at all.
+
+   Recording the head move is now **inside the same transaction as the head
+   move**, which the write-contention tests found the hard way: done afterwards,
+   a failure arrives when the head has already moved, and a caller reading that
+   error as lost contention retries a commit that already landed. One event,
+   one transaction.
+
+   What remains reading a commit is one function, `loadSeafileCrypto`, filling
+   the vestigial Seafile key-ceremony fields for libraries in the old format
+   only — chosen by the head id's width, forty characters being SHA-1, exactly
+   as the object store picks a digest. It is a bridge with a scheduled end: it
+   goes with the frozen lanes, taking those fields with it.
 3. **E2EE.** — **folded into phase 2, 2026-08-23.** Identity keys, salt
    endpoint, split-derivation login (with or after auth.md's rewrite), CK
    wrapping, library creation with client UUIDs, Option A names, convergent
@@ -1482,6 +1519,16 @@ ones from this plan:
 - **No refcounts in the store.** Liveness comes from the mark, only ever.
 - **The catalog never holds chunk locations.** The store stays reconstructible
   from packs + `storage.key`.
+- **A library's display name and description are server-plaintext, and that is
+  a boundary rather than a gap.** E2EE covers a library's content and the names
+  of the files inside it. It does not cover the library's own name: the server
+  has to sort it, search it, and put it in a listing for a client that has not
+  unlocked anything — a client that may not hold that library's key at all.
+  Sealing it would mean a listing of untitled libraries, or a second name
+  stored in the clear beside the sealed one, which is the same disclosure with
+  an extra step. The line is drawn here on purpose and is the sentence the
+  client docs need: **what is in the library is private; that the library
+  exists and what it is called is not.**
 
 ## Doc changes
 

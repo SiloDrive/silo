@@ -364,9 +364,9 @@ func editRepoNeedRetry(repoID, name, desc, user string) (bool, error) {
 	if name == "" {
 		name = repo.Name
 	}
-	if desc == "" {
-		desc = repo.Desc
-	}
+	// A library's description is no longer read back from its head commit, so
+	// there is nothing to inherit here. Virtual libraries go with the frozen
+	// lanes; an empty description in the meantime is what the catalog has.
 
 	parent, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
 	if err != nil {
@@ -391,14 +391,13 @@ func editRepoNeedRetry(repoID, name, desc, user string) (bool, error) {
 
 	// A failed branch update means someone else moved the head first; the
 	// caller should reload and try again.
-	_, err = updateBranch(repoID, repo.StoreID, commit.CommitID, parent.CommitID, "", false, "")
+	_, err = updateBranch(repoID, repo.StoreID, commit, parent.CommitID, "", false, "")
 	if err != nil {
 		return true, nil
 	}
 
-	if err := repomgr.UpdateRepoInfo(repoID, commit.CommitID); err != nil {
-		log.Warnf("failed to update repo info for %s: %v", repoID, err)
-	}
+	// updateBranch records the head move itself now, so there is nothing left
+	// to do here.
 
 	// Done — no retry. This returned true, which is what made the caller
 	// treat every successful rename as a lost race.

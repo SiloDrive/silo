@@ -31,14 +31,20 @@ const (
 
 // Repo contains information about a repo.
 type Repo struct {
-	ID                   string
+	ID string
+	// Name, LastModifier and LastModificationTime come from the catalog, not
+	// from the head commit. See the RepoInfo comment in dbutil/schema.go for
+	// why that inversion is forced rather than tidier: they are facts the
+	// server observed, and on an E2EE library it could not read them out of a
+	// commit even if it wanted to.
 	Name                 string
-	Desc                 string
 	LastModifier         string
 	LastModificationTime int64
-	HeadCommitID         string
-	RootID               string
-	IsCorrupted          bool
+	// HeadCommitID and RootID are one fact in two columns of one row, so they
+	// move together and are read together.
+	HeadCommitID string
+	RootID       string
+	IsCorrupted  bool
 
 	// Set when repo is virtual
 	VirtualInfo *VRepoInfo
@@ -51,7 +57,9 @@ type Repo struct {
 	// encrypted. Frozen at creation; see format.go.
 	Format Format
 
-	// Encrypted repo info
+	// Vestigial: the Seafile key ceremony, read out of the head commit of a
+	// library in the old format and populated for no other kind. It is the one
+	// thing still read from a commit, and it goes with the frozen lanes.
 	IsEncrypted   bool
 	EncVersion    int
 	Magic         string
@@ -119,21 +127,34 @@ func Get(id string) *Repo {
 // have to agree, and two copies of a pair that has to agree is one copy too
 // many — the format columns were added to one of them first, and the second
 // loader silently returned libraries with a zeroed chunker until it wasn't.
-const repoSelect = `SELECT r.repo_id, b.commit_id, v.origin_repo, v.path, v.base_commit, ` +
-	`r.chunker, r.chunk_min, r.chunk_target, r.chunk_max, r.chunk_norm, r.e2ee FROM ` +
+const repoSelect = `SELECT r.repo_id, b.commit_id, b.root_id, v.origin_repo, v.path, v.base_commit, ` +
+	`r.chunker, r.chunk_min, r.chunk_target, r.chunk_max, r.chunk_norm, r.e2ee, ` +
+	`i.name, i.update_time, i.last_modifier FROM ` +
 	`Repo r LEFT JOIN Branch b ON r.repo_id = b.repo_id ` +
 	`LEFT JOIN VirtualRepo v ON r.repo_id = v.repo_id ` +
+	`LEFT JOIN RepoInfo i ON r.repo_id = i.repo_id ` +
 	`WHERE r.repo_id = ? AND b.name = 'master'`
 
 // scanRepoRow reads one repoSelect row, including the virtual-repo columns and
 // the store id they decide.
 func scanRepoRow(rows *sql.Rows, id string, repo *Repo) error {
 	var originRepoID, path, baseCommitID sql.NullString
-	if err := rows.Scan(&repo.ID, &repo.HeadCommitID, &originRepoID, &path, &baseCommitID,
+	// Nullable because the joins are outer ones and because these columns
+	// arrived after the tables did. A library with no RepoInfo row is not an
+	// error to this loader: it has no display name yet, which is a different
+	// thing from having no head.
+	var rootID, name, lastModifier sql.NullString
+	var updateTime sql.NullInt64
+	if err := rows.Scan(&repo.ID, &repo.HeadCommitID, &rootID, &originRepoID, &path, &baseCommitID,
 		&repo.Format.Chunker, &repo.Format.MinSize, &repo.Format.TargetSize,
-		&repo.Format.MaxSize, &repo.Format.Normalization, &repo.Format.E2EE); err != nil {
+		&repo.Format.MaxSize, &repo.Format.Normalization, &repo.Format.E2EE,
+		&name, &updateTime, &lastModifier); err != nil {
 		return err
 	}
+	repo.RootID = rootID.String
+	repo.Name = name.String
+	repo.LastModifier = lastModifier.String
+	repo.LastModificationTime = updateTime.Int64
 
 	if !originRepoID.Valid {
 		repo.StoreID = repo.ID
@@ -194,17 +215,35 @@ func GetWithReason(id string) (*Repo, error) {
 		return nil, fault(id, ErrRepoCorrupted, "%v", err)
 	}
 
-	commit, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
-	if err != nil {
+	if err := loadSeafileCrypto(repo); err != nil {
 		return nil, fault(id, ErrRepoCorrupted, "failed to load head commit %s: %v", repo.HeadCommitID, err)
 	}
 	clearFaults(id)
 
-	repo.Name = commit.RepoName
-	repo.Desc = commit.RepoDesc
-	repo.LastModifier = commit.CreatorName
-	repo.LastModificationTime = commit.Ctime
-	repo.RootID = commit.RootID
+	return repo, nil
+}
+
+// loadSeafileCrypto fills the vestigial Seafile fields from the head commit,
+// and is the only thing left that reads one.
+//
+// It runs on libraries in the old format and on nothing else. The head id's
+// width is what says which: forty characters is SHA-1 and a Seafile commit,
+// sixty-four is SHA-256 and a store-v2 one, exactly as the object store
+// chooses a digest by the width of an id. A store-v2 library has no key
+// ceremony to read and no commit this decoder could parse, so asking would be
+// a guaranteed failure rather than a lookup.
+//
+// This is a bridge with a scheduled end: it goes when the frozen lanes do,
+// taking the fields it fills with it.
+func loadSeafileCrypto(repo *Repo) error {
+	const seafileCommitIDLen = 40
+	if len(repo.HeadCommitID) != seafileCommitIDLen {
+		return nil
+	}
+	commit, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
+	if err != nil {
+		return err
+	}
 	repo.Version = commit.Version
 	if commit.Encrypted == "true" {
 		repo.IsEncrypted = true
@@ -229,8 +268,7 @@ func GetWithReason(id string) (*Repo, error) {
 			repo.PwdHashParams = commit.PwdHashParams
 		}
 	}
-
-	return repo, nil
+	return nil
 }
 
 // StatusFor maps a GetWithReason failure onto the status and body a client
@@ -392,8 +430,7 @@ func GetEx(id string) *Repo {
 		return repo
 	}
 
-	commit, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
-	if err != nil {
+	if err := loadSeafileCrypto(repo); err != nil {
 		// Same fault as in GetWithReason, and reached by the sync path on
 		// every request, so it shares the same suppression.
 		_ = fault(id, ErrRepoCorrupted, "failed to load head commit %s: %v", repo.HeadCommitID, err)
@@ -401,32 +438,6 @@ func GetEx(id string) *Repo {
 		return repo
 	}
 	clearFaults(id)
-
-	repo.Name = commit.RepoName
-	repo.LastModifier = commit.CreatorName
-	repo.LastModificationTime = commit.Ctime
-	repo.RootID = commit.RootID
-	repo.Version = commit.Version
-	if commit.Encrypted == "true" {
-		repo.IsEncrypted = true
-		repo.EncVersion = commit.EncVersion
-		switch repo.EncVersion {
-		case 1:
-			repo.Magic = commit.Magic
-		case 2:
-			repo.Magic = commit.Magic
-			repo.RandomKey = commit.RandomKey
-		case 3, 4:
-			repo.Magic = commit.Magic
-			repo.RandomKey = commit.RandomKey
-			repo.Salt = commit.Salt
-		}
-		if commit.PwdHash != "" {
-			repo.PwdHash = commit.PwdHash
-			repo.PwdHashAlgo = commit.PwdHashAlgo
-			repo.PwdHashParams = commit.PwdHashParams
-		}
-	}
 
 	return repo
 }
@@ -662,41 +673,62 @@ func DelUploadTmpFile(repoID, filePath string) error {
 	return nil
 }
 
-func setRepoCommitToDb(repoID, repoName string, updateTime int64, version int, isEncrypted string, lastModifier string) error {
-	var exists int
-	var encrypted int
+// RecordHeadMove records what the server witnessed when a library's head
+// moved: who was authenticated, and when.
+//
+// It replaces a function that copied a name, a timestamp, a format version and
+// an encryption flag out of the new head commit into RepoInfo, keeping the
+// commit as the source of truth and this table as a mirror. That is inverted
+// now — see the RepoInfo comment in dbutil/schema.go — and the two fields left
+// are the two the server establishes itself rather than reads.
+//
+// modifier is the authenticated account, not a name a request supplied, and
+// when is the server's clock. On an E2EE library both may differ from the
+// author and created_at sealed inside the commit, and that is the intended
+// relationship rather than a drift to reconcile: one pair is what the members
+// say happened and the other is what the server saw.
+//
+// **It takes the caller's transaction**, and that is not a convenience. The
+// head move and this record are one event, so they commit together or not at
+// all. Recorded afterwards, a failure here arrives when the head has already
+// moved, and the only honest thing left to do with it is retry a commit that
+// already landed — which is precisely what a caller reading the error as lost
+// contention would do.
+//
+// The name is not touched. A rename is its own operation, and rewriting the
+// name here on every write is how a rename gets quietly undone by the next
+// one. A library with no row yet gets one with an empty name rather than an
+// error: this is display metadata, and refusing a write because of it would
+// be the same misjudgement as reporting it late.
+func RecordHeadMove(ctx context.Context, tx *sql.Tx, repoID, modifier string, when int64) error {
+	if when == 0 {
+		when = time.Now().Unix()
+	}
+	_, err := tx.ExecContext(ctx,
+		"INSERT INTO RepoInfo (repo_id, name, update_time, last_modifier) VALUES (?, '', ?, ?) "+
+			"ON CONFLICT(repo_id) DO UPDATE SET update_time=excluded.update_time, "+
+			"last_modifier=excluded.last_modifier",
+		repoID, when, modifier)
+	return err
+}
 
-	sqlStr := "SELECT 1 FROM RepoInfo WHERE repo_id=?"
+// SetRepoName renames a library.
+//
+// It is a single UPDATE and mints no commit. The old spelling wrote a commit
+// whose only change was the name it carried, which moved the head for a change
+// that was not in the tree — every client saw a new head and diffed two
+// identical roots. Under E2EE the server could not write that commit at all.
+func SetRepoName(repoID, name string) error {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID)
-	if err := row.Scan(&exists); err != nil {
-		if err != sql.ErrNoRows {
-			return err
-		}
+	res, err := seafileWriteDB.ExecContext(ctx,
+		"UPDATE RepoInfo SET name=? WHERE repo_id=?", name, repoID)
+	if err != nil {
+		return err
 	}
-	if updateTime == 0 {
-		updateTime = time.Now().Unix()
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("library %s has no RepoInfo row", repoID)
 	}
-
-	if isEncrypted == "true" {
-		encrypted = 1
-	}
-
-	if exists == 1 {
-		sqlStr := "UPDATE RepoInfo SET name=?, update_time=?, version=?, is_encrypted=?, " +
-			"last_modifier=? WHERE repo_id=?"
-		if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoName, updateTime, version, encrypted, lastModifier, repoID); err != nil {
-			return err
-		}
-	} else {
-		sqlStr := "INSERT INTO RepoInfo (repo_id, name, update_time, version, is_encrypted, last_modifier) " +
-			"VALUES (?, ?, ?, ?, ?, ?)"
-		if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, repoName, updateTime, version, encrypted, lastModifier); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -871,20 +903,6 @@ func GetRepoOwner(repoID string) (account.ID, error) {
 	}
 
 	return owner, nil
-}
-
-func UpdateRepoInfo(repoID, commitID string) error {
-	head, err := commitmgr.Load(repoID, commitID)
-	if err != nil {
-		err := fmt.Errorf("failed to get commit %s:%s", repoID, commitID)
-		return err
-	}
-
-	if err := setRepoCommitToDb(repoID, head.RepoName, head.Ctime, head.Version, head.Encrypted, head.CreatorName); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func HasLastGCID(repoID, clientID string) (bool, error) {
@@ -1113,7 +1131,8 @@ func CreateRepo(name string, owner *account.Account, format Format) (string, err
 		format.Normalization, format.E2EE); err != nil {
 		return "", fmt.Errorf("failed to insert repo: %v", err)
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)", repoID, commit.CommitID); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO Branch (name, repo_id, commit_id, root_id) VALUES ('master', ?, ?, ?)",
+		repoID, commit.CommitID, commit.RootID); err != nil {
 		return "", fmt.Errorf("failed to insert branch: %v", err)
 	}
 	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("RepoHead", "repo_id, branch_name"), repoID, "master"); err != nil {

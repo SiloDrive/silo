@@ -2075,7 +2075,7 @@ func genCommitNeedRetry(repo *repomgr.Repo, base *commitmgr.Commit, commit *comm
 		mergedCommit = commit
 	}
 
-	gcConflict, err := updateBranch(repoID, repo.StoreID, mergedCommit.CommitID, currentHead.CommitID, secondParentID, checkGC, lastGCID)
+	gcConflict, err := updateBranch(repoID, repo.StoreID, mergedCommit, currentHead.CommitID, secondParentID, checkGC, lastGCID)
 	if gcConflict {
 		return false, err
 	}
@@ -2101,7 +2101,16 @@ func genMergeDesc(repo *repomgr.Repo, mergedRoot, p1Root, p2Root string) string 
 	return desc
 }
 
-func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
+// updateBranch moves a library's head from oldCommitID to newCommit, or fails.
+//
+// It takes the commit rather than its id because the head and the root it
+// names are one fact in two columns, and they are written in one UPDATE: a
+// reader that found them disagreeing would have no way to tell which was
+// current. The same call is where the catalog learns who moved the head and
+// when, which are the server's own observations rather than anything read back
+// out of the commit.
+func updateBranch(repoID, originRepoID string, newCommit *commitmgr.Commit, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
+	newCommitID := newCommit.CommitID
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	trans, err := siloPair.Write.BeginTx(ctx, nil)
@@ -2151,9 +2160,15 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 		return false, err
 	}
 
-	sqlStr = "UPDATE Branch SET commit_id = ? WHERE name = ? AND repo_id = ?"
-	_, err = trans.ExecContext(ctx, sqlStr, newCommitID, name, repoID)
+	sqlStr = "UPDATE Branch SET commit_id = ?, root_id = ? WHERE name = ? AND repo_id = ?"
+	_, err = trans.ExecContext(ctx, sqlStr, newCommitID, newCommit.RootID, name, repoID)
 	if err != nil {
+		_ = trans.Rollback()
+		return false, err
+	}
+
+	// In the same transaction as the head it describes: see RecordHeadMove.
+	if err := repomgr.RecordHeadMove(ctx, trans, repoID, newCommit.CreatorName, newCommit.Ctime); err != nil {
 		_ = trans.Rollback()
 		return false, err
 	}
@@ -2163,24 +2178,22 @@ func updateBranch(repoID, originRepoID, newCommitID, oldCommitID, secondParentID
 	}
 
 	if secondParentID != "" {
-		if err := onBranchUpdated(repoID, secondParentID, false); err != nil {
+		if err := onBranchUpdated(repoID, secondParentID); err != nil {
 			return false, err
 		}
 	}
 
-	if err := onBranchUpdated(repoID, newCommitID, true); err != nil {
+	if err := onBranchUpdated(repoID, newCommitID); err != nil {
 		return false, err
 	}
 
 	return false, nil
 }
 
-func onBranchUpdated(repoID string, commitID string, updateRepoInfo bool) error {
-	if updateRepoInfo {
-		if err := repomgr.UpdateRepoInfo(repoID, commitID); err != nil {
-			return err
-		}
-	}
+// onBranchUpdated tells everything outside the database that a library moved.
+// The catalog is not among them any more — that happened inside the same
+// transaction as the move itself.
+func onBranchUpdated(repoID string, commitID string) error {
 
 	if option.EnableNotification {
 		notif.NotifyRepoUpdate(repoID, commitID)
