@@ -72,7 +72,7 @@ func setupPerms(t *testing.T) {
 		}
 	}
 
-	repomgr.Init(siloPair.Read, siloPair.Write)
+	repomgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
 	share.Init(siloPair.Read, "Group", false)
 	Init(siloPair.Read, siloPair.Write)
 }

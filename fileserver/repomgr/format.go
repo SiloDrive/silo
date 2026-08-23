@@ -82,6 +82,28 @@ func (f Format) PlainParams() (store.Params, error) {
 	return f.Params(store.PlainSeed())
 }
 
+// ServerParams is Params as the server can know them, for either library type.
+//
+// A plain library chunks under the published seed and the server chunks it, so
+// that case is PlainParams. An E2EE library's seed is HKDF over its content
+// key, which the server never holds — so there is no honest value to put here,
+// and the seed is left zero. That is safe and deliberate rather than a
+// placeholder: the server never chunks an E2EE library (WriteFile refuses
+// without the key), so the seed is never read; and zero is specifically not
+// the plain seed, so store.Params.ValidateFor's rule that an E2EE library must
+// never chunk under the published seed still bites if this value ever reaches
+// a chunker.
+//
+// Use this to open a library for the work the server actually does — serving
+// bytes by id, tracing the tree, reading public sections. Anything needing
+// real chunking in an E2EE library is a client operation.
+func (f Format) ServerParams() (store.Params, error) {
+	if !f.E2EE {
+		return f.PlainParams()
+	}
+	return f.Params([32]byte{})
+}
+
 // Validate reports whether the format describes a library this build can work
 // with at all, without needing a seed to say so.
 func (f Format) Validate() error {

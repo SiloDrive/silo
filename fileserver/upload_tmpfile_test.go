@@ -72,7 +72,7 @@ func uploadTmpDir(t *testing.T) string {
 	t.Helper()
 
 	sqliteTestDB(t)
-	repomgr.Init(siloPair.Read, siloPair.Write)
+	repomgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
 
 	absDataDir = t.TempDir()
 	shared := filepath.Join(absDataDir, "httptemp", "cluster-shared")

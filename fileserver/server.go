@@ -198,7 +198,7 @@ func openStores() error {
 	}
 	option.LoadFileServerOptions(configFile)
 	loadDatabase()
-	repomgr.Init(siloPair.Read, siloPair.Write)
+	repomgr.Init(siloPair.Read, siloPair.Write, dataDir)
 	return nil
 }
 
@@ -386,7 +386,7 @@ func Run(args []string) error {
 		log.SetLevel(level)
 	}
 
-	repomgr.Init(siloPair.Read, siloPair.Write)
+	repomgr.Init(siloPair.Read, siloPair.Write, dataDir)
 
 	// Drop cached authorisations as soon as the rows behind them go away,
 	// rather than at the next cache expiry. Registered here because repomgr

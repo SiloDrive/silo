@@ -21,7 +21,7 @@ func syncAuthTestDB(t *testing.T) {
 	t.Helper()
 
 	sqliteTestDB(t)
-	repomgr.Init(siloPair.Read, siloPair.Write)
+	repomgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
 	share.Init(siloPair.Read, "Group", false)
 
 	origTTL := option.AuthCacheTTL

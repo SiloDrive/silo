@@ -42,7 +42,7 @@ func getTestStore(t *testing.T) string {
 	}
 
 	dataDir := filepath.Join(dir, "seafile-data")
-	Init(pair.Read, pair.Write)
+	Init(pair.Read, pair.Write, dataDir)
 	account.Init(pair.Read, pair.Write)
 	commitmgr.Init(dir, dataDir)
 
@@ -108,8 +108,10 @@ func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 	head := repo.HeadCommitID
 
 	// Exactly the damage the accident caused: the row stays, the object goes.
-	if err := os.RemoveAll(objstore.RepoDir(dataDir, objstore.TypeCommits, repoID)); err != nil {
-		t.Fatalf("remove commit store: %v", err)
+	// A store-v2 commit lives in the objects store, not the Seafile commits
+	// one.
+	if err := os.RemoveAll(objstore.RepoDir(dataDir, objstore.TypeObjects, repoID)); err != nil {
+		t.Fatalf("remove object store: %v", err)
 	}
 	t.Cleanup(func() { clearFaults(repoID) })
 

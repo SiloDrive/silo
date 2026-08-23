@@ -17,7 +17,9 @@ import (
 	_ "github.com/dkam/silo/fileserver/blockmgr"
 	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
+	storefmt "github.com/dkam/silo/store"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 )
@@ -81,11 +83,40 @@ type VRepoInfo struct {
 
 var seafileDB *sql.DB      // read handle
 var seafileWriteDB *sql.DB // write handle
+var dataDir string         // where object stores live
 
-// Init initialize status of repomgr package
-func Init(readDB, writeDB *sql.DB) {
+// Init initialize status of repomgr package.
+//
+// dataDir is here because creating a library now writes objects as well as
+// rows: a store-v2 library's first commit and its empty root are real objects
+// that have to exist before the branch can point at them.
+func Init(readDB, writeDB *sql.DB, dir string) {
 	seafileDB = readDB
 	seafileWriteDB = writeDB
+	dataDir = dir
+}
+
+// OpenStore opens a library's store-v2 objects from the server's side.
+//
+// Server's side means without a content key, always — see Format.ServerParams.
+// For a plain library that is the whole story and the Store can do everything.
+// For an E2EE one the Store is permanently in objmgr's third mode: it moves
+// bytes, verifies ids and reads public sections, and refuses anything needing
+// the key rather than half-doing it.
+//
+// storeID rather than the library id because a virtual library's objects live
+// in its origin's store.
+func OpenStore(storeID string, f Format) (*objmgr.Store, error) {
+	params, err := f.ServerParams()
+	if err != nil {
+		return nil, err
+	}
+	return objmgr.New(objmgr.Config{
+		DataDir: dataDir,
+		StoreID: storeID,
+		E2EE:    f.E2EE,
+		Params:  params,
+	})
 }
 
 // A repo can fail to load for four unrelated reasons, and only one of them is
@@ -218,9 +249,48 @@ func GetWithReason(id string) (*Repo, error) {
 	if err := loadSeafileCrypto(repo); err != nil {
 		return nil, fault(id, ErrRepoCorrupted, "failed to load head commit %s: %v", repo.HeadCommitID, err)
 	}
+	if err := checkHeadPresent(repo); err != nil {
+		return nil, fault(id, ErrRepoCorrupted, "%v", err)
+	}
 	clearFaults(id)
 
 	return repo, nil
+}
+
+// checkHeadPresent verifies a store-v2 library's head commit object is
+// actually there.
+//
+// Nothing else does any more, and that is the point. A Seafile library's head
+// was read on every load by loadSeafileCrypto, so a missing object surfaced as
+// corruption for free; a store-v2 head is never read here, because there is
+// nothing in it this function needs. Without this check a library whose head
+// object had gone would load clean and fail later, somewhere further from the
+// cause — and the reason that matters is the one on GetWithReason's errors: a
+// library that answers "not found" tells a sync client to delete its local
+// copy, which is the copy that could have restored the object.
+//
+// A stat, not a read. It is strictly cheaper than what the old format paid on
+// the same path.
+func checkHeadPresent(repo *Repo) error {
+	if len(repo.HeadCommitID) != 2*storefmt.IDSize {
+		return nil
+	}
+	id, err := storefmt.ParseID(repo.HeadCommitID)
+	if err != nil {
+		return fmt.Errorf("head commit id %q is unreadable: %w", repo.HeadCommitID, err)
+	}
+	st, err := OpenStore(repo.StoreID, repo.Format)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %w", err)
+	}
+	ok, err := st.HasObject(id)
+	if err != nil {
+		return fmt.Errorf("failed to look for head commit %s: %w", repo.HeadCommitID, err)
+	}
+	if !ok {
+		return fmt.Errorf("head commit %s is missing from the object store", repo.HeadCommitID)
+	}
+	return nil
 }
 
 // loadSeafileCrypto fills the vestigial Seafile fields from the head commit,
@@ -1093,29 +1163,48 @@ const emptySHA1 = "0000000000000000000000000000000000000000"
 // life of the library: every client that ever reads it chunks to these
 // numbers, so the one moment it can be chosen is this one.
 //
-// Note what this cannot yet do. An end-to-end encrypted library's initial
-// commit is sealed under a content key the server never holds, so the server
-// cannot mint one — creating an E2EE library is a client operation with a
-// client-generated id, and this path handles the server-readable case until
-// that lands.
+// The library is store-v2: an empty root directory object and an initial
+// commit pointing at it, both minted here and both addressed by SHA-256. The
+// commit carries no library name — the catalog is the authority for that, and
+// a name sealed inside a commit would be unreadable in the library type this
+// server exists to serve.
+//
+// E2EE is still refused, but the reason has moved. It is no longer that the
+// server cannot mint a sealed commit — that is true and remains a client
+// operation with a client-supplied id, and the wire shape for it is in
+// porter-brief.md. It is that the content key would have nowhere to live: the
+// CK is wrapped to each member's X25519 public key, that key is an account
+// column that does not exist yet, and the wrap blob has no table. Creating an
+// E2EE library before then would produce one whose key dies with the device
+// that made it, which is data loss wearing a feature's clothes.
 func CreateRepo(name string, owner *account.Account, format Format) (string, error) {
 	if err := format.Validate(); err != nil {
 		return "", err
 	}
 	if format.E2EE {
-		return "", fmt.Errorf("cannot create an end-to-end encrypted library server-side: %w", ErrNoContentKey)
+		return "", fmt.Errorf("cannot yet create an end-to-end encrypted library: its content key has nowhere durable to live: %w", ErrNoContentKey)
 	}
 	repoID := uuid.New().String()
 
-	// Create initial commit with empty root
-	commit := commitmgr.NewCommit(repoID, "", emptySHA1, owner.Email, "Created library")
-	commit.RepoName = name
-	commit.Version = 1
-	if err := commitmgr.Save(commit); err != nil {
-		return "", fmt.Errorf("failed to save initial commit: %v", err)
+	store, err := OpenStore(repoID, format)
+	if err != nil {
+		return "", fmt.Errorf("failed to open store for new library: %w", err)
+	}
+	root, err := store.EmptyDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to create empty root: %w", err)
+	}
+	now := time.Now().Unix()
+	commitID, err := store.PutCommit(&storefmt.Commit{
+		Root:      root,
+		CreatedAt: now,
+		Author:    owner.Email,
+		Message:   "Created library",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to create initial commit: %w", err)
 	}
 
-	now := time.Now().Unix()
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
@@ -1132,7 +1221,7 @@ func CreateRepo(name string, owner *account.Account, format Format) (string, err
 		return "", fmt.Errorf("failed to insert repo: %v", err)
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO Branch (name, repo_id, commit_id, root_id) VALUES ('master', ?, ?, ?)",
-		repoID, commit.CommitID, commit.RootID); err != nil {
+		repoID, commitID.String(), root.String()); err != nil {
 		return "", fmt.Errorf("failed to insert branch: %v", err)
 	}
 	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("RepoHead", "repo_id, branch_name"), repoID, "master"); err != nil {
