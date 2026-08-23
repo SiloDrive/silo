@@ -903,6 +903,73 @@ same mark phase.
   second mechanism**. Dead fraction and locality already order the queue;
   undersize joins them at the bottom.
 
+### Size accounting and quota
+
+Accounting today is built entirely on what phase 2 deletes, and the lane
+store-v2 builds on never had it.
+
+- **What dies.** `size_sched.go` computes `RepoSize`/`RepoFileCount` through
+  `commitmgr.Load`, `diff.DiffCommits` and an `fsmgr.GetFileCountInfoByPath`
+  fallback — all three doomed managers — and is queued only from
+  `sync_api.go:1170` and `fileop.go:2962`, both frozen lanes. Its
+  `notifyRepoSizeChange` needs Redis, which a single-binary local Silo has no
+  reason to run. At the deletion nothing computes a size and nothing asks for
+  one.
+- **Quota is already absent from the silo lane.** Every `checkQuota` call site
+  sits in `doUpload`, `doUpdate`, `parseUploadHeaders`, `commitFileBlocks` or
+  `sync_api` — Seafile lanes without exception. `entries/{path}` has never
+  checked it. Note the failure mode precisely, because it is quiet: usage stays
+  0, `usage >= quota` never trips, so quota does not break loudly at the
+  deletion, it stops existing.
+- **Quota is logical size at head** — the sum of `file_size` over the files the
+  head commit reaches. Not stored bytes, not disk. Under content-defined
+  chunking, dedup and deferred compaction those three numbers diverge by
+  multiples in both directions, and only the first is one a user can predict or
+  act on: delete a 2 GB file, get 2 GB back. It is also the only one that holds
+  still while the server works — a compaction run must never change what
+  somebody is charged.
+- **It is computable without a key, in both library types.** `file_size` is
+  public by design (Manifests), so one path covers plain and E2EE with no
+  branch. Nor is it usefully forgeable: a chunked manifest's chunk sizes must
+  sum to `file_size` and the count check rejects a mismatch, and those chunks
+  are bytes the client actually uploaded. Overstating is possible and
+  self-defeating — it charges the liar.
+- **The number comes from the object index, not a walk.** The
+  `(child_id → file_size)` map the server already populates at commit time for
+  the listing sidecar is the same table accounting reads. One population pass,
+  two consumers; a second walker built for sizes is the thing to not do.
+- **Steady state is incremental off the store-v2 diff** — the same diff
+  `changes?since=` needs, so build them together. Delta over added, modified
+  and deleted, applied to the stored total. The full walk survives as a repair
+  path and as phase 4's recovery scan's natural companion, never as the
+  routine.
+- **Dedup is not a discount, and a stored-bytes quota is refused.**
+  Cross-library dedup exists only for plain libraries — a different CK mints a
+  different frame (Content crypto) — so charging stored bytes would bill two
+  users differently for the same file depending on who uploaded it first, and
+  bill E2EE users more for choosing E2EE. There is also no machinery that could
+  split a shared chunk fairly: mark **must never be refcounted** (GC and
+  compaction, above), and without refcounts there is no principled attribution.
+  Logical-at-head is the only rule that is both computable and explicable.
+- **Disk is a second number with a different owner.**
+  `PackStats(pack_id, total_bytes, live_bytes, gc_id)` already answers it, and
+  the mark phase already produces it. Sum it for what the disk holds; its gap
+  against the logical total *is* the dead fraction waiting on compaction. Two
+  numbers, two purposes, never added together — and an operator number rather
+  than a per-user one, because packs are not per-library and per-library disk
+  attribution does not exist to be reported.
+- **Open — where the check goes on the id-addressed lane.** `PUT entries/{path}`
+  checks `Content-Length` as today. `PUT objects/{id}` cannot: objects are
+  admitted before the head that references them moves, so charging at admission
+  over-charges a client that abandons an upload, and charging only at head-move
+  lets one push unbounded bytes first. The shape that fits is a soft ceiling at
+  admission to bound the damage and the real accounting at head-move, leaving
+  unreferenced bytes to GC — which is what GC is for. Decide this **with** the
+  surface, not after it.
+- File count rides along unchanged in shape: same diff, same index. Its only
+  reader today is `size_sched`'s own bookkeeping query, so whether
+  `RepoFileCount` survives turns on whether anything outside wants it.
+
 ### Observability for the background workers
 
 Error reporting today rides two things, and both are request-shaped: the
