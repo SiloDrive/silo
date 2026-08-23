@@ -903,6 +903,59 @@ same mark phase.
   second mechanism**. Dead fraction and locality already order the queue;
   undersize joins them at the bottom.
 
+### History retention
+
+The "delete file history after N days" knob, and it is a GC input rather than
+a feature of its own. `RepoHistoryLimit (repo_id, days)` has sat in the schema
+since the Seafile era (`dbutil/schema.go:158`) with no reader but `DeleteRepo`'s
+cleanup — the storage survives, and the mark phase is where it grows teeth.
+
+- **Retention is the definition of "live commit", not a second collector.**
+  Mark traces from live commits, and without a limit every commit ever written
+  is live — nothing short of deleting the library ever reclaims a byte. Under a
+  limit the live set is the head plus every commit younger than the cutoff; the
+  head is always live, however old. Everything reachable from that set stays,
+  and commits outside it — with the objects only they reference — are what the
+  sweep exists for. The user-facing promise is snapshot-shaped: anything
+  deleted or overwritten less than N days ago is still recoverable.
+- **It works without the key.** Truncation needs a commit's parent and its
+  age, and `DecodeCommitPublic` serves both in an E2EE library. The server can
+  cut an encrypted library's history without reading a byte of it — the
+  key-free readers were named the server's view of the format, and this is
+  that view doing its job.
+- **The knob: per-library override over one global default, unlimited when
+  unset.** `days = 0` is valid and means head-only — a library that is a
+  mirror rather than an archive. Absent means keep everything, and unlimited
+  is the default, because reclamation nobody configured is the one kind this
+  system must never perform.
+- **`changes?since=` must answer truncation before the diff is written.** A
+  client asking `since=` a commit retention has reclaimed gets a defined
+  answer — history was cut, resync from the head — not an object-not-found
+  dressed as a 500. Pinned as **410 Gone carrying the current head**, so the
+  client's next move rides in the response. Conversion already needs the
+  identical answer: a converted library **starts a new history root**
+  (Conversion is a named operation), and a `since=` from behind that root is
+  the same "your baseline no longer exists" case. One response, two causes —
+  and it goes in before the diff bakes in the assumption that every `since`
+  resolves.
+- **Disk usage decomposes into three numbers, and the middle one is this
+  knob's.** Chunks the head reaches; chunks only retained history reaches; and
+  what the directory actually holds — packs with their dead fraction, indexes,
+  overhead. The mark walks the first two sets anyway and can tell them apart
+  in the same trace; `PackStats` already totals the third. The middle number
+  is what retention trades against, so it is the one to show next to the knob
+  — with one honesty rule under cross-library dedup: the figure worth showing
+  is the bytes *only* this library's history keeps alive, because a chunk
+  another library still reaches is reclaimed by nobody's truncation. That is
+  computable inside the global mark without refcounts, and no other way.
+- **Accounting is untouched by design.** Quota is logical size at head
+  (below), and truncation moves no head: cutting history reclaims disk, never
+  quota. The two numbers diverging here is the system working — `PackStats`
+  sees the reclaim and the user's number never flinches.
+- Enforcement lands with phase 5's mark, where liveness is computed anyway.
+  What phase 2 must carry is only the wire answer above and the row that
+  already exists.
+
 ### Size accounting and quota
 
 Accounting today is built entirely on what phase 2 deletes, and the lane
