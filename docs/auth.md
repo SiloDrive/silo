@@ -519,6 +519,14 @@ and do not interoperate, so each is pinned here rather than chosen twice.
   verifier reads `Credential.public_key`, and nothing the request says about
   which key or which algorithm to use is honored. A signature the request gets
   to describe is a signature the request gets to weaken.
+- **The wrong key type is rejected at enrolment, not at verification.** The
+  SPKI is parsed when the credential is registered and refused unless it is
+  P-256; a key that is not the one algorithm never reaches the table. Checking
+  at verification instead would leave rows in `Credential` that can never
+  authenticate anything, failing on every request with an error that looks like
+  a signing bug on a device that is in fact holding a key the server should
+  have refused to store — and the person debugging it is the one who cannot see
+  the table.
 - **The nonce is a signature parameter, not a covered component.**
   `;nonce="…"` per RFC 9421 §2.3 — *not* `"nonce"` in the component list, which
   would require inventing a `Nonce:` request header this profile has no other
@@ -542,6 +550,16 @@ and do not interoperate, so each is pinned here rather than chosen twice.
 
 That list closes every degree of freedom in this lane. A signer and a verifier
 written from it on different days should meet in the middle.
+
+**When the lane is built, the signing contract gets the store-format
+treatment** — a file under [`spec/`](spec/) with cross-implementation vectors,
+because porter-mac has to produce byte-identical signature bases and prose has
+never once been enough for that. Signature base construction, the canonical
+form of each covered component, and the nonce rules are what the vectors pin.
+This section is the decision record; the spec is the contract. Not now — it
+waits for something to verify against, the way `store-format.md` waited for
+`store/`. [`porter-brief.md`](porter-brief.md) then gets the captured request
+flow, as it does for every other lane.
 
 #### The body is mostly not in the signature
 

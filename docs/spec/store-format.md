@@ -814,6 +814,14 @@ with no key store, stated plainly rather than pretended otherwise. The wrapped
 blob on the server exists for one moment: bootstrapping a new device, which is
 the one time the password is typed again.
 
+**Cache the identity key, never `wrapKey`.** Caching `wrapKey` avoids the same
+re-typing and is the more obvious thing to reach for, and it is the wrong one:
+`wrapKey` is a deterministic function of the password and salt, so `wrapKey` at
+rest is an offline password oracle — whoever reads it off a stolen device tests
+guesses against it directly and recovers the *password*, which also yields
+`authKey` and the account itself. The identity key discloses nothing about the
+password. Same convenience, strictly smaller blast radius.
+
 Any 32 bytes are a valid private key. X25519 clamping forces bit 254 set and
 the low three bits clear, and no scalar of that shape is a multiple of the
 group order, so even an all-zero input yields an ordinary public key rather

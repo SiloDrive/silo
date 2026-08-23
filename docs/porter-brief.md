@@ -46,6 +46,27 @@ Missing or bad token → **401**. No permission on the library → **403**.
 log in again with the stored credentials and retry the request once. Keep the
 password in the Keychain, not the token — the token is the short-lived thing.
 
+> **This lane is transitional. Do not architect around a password at rest.**
+>
+> The advice above is correct for the server as it is today, and re-presenting
+> the password on a 401 is the only thing that works right now. It is also the
+> one piece of this brief that two landed designs go on to prohibit, so it is
+> worth knowing before the Keychain entry exists on real machines:
+>
+> - [`auth.md`](auth.md)'s device lane makes the password an **enrolment
+>   credential** — presented once, exchanged for a registered keypair,
+>   forgotten. Requests are signed thereafter; there is nothing to re-present.
+> - [`plans/store-v2.md`](plans/store-v2.md)'s split derivation goes further:
+>   nothing persists the password at all. The client derives `wrapKey` at
+>   enrolment, unwraps its identity key with it, stores **the identity key** in
+>   the platform key store, and discards both the password and `wrapKey`.
+>
+> What that costs you if you build on today's shape unexamined: a re-login path
+> that assumes a re-derivable secret, and any feature that quietly depends on
+> "we can always log in again". Keep the credential behind a narrow interface —
+> something that answers *authenticate this request*, not *give me the
+> password* — and the swap is a new implementation rather than an unwind.
+
 If several requests are in flight when it expires they will all 401 at once.
 Collapse that into one re-login rather than a stampede; `client/client.go` does
 it by recording which token a caller observed and only re-logging in if it has

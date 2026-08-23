@@ -946,6 +946,17 @@ the obvious way:
   blob on the server exists for new-device bootstrap — the one moment the
   password is typed again. Nothing persists the password; the identity key
   sits exactly where auth.md already puts the device key.
+
+  **Why the identity key and not wrapKey**, since caching wrapKey would also
+  avoid re-typing and is the more obvious thing to reach for: wrapKey is a
+  deterministic function of the password and the salt, so wrapKey at rest is an
+  **offline password oracle**. Whoever reads it off a stolen device tests
+  guesses against it directly, and what they recover is the password itself —
+  which yields authKey, the account on the server, and whatever else that
+  password opens, not merely this library. The identity key discloses nothing
+  about the password: it is independently random, and stealing it costs exactly
+  the libraries it unwraps. Same convenience, strictly smaller blast radius,
+  and the one that fails without escalating.
 - **Server-side hashing of authKey collapses to a fast hash.** auth.md sized
   64 MiB argon2id behind a 4-wide semaphore against low-entropy passwords; a
   256-bit authKey needs none of it, by auth.md's own rule that a 256-bit
