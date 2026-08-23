@@ -1026,6 +1026,38 @@ store-v2 builds on never had it.
 - File count rides along unchanged in shape: same diff, same index. Its only
   reader today is `size_sched`'s own bookkeeping query, so whether
   `RepoFileCount` survives turns on whether anything outside wants it.
+- **The numbers need a wire surface, because they reach a GUI.** Today the only
+  quota endpoint is the sync lane's `/repo/{id}/quota-check`
+  (`server.go:668`) — it dies with the lanes, and it is a boolean admission
+  check rather than a report. The silo API has nothing, and `porter-brief.md`
+  never says "quota". The shape:
+  - `GET account/usage` — the account's quota and its logical usage, and
+    nothing else. `server-info`'s `features` gains `"usage"` when the route
+    lands, so porter feature-detects rather than version-sniffs, and
+    porter-brief gets its section when it ships.
+  - **Per-library `size` and `file_count` go on the repos listing, not on
+    `account/usage`.** They are library facts, from the same catalog row as
+    `update_time` and `last_modifier` — the server-observed columns — and
+    splitting one row across two endpoints buys nothing. Sharing settles it: a
+    library shared with you appears in your listing but is charged to its
+    *owner's* quota, so per-library sizes under an account usage report either
+    leak libraries you do not own into a total they must not sum to, or omit
+    them and leave the widget with rows it cannot size. On the listing each row
+    carries its own number and nothing has to add up.
+  - **Unlimited is the absence of the field, never a sentinel.**
+    `option.InfiniteQuota` is `-2`, and a widget rendering "-2 bytes" is the
+    predictable end of putting it on the wire.
+  - **Every figure is labelled by kind.** These are logical-at-head numbers and
+    the client must be able to say so, because the first support question any
+    of this generates is a mismatch against `du` — which is not a bug but the
+    two-numbers rule above, working as designed.
+  - **The report reads the catalog; it never walks and never recomputes.** A
+    second path to the number is a second definition of it, and the one that
+    drifts is whichever the quota check does not use.
+  - When phase 5's mark produces the history-only figure it joins the same
+    listing row, as `history_bytes` with a `measured_at` — per-library because
+    the retention knob is, and dated because it is stale by construction, where
+    visible staleness beats silent drift.
 
 ### Observability for the background workers
 
