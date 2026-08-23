@@ -301,35 +301,13 @@ func TestALowOrderPublicKeyIsRefused(t *testing.T) {
 	}
 }
 
-func TestAWrapRefusesAnIdentifierItCannotBind(t *testing.T) {
+// The identifier spelling rejections are not here: they are committed in
+// keys.json's identifiers_refused and driven from there by
+// TestKeyVectorsAreReproducibleFromTheFile, because the vector file is the
+// normative artifact and a port checks against it. A second list in this file
+// would be the one somebody forgets to add a case to.
+func TestAWrapRefusesAContentKeyOfTheWrongWidth(t *testing.T) {
 	id := testIdentity(t)
-	wrapKey := testWrapKey(t)
-
-	// One table, both identifiers, because it is one rule. A case that is
-	// refused as an account id and accepted as a library id would be the
-	// asymmetry this table exists to keep from reappearing.
-	for _, tc := range []struct{ what, id string }{
-		{"empty", ""},
-		{"over-long", string(bytes.Repeat([]byte{'a'}, UUIDTextBytes+1))},
-		{"upper case", strings.ToUpper(testHolder)},
-		{"the unhyphenated form", strings.ReplaceAll(testHolder, "-", "")},
-		{"braced", "{" + testHolder + "}"},
-		{"urn-prefixed", "urn:uuid:" + testHolder},
-		{"a trailing space", testHolder + " "},
-		{"a hyphen in the wrong place", "0192f0a13-c5d-7e4b-8f26-9a7d5c3e1b04"},
-		{"a non-hex digit", strings.Replace(testHolder, "f", "g", 1)},
-		{"the nil UUID", nilUUID},
-		{"an account-scheme id", "account:7"},
-		{"an email address", "person@example.com"},
-	} {
-		if _, err := WrapIdentity(wrapKey, tc.id, cheapParams(), id.Private()); !errors.Is(err, ErrWrap) {
-			t.Errorf("wrapped an identity to %s as a holder (%q): %v", tc.what, tc.id, err)
-		}
-		if _, err := WrapCK(id.Public(), tc.id, bytes.Repeat([]byte{1}, CKSize)); !errors.Is(err, ErrWrap) {
-			t.Errorf("wrapped a content key to %s as a library (%q): %v", tc.what, tc.id, err)
-		}
-	}
-
 	if _, err := WrapCK(id.Public(), testLibrary, []byte("short")); !errors.Is(err, ErrWrap) {
 		t.Error("wrapped a content key of the wrong width")
 	}

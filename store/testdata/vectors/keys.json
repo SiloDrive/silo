@@ -146,6 +146,16 @@
       "why": "thirty-six characters and still not a UUID; the length check alone does not catch it"
     },
     {
+      "name": "non-hex-digit",
+      "identifier": "0192g0a1-3c5d-7e4b-8f26-9a7d5c3e1b04",
+      "why": "g is not a hexadecimal digit; the hyphen positions alone do not catch it"
+    },
+    {
+      "name": "over-long",
+      "identifier": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "why": "one byte too many, which is the length off-by-one a port is most likely to get wrong"
+    },
+    {
       "name": "nil-uuid",
       "identifier": "00000000-0000-0000-0000-000000000000",
       "why": "well formed and names nobody, which is the empty identifier wearing a UUID"
