@@ -1,6 +1,7 @@
 package objmgr
 
 import (
+	"bytes"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -69,28 +70,43 @@ func (r *dirReader) name(e store.DirEntry) (string, error) {
 	return r.cipher.Decrypt(e.Name)
 }
 
-// lookup finds an entry by its plaintext name.
+// stored returns the bytes a name has inside the object: the name itself in a
+// plain library, its SIV ciphertext in an E2EE one.
+func (r *dirReader) stored(name string) ([]byte, error) {
+	if r.cipher == nil {
+		return []byte(name), nil
+	}
+	return r.cipher.Encrypt(name)
+}
+
+// index returns the position of the entry with the given plaintext name, or -1
+// if the directory has no such entry.
 //
 // In an E2EE library it encrypts the name and matches on ciphertext rather
 // than decrypting every entry to compare. Both are correct — AES-SIV is
 // deterministic, which is the whole reason `entries/{path}` can route on
 // ciphertext — but one is a single encryption and the other is one decryption
 // per entry in the directory.
+func (r *dirReader) index(name string) (int, error) {
+	want, err := r.stored(name)
+	if err != nil {
+		return -1, err
+	}
+	for i, e := range r.dir.Entries {
+		if bytes.Equal(e.Name, want) {
+			return i, nil
+		}
+	}
+	return -1, nil
+}
+
+// lookup finds an entry by its plaintext name.
 func (r *dirReader) lookup(name string) (store.DirEntry, bool, error) {
-	want := []byte(name)
-	if r.cipher != nil {
-		ct, err := r.cipher.Encrypt(name)
-		if err != nil {
-			return store.DirEntry{}, false, err
-		}
-		want = ct
+	i, err := r.index(name)
+	if err != nil || i < 0 {
+		return store.DirEntry{}, false, err
 	}
-	for _, e := range r.dir.Entries {
-		if string(e.Name) == string(want) {
-			return e, true, nil
-		}
-	}
-	return store.DirEntry{}, false, nil
+	return r.dir.Entries[i], true, nil
 }
 
 // List returns a directory's entries, with names in the clear and in the
