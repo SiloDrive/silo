@@ -807,11 +807,39 @@ same mark phase.
   a real bill the mark phase should price in rather than discover. `PackStats`
   already carries the dead fraction; **local presence joins it as a scheduling
   input**, so the autovacuum-style limiter spends its I/O budget on the free
-  rewrites before the paid ones. Dead fraction still decides *whether* a pack
-  wants compacting; locality decides *which* of the wanting packs goes first.
-  A remote-only pack that is mostly dead still gets compacted eventually —
-  starving it would leave paid storage full of garbage, which is the bill this
-  is trying to avoid.
+  rewrites before the paid ones.
+
+  **Gate on dead fraction, order by locality, starve nothing.** Dead fraction
+  decides *whether* a pack wants compacting; locality decides *which* of the
+  wanting packs goes first. The economics settle it rather than taste:
+  compacting a remote-only pack costs egress **once**, roughly the pack's size,
+  which at S3 rates is about four months of storing those same bytes. Leaving a
+  mostly-dead pack on paid storage costs its dead fraction **every month,
+  forever**. A one-time cost against a perpetual one always eventually pays for
+  itself, so deprioritised-but-not-starved is the only ordering consistent with
+  what this bullet is for.
+
+  Neither alternative survives that. Pure locality-first leaves paid storage
+  full of garbage. **Operator-only remote compaction fails the same way with
+  extra steps**: it converts a scheduling decision the system can price
+  precisely into a chore a human will defer indefinitely, and the default
+  outcome of a deferred chore is the garbage-filled bucket again.
+
+- **Two budgets, because they are two bills.** The autovacuum analogy implies
+  one limiter; this needs two. Local rewrites spend disk I/O. Remote
+  compactions spend disk I/O *and* egress, and those have different owners —
+  one shows up as a slow server, the other as a line item somebody has to
+  explain. A single budget cannot express "rewrite freely, spend carefully".
+
+  So the limiter carries a **separate egress budget: bytes downloaded per
+  interval, config-visible, generous default.** A backlog of mostly-dead remote
+  packs then drains at a bounded, predictable rate instead of arriving as one
+  surprise invoice.
+
+  That is also the honest knob to hand an operator. Not "may the system touch
+  remote packs" — it may, and the economics above say it must — but **"how fast
+  may it spend money doing so"**, which is a policy question that is correctly
+  theirs, expressed as a number rather than a ritual.
 
 ## End-to-end encryption
 
@@ -1161,7 +1189,9 @@ Phases are sequential on the branch; each leaves the tree working.
    backup-set wiring + init warning, recovery scan. The fs backend becomes the
    pack store; step 2's loose store was the scaffold.
 5. **GC + compaction.** Tracing mark, `PackStats`, threshold + throttled
-   rewrite. Built together with per-repo GC from
+   rewrite, with locality as a scheduling input and **two budgets** — disk I/O
+   for every rewrite, egress for the ones that have to download the pack first.
+   Built together with per-repo GC from
    [`future-features.md`](../future-features.md) — same mark, build it once.
 6. **Durable backends.** NAS fs root and S3 against the four-verb feature
    floor, async upload of sealed packs, verified-then-evictable local cache
