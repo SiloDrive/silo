@@ -15,8 +15,15 @@ import (
 	"github.com/dkam/silo/fileserver/repomgr"
 )
 
-// sqliteTestDB points the package's seafile connection at a throwaway SQLite file
-// and restores whatever was there when the test finishes.
+// sqliteTestDB points the package's seafile connection at a throwaway SQLite
+// file and its object stores at a throwaway directory, and restores whatever
+// was there when the test finishes.
+//
+// It initialises repomgr as well as the package globals because every caller
+// did, on the next line, with a temp dir of its own — and one of them handed
+// repomgr a different directory from the one it set absDataDir to, which is
+// the failure this shape exists to make impossible. A test that wants to know
+// where the objects went reads absDataDir.
 func sqliteTestDB(t *testing.T) {
 	t.Helper()
 
@@ -36,7 +43,9 @@ func sqliteTestDB(t *testing.T) {
 	origPair := siloPair
 	origDataDir := absDataDir
 	siloPair = pair
+	absDataDir = t.TempDir()
 	account.Init(pair.Read, pair.Write)
+	repomgr.Init(pair.Read, pair.Write, absDataDir)
 
 	t.Cleanup(func() {
 		siloPair = origPair
@@ -139,7 +148,6 @@ func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
 		live = "22222222-2222-2222-2222-222222222222"
 	)
 
-	absDataDir = t.TempDir()
 	for _, repoID := range []string{dead, live} {
 		for _, objType := range objstore.Types {
 			objDir := filepath.Join(objstore.RepoDir(absDataDir, objType, repoID), "04")
@@ -211,7 +219,6 @@ func TestCollectSkipsOriginOfLiveVirtualRepo(t *testing.T) {
 		virtual = "22222222-2222-2222-2222-222222222222"
 	)
 
-	absDataDir = t.TempDir()
 	objDir := filepath.Join(absDataDir, "storage", "fs", origin, "04")
 	if err := os.MkdirAll(objDir, 0700); err != nil {
 		t.Fatalf("failed to create %s: %v", objDir, err)

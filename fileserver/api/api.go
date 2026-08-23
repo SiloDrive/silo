@@ -472,7 +472,7 @@ func listEntries(repo *repomgr.Repo, dirID string) ([]dirEntry, error) {
 		return dirEntries(dir), nil
 	}
 
-	st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+	st, err := repo.Store()
 	if err != nil {
 		return nil, err
 	}

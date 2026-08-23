@@ -8,7 +8,6 @@ import (
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/apitokenstore"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 )
 
 const (
@@ -31,7 +30,6 @@ func tokenTestStore(t *testing.T) {
 	t.Helper()
 
 	sqliteTestDB(t)
-	repomgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
 	apitokenstore.Init(siloPair.Read, siloPair.Write)
 
 	origTTL := option.APITokenTTL

@@ -169,7 +169,7 @@ func resolve(repo *repomgr.Repo, path string) (*resolved, error) {
 // to the reason instead of surfacing as "not found", which would be a lie
 // about whether the file exists.
 func resolveV2(repo *repomgr.Repo, path string) (*resolved, error) {
-	st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+	st, err := repo.Store()
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +315,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileI
 // tell that apart from the file. Such a library is read through the
 // id-addressed surface, where the client opens the chunks itself.
 func serveFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID, fileName string) {
-	st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+	st, err := repo.Store()
 	if err != nil {
 		log.Errorf("failed to open store for repo %s: %v", repo.ID, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -523,7 +523,7 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 	}
 
 	if repo.IsStoreV2() {
-		putEntryFileV2(w, r, repo, parentDir, fileName, path)
+		putEntryFileV2(w, r, repo, fileName, path)
 		return
 	}
 
@@ -594,10 +594,10 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 // server cannot chunk what it cannot read, and chunking under the wrong seed
 // would be worse than refusing. Writing such a library is the id-addressed
 // surface's job, where the client chunks, seals and names every object.
-func putEntryFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, parentDir, fileName, path string) {
+func putEntryFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileName, path string) {
 	acct := middleware.GetAccount(r)
 
-	st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+	st, err := repo.Store()
 	if err != nil {
 		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -608,11 +608,9 @@ func putEntryFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, 
 	// addressed by content, so writing them commits to nothing — until the
 	// head moves, the file does not exist and no path has changed. That is
 	// also what makes the retry in mutateTree free of them.
-	body := io.Reader(r.Body)
-	if option.MaxUploadSize > 0 {
-		// A chunked upload has no Content-Length to check, so the limit is
-		// enforced on the way through as well as up front.
-		body = io.LimitReader(body, int64(option.MaxUploadSize)+1)
+	body, ok := boundedBody(w, r)
+	if !ok {
+		return
 	}
 	m, err := st.WriteFile(body)
 	if err != nil {
@@ -620,13 +618,24 @@ func putEntryFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, 
 			return // the client hung up; nothing was committed
 		}
 		if errors.Is(err, objmgr.ErrNoContentKey) {
-			http.Error(w, "This library is end-to-end encrypted; write its objects by id", http.StatusForbidden)
+			http.Error(w, errE2EEWriteByID, http.StatusForbidden)
 			return
 		}
 		log.WithContext(r.Context()).WithError(err).Errorf("failed to store %s in repo %s", path, repo.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+	// Asked after the chunks are written rather than before, because on a
+	// chunked upload there is nothing to ask until the body has been read.
+	// What that leaves behind is chunks nothing names — which is what the
+	// lost-race retry leaves behind too, and for the same reason it is the
+	// collector's business rather than this request's. No manifest is minted
+	// and no path changes, so the file does not exist.
+	if overBound(m.FileSize) {
+		http.Error(w, "File is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+
 	manifestID, err := st.PutManifest(m)
 	if err != nil {
 		log.WithContext(r.Context()).WithError(err).Errorf("failed to store manifest for %s in repo %s", path, repo.ID)
@@ -640,7 +649,8 @@ func putEntryFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, 
 			Mtime: now, Mode: defaultFileMode,
 		}, now)
 	}); err != nil {
-		writeCommitErr(w, r, err, fmt.Sprintf("commit of %s in repo %s", path, repo.ID))
+		writeTreeErr(w, r, err, "Parent directory does not exist",
+			fmt.Sprintf("commit of %s in repo %s", path, repo.ID))
 		return
 	}
 
@@ -778,11 +788,44 @@ func putEntryBlocks(w http.ResponseWriter, r *http.Request, repoID, path string)
 	})
 }
 
+// boundedBody applies the upload size limit to a request body, answering the
+// request itself if the limit is already known to be exceeded.
+//
+// The limit is policy and spooling to a temp file is mechanism, so the policy
+// lives here rather than inside spoolBody, where it started. A lane that does
+// not spool — putEntryFileV2 chunks the stream straight into the object store
+// — needs the same bound and none of the temp file, and taking only the
+// LimitReader from spoolBody is how it came to enforce half the rule. The half
+// it took is the half that silently truncates.
+//
+// Two checks, because neither alone is enough. Content-Length refuses the
+// ordinary case before a byte is transferred. A chunked upload declares no
+// length, so the reader is bounded one byte PAST the limit and the caller asks
+// overBound whether that byte arrived — a LimitReader on its own refuses
+// nothing, it ends the stream, and an ended stream is indistinguishable from a
+// client that sent exactly that much.
+func boundedBody(w http.ResponseWriter, r *http.Request) (io.Reader, bool) {
+	if option.MaxUploadSize == 0 {
+		return r.Body, true
+	}
+	if r.ContentLength > 0 && uint64(r.ContentLength) > option.MaxUploadSize {
+		http.Error(w, "File is too large", http.StatusRequestEntityTooLarge)
+		return nil, false
+	}
+	return io.LimitReader(r.Body, int64(option.MaxUploadSize)+1), true
+}
+
+// overBound reports whether a body read through boundedBody ran past the
+// limit. The extra byte boundedBody allows is what makes this answerable.
+func overBound(size int64) bool {
+	return option.MaxUploadSize > 0 && uint64(size) > option.MaxUploadSize
+}
+
 // spoolBody writes the request body to a temp file, returning its path and
 // size. On failure it has already answered the request.
 func spoolBody(w http.ResponseWriter, r *http.Request, fileName string) (string, int64, error) {
-	if option.MaxUploadSize > 0 && r.ContentLength > 0 && uint64(r.ContentLength) > option.MaxUploadSize {
-		http.Error(w, "File is too large", http.StatusRequestEntityTooLarge)
+	body, ok := boundedBody(w, r)
+	if !ok {
 		return "", 0, errTooLarge
 	}
 
@@ -795,20 +838,13 @@ func spoolBody(w http.ResponseWriter, r *http.Request, fileName string) (string,
 	}
 	defer func() { _ = f.Close() }()
 
-	body := io.Reader(r.Body)
-	if option.MaxUploadSize > 0 {
-		// A chunked upload has no Content-Length to check, so the limit is also
-		// enforced on the way through.
-		body = io.LimitReader(body, int64(option.MaxUploadSize)+1)
-	}
-
 	size, err := io.Copy(f, body)
 	if err != nil {
 		_ = os.Remove(f.Name())
 		// A client that disconnected mid-body is not an error worth reporting.
 		return "", 0, err
 	}
-	if option.MaxUploadSize > 0 && uint64(size) > option.MaxUploadSize {
+	if overBound(size) {
 		_ = os.Remove(f.Name())
 		http.Error(w, "File is too large", http.StatusRequestEntityTooLarge)
 		return "", 0, errTooLarge

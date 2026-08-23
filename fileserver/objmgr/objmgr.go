@@ -474,28 +474,15 @@ func (s *Store) ReadFileRange(m *store.Manifest, off, n int64, w io.Writer) erro
 }
 
 // ReadFile writes a manifest's file content to w.
+//
+// The whole file is the range starting at nothing and running to the end, and
+// saying so is the entire implementation: Manifest.Validate guarantees the
+// inline slice is the file and that the chunk sizes sum to FileSize, so every
+// chunk of that range is taken whole. Written out separately it was a second
+// copy of the E2EE-without-key refusal and the chunk walk, three lines apart,
+// and the two would have drifted the first time either grew a check.
 func (s *Store) ReadFile(m *store.Manifest, w io.Writer) error {
-	if err := m.Validate(); err != nil {
-		return err
-	}
-	if store.Inlined(m.FileSize) {
-		_, err := w.Write(m.Inline)
-		return err
-	}
-	if s.e2ee && !s.HasKey() {
-		return ErrNoContentKey
-	}
-
-	for i, ref := range m.Chunks {
-		data, err := s.openChunk(ref, i, len(m.Chunks))
-		if err != nil {
-			return err
-		}
-		if _, err := w.Write(data); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.ReadFileRange(m, 0, -1, w)
 }
 
 // openChunk fetches one chunk of a manifest and returns its plaintext, having

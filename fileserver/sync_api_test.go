@@ -10,7 +10,6 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 )
 
@@ -21,7 +20,6 @@ func syncAuthTestDB(t *testing.T) {
 	t.Helper()
 
 	sqliteTestDB(t)
-	repomgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
 	share.Init(siloPair.Read, "Group", false)
 
 	origTTL := option.AuthCacheTTL

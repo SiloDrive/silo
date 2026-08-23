@@ -3,6 +3,7 @@ package silod
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/dkam/silo/fileserver/objmgr"
@@ -18,6 +19,39 @@ import (
 // passes is far past what contention on one library produces; beyond that the
 // honest answer is that the caller is losing a race it should be told about.
 const commitAttempts = 5
+
+// errE2EEWriteByID is what a client is told when it asks the server to write
+// into an end-to-end encrypted library through a path. Spelled once because it
+// is a wire string three handlers hand back, and three copies of a sentence a
+// client may match on is three chances for them to stop being the same
+// sentence.
+const errE2EEWriteByID = "This library is end-to-end encrypted; write its objects by id"
+
+// writeTreeErr answers a failed store-v2 tree mutation.
+//
+// It exists for the reason writeCommitErr does, one layer up: the objmgr
+// sentinels that deserve an answer other than 500 are a fixed set, and every
+// handler that mutates a tree was deciding the set again. The ones still to be
+// written — rename, copy, move — would each have decided it a fourth time,
+// and the arm that goes missing is never the first one.
+//
+// notFound is a parameter because the 404 is the one answer that is genuinely
+// about the request: a mkdir says the parent is missing, a delete says the
+// entry is. Everything below it is about the library, and is the same
+// everywhere. Anything unrecognised falls through to writeCommitErr, which
+// owns the contention-versus-breakage decision and keeps it.
+func writeTreeErr(w http.ResponseWriter, r *http.Request, err error, notFound, what string) {
+	switch {
+	case errors.Is(err, objmgr.ErrExists):
+		http.Error(w, "Entry already exists", http.StatusConflict)
+	case errors.Is(err, objmgr.ErrNotFound):
+		http.Error(w, notFound, http.StatusNotFound)
+	case errors.Is(err, objmgr.ErrNoContentKey):
+		http.Error(w, errE2EEWriteByID, http.StatusForbidden)
+	default:
+		writeCommitErr(w, r, err, what)
+	}
+}
 
 // defaultFileMode is the mode a server-written regular file gets. The format
 // carries permission bits only — file type lives in NodeType — so this is the
@@ -47,7 +81,7 @@ const defaultDirMode = 0o755
 // handed the attempt's timestamp too, so the mtime a dirent records and the
 // commit's created_at are the same instant rather than two calls to the clock.
 func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store, root store.ID, now int64) (store.ID, error)) (store.ID, error) {
-	st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+	st, err := repo.Store()
 	if err != nil {
 		return store.ID{}, err
 	}
@@ -117,5 +151,11 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 			return store.ID{}, err
 		}
 	}
-	return store.ID{}, fmt.Errorf("gave up after %d attempts to move the head of %s", commitAttempts, repo.ID)
+	// Wrapped in the sentinel the Seafile lane's own bounded loop uses, so
+	// writeCommitErr classifies this as contention rather than breakage: the
+	// caller lost a race, nothing was applied, and the identical request will
+	// usually succeed. Left bare it fell to the default arm — a 500 with no
+	// Retry-After, filed to Sentry — which is exactly the outcome
+	// docs/bugs/fixed/write-contention-returns-500.md exists to prevent.
+	return store.ID{}, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", commitAttempts, repo.ID, ErrRetriesExhausted)
 }

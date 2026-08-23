@@ -2101,14 +2101,6 @@ func genMergeDesc(repo *repomgr.Repo, mergedRoot, p1Root, p2Root string) string 
 	return desc
 }
 
-// updateBranch moves a library's head from oldCommitID to newCommit, or fails.
-//
-// It takes the commit rather than its id because the head and the root it
-// names are one fact in two columns, and they are written in one UPDATE: a
-// reader that found them disagreeing would have no way to tell which was
-// current. The same call is where the catalog learns who moved the head and
-// when, which are the server's own observations rather than anything read back
-// out of the commit.
 // headMove is a proposed new head: the commit, the root it names, and who
 // moved it when.
 //
@@ -2124,8 +2116,16 @@ type headMove struct {
 	Ctime    int64
 }
 
+// updateBranch moves a library's head from oldCommitID to the commit move
+// names, or fails.
+//
+// It takes a headMove rather than an id because the head and the root it names
+// are one fact in two columns, and they are written in one UPDATE: a reader
+// that found them disagreeing would have no way to tell which was current. The
+// same call is where the catalog learns who moved the head and when, which are
+// the server's own observations rather than anything read back out of the
+// commit.
 func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
-	newCommitID := move.CommitID
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	trans, err := siloPair.Write.BeginTx(ctx, nil)
@@ -2176,7 +2176,7 @@ func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secon
 	}
 
 	sqlStr = "UPDATE Branch SET commit_id = ?, root_id = ? WHERE name = ? AND repo_id = ?"
-	_, err = trans.ExecContext(ctx, sqlStr, newCommitID, move.RootID, name, repoID)
+	_, err = trans.ExecContext(ctx, sqlStr, move.CommitID, move.RootID, name, repoID)
 	if err != nil {
 		_ = trans.Rollback()
 		return false, err
@@ -2198,7 +2198,7 @@ func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secon
 		}
 	}
 
-	if err := onBranchUpdated(repoID, newCommitID); err != nil {
+	if err := onBranchUpdated(repoID, move.CommitID); err != nil {
 		return false, err
 	}
 

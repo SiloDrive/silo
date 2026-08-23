@@ -72,9 +72,7 @@ func uploadTmpDir(t *testing.T) string {
 	t.Helper()
 
 	sqliteTestDB(t)
-	repomgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
 
-	absDataDir = t.TempDir()
 	shared := filepath.Join(absDataDir, "httptemp", "cluster-shared")
 	if err := os.MkdirAll(shared, 0o755); err != nil {
 		t.Fatalf("failed to create the staging dir: %v", err)

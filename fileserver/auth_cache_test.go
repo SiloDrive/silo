@@ -17,7 +17,6 @@ func authCacheTest(t *testing.T) {
 	t.Helper()
 
 	sqliteTestDB(t)
-	repomgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
 
 	origTTL := option.AuthCacheTTL
 	option.AuthCacheTTL = 5 * time.Minute

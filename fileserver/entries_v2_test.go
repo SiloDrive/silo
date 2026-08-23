@@ -10,6 +10,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/store"
@@ -21,10 +22,6 @@ import (
 func storeV2Library(t *testing.T) (string, *account.Account) {
 	t.Helper()
 	sqliteTestDB(t)
-
-	dir := t.TempDir()
-	absDataDir = dir
-	repomgr.Init(siloPair.Read, siloPair.Write, dir)
 	share.Init(siloPair.Read, "Group", false)
 
 	ctx := context.Background()
@@ -45,7 +42,7 @@ func storeV2Library(t *testing.T) (string, *account.Account) {
 
 // do runs one request through a handler with the account and mux vars a real
 // request would carry.
-func do(t *testing.T, h http.HandlerFunc, acct *account.Account, method, target string, vars map[string]string, body []byte) *httptest.ResponseRecorder {
+func do(t *testing.T, h http.HandlerFunc, acct *account.Account, method, target string, vars map[string]string, body []byte, opts ...func(*http.Request)) *httptest.ResponseRecorder {
 	t.Helper()
 	var rdr *bytes.Reader
 	if body == nil {
@@ -56,9 +53,20 @@ func do(t *testing.T, h http.HandlerFunc, acct *account.Account, method, target 
 	r := httptest.NewRequest(method, target, rdr)
 	r = mux.SetURLVars(r, vars)
 	r = middleware.WithAccount(r, acct)
+	for _, opt := range opts {
+		opt(r)
+	}
 	w := httptest.NewRecorder()
 	h(w, r)
 	return w
+}
+
+// withHeader sets one header on a do request. Variadic rather than another
+// positional parameter so the calls that need no header stay as they read now
+// — and so the one that does need one stops rebuilding the request by hand,
+// which is how it came to miss whatever do gains next.
+func withHeader(k, v string) func(*http.Request) {
+	return func(r *http.Request) { r.Header.Set(k, v) }
 }
 
 // A store-v2 library takes a write and gives the same bytes back, at the whole
@@ -93,12 +101,9 @@ func TestAStoreV2LibraryRoundTripsAFileOverHTTP(t *testing.T) {
 
 	// A range, across a chunk boundary wherever the chunker put one.
 	const off, n = 1_000_000, 4096
-	r := httptest.NewRequest(http.MethodGet, "/entries/big.bin", nil)
-	r = mux.SetURLVars(r, map[string]string{"repoid": repoID, "path": "big.bin"})
-	r = middleware.WithAccount(r, acct)
-	r.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+n-1))
-	rw := httptest.NewRecorder()
-	getEntry(rw, r)
+	rw := do(t, getEntry, acct, http.MethodGet, "/entries/big.bin",
+		map[string]string{"repoid": repoID, "path": "big.bin"}, nil,
+		withHeader("Range", fmt.Sprintf("bytes=%d-%d", off, off+n-1)))
 	if rw.Code != http.StatusPartialContent {
 		t.Fatalf("ranged GET = %d, want 206", rw.Code)
 	}
@@ -141,7 +146,7 @@ func TestAStoreV2WriteMovesTheHeadToANewCommit(t *testing.T) {
 	// GetWithReason stats the head object, so reaching here at all proves the
 	// commit was written before the branch pointed at it. The parent link is
 	// what this checks: history has to chain, not restart.
-	st, err := repomgr.OpenStore(after.StoreID, after.Format)
+	st, err := after.Store()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,5 +174,47 @@ func TestAStoreV2WriteRefusesAMissingParent(t *testing.T) {
 		map[string]string{"repoid": repoID, "path": "nope/a.txt"}, []byte("hello"))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("PUT into a missing directory = %d, want 404", w.Code)
+	}
+}
+
+// An upload over the limit is refused rather than truncated, whether or not
+// the client declared its length.
+//
+// The chunked case is the one worth pinning. This lane took the LimitReader
+// out of spoolBody and left both size checks behind, so an over-long body was
+// cut at the limit, chunked, committed and answered 201 with an ETag — the
+// client had every reason to believe the whole file was stored, and nothing
+// anywhere said otherwise. A truncation that reports success is worse than a
+// refusal, and there is no request this can be confused with: a client that
+// declares no length is exactly the one that cannot be caught up front.
+func TestAStoreV2UploadOverTheLimitIsRefusedNotTruncated(t *testing.T) {
+	repoID, acct := storeV2Library(t)
+
+	oldMax := option.MaxUploadSize
+	option.MaxUploadSize = 64
+	t.Cleanup(func() { option.MaxUploadSize = oldMax })
+
+	content := bytes.Repeat([]byte("x"), 4096)
+	vars := map[string]string{"repoid": repoID, "path": "big.bin"}
+
+	for _, tc := range []struct {
+		name string
+		opts []func(*http.Request)
+	}{
+		{"declared length", nil},
+		{"chunked", []func(*http.Request){func(r *http.Request) { r.ContentLength = -1 }}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := do(t, putEntry, acct, http.MethodPut, "/entries/big.bin", vars, content, tc.opts...)
+			if w.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("PUT = %d (%s), want 413", w.Code, w.Body.String())
+			}
+			// And no path was created: a refused upload must not appear as a
+			// short file, which is the failure mode a 413 alone would hide.
+			g := do(t, getEntry, acct, http.MethodGet, "/entries/big.bin", vars, nil)
+			if g.Code != http.StatusNotFound {
+				t.Errorf("GET after refusal = %d (%d bytes), want 404", g.Code, g.Body.Len())
+			}
+		})
 	}
 }

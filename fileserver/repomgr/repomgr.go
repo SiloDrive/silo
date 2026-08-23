@@ -54,6 +54,9 @@ type Repo struct {
 	// ID for fs and block store
 	StoreID string
 
+	// store is this library's objects, opened at most once. See Store.
+	store *objmgr.Store
+
 	// Format is how this library's bytes are made — the chunker parameters
 	// every client has to agree with, and whether the content is end-to-end
 	// encrypted. Frozen at creation; see format.go.
@@ -117,6 +120,33 @@ func OpenStore(storeID string, f Format) (*objmgr.Store, error) {
 		E2EE:    f.E2EE,
 		Params:  params,
 	})
+}
+
+// Store is this library's objects, opened once per loaded Repo.
+//
+// Every caller wanted the same two fields — StoreID and Format — and opening
+// from those by hand at each site made the "storeID rather than the library
+// id" rule above something six call sites had to remember, where writing
+// repo.ID instead would have looked entirely reasonable. Now it is remembered
+// in one place.
+//
+// Opened once because a Store is not free: it builds an object store per
+// object type and each of those mkdirs its directories, so a request that
+// resolved a path, read the file and wrote a commit paid for four or five
+// identical handles. A Repo is a per-request value — nothing caches one, and
+// GetWithReason mints a fresh one per call — so the handle lives exactly as
+// long as the request that asked for it, and is used by the one goroutine
+// serving it.
+func (repo *Repo) Store() (*objmgr.Store, error) {
+	if repo.store != nil {
+		return repo.store, nil
+	}
+	st, err := OpenStore(repo.StoreID, repo.Format)
+	if err != nil {
+		return nil, err
+	}
+	repo.store = st
+	return st, nil
 }
 
 // A repo can fail to load for four unrelated reasons, and only one of them is
@@ -280,8 +310,9 @@ func (repo *Repo) IsStoreV2() bool {
 // library that answers "not found" tells a sync client to delete its local
 // copy, which is the copy that could have restored the object.
 //
-// A stat, not a read. It is strictly cheaper than what the old format paid on
-// the same path.
+// A stat, not a read — and the Store it stats through is repo.Store, so the
+// handle this check needs is the one the rest of the request was going to open
+// anyway. What the check itself adds to a load is one lookup.
 func checkHeadPresent(repo *Repo) error {
 	if !repo.IsStoreV2() {
 		return nil
@@ -290,7 +321,7 @@ func checkHeadPresent(repo *Repo) error {
 	if err != nil {
 		return fmt.Errorf("head commit id %q is unreadable: %w", repo.HeadCommitID, err)
 	}
-	st, err := OpenStore(repo.StoreID, repo.Format)
+	st, err := repo.Store()
 	if err != nil {
 		return fmt.Errorf("failed to open store: %w", err)
 	}
@@ -1156,11 +1187,8 @@ func ListRepoTokensByAccount(id account.ID) ([]RepoToken, error) {
 	return tokens, rows.Err()
 }
 
-const emptySHA1 = "0000000000000000000000000000000000000000"
-
-// CreateRepo creates a new unencrypted repository.
-// It generates a UUID, creates an initial commit with an empty root,
-// and inserts all required DB records.
+// CreateRepo makes a library owned by owner, in the given format. It mints the
+// library's id, its initial objects and every row the library needs.
 //
 // It takes the whole account rather than an id because the owner is used for
 // two different things here. RepoOwner records who may administer the
@@ -1168,7 +1196,6 @@ const emptySHA1 = "0000000000000000000000000000000000000000"
 // RepoInfo.last_modifier record what the creator was called at the time, and
 // those are display data — the commit's is baked into its content hash and
 // could not be rewritten later even if it should be.
-// CreateRepo makes a library owned by owner, in the given format.
 //
 // format is a parameter rather than a default because it is frozen for the
 // life of the library: every client that ever reads it chunks to these

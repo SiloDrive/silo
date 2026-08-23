@@ -32,7 +32,6 @@ func seedRepo(t *testing.T, repoID, email, token string) {
 // against an empty store and nothing ever cleaned the rows up.
 func TestDeleteRepoCascadesToVirtualRepos(t *testing.T) {
 	sqliteTestDB(t)
-	repomgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
 
 	seedRepo(t, originRepo, "owner@example.com", "1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa")
 	seedRepo(t, childRepo, "owner@example.com", "2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb")
@@ -73,7 +72,6 @@ func TestDeleteRepoCascadesToVirtualRepos(t *testing.T) {
 // until the stack runs out.
 func TestDeleteRepoSurvivesSelfReferencingVirtualRepo(t *testing.T) {
 	sqliteTestDB(t)
-	repomgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
 
 	seedRepo(t, originRepo, "owner@example.com", "1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa")
 	dbExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, ?, ?)",

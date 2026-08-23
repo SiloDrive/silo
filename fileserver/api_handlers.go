@@ -1,7 +1,6 @@
 package silod
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,7 +15,6 @@ import (
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/repomgr"
-	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -34,39 +32,23 @@ func loadSeafileHead(w http.ResponseWriter, repo *repomgr.Repo) (*commitmgr.Comm
 	return head, true
 }
 
-// loadRepoRW loads the repo with an rw permission check, and nothing else.
+// loadRepoAndCommit loads the repo and its Seafile head commit, with rw
+// permission check. It dies with the lanes that need a Seafile commit.
 //
-// Split out from loadRepoAndCommit because the head commit is not a thing
+// The two halves are separate calls because the head commit is not a thing
 // every caller can load any more: a store-v2 commit is not a Seafile one and
 // commitmgr cannot read it. A handler that serves both formats has to decide
 // which it is holding BEFORE it asks for a commit — asking first turns a
-// perfectly good store-v2 library into a 500.
-func loadRepoRW(w http.ResponseWriter, repoID string, user account.ID) (*repomgr.Repo, bool) {
-	perm := share.CheckPerm(repoID, user)
-	if perm != "rw" {
-		http.Error(w, "Permission denied", http.StatusForbidden)
-		return nil, false
-	}
-	repo, err := repomgr.GetWithReason(repoID)
-	if err != nil {
-		code, msg := repomgr.StatusFor(err)
-		http.Error(w, msg, code)
-		return nil, false
-	}
-	return repo, true
-}
-
-// loadRepoAndCommit loads the repo and its Seafile head commit, with rw
-// permission check. It dies with the lanes that need a Seafile commit.
+// perfectly good store-v2 library into a 500 — so those handlers call
+// entryRepo and loadSeafileHead in sequence with the format check between,
+// and this remains for the ones that will only ever hold a Seafile library.
 func loadRepoAndCommit(w http.ResponseWriter, repoID string, user account.ID) (*repomgr.Repo, *commitmgr.Commit, bool) {
-	repo, ok := loadRepoRW(w, repoID, user)
-	if !ok {
+	repo := entryRepo(w, repoID, user, true)
+	if repo == nil {
 		return nil, nil, false
 	}
-	head, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
-	if err != nil {
-		log.Errorf("Failed to load head commit: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	head, ok := loadSeafileHead(w, repo)
+	if !ok {
 		return nil, nil, false
 	}
 	return repo, head, true
@@ -238,7 +220,6 @@ func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, newN
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return false
 	}
-	repo.Name = newName
 	return true
 }
 
@@ -254,16 +235,8 @@ func mkdirV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path, d
 	if _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Mkdir(root, path, defaultDirMode, now)
 	}); err != nil {
-		switch {
-		case errors.Is(err, objmgr.ErrExists):
-			http.Error(w, "Entry already exists", http.StatusConflict)
-		case errors.Is(err, objmgr.ErrNotFound):
-			http.Error(w, "Parent directory does not exist", http.StatusNotFound)
-		case errors.Is(err, objmgr.ErrNoContentKey):
-			http.Error(w, "This library is end-to-end encrypted; write its objects by id", http.StatusForbidden)
-		default:
-			writeCommitErr(w, r, err, fmt.Sprintf("mkdir %s in repo %s", path, repo.ID))
-		}
+		writeTreeErr(w, r, err, "Parent directory does not exist",
+			fmt.Sprintf("mkdir %s in repo %s", path, repo.ID))
 		return
 	}
 
@@ -288,8 +261,8 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, ok := loadRepoRW(w, repoID, acct.ID)
-	if !ok {
+	repo := entryRepo(w, repoID, acct.ID, true)
+	if repo == nil {
 		return
 	}
 	if repo.IsStoreV2() {
@@ -337,14 +310,8 @@ func deleteV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path s
 	if _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Remove(root, path, now)
 	}); err != nil {
-		switch {
-		case errors.Is(err, objmgr.ErrNotFound):
-			http.Error(w, "Not found", http.StatusNotFound)
-		case errors.Is(err, objmgr.ErrNoContentKey):
-			http.Error(w, "This library is end-to-end encrypted; write its objects by id", http.StatusForbidden)
-		default:
-			writeCommitErr(w, r, err, fmt.Sprintf("delete %s in repo %s", path, repo.ID))
-		}
+		writeTreeErr(w, r, err, "Not found",
+			fmt.Sprintf("delete %s in repo %s", path, repo.ID))
 		return
 	}
 
@@ -363,8 +330,8 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, ok := loadRepoRW(w, repoID, acct.ID)
-	if !ok {
+	repo := entryRepo(w, repoID, acct.ID, true)
+	if repo == nil {
 		return
 	}
 	if repo.IsStoreV2() {

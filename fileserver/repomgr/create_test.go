@@ -32,7 +32,7 @@ func TestACreatedLibraryIsStoreV2(t *testing.T) {
 		}
 	}
 
-	st, err := OpenStore(repo.StoreID, repo.Format)
+	st, err := repo.Store()
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
