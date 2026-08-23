@@ -1011,10 +1011,10 @@ store-v2 builds on never had it.
   numbers, two purposes, never added together — and an operator number rather
   than a per-user one, because packs are not per-library and per-library disk
   attribution does not exist to be reported. History retention (above) splits
-  the live side of that second number in three — head-reachable, history-only,
-  and what the directory holds — because the middle one is what its knob trades
-  against. The split is within the disk number, never across the boundary: no
-  part of it reaches quota.
+  the live side of that second number in two — head-reachable and history-only
+  — inside the total the directory holds, because history-only is what its knob
+  trades against. The split is within the disk number, never across the
+  boundary: no part of it reaches quota.
 - **Open — where the check goes on the id-addressed lane.** `PUT entries/{path}`
   checks `Content-Length` as today. `PUT objects/{id}` cannot: objects are
   admitted before the head that references them moves, so charging at admission
