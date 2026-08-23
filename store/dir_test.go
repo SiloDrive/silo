@@ -367,3 +367,90 @@ func TestOutOfOrderEntriesAreRefusedOnRead(t *testing.T) {
 		t.Fatalf("got %v, want out-of-order entries rejected", err)
 	}
 }
+
+func TestTheEdgesOfASealedDirectoryReadWithoutTheKey(t *testing.T) {
+	d := testDir()
+	sealed, err := d.EncodeSealed(testCK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := DecodeDirectoryPublic(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pub.E2EE {
+		t.Error("the object did not declare itself sealed")
+	}
+	if pub.Salt != d.Salt {
+		t.Error("the salt did not survive the key-free read")
+	}
+	if len(pub.Entries) != len(d.Entries) {
+		t.Fatalf("%d entries, want %d", len(pub.Entries), len(d.Entries))
+	}
+
+	// The mark phase needs exactly this and nothing else: which objects this
+	// directory points at, and whether each one is another directory to
+	// descend into or a manifest to read a chunk list from.
+	want := map[ID]NodeType{}
+	for _, e := range d.Entries {
+		want[e.ChildID] = e.Type
+	}
+	for _, e := range pub.Entries {
+		if typ, ok := want[e.ChildID]; !ok || typ != e.Type {
+			t.Errorf("edge %s/%d is not one of the directory's", e.ChildID, e.Type)
+		}
+		// What it must not give up. Names are absent from this list on
+		// purpose: this codec treats a name as opaque bytes in both library
+		// types, so what comes back is whatever the writer put in, and
+		// encrypting it is objmgr's job one layer up.
+		if e.Mtime != 0 || e.Mode != 0 {
+			t.Errorf("entry carries mtime %d mode %#o without the key", e.Mtime, e.Mode)
+		}
+	}
+}
+
+func TestAPlainDirectoryReadsWholeWithoutAKey(t *testing.T) {
+	d := testDir()
+	encoded, err := d.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := DecodeDirectoryPublic(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub.E2EE {
+		t.Error("a plain directory declared itself sealed")
+	}
+	// Nothing is hidden in a plain library, so the key-free read is the whole
+	// object — including the fields a sealed one withholds.
+	full, err := DecodeDirectory(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(pub.Entries, full.Entries) {
+		t.Error("the public read of a plain directory is not the whole of it")
+	}
+}
+
+func TestThePublicReadStillRefusesAMalformedDirectory(t *testing.T) {
+	d := testDir()
+	sealed, err := d.EncodeSealed(testCK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		damage func([]byte) []byte
+	}{
+		{"version", func(b []byte) []byte { c := bytes.Clone(b); c[0] = DirVersion + 1; return c }},
+		{"reserved flags", func(b []byte) []byte { c := bytes.Clone(b); c[1] |= 0x80; return c }},
+		{"truncated", func(b []byte) []byte { return b[:len(b)/2] }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := DecodeDirectoryPublic(tc.damage(sealed)); err == nil {
+				t.Error("accepted a malformed directory")
+			}
+		})
+	}
+}

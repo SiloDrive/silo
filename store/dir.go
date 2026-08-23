@@ -187,95 +187,55 @@ func DecodeSealedDirectory(b, ck []byte) (*Directory, error) {
 	return decodeDirectory(b, ck)
 }
 
+// PublicDirectory is a directory object as a server can see it: the edges of
+// the tree, with no key in hand.
+//
+// Under E2EE, Name is SIV ciphertext and **Mtime and Mode are zero** — they
+// live in the sealed section, and reading them here is reading the absence of
+// data rather than a directory whose entries were all created at the epoch.
+// In a plain library every field is the real one.
+type PublicDirectory struct {
+	E2EE bool
+	Salt [DirSaltSize]byte
+	// Entries in the object's own order: strictly increasing bytewise by
+	// stored name, which under E2EE is an order over ciphertext and therefore
+	// says nothing about the names.
+	Entries []DirEntry
+}
+
+// DecodeDirectoryPublic reads the public section of a directory of either
+// library type, without a content key.
+//
+// It is the directory half of what DecodeManifestPublic does for files, and it
+// exists for the same reason: the tracing collector has to walk from a commit
+// to every chunk it reaches, and half of that walk is directories. Child ids
+// and node types are public **by design** — a mark phase that could not
+// classify an edge could not follow it — so the walk needs no key, and a
+// server that cannot read its own libraries can still reclaim them.
+//
+// **A client must not use this.** The public section of a sealed directory is
+// covered by the AEAD tag, but nothing here checks it, because checking it
+// needs the key. A holder of CK calls DecodeSealedDirectory and gets the edges
+// authenticated; a server calls this and gets them unverified, which is the
+// correct trade for the one party the threat model already calls actively
+// malicious for integrity.
+func DecodeDirectoryPublic(b []byte) (*PublicDirectory, error) {
+	d, e2ee, _, err := parseDirectoryPublic(b)
+	if err != nil {
+		return nil, err
+	}
+	return &PublicDirectory{E2EE: e2ee, Salt: d.Salt, Entries: d.Entries}, nil
+}
+
 func decodeDirectory(b, ck []byte) (*Directory, error) {
-	if len(b) > MaxDirBytes {
-		return nil, fmt.Errorf("%w: directory is %d bytes, above the %d ceiling",
-			ErrEncoding, len(b), MaxDirBytes)
-	}
-	if len(b) < 3 {
-		return nil, fmt.Errorf("%w: directory is %d bytes, too short for a header", ErrEncoding, len(b))
-	}
-	if b[0] != DirVersion {
-		return nil, fmt.Errorf("%w: directory version %d, this build writes %d",
-			ErrEncoding, b[0], DirVersion)
-	}
-	flags := b[1]
-	// Bit 1 is the manifest's inline flag and is reserved here; a directory
-	// carrying it is refused rather than tolerated.
-	if flags&^byte(flagE2EE) != 0 {
-		return nil, fmt.Errorf("%w: directory reserved flag bits are set (%#02x)", ErrEncoding, flags)
+	d, declared, p, err := parseDirectoryPublic(b)
+	if err != nil {
+		return nil, err
 	}
 	e2ee := ck != nil
-	if (flags&flagE2EE != 0) != e2ee {
+	if declared != e2ee {
 		return nil, fmt.Errorf("%w: directory declares E2EE=%t, library is E2EE=%t",
-			ErrEncoding, flags&flagE2EE != 0, e2ee)
-	}
-
-	p := 2
-	count, n, err := readUvarint(b[p:])
-	if err != nil {
-		return nil, fmt.Errorf("%w: directory entry count", ErrEncoding)
-	}
-	p += n
-	// The smallest entry is 32 bytes of id, a type, a length, one name byte
-	// and — in a plain library — two more varints.
-	if count > uint64(len(b)/(IDSize+3)) {
-		return nil, fmt.Errorf("%w: directory claims %d entries in %d bytes", ErrEncoding, count, len(b))
-	}
-
-	d := &Directory{}
-	if e2ee {
-		if len(b)-p < DirSaltSize {
-			return nil, fmt.Errorf("%w: directory ends before its salt", ErrEncoding)
-		}
-		copy(d.Salt[:], b[p:p+DirSaltSize])
-		p += DirSaltSize
-	}
-
-	d.Entries = make([]DirEntry, count)
-	var prev []byte
-	for i := range d.Entries {
-		e := &d.Entries[i]
-		if len(b)-p < IDSize+1 {
-			return nil, fmt.Errorf("%w: directory ends inside entry %d", ErrEncoding, i)
-		}
-		copy(e.ChildID[:], b[p:p+IDSize])
-		p += IDSize
-		e.Type = NodeType(b[p])
-		p++
-		if !e.Type.valid() {
-			return nil, fmt.Errorf("%w: entry %d has type %d", ErrEncoding, i, e.Type)
-		}
-		nameLen, n, err := readUvarint(b[p:])
-		if err != nil {
-			return nil, fmt.Errorf("%w: entry %d name length", ErrEncoding, i)
-		}
-		p += n
-		if nameLen == 0 || nameLen > MaxNameBytes || uint64(len(b)-p) < nameLen {
-			return nil, fmt.Errorf("%w: entry %d name length %d", ErrEncoding, i, nameLen)
-		}
-		e.Name = append([]byte(nil), b[p:p+int(nameLen)]...)
-		p += int(nameLen)
-
-		// Strictly increasing, not merely sorted: a duplicate name is
-		// unrepresentable, refused by the same single pass that validates
-		// canonical order, at no extra cost.
-		if prev != nil && bytes.Compare(prev, e.Name) >= 0 {
-			return nil, fmt.Errorf("%w: entry %d is not after the entry before it", ErrEncoding, i)
-		}
-		prev = e.Name
-
-		if !e2ee {
-			if err := ValidName(e.Name); err != nil {
-				return nil, fmt.Errorf("%w: entry %d: %w", ErrEncoding, i, err)
-			}
-			if e.Mtime, e.Mode, p, err = readTimeAndMode(b, p); err != nil {
-				return nil, fmt.Errorf("%w: entry %d: %v", ErrEncoding, i, err)
-			}
-			if err := checkMode(e.Type, e.Mode); err != nil {
-				return nil, fmt.Errorf("%w: entry %d: %v", ErrEncoding, i, err)
-			}
-		}
+			ErrEncoding, declared, e2ee)
 	}
 
 	if !e2ee {
@@ -321,6 +281,107 @@ func decodeDirectory(b, ck []byte) (*Directory, error) {
 			ErrEncoding, len(plain)-q)
 	}
 	return d, nil
+}
+
+// parseDirectoryPublic reads the part of a directory object that needs no key,
+// and returns it, the library type the object declares, and how far it got.
+//
+// Both decoders start here, for the reason the manifest's shared parser gives:
+// two hand-written parsers of one pinned layout are two things a port has to
+// implement and keep in step. What follows the public section is the caller's
+// rule — a plain directory ends here, an E2EE one has a seal hash and a sealed
+// section — so the offset is returned rather than a remainder slice.
+//
+// The declared flag decides the layout, not the caller's expectation: an
+// object says what it is, and whether that is what was wanted is a question
+// for the caller one frame up.
+func parseDirectoryPublic(b []byte) (*Directory, bool, int, error) {
+	if len(b) > MaxDirBytes {
+		return nil, false, 0, fmt.Errorf("%w: directory is %d bytes, above the %d ceiling",
+			ErrEncoding, len(b), MaxDirBytes)
+	}
+	if len(b) < 3 {
+		return nil, false, 0, fmt.Errorf("%w: directory is %d bytes, too short for a header", ErrEncoding, len(b))
+	}
+	if b[0] != DirVersion {
+		return nil, false, 0, fmt.Errorf("%w: directory version %d, this build writes %d",
+			ErrEncoding, b[0], DirVersion)
+	}
+	flags := b[1]
+	// Bit 1 is the manifest's inline flag and is reserved here; a directory
+	// carrying it is refused rather than tolerated.
+	if flags&^byte(flagE2EE) != 0 {
+		return nil, false, 0, fmt.Errorf("%w: directory reserved flag bits are set (%#02x)", ErrEncoding, flags)
+	}
+	e2ee := flags&flagE2EE != 0
+
+	p := 2
+	count, n, err := readUvarint(b[p:])
+	if err != nil {
+		return nil, false, 0, fmt.Errorf("%w: directory entry count", ErrEncoding)
+	}
+	p += n
+	// The smallest entry is 32 bytes of id, a type, a length, one name byte
+	// and — in a plain library — two more varints.
+	if count > uint64(len(b)/(IDSize+3)) {
+		return nil, false, 0, fmt.Errorf("%w: directory claims %d entries in %d bytes", ErrEncoding, count, len(b))
+	}
+
+	d := &Directory{}
+	if e2ee {
+		if len(b)-p < DirSaltSize {
+			return nil, false, 0, fmt.Errorf("%w: directory ends before its salt", ErrEncoding)
+		}
+		copy(d.Salt[:], b[p:p+DirSaltSize])
+		p += DirSaltSize
+	}
+
+	d.Entries = make([]DirEntry, count)
+	var prev []byte
+	for i := range d.Entries {
+		e := &d.Entries[i]
+		if len(b)-p < IDSize+1 {
+			return nil, false, 0, fmt.Errorf("%w: directory ends inside entry %d", ErrEncoding, i)
+		}
+		copy(e.ChildID[:], b[p:p+IDSize])
+		p += IDSize
+		e.Type = NodeType(b[p])
+		p++
+		if !e.Type.valid() {
+			return nil, false, 0, fmt.Errorf("%w: entry %d has type %d", ErrEncoding, i, e.Type)
+		}
+		nameLen, n, err := readUvarint(b[p:])
+		if err != nil {
+			return nil, false, 0, fmt.Errorf("%w: entry %d name length", ErrEncoding, i)
+		}
+		p += n
+		if nameLen == 0 || nameLen > MaxNameBytes || uint64(len(b)-p) < nameLen {
+			return nil, false, 0, fmt.Errorf("%w: entry %d name length %d", ErrEncoding, i, nameLen)
+		}
+		e.Name = append([]byte(nil), b[p:p+int(nameLen)]...)
+		p += int(nameLen)
+
+		// Strictly increasing, not merely sorted: a duplicate name is
+		// unrepresentable, refused by the same single pass that validates
+		// canonical order, at no extra cost.
+		if prev != nil && bytes.Compare(prev, e.Name) >= 0 {
+			return nil, false, 0, fmt.Errorf("%w: entry %d is not after the entry before it", ErrEncoding, i)
+		}
+		prev = e.Name
+
+		if !e2ee {
+			if err := ValidName(e.Name); err != nil {
+				return nil, false, 0, fmt.Errorf("%w: entry %d: %w", ErrEncoding, i, err)
+			}
+			if e.Mtime, e.Mode, p, err = readTimeAndMode(b, p); err != nil {
+				return nil, false, 0, fmt.Errorf("%w: entry %d: %v", ErrEncoding, i, err)
+			}
+			if err := checkMode(e.Type, e.Mode); err != nil {
+				return nil, false, 0, fmt.Errorf("%w: entry %d: %v", ErrEncoding, i, err)
+			}
+		}
+	}
+	return d, e2ee, p, nil
 }
 
 func readTimeAndMode(b []byte, p int) (mtime int64, mode uint32, next int, err error) {
