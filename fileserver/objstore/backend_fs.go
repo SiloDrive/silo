@@ -143,10 +143,21 @@ func (b *fsBackend) readAt(repoID string, packID string, p []byte, off int64) (i
 // believes it has already uploaded those blocks, so a resync does not send them
 // again.
 //
-// The temp-file-then-rename is also what "seal" means for this backend. A pack
-// becomes visible in one step, complete, or not at all — the property a real
-// pack store gets from writing a pack once and never appending to it again,
-// and the property object storage gets from a single PUT.
+// The temp-file-then-rename is what publishing means here, and it is worth
+// being exact about how that differs from a real pack store rather than
+// implying they are the same mechanism.
+//
+// A real pack is *appended to* while it is open: chunk frames go on the end,
+// and each one is append → fsync → atomic index update, so a torn tail is
+// recoverable by truncating the pack to its last indexed offset. Its crash
+// safety comes from the index, not from atomic publication.
+//
+// This interface never sees a pack in that state. An open pack is local
+// staging — it cannot live on a durable tier at all, since the S3 feature
+// floor is PUT, ranged GET, DELETE and LIST with no append and no multipart —
+// so a pack enters this interface only once it is sealed, and arrives whole.
+// Here, where a pack holds exactly one object, it is sealed the moment it is
+// written, and the rename is what makes it appear complete or not at all.
 func (b *fsBackend) write(repoID string, packID string, r io.Reader, opts writeOpts) error {
 	p, err := b.packPath(repoID, packID)
 	if err != nil {

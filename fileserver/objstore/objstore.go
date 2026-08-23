@@ -98,12 +98,22 @@ type writeOpts struct {
 
 // storageBackend is the interface every storage tier implements.
 //
-// Pack-shaped. In the filesystem backend a pack holds exactly one object, so
-// readAt is a seek into it and write's atomic publish is the whole of sealing;
-// in a real pack store a pack holds many frames and the mapping from chunk to
-// (pack, offset, length) lives above this interface, in the pack index. Either
-// way this layer stores addressable byte ranges and knows nothing about what
-// is in them.
+// Pack-shaped, and specifically **sealed**-pack-shaped. A real pack has two
+// lives: it is open while chunk frames are being appended to its end, and
+// sealed once it reaches its target size, after which it is immutable
+// forever. This interface only ever sees the second one.
+//
+// That split is not a simplification, it is forced. An open pack is appended
+// to, and the durable tiers cannot do that — the S3 feature floor is PUT,
+// ranged GET, DELETE and LIST, with no append and no multipart. So an open
+// pack is local staging that lives above this interface, and a pack becomes a
+// thing tiers store, replicate, evict and compact at the moment it seals.
+// Where a pack holds exactly one object, as it does in the filesystem backend
+// below, it is sealed the moment it is written.
+//
+// The mapping from chunk to (pack, offset, length) also lives above this
+// interface, in the pack index. This layer stores addressable byte ranges and
+// knows nothing about what is in them.
 //
 // Not in this interface, deliberately: anything that requires more of a
 // backend than PUT, ranged GET, DELETE and LIST. Every extra verb assumed here
