@@ -638,6 +638,27 @@ that document owns:
 
 - ~512 MB target, sized by compaction-rewrite granularity (borg's end of the
   spectrum, not restic's), sealed when full, then immutable.
+- **Sealed on age as well as size**, and at clean shutdown. Size alone leaves
+  the single-copy window unbounded *in time*: an open pack cannot be uploaded,
+  so it cannot be verified, so the day's last chunks sit on one disk until
+  unrelated future traffic happens to fill the pack. On a quiet server that is
+  never. So a pack seals when it reaches target size, **or when its oldest
+  frame exceeds a maximum age (default ~5 minutes)**, or when the server shuts
+  down cleanly.
+
+  What that buys is a durability story with a number in it: the single-copy
+  window becomes **seal age + upload and verify time**, which an operator can
+  reason about, rather than "until enough data arrives", which is not a
+  quantity. What it costs is occasional undersized packs, and that is not a
+  cost — see GC and compaction, which merges them.
+
+  **The alternative was considered and rejected**: opportunistically pushing
+  the open pack to the durable tier and overwriting it as it grows. It
+  re-uploads a growing prefix — around 5.5× the bytes for a pack filled in ten
+  increments — makes verification a moving target, since what was checked is
+  already stale, and breaks the write-once argument the conditional-write-free
+  feature floor stands on. **Sealed and immutable stays the only remote
+  state.**
 - Append-only. Reclaim is rewrite-and-swap, never in-place hole reuse — no
   free-list allocator inside packs, ever.
 - New chunks of a file are written contiguously, in file order, into the
@@ -754,6 +775,35 @@ that is the recovery path and the thing that makes the column safe to lose —
 and persisted as a catalog column so the ordinary case does not scan, and so
 an operator can ask how much of this server exists once.
 
+#### The cache has a size, and zero is one of them
+
+One knob: **a byte target for evictable local pack data.** Bytes, not a
+fraction of the disk — disks are shared, and a fraction of a disk something
+else is also filling is a number that means something different every day.
+Over target, evict verified packs least-recently-read first; a coarse
+per-pack last-read stamp is enough resolution, and a precise one would cost a
+write on every read.
+
+Three consequences, stated because each one is somewhere an implementation
+would otherwise invent its own answer:
+
+- **Zero is the limit case, not a mode.** A target of zero means seal →
+  upload → verify → evict immediately, and it needs no separate code path.
+  What stops it deleting the server is the floor of things that are never
+  evictable at any target: the open pack, sealed-but-unverified packs, pack
+  indexes, the catalog, and `storage.key`.
+- **The bound is soft against that floor.** A durable-tier outage grows the
+  unverified backlog past any target, because unverified packs cannot be
+  evicted and new writes keep arriving. The answer is the queue-depth alert
+  below — never refusing writes, and never evicting something unverified to
+  get back under a number.
+- **With no durable tier configured the knob is inert by construction.**
+  Nothing is ever verified remotely, so nothing ever qualifies as evictable,
+  so a local-only deployment cannot misconfigure its way into deleting its
+  only copy. This is a property of the eviction predicate rather than a check,
+  which is why there is **no force-evict flag, ever** — one would be the only
+  way to reach that outcome, and its existence is the entire risk.
+
 #### The S3 feature floor
 
 **PUT, ranged GET, DELETE, LIST. Nothing else.** Every additional API a
@@ -840,6 +890,63 @@ same mark phase.
   remote packs" — it may, and the economics above say it must — but **"how fast
   may it spend money doing so"**, which is a policy question that is correctly
   theirs, expressed as a number rather than a ritual.
+
+- **Compaction may also merge undersized packs**, at the lowest priority there
+  is. Age-sealing (see Packs) produces small packs on a quiet server, and
+  smallness is a nuisance rather than a leak: one extra object, one extra small
+  index, one more bloom slot. Nothing is lost by leaving them, so merging is
+  what the rewrite machinery does with leftover I/O budget, or does not do at
+  all.
+
+  It is the same machinery — read live frames, write a new pack, swap index
+  entries, delete the old — so this is **one more scheduling input, not a
+  second mechanism**. Dead fraction and locality already order the queue;
+  undersize joins them at the bottom.
+
+### Observability for the background workers
+
+Error reporting today rides two things, and both are request-shaped: the
+logrus hook, which sends everything at error level and above, and the recover
+middleware that turns a panicking handler into an event instead of a dead
+process. See [`error-reporting.md`](../error-reporting.md).
+
+The upload queue, the eviction verifier and the compaction worker are this
+server's **first long-running goroutines** — no request to hang a trace on, no
+middleware in the call stack to catch a panic. So each gets its own
+recover-that-reports, in the established pattern. Without it a panic in the
+upload queue takes the process down with no event, and the operator learns
+about it from the restart.
+
+**Three conditions are pinned at error level**, which is what makes them
+reportable at all — the hook's threshold is the whole mechanism:
+
+- **A durable-copy verification mismatch.** The pack on the remote tier is not
+  the pack that was written. This is an integrity signal rather than an
+  operational one, and it is the moment the eviction gate earns its keep: the
+  check ran *before* the local copy was deleted, so this is a warning about a
+  bad remote copy rather than a report of data already lost.
+- **An `If-None-Match: *` precondition failure.** "Log loudly" means error
+  level; the hook is what makes loud actually loud. It signals one of the two
+  things the one-writer invariant forbids — a second writer on the prefix, or
+  an id collision — and it must never be retried, because a retry overwrites
+  the evidence of the condition it just detected.
+- **The upload queue failing to drain past a depth-or-age threshold.** Not any
+  single failure: the *shape* of a queue that is not moving. What it means is
+  the single-copy window is growing, which is the number the cache-size knob
+  above deliberately refuses to fix by evicting.
+
+**Retryable object-storage failures stay below error level** — a warn, seen in
+logs, sent nowhere. That is not timidity, it is error-reporting.md's own rule:
+the threshold exists because everything at error goes, and a retryable blip
+recurring several times a minute would drown the three conditions above. A
+retry that then succeeds is not a failure; a retry budget exhausted is, and
+that is what the queue-depth condition catches.
+
+**`store/` stays log-free and sentry-free, permanently.** It ships inside
+porter-fuse and is reimplemented in porter-mac, so it has no business holding
+an opinion about where a server sends its errors. Errors cross that boundary
+as return values, and every sentinel in the package exists so a caller can
+decide what to do with one.
 
 ## End-to-end encryption
 
@@ -1197,19 +1304,23 @@ Phases are sequential on the branch; each leaves the tree working.
    types are live from the start of the cutover instead; what phase 2 gains is
    the client-side CK plumbing and an earlier coupling to auth.md's login
    rewrite, and what it loses is one full rewrite of the read and write paths.
-4. **Packs.** Pack format, per-pack indexes, `storage.key` generation +
-   backup-set wiring + init warning, recovery scan. The fs backend becomes the
-   pack store; step 2's loose store was the scaffold.
+4. **Packs.** Pack format, per-pack indexes, seal-on-size-or-age-or-shutdown,
+   `storage.key` generation + backup-set wiring + init warning, recovery scan.
+   The fs backend becomes the pack store; step 2's loose store was the
+   scaffold.
 5. **GC + compaction.** Tracing mark, `PackStats`, threshold + throttled
-   rewrite, with locality as a scheduling input and **two budgets** — disk I/O
-   for every rewrite, egress for the ones that have to download the pack first.
+   rewrite, with locality and undersize as scheduling inputs and **two
+   budgets** — disk I/O for every rewrite, egress for the ones that have to
+   download the pack first.
    Built together with per-repo GC from
    [`future-features.md`](../future-features.md) — same mark, build it once.
 6. **Durable backends.** NAS fs root and S3 against the four-verb feature
    floor, async upload of sealed packs, verified-then-evictable local cache
    (with verification meaning what Backends and tiering says it means, not
-   ETag), the "no verified remote copy" catalog column and the scan that
-   rebuilds it, replication as pack copy.
+   ETag), the cache-size knob, the "no verified remote copy" catalog column and
+   the scan that rebuilds it, replication as pack copy. The background workers
+   arrive here and bring their own panic recovery and the three error-level
+   conditions with them.
 
 porter-mac proceeds against the vectors from the end of phase 1 and the wire
 from the end of phase 2 — it does not wait for packs, which it can never
@@ -1252,6 +1363,10 @@ ones from this plan:
   items in the must-not-lose set. Also the single-copy window: a sealed pack
   with no verified remote copy exists once, so "how many packs are awaiting
   verification" is a number an operator taking a backup wants in front of them.
+- `error-reporting.md` — the "what gets sent" section is written entirely
+  around request-shaped reporting. It gains the background workers: their own
+  recover-that-reports, the three error-level conditions, and the rule that
+  retryable object-storage failures stay at warn so they do not drown them.
 - **Ops documentation gains the one-writer invariant.** Exactly one Silo
   server writes a given bucket-prefix. It is not enforced by the store —
   nothing in the S3 feature floor can enforce it — and two servers pointed at
