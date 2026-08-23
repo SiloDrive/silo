@@ -1,15 +1,42 @@
 package silod
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"time"
 
+	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/objmgr"
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/store"
+	log "github.com/sirupsen/logrus"
 )
+
+// contentionBackoff is how long to wait before retry number attempt (0-based)
+// of a write that lost the race for the branch head: exponential from 50ms to
+// a 1s ceiling, with full jitter.
+//
+// It replaces a flat "random 100–3000 ms". That made the first retry wait an
+// average of 1.55s to re-take a head the winning writer had claimed in 20ms,
+// and it put ten such waits on the request path — a contended write could hold
+// a connection for 30 seconds before answering, which is most of why the
+// failures in docs/bugs/fixed/write-contention-returns-500.md took a median of
+// 14 seconds to arrive. Full jitter (uniform over [0, window), not the window
+// itself) is the part that actually spreads a thundering herd; the doubling is
+// what stops a persistent loser from hammering.
+func contentionBackoff(attempt int) time.Duration {
+	const base, ceiling = 50 * time.Millisecond, time.Second
+	window := base << min(attempt, 5)
+	if window > ceiling {
+		window = ceiling
+	}
+	return time.Duration(rand.Int63n(int64(window)))
+}
 
 // commitAttempts bounds the compare-and-swap retry loop.
 //
@@ -19,6 +46,11 @@ import (
 // passes is far past what contention on one library produces; beyond that the
 // honest answer is that the caller is losing a race it should be told about.
 const commitAttempts = 5
+
+// commitAttemptsForTest is the budget actually used. A var only so a test can
+// lower it to force exhaustion without racing a scheduler — nothing in the
+// server writes it.
+var commitAttemptsForTest = commitAttempts
 
 // errE2EEWriteByID is what a client is told when it asks the server to write
 // into an end-to-end encrypted library through a path. Spelled once because it
@@ -121,7 +153,7 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 	}
 
 	head := repo
-	for attempt := 0; attempt < commitAttempts; attempt++ {
+	for attempt := 0; attempt < commitAttemptsForTest; attempt++ {
 		// Read before the mutation, so a GC that starts mid-write is caught by
 		// the generation check below rather than racing the objects this is
 		// about to publish.
@@ -184,6 +216,10 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 		if err != nil {
 			return store.ID{}, store.ID{}, err
 		}
+		// Jittered, so eight writers that arrived together do not re-collide
+		// in lockstep. Bounded, so the whole budget stays on the request path
+		// rather than holding a connection for half a minute.
+		time.Sleep(contentionBackoff(attempt))
 	}
 	// Wrapped in the sentinel the Seafile lane's own bounded loop uses, so
 	// writeCommitErr classifies this as contention rather than breakage: the
@@ -192,4 +228,175 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 	// Retry-After, filed to Sentry — which is exactly the outcome
 	// docs/bugs/fixed/write-contention-returns-500.md exists to prevent.
 	return store.ID{}, store.ID{}, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", commitAttempts, repo.ID, ErrRetriesExhausted)
+}
+
+// ErrConflict, ErrGCConflict and ErrRetriesExhausted are the three ways a
+// write can lose rather than break.
+var (
+	ErrConflict   = errors.New("concurrent write conflict")
+	ErrGCConflict = errors.New("GC Conflict")
+	// ErrRetriesExhausted is a write that kept losing the race for the branch
+	// head until its retry budget ran out. It is contention, not breakage:
+	// nothing was applied, and the same request will usually succeed on a
+	// retry. It exists so callers can tell that apart from a real failure —
+	// without it the exhaustion case is an ordinary error and every HTTP
+	// handler answers 500, which is the one class a client must not retry.
+	ErrRetriesExhausted = errors.New("write contention: retries exhausted")
+)
+
+// writeCommitErr answers a request whose commit failed, and says so in the log
+// exactly once. It lives beside the sentinels because every handler that
+// commits needs it, and two copies of this decision would drift — the same
+// reason repomgr.StatusFor exists.
+//
+// The distinction that matters to a client is contention versus breakage. 500
+// is the one class a client must not retry blind: it means the server hit an
+// unexpected condition and may have applied part of the request, so the safe
+// response is to stop and surface it. A lost race for the branch head is the
+// opposite — nothing was applied, and the identical request will usually
+// succeed a moment later.
+//
+// 503 rather than 409, because 409 is not free: docs/bugs/fixed/
+// move-onto-directory-destroys-it.md gave it to destination collisions, and
+// Porter maps that to NSFileProviderError.filenameCollision — "return the
+// existing item so the system renames". Answering a contended write with 409
+// would tell a File Provider client to rename the user's file. 503 says
+// transient, and Retry-After says when.
+//
+// A GC conflict is the same instruction wearing a different number. The commit
+// lost a race with the garbage collector, nothing was applied, and the fix is
+// to send the identical request again — which is what 503 already means here,
+// so it goes there too rather than keeping 409 overloaded between "retry" and
+// "rename".
+func writeCommitErr(w http.ResponseWriter, r *http.Request, err error, what string) {
+	switch {
+	case errors.Is(err, ErrGCConflict), errors.Is(err, ErrRetriesExhausted), errors.Is(err, ErrConflict):
+		// Logged below error level on purpose: contention is an expected
+		// outcome of concurrent writers, and errors go to Sentry. The 3000-file
+		// seeding run in docs/bugs/fixed/write-contention-returns-500.md would have
+		// filed 74 reports of the server working as designed.
+		log.WithContext(r.Context()).WithError(err).Infof("%s lost the race for the branch head", what)
+		w.Header().Set("Retry-After", "1")
+		if errors.Is(err, ErrGCConflict) {
+			http.Error(w, "GC conflict; retry", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, "write contention; retry", http.StatusServiceUnavailable)
+	default:
+		log.WithContext(r.Context()).WithError(err).Errorf("%s failed", what)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
+
+// headMove is a proposed new head: the commit, the root it names, and who
+// moved it when.
+//
+// It exists so that updateBranch takes facts rather than a Seafile commit
+// object. Those four values are all it ever read out of one, and a store-v2
+// commit has the same four — so the compare-and-swap, the GC generation check
+// and the catalog record are written once and serve both formats, rather than
+// being copied into a parallel implementation that then drifts.
+type headMove struct {
+	CommitID string
+	RootID   string
+	Author   string
+	Ctime    int64
+}
+
+// updateBranch moves a library's head from oldCommitID to the commit move
+// names, or fails.
+//
+// It takes a headMove rather than an id because the head and the root it names
+// are one fact in two columns, and they are written in one UPDATE: a reader
+// that found them disagreeing would have no way to tell which was current. The
+// same call is where the catalog learns who moved the head and when, which are
+// the server's own observations rather than anything read back out of the
+// commit.
+func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	trans, err := siloPair.Write.BeginTx(ctx, nil)
+	if err != nil {
+		err := fmt.Errorf("failed to start transaction: %v", err)
+		return false, err
+	}
+
+	var row *sql.Row
+	var sqlStr string
+	if checkGC {
+		sqlStr = "SELECT gc_id FROM GCID WHERE repo_id = ?"
+		if originRepoID == "" {
+			row = trans.QueryRowContext(ctx, sqlStr, repoID)
+		} else {
+			row = trans.QueryRowContext(ctx, sqlStr, originRepoID)
+		}
+		var gcID sql.NullString
+		if err := row.Scan(&gcID); err != nil {
+			if err != sql.ErrNoRows {
+				_ = trans.Rollback()
+				return false, err
+			}
+		}
+
+		if lastGCID != gcID.String {
+			err = fmt.Errorf("head branch update for repo %s conflicts with GC", repoID)
+			_ = trans.Rollback()
+			return true, ErrGCConflict
+		}
+	}
+
+	var commitID string
+	name := "master"
+	sqlStr = "SELECT commit_id FROM Branch WHERE name = ? AND repo_id = ?"
+
+	row = trans.QueryRowContext(ctx, sqlStr, name, repoID)
+	if err := row.Scan(&commitID); err != nil {
+		if err != sql.ErrNoRows {
+			_ = trans.Rollback()
+			return false, err
+		}
+	}
+	if oldCommitID != commitID {
+		_ = trans.Rollback()
+		err := fmt.Errorf("head commit id has changed")
+		return false, err
+	}
+
+	sqlStr = "UPDATE Branch SET commit_id = ?, root_id = ? WHERE name = ? AND repo_id = ?"
+	_, err = trans.ExecContext(ctx, sqlStr, move.CommitID, move.RootID, name, repoID)
+	if err != nil {
+		_ = trans.Rollback()
+		return false, err
+	}
+
+	// In the same transaction as the head it describes: see RecordHeadMove.
+	if err := repomgr.RecordHeadMove(ctx, trans, repoID, move.Author, move.Ctime); err != nil {
+		_ = trans.Rollback()
+		return false, err
+	}
+
+	if err := trans.Commit(); err != nil {
+		return false, fmt.Errorf("failed to commit branch update: %v", err)
+	}
+
+	if secondParentID != "" {
+		if err := onBranchUpdated(repoID, secondParentID); err != nil {
+			return false, err
+		}
+	}
+
+	if err := onBranchUpdated(repoID, move.CommitID); err != nil {
+		return false, err
+	}
+
+	return false, nil
+}
+
+// onBranchUpdated tells whoever is listening that a library moved.
+func onBranchUpdated(repoID string, commitID string) error {
+	if option.EnableNotification {
+		notif.NotifyRepoUpdate(repoID, commitID)
+	}
+	publishUpdateEvent(repoID, commitID)
+	return nil
 }

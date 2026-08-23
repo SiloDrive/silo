@@ -14,8 +14,6 @@ import (
 
 	// Change to non-blank imports when use
 	"github.com/dkam/silo/fileserver/account"
-	_ "github.com/dkam/silo/fileserver/blockmgr"
-	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
@@ -61,19 +59,6 @@ type Repo struct {
 	// every client has to agree with, and whether the content is end-to-end
 	// encrypted. Frozen at creation; see format.go.
 	Format Format
-
-	// Vestigial: the Seafile key ceremony, read out of the head commit of a
-	// library in the old format and populated for no other kind. It is the one
-	// thing still read from a commit, and it goes with the frozen lanes.
-	IsEncrypted   bool
-	EncVersion    int
-	Magic         string
-	RandomKey     string
-	Salt          string
-	PwdHash       string
-	PwdHashAlgo   string
-	PwdHashParams string
-	Version       int
 }
 
 // VRepoInfo contains virtual repo information.
@@ -276,26 +261,12 @@ func GetWithReason(id string) (*Repo, error) {
 		return nil, fault(id, ErrRepoCorrupted, "%v", err)
 	}
 
-	if err := loadSeafileCrypto(repo); err != nil {
-		return nil, fault(id, ErrRepoCorrupted, "failed to load head commit %s: %v", repo.HeadCommitID, err)
-	}
 	if err := checkHeadPresent(repo); err != nil {
 		return nil, fault(id, ErrRepoCorrupted, "%v", err)
 	}
 	clearFaults(id)
 
 	return repo, nil
-}
-
-// IsStoreV2 reports whether this library's objects are the store-v2 format.
-//
-// The head id's width says which, exactly as it does for loadSeafileCrypto and
-// for the object store's choice of digest: forty hex characters is a SHA-1
-// Seafile commit, sixty-four is SHA-256. It is a real discriminator rather
-// than a heuristic — the two formats cannot mint an id of the other's width —
-// and it disappears with the Seafile lanes, when there is only one answer.
-func (repo *Repo) IsStoreV2() bool {
-	return len(repo.HeadCommitID) == 2*storefmt.IDSize
 }
 
 // checkHeadPresent verifies a store-v2 library's head commit object is
@@ -314,9 +285,6 @@ func (repo *Repo) IsStoreV2() bool {
 // handle this check needs is the one the rest of the request was going to open
 // anyway. What the check itself adds to a load is one lookup.
 func checkHeadPresent(repo *Repo) error {
-	if !repo.IsStoreV2() {
-		return nil
-	}
 	id, err := storefmt.ParseID(repo.HeadCommitID)
 	if err != nil {
 		return fmt.Errorf("head commit id %q is unreadable: %w", repo.HeadCommitID, err)
@@ -331,54 +299,6 @@ func checkHeadPresent(repo *Repo) error {
 	}
 	if !ok {
 		return fmt.Errorf("head commit %s is missing from the object store", repo.HeadCommitID)
-	}
-	return nil
-}
-
-// loadSeafileCrypto fills the vestigial Seafile fields from the head commit,
-// and is the only thing left that reads one.
-//
-// It runs on libraries in the old format and on nothing else. The head id's
-// width is what says which: forty characters is SHA-1 and a Seafile commit,
-// sixty-four is SHA-256 and a store-v2 one, exactly as the object store
-// chooses a digest by the width of an id. A store-v2 library has no key
-// ceremony to read and no commit this decoder could parse, so asking would be
-// a guaranteed failure rather than a lookup.
-//
-// This is a bridge with a scheduled end: it goes when the frozen lanes do,
-// taking the fields it fills with it.
-func loadSeafileCrypto(repo *Repo) error {
-	const seafileCommitIDLen = 40
-	if len(repo.HeadCommitID) != seafileCommitIDLen {
-		return nil
-	}
-	commit, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
-	if err != nil {
-		return err
-	}
-	repo.Version = commit.Version
-	if commit.Encrypted == "true" {
-		repo.IsEncrypted = true
-		repo.EncVersion = commit.EncVersion
-		if repo.EncVersion == 1 && commit.PwdHash == "" {
-			repo.Magic = commit.Magic
-		} else if repo.EncVersion == 2 {
-			repo.RandomKey = commit.RandomKey
-		} else if repo.EncVersion == 3 {
-			repo.RandomKey = commit.RandomKey
-			repo.Salt = commit.Salt
-		} else if repo.EncVersion == 4 {
-			repo.RandomKey = commit.RandomKey
-			repo.Salt = commit.Salt
-		}
-		if repo.EncVersion >= 2 && commit.PwdHash == "" {
-			repo.Magic = commit.Magic
-		}
-		if commit.PwdHash != "" {
-			repo.PwdHash = commit.PwdHash
-			repo.PwdHashAlgo = commit.PwdHashAlgo
-			repo.PwdHashParams = commit.PwdHashParams
-		}
 	}
 	return nil
 }
@@ -468,38 +388,6 @@ func clearFaults(repoID string) {
 	}
 }
 
-// RepoToCommit converts Repo to Commit.
-func RepoToCommit(repo *Repo, commit *commitmgr.Commit) {
-	commit.RepoID = repo.ID
-	commit.RepoName = repo.Name
-	if repo.IsEncrypted {
-		commit.Encrypted = "true"
-		commit.EncVersion = repo.EncVersion
-		if repo.EncVersion == 1 && repo.PwdHash == "" {
-			commit.Magic = repo.Magic
-		} else if repo.EncVersion == 2 {
-			commit.RandomKey = repo.RandomKey
-		} else if repo.EncVersion == 3 {
-			commit.RandomKey = repo.RandomKey
-			commit.Salt = repo.Salt
-		} else if repo.EncVersion == 4 {
-			commit.RandomKey = repo.RandomKey
-			commit.Salt = repo.Salt
-		}
-		if repo.EncVersion >= 2 && repo.PwdHash == "" {
-			commit.Magic = repo.Magic
-		}
-		if repo.PwdHash != "" {
-			commit.PwdHash = repo.PwdHash
-			commit.PwdHashAlgo = repo.PwdHashAlgo
-			commit.PwdHashParams = repo.PwdHashParams
-		}
-	} else {
-		commit.Encrypted = "false"
-	}
-	commit.Version = repo.Version
-}
-
 // GetEx return repo object even if it's corrupted.
 func GetEx(id string) *Repo {
 	repo := new(Repo)
@@ -542,10 +430,10 @@ func GetEx(id string) *Repo {
 		return repo
 	}
 
-	if err := loadSeafileCrypto(repo); err != nil {
-		// Same fault as in GetWithReason, and reached by the sync path on
-		// every request, so it shares the same suppression.
-		_ = fault(id, ErrRepoCorrupted, "failed to load head commit %s: %v", repo.HeadCommitID, err)
+	if err := checkHeadPresent(repo); err != nil {
+		// Same fault as in GetWithReason, and reached on every request, so it
+		// shares the same suppression.
+		_ = fault(id, ErrRepoCorrupted, "%v", err)
 		repo.IsCorrupted = true
 		return repo
 	}
@@ -709,79 +597,6 @@ func UpdateTokenPeerInfo(token, peerID, clientVer string, syncTime int64) error 
 	if _, err := seafileWriteDB.ExecContext(ctx, sqlStr, peerID, syncTime, clientVer, token); err != nil {
 		return err
 	}
-	return nil
-}
-
-// GetUploadTmpFile gets the timp file path of upload file.
-func GetUploadTmpFile(repoID, filePath string) (string, error) {
-	var filePathNoSlash string
-	if filePath[0] == '/' {
-		filePathNoSlash = filePath[1:]
-	} else {
-		filePathNoSlash = filePath
-		filePath = "/" + filePath
-	}
-
-	var tmpFile string
-	sqlStr := "SELECT tmp_file_path FROM WebUploadTempFiles WHERE repo_id = ? AND file_path = ?"
-
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	row := seafileDB.QueryRowContext(ctx, sqlStr, repoID, filePath)
-	if err := row.Scan(&tmpFile); err != nil {
-		if err != sql.ErrNoRows {
-			return "", err
-		}
-	}
-	if tmpFile == "" {
-		row := seafileDB.QueryRowContext(ctx, sqlStr, repoID, filePathNoSlash)
-		if err := row.Scan(&tmpFile); err != nil {
-			if err != sql.ErrNoRows {
-				return "", err
-			}
-		}
-	}
-
-	return tmpFile, nil
-}
-
-// AddUploadTmpFile adds the tmp file path of upload file.
-func AddUploadTmpFile(repoID, filePath, tmpFile string) error {
-	if filePath[0] != '/' {
-		filePath = "/" + filePath
-	}
-
-	sqlStr := "INSERT INTO WebUploadTempFiles (repo_id, file_path, tmp_file_path) VALUES (?, ?, ?)"
-
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	_, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, filePath, tmpFile)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// DelUploadTmpFile deletes the tmp file path of upload file.
-func DelUploadTmpFile(repoID, filePath string) error {
-	var filePathNoSlash string
-	if filePath[0] == '/' {
-		filePathNoSlash = filePath[1:]
-	} else {
-		filePathNoSlash = filePath
-		filePath = "/" + filePath
-	}
-
-	sqlStr := "DELETE FROM WebUploadTempFiles WHERE repo_id = ? AND file_path IN (?, ?)"
-
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	_, err := seafileWriteDB.ExecContext(ctx, sqlStr, repoID, filePath, filePathNoSlash)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -963,12 +778,6 @@ func removeVirtualRepoOndisk(repoID string, cloudMode bool) error {
 	}
 
 	sqlStr = "DELETE FROM RepoValidSince WHERE repo_id = ?"
-	_, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
-	if err != nil {
-		return err
-	}
-
-	sqlStr = "DELETE FROM RepoSize WHERE repo_id = ?"
 	_, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
 	if err != nil {
 		return err
@@ -1328,7 +1137,6 @@ func DeleteRepo(repoID string) error {
 		"DELETE FROM RepoGroup WHERE repo_id = ?",
 		"DELETE FROM InnerPubRepo WHERE repo_id = ?",
 		"DELETE FROM RepoUserToken WHERE repo_id = ?",
-		"DELETE FROM RepoSize WHERE repo_id = ?",
 		"DELETE FROM RepoUsage WHERE repo_id = ?",
 		"DELETE FROM RepoHistoryLimit WHERE repo_id = ?",
 		"DELETE FROM RepoValidSince WHERE repo_id = ?",

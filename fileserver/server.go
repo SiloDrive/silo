@@ -21,11 +21,7 @@ import (
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/apitokenstore"
 	"github.com/dkam/silo/fileserver/authmgr"
-	"github.com/dkam/silo/fileserver/blockmgr"
-	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/fileserver/fsmgr"
-	"github.com/dkam/silo/fileserver/keycache"
 	"github.com/dkam/silo/fileserver/metrics"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/notif"
@@ -388,25 +384,9 @@ func Run(args []string) error {
 
 	repomgr.Init(siloPair.Read, siloPair.Write, dataDir)
 
-	// Drop cached authorisations as soon as the rows behind them go away,
-	// rather than at the next cache expiry. Registered here because repomgr
-	// sits below this package and cannot call into it.
-	repomgr.OnRepoDeleted = invalidateRepoAuth
-	repomgr.OnTokensRevoked = invalidateUserAuth
-
-	// First arg is the legacy "central config path"; it's threaded into
-	// objstore.New but never used there. Passing "" keeps the signatures
-	// untouched until a wider cleanup removes the parameter entirely.
-	fsmgr.Init("", dataDir, option.FsCacheLimit)
-
-	blockmgr.Init("", dataDir)
-
-	commitmgr.Init("", dataDir)
-
 	share.Init(siloPair.Read, option.GroupTableName, option.CloudMode)
 
 	tokenstore.StartCleanup()
-	keycache.StartReaper()
 	account.Init(siloPair.Read, siloPair.Write)
 	authmgr.Init(siloPair.Read, siloPair.Write)
 	api.Init(siloPair.Read, siloPair.Write)
@@ -430,16 +410,6 @@ func Run(args []string) error {
 	if generated != "" {
 		logGeneratedAdmin(adminEmail, generated)
 	}
-
-	fileopInit()
-
-	syncAPIInit()
-
-	sizeSchedulerInit()
-
-	virtualRepoInit()
-
-	initUpload()
 
 	metrics.Init()
 
@@ -627,54 +597,6 @@ func newHTTPRouter() *mux.Router {
 	if observability.Enabled() {
 		r.Use(middleware.NameTransaction)
 	}
-	r.HandleFunc("/protocol-version{slash:\\/?}", handleProtocolVersion)
-	r.Handle("/files/{.*}/{.*}", appHandler(accessCB))
-	r.Handle("/blks/{.*}/{.*}", appHandler(accessBlksCB))
-	r.Handle("/zip/{.*}", appHandler(accessZipCB))
-	r.Handle("/upload-api/{.*}", appHandler(uploadAPICB))
-	r.Handle("/upload-aj/{.*}", appHandler(uploadAjaxCB))
-	r.Handle("/update-api/{.*}", appHandler(updateAPICB))
-	r.Handle("/update-aj/{.*}", appHandler(updateAjaxCB))
-	r.Handle("/upload-blks-api/{.*}", appHandler(uploadBlksAPICB))
-	r.Handle("/upload-raw-blks-api/{.*}", appHandler(uploadRawBlksAPICB))
-
-	// The share-link routes (/f/, /u/, /d/) and the web file-access route
-	// (/repos/{id}/files/{path}) were removed: every one of them authorized
-	// by POSTing to Seahub, which a standalone Silo deploy does not run, so
-	// they could only ever fail. Reinstating them means implementing the
-	// authorization against Silo's own share store, not restoring these.
-
-	// file syncing api
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/permission-check{slash:\\/?}",
-		appHandler(permissionCheckCB))
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/commit/HEAD{slash:\\/?}",
-		appHandler(headCommitOperCB))
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/commit/{id:[\\da-z]{40}}",
-		appHandler(commitOperCB))
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/block/{id:[\\da-z]{40}}",
-		appHandler(blockOperCB))
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/fs-id-list{slash:\\/?}",
-		appHandler(getFsObjIDCB))
-	r.Handle("/repo/head-commits-multi{slash:\\/?}",
-		appHandler(headCommitsMultiCB))
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/pack-fs{slash:\\/?}",
-		appHandler(packFSCB))
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/check-fs{slash:\\/?}",
-		appHandler(checkFSCB))
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/check-blocks{slash:\\/?}",
-		appHandler(checkBlockCB))
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/recv-fs{slash:\\/?}",
-		appHandler(recvFSCB))
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/quota-check{slash:\\/?}",
-		appHandler(getCheckQuotaCB))
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/jwt-token{slash:\\/?}",
-		appHandler(getJWTTokenCB))
-
-	// seadrive api
-	r.Handle("/repo/{repoid:[\\da-z]{8}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{4}-[\\da-z]{12}}/block-map/{id:[\\da-z]{40}}",
-		appHandler(getBlockMapCB))
-	r.Handle("/accessible-repos{slash:\\/?}", appHandler(getAccessibleRepoListCB))
-
 	// in-process notification-server WebSocket endpoint
 	if option.EnableNotification {
 		r.HandleFunc("/notification", notif.Handler)
@@ -709,7 +631,6 @@ func newHTTPRouter() *mux.Router {
 	// that stops being true when someone loosens the regex.
 	apiRouter.HandleFunc("/repos/{repoid}/batch", batchHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}/blocks/missing", blocksMissingHandler).Methods("POST")
-	apiRouter.HandleFunc("/repos/{repoid}/blocks/{id:[0-9a-f]{40}}", putBlockHandler).Methods("PUT")
 	// The id-addressed surface, store-v2 only. A chunk id is sixty-four hex
 	// characters and a Seafile block id is forty, so the two PUT routes cannot
 	// collide however the library is stored — the width is the format, not a
@@ -723,29 +644,7 @@ func newHTTPRouter() *mux.Router {
 	// bad method with 405 and an Allow header, which mux would otherwise turn
 	// into a 404 that reads as "wrong path".
 	apiRouter.HandleFunc("/repos/{repoid}/entries/{path:.*}", entriesHandler)
-	apiRouter.HandleFunc("/repos/{repoid}/sync-token", api.CreateRepoSyncTokenHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}/notify-token", api.CreateNotifyTokenHandler).Methods("POST")
-
-	// SeaDrive compatibility routes (/api2/)
-	// These use Seahub/DRF-style "Authorization: Token <token>" auth, not Bearer JWT.
-	r.HandleFunc("/api2/auth-token/", api.SeaDriveAuthTokenHandler).Methods("POST")
-	api2Router := r.PathPrefix("/api2").Subrouter()
-	api2Router.Use(middleware.RequireAPIToken)
-	api2Router.HandleFunc("/auth/ping/", api.SeaDriveAuthPingHandler).Methods("GET")
-	api2Router.HandleFunc("/auth/logout/", api.SeaDriveLogoutHandler).Methods("POST")
-	api2Router.HandleFunc("/account/info/", api.SeaDriveAccountInfoHandler).Methods("GET")
-	api2Router.HandleFunc("/server-info/", api.SeaDriveServerInfoHandler).Methods("GET")
-	api2Router.HandleFunc("/repos/", api.SeaDriveReposHandler).Methods("GET")
-	api2Router.HandleFunc("/repos/", api.SeaDriveCreateRepoHandler).Methods("POST")
-	api2Router.HandleFunc("/repos/{repoid}/", renameRepoHandler).Methods("POST").Queries("op", "rename")
-	api2Router.HandleFunc("/repos/{repoid}/download-info/", api.SeaDriveDownloadInfoHandler).Methods("GET")
-	api2Router.HandleFunc("/repos/{repoid}/repo-tokens/", api.CreateRepoSyncTokenHandler).Methods("POST")
-
-	// SeaDrive also uses /api/v2.1/ for some operations (delete, rename).
-	api21Router := r.PathPrefix("/api/v2.1").Subrouter()
-	api21Router.Use(middleware.RequireAPIToken)
-	api21Router.HandleFunc("/repos/{repoid}/", renameRepoHandler).Methods("POST").Queries("op", "rename")
-	api21Router.HandleFunc("/repos/{repoid}/", api.DeleteRepoHandler).Methods("DELETE")
 
 	if option.HasRedisOptions {
 		r.Use(metrics.MetricMiddleware)
@@ -755,26 +654,6 @@ func newHTTPRouter() *mux.Router {
 
 func handleProtocolVersion(rsp http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(rsp, "{\"version\": 2}")
-}
-
-type appError struct {
-	Error   error
-	Message string
-	Code    int
-}
-
-type appHandler func(http.ResponseWriter, *http.Request) *appError
-
-func (fn appHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if e := fn(w, r); e != nil {
-		if e.Error != nil && e.Code == http.StatusInternalServerError {
-			// WithContext so the report carries the request that caused it —
-			// the URL alone doesn't say which account or which client.
-			log.WithContext(r.Context()).WithError(e.Error).
-				Errorf("path %s internal server error: %v\n", r.URL.Path, e.Error)
-		}
-		http.Error(w, e.Message, e.Code)
-	}
 }
 
 func RecoverWrapper(f func()) {

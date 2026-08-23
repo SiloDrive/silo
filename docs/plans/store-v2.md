@@ -1677,11 +1677,48 @@ Phases are sequential on the branch; each leaves the tree working.
    error as lost contention retries a commit that already landed. One event,
    one transaction.
 
-   What remains reading a commit is one function, `loadSeafileCrypto`, filling
-   the vestigial Seafile key-ceremony fields for libraries in the old format
-   only — chosen by the head id's width, forty characters being SHA-1, exactly
-   as the object store picks a digest. It is a bridge with a scheduled end: it
-   goes with the frozen lanes, taking those fields with it.
+   *Nothing reads a Seafile commit any more.* `loadSeafileCrypto` and the
+   vestigial key-ceremony fields it filled are gone with the frozen lanes, and
+   so is the head-id-width discriminator that chose between formats: there is
+   one format, so there is nothing to discriminate.
+   **Step 6b landed 2026-08-23: the deletion, and the narrowing with it.**
+   Roughly 14,000 lines: `fileop.go`, `sync_api.go`, `merge.go`,
+   `virtual_repo.go`, `size_sched.go`, `quota.go`, `crypt.go`, the `fsmgr`,
+   `blockmgr`, `commitmgr`, `diff`, `keycache` and `workerpool` packages, the
+   SeaDrive API and every route that reached any of them. Each surviving
+   handler had its format branch collapsed onto the store-v2 side rather than
+   being left with a dead arm, so `IsStoreV2` went too: with one format there
+   is nothing to discriminate, and `utils.IsObjectIDValid` was deleted rather
+   than widened, because `store.ParseID` was already the one id parser and a
+   second one is what drift is made of.
+
+   Three things the deletion turned up that reading alone had not.
+
+   *`POST entries/{path}` with `op=move` or `op=copy` had no store-v2
+   implementation at all.* It delegated to the Seafile `moveOrCopy`, which
+   loads a head commit through `commitmgr` — so on a 64-hex head it answered
+   500. Only the batch lane could move a file. `moveOrCopy` is now written
+   against the tree layer, with the two guards that matter kept: a directory
+   moved into its own subtree is refused, and so is a move onto an existing
+   directory, because replacing one unlinks its whole subtree in a single
+   commit. A copy into its own subtree is still allowed, and still terminates,
+   because the destination entry names the source as it stands at this commit.
+
+   *The store-v2 commit loop had no backoff.* `GenNewCommit` had a jittered,
+   bounded one, added by
+   [`write-contention-returns-500.md`](../bugs/fixed/write-contention-returns-500.md);
+   `mutateTree` retried immediately, so deleting the old loop would have taken
+   the fix with it. `contentionBackoff` moved across.
+
+   *The sync credential died with the lane that validated it.* The token cache
+   in `sync_api.go` was the only thing that ever read a `RepoUserToken`, and
+   `POST repos/{id}/sync-token` was the only thing that minted one — for a
+   `GET /repo/{id}/jwt-token` fallback that the route deletion had already
+   removed. Leaving an endpoint that mints a credential nothing validates is
+   worse than removing it, so both went. What is left orphaned and deliberately
+   untouched, because it is the auth lane's to decide: `middleware.RequireAPIToken`,
+   the `RepoUserToken` table, and `silo token`'s repo-token half.
+
 3. **E2EE.** — **folded into phase 2, 2026-08-23.** Identity keys, salt
    endpoint, split-derivation login (with or after auth.md's rewrite), CK
    wrapping, library creation with client UUIDs, Option A names, convergent

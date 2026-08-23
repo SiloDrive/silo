@@ -154,7 +154,6 @@ CREATE INDEX IF NOT EXISTS repo_token_account_indx on RepoUserToken (account_id)
 CREATE TABLE IF NOT EXISTS RepoTokenPeerInfo (token CHAR(41) PRIMARY KEY, peer_id CHAR(41), peer_ip VARCHAR(50), peer_name VARCHAR(255), sync_time BIGINT, client_ver VARCHAR(20));
 
 CREATE TABLE IF NOT EXISTS RepoHead (repo_id CHAR(37) PRIMARY KEY, branch_name VARCHAR(10));
-CREATE TABLE IF NOT EXISTS RepoSize (repo_id CHAR(37) PRIMARY KEY, size BIGINT UNSIGNED, head_id CHAR(41));
 -- What a library holds, as the number quota is charged on.
 --
 -- size is logical size at head: the sum of file_size over the files the head
@@ -190,9 +189,6 @@ CREATE TABLE IF NOT EXISTS VirtualRepo (repo_id CHAR(36) PRIMARY KEY, origin_rep
 CREATE INDEX IF NOT EXISTS virtualrepo_origin_repo_idx ON VirtualRepo (origin_repo);
 CREATE TABLE IF NOT EXISTS GarbageRepos (repo_id CHAR(36) PRIMARY KEY);
 
-CREATE TABLE IF NOT EXISTS RepoFileCount (repo_id CHAR(36) PRIMARY KEY, file_count BIGINT UNSIGNED);
-
-CREATE TABLE IF NOT EXISTS WebUploadTempFiles (repo_id CHAR(40) NOT NULL, file_path TEXT NOT NULL, tmp_file_path TEXT NOT NULL);
 
 -- A library's display metadata, and the authority for it.
 --

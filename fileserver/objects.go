@@ -53,19 +53,10 @@ import (
 // request that is not an object at all.
 const maxObjectBody = store.MaxManifestBytes + (1 << 20)
 
-// storeV2Repo loads a library for the id-addressed surface, refusing one that
-// is not store-v2.
-//
-// The refusal is a 404 on the route rather than an error about formats: a
-// Seafile library has no objects addressed this way, so the honest answer to
-// "give me object X in this library" is that there is no such thing here.
-func storeV2Repo(w http.ResponseWriter, r *http.Request, write bool) (*repomgr.Repo, *objmgr.Store, bool) {
+// idAddressedRepo loads a library and its store for the id-addressed surface.
+func idAddressedRepo(w http.ResponseWriter, r *http.Request, write bool) (*repomgr.Repo, *objmgr.Store, bool) {
 	repo := entryRepo(w, mux.Vars(r)["repoid"], middleware.GetAccountID(r), write)
 	if repo == nil {
-		return nil, nil, false
-	}
-	if !repo.IsStoreV2() {
-		http.Error(w, "This library does not have an object surface", http.StatusNotFound)
 		return nil, nil, false
 	}
 	st, err := repo.Store()
@@ -97,7 +88,7 @@ func objectID(w http.ResponseWriter, r *http.Request) (store.ID, bool) {
 // to ask again, which matters most to the client that has to walk a whole
 // object graph to resolve one path.
 func getObjectHandler(w http.ResponseWriter, r *http.Request) {
-	_, st, ok := storeV2Repo(w, r, false)
+	_, st, ok := idAddressedRepo(w, r, false)
 	if !ok {
 		return
 	}
@@ -134,7 +125,7 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request) {
 // object was already there, which is the one bit of information the retry
 // might want and costs an Exists call to provide.
 func putObjectHandler(w http.ResponseWriter, r *http.Request) {
-	_, st, ok := storeV2Repo(w, r, true)
+	_, st, ok := idAddressedRepo(w, r, true)
 	if !ok {
 		return
 	}
@@ -176,7 +167,7 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request) {
 // handing over and does not need to: the client that asked holds the key, or
 // does not need one.
 func getChunkHandler(w http.ResponseWriter, r *http.Request) {
-	_, st, ok := storeV2Repo(w, r, false)
+	_, st, ok := idAddressedRepo(w, r, false)
 	if !ok {
 		return
 	}
@@ -212,7 +203,7 @@ func getChunkHandler(w http.ResponseWriter, r *http.Request) {
 // the server can check without the key. The id is the whole verification, and
 // for a plain library it is a real one — SHA-256 of exactly these bytes.
 func putChunkHandler(w http.ResponseWriter, r *http.Request) {
-	repo, st, ok := storeV2Repo(w, r, true)
+	repo, st, ok := idAddressedRepo(w, r, true)
 	if !ok {
 		return
 	}
@@ -354,7 +345,7 @@ func putObjectError(w http.ResponseWriter, r *http.Request, err error, kind stri
 // looked, silently. There is no sensible default for that, so there is no
 // default.
 func putHeadHandler(w http.ResponseWriter, r *http.Request) {
-	repo, st, ok := storeV2Repo(w, r, true)
+	repo, st, ok := idAddressedRepo(w, r, true)
 	if !ok {
 		return
 	}

@@ -14,20 +14,6 @@ func IsValidUUID(u string) bool {
 	return err == nil
 }
 
-func IsObjectIDValid(objID string) bool {
-	if len(objID) != 40 {
-		return false
-	}
-	for i := 0; i < len(objID); i++ {
-		c := objID[i]
-		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
 // Every Silo JWT is signed with the same key (option.JWTPrivateKey), so a
 // token of one kind parses cleanly as another kind's claims — a notification
 // token read as session claims yields an empty email rather than an error.

@@ -6,12 +6,8 @@ import (
 	"net/url"
 	upath "path"
 	"strings"
-	"syscall"
-	"time"
+	"unicode/utf8"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/commitmgr"
-	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/repomgr"
@@ -19,55 +15,6 @@ import (
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
-
-// loadSeafileHead loads a Seafile library's head commit. Only the lanes that
-// still need one call it, and it dies with them.
-func loadSeafileHead(w http.ResponseWriter, repo *repomgr.Repo) (*commitmgr.Commit, bool) {
-	head, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
-	if err != nil {
-		log.Errorf("Failed to load head commit: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return nil, false
-	}
-	return head, true
-}
-
-// loadRepoAndCommit loads the repo and its Seafile head commit, with rw
-// permission check. It dies with the lanes that need a Seafile commit.
-//
-// The two halves are separate calls because the head commit is not a thing
-// every caller can load any more: a store-v2 commit is not a Seafile one and
-// commitmgr cannot read it. A handler that serves both formats has to decide
-// which it is holding BEFORE it asks for a commit — asking first turns a
-// perfectly good store-v2 library into a 500 — so those handlers call
-// entryRepo and loadSeafileHead in sequence with the format check between,
-// and this remains for the ones that will only ever hold a Seafile library.
-func loadRepoAndCommit(w http.ResponseWriter, repoID string, user account.ID) (*repomgr.Repo, *commitmgr.Commit, bool) {
-	repo := entryRepo(w, repoID, user, true)
-	if repo == nil {
-		return nil, nil, false
-	}
-	head, ok := loadSeafileHead(w, repo)
-	if !ok {
-		return nil, nil, false
-	}
-	return repo, head, true
-}
-
-// currentGCID reads the store's gc id so the commit that follows can be
-// checked against it. Read it before any object the commit will name is
-// written, so a GC that starts mid-request is caught as a conflict rather
-// than leaving behind a commit pointing at reclaimed objects. Answers the
-// request itself on failure, and reports whether the caller should carry on.
-func currentGCID(w http.ResponseWriter, repo *repomgr.Repo) (string, bool) {
-	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
-	if err != nil {
-		log.Errorf("Failed to get gc id for repo %s: %v", repo.StoreID, err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return "", false
-	}
-	return gcID, true
-}
 
 // checkEntryName applies the same name guard the upload path uses before a
 // dirent reaches the tree, replying 400 when the name is rejected. Syncing
@@ -90,6 +37,25 @@ func validEntryName(name string) bool {
 	return name != "" && name != "." && !shouldIgnoreFile(name)
 }
 
+// shouldIgnoreFile is the rule for a single path component: no traversal, no
+// invalid UTF-8, nothing absurdly long, and no separator smuggled inside what
+// is supposed to be one name.
+func shouldIgnoreFile(name string) bool {
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return true
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	if !utf8.ValidString(name) {
+		log.Warnf("file name %s contains non-UTF8 characters, skip", name)
+		return true
+	}
+	return len(name) >= 256
+}
+
 // movesIntoOwnSubtree reports whether dstDir sits at or beneath srcPath. A
 // move is add-then-delete, so relocating a directory beneath itself would put
 // the copy inside the tree that the delete then removes, destroying it. The
@@ -107,29 +73,6 @@ func movesIntoOwnSubtree(srcPath, dstDir string) bool {
 		return true
 	}
 	return strings.HasPrefix(dst, src+"/")
-}
-
-// destructiveCollision reports why moving an entry of mode srcMode onto dst
-// would destroy data, or "" when the move is safe. dst is the dirent already at
-// the destination path, or nil when nothing is there.
-//
-// A move replaces its destination, so the type of what is being replaced decides
-// how much is lost. Replacing a directory unlinks its whole subtree; replacing a
-// file with a directory is the same trade in the other direction. Only
-// file-onto-file loses nothing the caller did not name, which is why it is the
-// one collision left to proceed — PUT entries/{path} already replaces rather
-// than renaming, and a move should not be stricter than a write.
-func destructiveCollision(srcMode uint32, dst *fsmgr.SeafDirent) string {
-	if dst == nil {
-		return ""
-	}
-	if fsmgr.IsDir(dst.Mode) {
-		return "Destination exists and is a directory"
-	}
-	if fsmgr.IsDir(srcMode) {
-		return "Destination exists and is a file"
-	}
-	return ""
 }
 
 func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
@@ -175,11 +118,7 @@ func patchRepoHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name string `json:"name"`
 	}
-	if appErr := decodeLimitedJSON(w, r, 64<<10, &body); appErr != nil {
-		if appErr.Code == http.StatusBadRequest {
-			appErr.Message = `Expected a JSON body such as {"name":"New name"}`
-		}
-		http.Error(w, appErr.Message, appErr.Code)
+	if !decodeJSONBody(w, r, 64<<10, &body, `Expected a JSON body such as {"name":"New name"}`) {
 		return
 	}
 	name := strings.TrimSpace(body.Name)
@@ -229,9 +168,26 @@ func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, newN
 // not silently build a directory tree, and a client that wants mkdir -p asks
 // for it a directory at a time — the same rule putEntryFile applies to a
 // file's parent, stated once in each place it is enforced.
-func mkdirV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path, dirName string) {
+func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
+	vars := mux.Vars(r)
+	repoID := vars["repoid"]
 
+	path, _ := url.QueryUnescape(r.URL.Query().Get("path"))
+	if path == "" {
+		http.Error(w, "path is required", http.StatusBadRequest)
+		return
+	}
+
+	dirName := upath.Base(path)
+	if !checkEntryName(w, dirName) {
+		return
+	}
+
+	repo := entryRepo(w, repoID, acct.ID, true)
+	if repo == nil {
+		return
+	}
 	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Mkdir(root, path, defaultDirMode, now)
 	}); err != nil {
@@ -243,9 +199,8 @@ func mkdirV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path, d
 	writeEntryJSON(w, http.StatusCreated, map[string]any{"name": dirName, "type": "dir"})
 }
 
-func mkdirHandler(w http.ResponseWriter, r *http.Request) {
+func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
-	user := acct.Email
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 
@@ -255,113 +210,18 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	parentDir := upath.Dir(path)
-	dirName := upath.Base(path)
-	if !checkEntryName(w, dirName) {
-		return
-	}
-
 	repo := entryRepo(w, repoID, acct.ID, true)
 	if repo == nil {
 		return
 	}
-	if repo.IsStoreV2() {
-		mkdirV2(w, r, repo, path, dirName)
-		return
-	}
-	head, ok := loadSeafileHead(w, repo)
-	if !ok {
-		return
-	}
-
-	gcID, ok := currentGCID(w, repo)
-	if !ok {
-		return
-	}
-
-	mode := uint32(syscall.S_IFDIR | 0644)
-	dent := fsmgr.NewDirent(fsmgr.EmptySha1, dirName, mode, time.Now().Unix(), "", 0)
-
-	var names []string
-	newRootID, err := DoPostMultiFiles(repo, head.RootID, parentDir, []*fsmgr.SeafDirent{dent}, user, false, &names)
-	if err != nil {
-		log.Errorf("Failed to create directory: %v", err)
-		http.Error(w, "Failed to create directory", http.StatusInternalServerError)
-		return
-	}
-
-	desc := fmt.Sprintf("Added directory \"%s\"", dirName)
-	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, gcID, true)
-	if err != nil {
-		writeCommitErr(w, r, err, "mkdir")
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
-}
-
-// deleteV2 removes one entry from a store-v2 library. A directory goes with
-// everything under it — the tree is content-addressed, so dropping the edge
-// drops the subtree, and what that leaves unreferenced is the collector's
-// business rather than this request's.
-func deleteV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path string) {
-	acct := middleware.GetAccount(r)
-
+	// A directory goes with everything under it — the tree is content-addressed,
+	// so dropping the edge drops the subtree, and what that leaves unreferenced
+	// is the collector's business rather than this request's.
 	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Remove(root, path, now)
 	}); err != nil {
 		writeTreeErr(w, r, err, "Not found",
 			fmt.Sprintf("delete %s in repo %s", path, repo.ID))
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
-func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
-	acct := middleware.GetAccount(r)
-	user := acct.Email
-	vars := mux.Vars(r)
-	repoID := vars["repoid"]
-
-	path, _ := url.QueryUnescape(r.URL.Query().Get("path"))
-	if path == "" {
-		http.Error(w, "path is required", http.StatusBadRequest)
-		return
-	}
-
-	repo := entryRepo(w, repoID, acct.ID, true)
-	if repo == nil {
-		return
-	}
-	if repo.IsStoreV2() {
-		deleteV2(w, r, repo, path)
-		return
-	}
-	head, ok := loadSeafileHead(w, repo)
-	if !ok {
-		return
-	}
-
-	gcID, ok := currentGCID(w, repo)
-	if !ok {
-		return
-	}
-
-	parentDir := upath.Dir(path)
-	filename := upath.Base(path)
-
-	newRootID, err := DelFileFromTree(repo.StoreID, head.RootID, parentDir, filename)
-	if err != nil {
-		log.Errorf("Failed to delete %s: %v", path, err)
-		http.Error(w, fmt.Sprintf("Failed to delete: %v", err), http.StatusNotFound)
-		return
-	}
-
-	desc := fmt.Sprintf("Deleted \"%s\"", filename)
-	_, err = GenNewCommit(repo, head, newRootID, user, desc, false, gcID, true)
-	if err != nil {
-		writeCommitErr(w, r, err, "delete")
 		return
 	}
 
@@ -381,7 +241,6 @@ func copyHandler(w http.ResponseWriter, r *http.Request) { moveOrCopy(w, r, true
 
 func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 	acct := middleware.GetAccount(r)
-	user := acct.Email
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 
@@ -401,99 +260,76 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 	if isCopy {
 		verb = "copy"
 	}
-	if !checkEntryName(w, upath.Base(dstPath)) {
+	dstName := upath.Base(dstPath)
+	if !checkEntryName(w, dstName) {
 		return
 	}
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
-	if !ok {
+	repo := entryRepo(w, repoID, acct.ID, true)
+	if repo == nil {
+		return
+	}
+	st, err := repo.Store()
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repoID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	root, err := store.ParseID(repo.RootID)
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	// Get the existing entry
-	srcEntry, err := fsmgr.GetDirentByPath(repo.StoreID, head.RootID, srcPath)
-	if err != nil || srcEntry == nil {
+	src, err := st.Resolve(root, srcPath)
+	if err != nil {
 		http.Error(w, "Source not found", http.StatusNotFound)
 		return
 	}
 
-	srcDir := upath.Dir(srcPath)
-	srcName := upath.Base(srcPath)
-	dstDir := upath.Dir(dstPath)
-	dstName := upath.Base(dstPath)
-
-	// Copying is exempt: the destination dirent holds the source's id, which
+	// Copying is exempt: the destination entry holds the source's id, which
 	// names the subtree as it stands at this commit, so a copy into its own
 	// subtree is a snapshot of a finite thing and terminates. A move cannot be,
 	// because its delete would take the copy with it.
-	if !isCopy && fsmgr.IsDir(srcEntry.Mode) && movesIntoOwnSubtree(srcPath, dstDir) {
+	if !isCopy && src.IsDir() && movesIntoOwnSubtree(srcPath, upath.Dir(dstPath)) {
 		http.Error(w, "Cannot move a directory into itself", http.StatusBadRequest)
 		return
 	}
 
-	// Without this, a destination whose parent is missing reaches phase 1 and
-	// fails there, and the caller is told the server broke when in fact it named
-	// a directory that does not exist. Same answer, same words, as PUT
-	// entries/{path} into a missing parent — parents are never created
-	// implicitly on this lane.
-	if dstDir != "/" {
-		parent, err := fsmgr.GetDirentByPath(repo.StoreID, head.RootID, dstDir)
-		if err != nil || parent == nil || !fsmgr.IsDir(parent.Mode) {
-			http.Error(w, "Parent directory does not exist", http.StatusNotFound)
+	// A destination that already holds a directory would lose its whole
+	// subtree to the replacement — silent data loss reported as 200. Refused
+	// before anything is written. File-onto-file is deliberately still
+	// allowed: it is the one collision that destroys nothing the caller did
+	// not name, and it matches PUT entries/{path}, which replaces.
+	if dst, err := st.Resolve(root, dstPath); err == nil {
+		switch {
+		case dst.IsDir():
+			http.Error(w, "Destination exists and is a directory", http.StatusConflict)
+			return
+		case src.IsDir():
+			http.Error(w, "Destination exists and is a file", http.StatusConflict)
 			return
 		}
 	}
 
-	// Phase 1 replaces whatever already sits at the destination, and until this
-	// guard nothing established what that was. Overwriting a directory swaps its
-	// dirent for the source's, which unreachables every descendant in a single
-	// commit — silent data loss reported as 200. Refuse before phase 1 runs, the
-	// same shape of guard and for the same reason as movesIntoOwnSubtree.
-	//
-	// File-onto-file is deliberately still allowed: it is the one collision that
-	// destroys nothing the caller did not name, and it matches PUT entries/{path},
-	// which replaces rather than renaming the collision.
-	dstEntry, err := fsmgr.GetDirentByPath(repo.StoreID, head.RootID, dstPath)
-	if err != nil {
-		dstEntry = nil // absent, which is the ordinary case
-	}
-	if reason := destructiveCollision(srcEntry.Mode, dstEntry); reason != "" {
-		http.Error(w, reason, http.StatusConflict)
-		return
-	}
-
-	gcID, ok := currentGCID(w, repo)
-	if !ok {
-		return
-	}
-
-	// Phase 1: Add to destination
-	newDent := fsmgr.NewDirent(srcEntry.ID, dstName, srcEntry.Mode, time.Now().Unix(), srcEntry.Modifier, srcEntry.Size)
-	var names []string
-	newRootID, err := DoPostMultiFiles(repo, head.RootID, dstDir, []*fsmgr.SeafDirent{newDent}, user, true, &names)
-	if err != nil {
-		log.Errorf("Failed to add to destination: %v", err)
-		http.Error(w, "Failed to "+verb+": destination error", http.StatusInternalServerError)
-		return
-	}
-
-	// Phase 2: Remove from source. A copy stops at phase 1 — that is the whole
-	// difference between the two operations.
-	if !isCopy {
-		newRootID, err = DelFileFromTree(repo.StoreID, newRootID, srcDir, srcName)
+	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+		if !isCopy {
+			return st.Rename(root, srcPath, dstPath, now)
+		}
+		// A copy is a move with the delete left off: the new entry points at
+		// the object the source already names, so no content moves and a
+		// directory copies in constant time however large it is.
+		node, err := st.Resolve(root, srcPath)
 		if err != nil {
-			log.Errorf("Failed to remove from source: %v", err)
-			http.Error(w, "Failed to move: source error", http.StatusInternalServerError)
-			return
+			return store.ID{}, err
 		}
-	}
-
-	desc := fmt.Sprintf("Moved \"%s\"", srcName)
-	if isCopy {
-		desc = fmt.Sprintf("Copied \"%s\"", srcName)
-	}
-	if _, err := GenNewCommit(repo, head, newRootID, user, desc, false, gcID, true); err != nil {
-		writeCommitErr(w, r, err, verb)
+		return st.PutNode(root, dstPath, objmgr.Node{
+			ID: node.ID, Type: node.Type, Name: dstName,
+			Mtime: now, Mode: node.Mode,
+		}, now)
+	}); err != nil {
+		writeTreeErr(w, r, err, "Parent directory does not exist",
+			fmt.Sprintf("%s %s in repo %s", verb, srcPath, repoID))
 		return
 	}
 
@@ -508,11 +344,11 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 	// source's id. A client can file the destination in its cache without a
 	// follow-up GET, and will find it already has the content.
 	entryType := "file"
-	if fsmgr.IsDir(srcEntry.Mode) {
+	if src.IsDir() {
 		entryType = "dir"
 	}
-	w.Header().Set("ETag", `"`+etagPrefix+srcEntry.ID+`"`)
+	w.Header().Set("ETag", `"`+etagPrefix+src.ID.String()+`"`)
 	writeEntryJSON(w, http.StatusCreated, map[string]any{
-		"name": dstName, "type": entryType, "id": srcEntry.ID, "size": srcEntry.Size,
+		"name": dstName, "type": entryType, "id": src.ID.String(),
 	})
 }

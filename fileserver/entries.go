@@ -17,13 +17,11 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/api"
-	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
-	"github.com/dkam/silo/fileserver/utils"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -142,25 +140,6 @@ type resolved struct {
 // resolve looks up a path in the current head tree. The root has no dirent of
 // its own — nothing contains it — so its id is the commit's root id, which is
 // exactly as good an ETag: it changes whenever anything in the library does.
-func resolve(repo *repomgr.Repo, path string) (*resolved, error) {
-	if path == "/" {
-		return &resolved{id: repo.RootID, isDir: true}, nil
-	}
-	if repo.IsStoreV2() {
-		return resolveV2(repo, path)
-	}
-	dent, err := fsmgr.GetDirentByPath(repo.StoreID, repo.RootID, path)
-	if err != nil {
-		return nil, err
-	}
-	return &resolved{
-		id:    dent.ID,
-		isDir: fsmgr.IsDir(dent.Mode),
-		mtime: dent.Mtime,
-	}, nil
-}
-
-// resolveV2 walks a store-v2 tree to a path.
 //
 // It refuses an E2EE library rather than failing further in. The server has no
 // content key, so it cannot encrypt the path segments it would have to match
@@ -168,7 +147,10 @@ func resolve(repo *repomgr.Repo, path string) (*resolved, error) {
 // surface is how such a library is read. Saying so here keeps the refusal next
 // to the reason instead of surfacing as "not found", which would be a lie
 // about whether the file exists.
-func resolveV2(repo *repomgr.Repo, path string) (*resolved, error) {
+func resolve(repo *repomgr.Repo, path string) (*resolved, error) {
+	if path == "/" {
+		return &resolved{id: repo.RootID, isDir: true}, nil
+	}
 	st, err := repo.Store()
 	if err != nil {
 		return nil, err
@@ -196,7 +178,6 @@ func resolveV2(repo *repomgr.Repo, path string) (*resolved, error) {
 // re-checking a materialised file pays almost nothing to learn it is current.
 func getEntry(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
-	user := acct.Email
 	vars := mux.Vars(r)
 	repoID := vars["repoid"]
 	path := entryPath(vars["path"])
@@ -232,7 +213,7 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 		api.ListDirByID(w, r, repo, entry.id)
 		return
 	}
-	serveFile(w, r, repo, entry.id, upath.Base(path), user)
+	serveFile(w, r, repo, entry.id, upath.Base(path))
 }
 
 // isPaged reports whether a request is asking for a window of a listing rather
@@ -244,77 +225,28 @@ func isPaged(r *http.Request) bool {
 }
 
 // serveFile streams a file's bytes on this request, rather than redirecting to
-// /files/{token}/{name} the way the Seafile lane does.
+// a one-time capability URL the way Seafile did.
 //
-// That redirect exists because its consumers — a browser following a download
+// That redirect existed because its consumers — a browser following a download
 // link, a document server fetching a file — cannot set an Authorization header,
 // so the URL has to carry the credential, and the token is spent on first use
 // so a leaked URL is worth one request. Every caller of this lane sets a bearer
 // header on every request, so there is nothing to solve: minting a one-time
 // capability here would only mean two round trips and a URL that stops working
 // after one of them. That is the difference between a usable ranged read and an
-// unusable one, since a client reading at offsets pays it on every read.
-//
-// See docs/capability-urls.md. The redirect is still correct for the Seafile
-// lane and is untouched there.
-func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID, fileName, user string) {
-	if repo.IsStoreV2() {
-		serveFileV2(w, r, repo, fileID, fileName)
-		return
-	}
-
-	// Advertised even when this request has no Range, so a client learns it can
-	// seek without having to try one and see — and *denied* on an encrypted
-	// library, where the whole-file path below ignores Range and answers 200
-	// with everything. Ignoring a Range is allowed; advertising support for one
-	// and then ignoring it is not, and a client that trusts the header has no
-	// way to tell the difference between the file it asked for and the file it
-	// got. See docs/responses.md.
-	if repo.IsEncrypted {
-		w.Header().Set("Accept-Ranges", "none")
-	} else {
-		w.Header().Set("Accept-Ranges", "bytes")
-	}
-
-	var cryptKey *seafileCrypt
-	if repo.IsEncrypted {
-		key, err := parseCryptKey(w, repo.ID, user, repo.EncVersion)
-		if err != nil {
-			http.Error(w, err.Message, err.Code)
-			return
-		}
-		cryptKey = key
-	}
-
-	// Ranges are not served from an encrypted repo: the blocks are encrypted,
-	// so a byte range of the plaintext is not a byte range of what is stored.
-	// The whole-file path decrypts as it streams. This mirrors accessCB.
-	byteRanges := strings.Join(r.Header["Range"], "")
-	if !repo.IsEncrypted && byteRanges != "" {
-		if e := doFileRange(w, r, repo, fileID, fileName, "download", byteRanges, user, siloTextCharset); e != nil {
-			http.Error(w, e.Message, e.Code)
-		}
-		return
-	}
-	if e := doFile(w, r, repo, fileID, fileName, "download", cryptKey, user, siloTextCharset); e != nil {
-		http.Error(w, e.Message, e.Code)
-	}
-}
-
-// serveFileV2 streams a store-v2 file, whole or ranged.
+// unusable one, since a client reading at offsets pays it on every read. See
+// docs/capability-urls.md.
 //
 // The ranged path is arithmetic rather than I/O planning, which is the
 // manifest earning its keep: chunk sizes are recorded as PLAINTEXT lengths, so
-// the run of chunks a range touches is computable from the manifest alone. The
-// Seafile path has to stat every block to learn the same thing, and caches the
-// result to avoid doing it twice.
+// the run of chunks a range touches is computable from the manifest alone.
 //
 // An E2EE library is refused rather than served here, inside GetManifest and
 // ReadFile: the server holds no key, so what it could stream is ciphertext,
 // and a client that asked for a file and received sealed bytes has no way to
 // tell that apart from the file. Such a library is read through the
 // id-addressed surface, where the client opens the chunks itself.
-func serveFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID, fileName string) {
+func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID, fileName string) {
 	st, err := repo.Store()
 	if err != nil {
 		log.Errorf("failed to open store for repo %s: %v", repo.ID, err)
@@ -486,13 +418,17 @@ func preconditionResult(etag, ifMatch, ifNoneMatch string) bool {
 // it is modelled on a person dragging things into a folder rather than on a
 // client asserting a desired state.
 //
-// The body is spooled to a temp file before indexing. That is not a shortcut
-// around streaming: chunkFile seeks to each block boundary, so it needs a
-// seekable source, and indexFileWorker already accepts a path for exactly this
-// reason. A request body is neither seekable nor replayable.
+// The body streams straight into the chunker rather than through a spool file:
+// WriteFile chunks a stream and the manifest records what it found, so nothing
+// needs to know the size in advance and there is no temporary file, no cleanup
+// and no disk for it.
+//
+// An E2EE library is refused, and inside WriteFile rather than here: the
+// server cannot chunk what it cannot read, and chunking under the wrong seed
+// would be worse than refusing. Writing such a library is the id-addressed
+// surface's job, where the client chunks, seals and names every object.
 func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 	acct := middleware.GetAccount(r)
-	user := acct.Email
 
 	repo := entryRepo(w, repoID, acct.ID, true)
 	if repo == nil {
@@ -521,81 +457,6 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 			return
 		}
 	}
-
-	if repo.IsStoreV2() {
-		putEntryFileV2(w, r, repo, fileName, path)
-		return
-	}
-
-	// Resolved before the body is transferred: this is an in-memory key lookup
-	// that can reject the request outright, and spooling gigabytes to disk only
-	// to discover the library is locked is the case the ordering exists to
-	// avoid.
-	var cryptKey *seafileCrypt
-	if repo.IsEncrypted {
-		key, appErr := parseCryptKey(w, repoID, user, repo.EncVersion)
-		if appErr != nil {
-			http.Error(w, appErr.Message, appErr.Code)
-			return
-		}
-		cryptKey = key
-	}
-
-	tmpPath, size, err := spoolBody(w, r, fileName)
-	if err != nil {
-		return // spoolBody has answered
-	}
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	// Read before indexing, so a GC that starts mid-upload is detected as a
-	// conflict rather than racing the blocks this is about to write.
-	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to get gc id for repo %s", repoID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	id, indexedSize, err := indexBlocks(r.Context(), repo.StoreID, repo.Version, tmpPath, nil, cryptKey)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			// The client hung up mid-upload. Nothing was committed.
-			return
-		}
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to index blocks for %s in repo %s", path, repoID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	if _, err := postFilesAndGenCommit([]string{fileName}, repo.ID, user, parentDir, true,
-		[]string{id}, []int64{indexedSize}, 0, gcID); err != nil {
-		writeCommitErr(w, r, err, fmt.Sprintf("commit of %s in repo %s", path, repoID))
-		return
-	}
-
-	sendStatisticMsg(repoID, user, "web-file-upload", uint64(size))
-
-	// The ETag is the new content, so a client can record it without a
-	// follow-up GET — which is the whole point of returning it here.
-	w.Header().Set("ETag", `"`+etagPrefix+id+`"`)
-	writeEntryJSON(w, http.StatusCreated, map[string]any{
-		"name": fileName, "type": "file", "id": id, "size": indexedSize,
-	})
-}
-
-// putEntryFileV2 stores an uploaded file in a store-v2 library.
-//
-// The body streams straight into the chunker rather than through a spool file.
-// The Seafile path spools because it has to know the size before it indexes;
-// this does not — WriteFile chunks a stream and the manifest records what it
-// found — so the temporary file, its cleanup and the disk it needed all go.
-//
-// An E2EE library is refused, and inside WriteFile rather than here: the
-// server cannot chunk what it cannot read, and chunking under the wrong seed
-// would be worse than refusing. Writing such a library is the id-addressed
-// surface's job, where the client chunks, seals and names every object.
-func putEntryFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileName, path string) {
-	acct := middleware.GetAccount(r)
 
 	st, err := repo.Store()
 	if err != nil {
@@ -804,20 +665,9 @@ func idStrings(ids []store.ID) []string {
 // See blocks.go for the surface as a whole.
 func putEntryBlocks(w http.ResponseWriter, r *http.Request, repoID, path string) {
 	acct := middleware.GetAccount(r)
-	user := acct.Email
 
 	repo := entryRepo(w, repoID, acct.ID, true)
 	if repo == nil {
-		return
-	}
-
-	// An encrypted library stores ciphertext, so its block ids are the hashes
-	// of encrypted bytes and a client cannot name one without doing the
-	// encryption itself under the exact scheme in crypt.go. Refused rather
-	// than half-supported: the whole-file PUT works there and does the
-	// encryption server-side from the cached key.
-	if repo.IsEncrypted {
-		http.Error(w, "An encrypted library cannot be written block by block; PUT the file content instead", http.StatusBadRequest)
 		return
 	}
 
@@ -841,82 +691,11 @@ func putEntryBlocks(w http.ResponseWriter, r *http.Request, repoID, path string)
 	var body struct {
 		Blocks []string `json:"blocks"`
 	}
-	if appErr := decodeLimitedJSON(w, r, maxBlockListBody, &body); appErr != nil {
-		if appErr.Code == http.StatusBadRequest {
-			appErr.Message = `Expected a JSON body such as {"blocks":["<sha1>",…]}`
-		}
-		http.Error(w, appErr.Message, appErr.Code)
+	if !decodeJSONBody(w, r, maxBlockListBody, &body, `Expected a JSON body such as {"blocks":["<sha1>",…]}`) {
 		return
 	}
 
-	if repo.IsStoreV2() {
-		putEntryChunks(w, r, repo, path, fileName, body.Blocks)
-		return
-	}
-
-	// Read before the blocks are checked, so a GC that starts between the
-	// check and the commit is caught as a conflict rather than leaving a
-	// commit pointing at blocks that have just been reclaimed. The same
-	// ordering as the whole-file path, for the same reason.
-	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to get gc id for repo %s", repoID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	for _, id := range body.Blocks {
-		if !utils.IsObjectIDValid(id) {
-			http.Error(w, "Not a block id: "+id, http.StatusBadRequest)
-			return
-		}
-	}
-
-	// The size is summed from the store rather than taken from the request. A
-	// client-supplied length that disagreed with the blocks would produce a
-	// file whose recorded size is a lie, and nothing downstream would notice —
-	// reads take their length from here, not from the blocks.
-	missing, size, err := blockInventory(repo.StoreID, body.Blocks)
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory blocks for %s in repo %s", path, repoID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	// 424 rather than 400, because the request is not wrong and the identical
-	// one will succeed once its dependency is met — which is precisely what
-	// 400 tells a client never to assume. The list is in the body so the fix
-	// is exact: upload these, then send this same request again.
-	if len(missing) > 0 {
-		writeEntryJSON(w, http.StatusFailedDependency, map[string]any{
-			"error":   "Some blocks are not on the server; upload them and retry",
-			"missing": missing,
-		})
-		return
-	}
-
-	if option.MaxUploadSize > 0 && uint64(size) > option.MaxUploadSize {
-		http.Error(w, "File is too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-
-	id, err := writeSeafile(repo.StoreID, repo.Version, size, body.Blocks)
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to write seafile for %s in repo %s", path, repoID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	if _, err := postFilesAndGenCommit([]string{fileName}, repo.ID, user, parentDir, true,
-		[]string{id}, []int64{size}, 0, gcID); err != nil {
-		writeCommitErr(w, r, err, fmt.Sprintf("commit of %s in repo %s", path, repoID))
-		return
-	}
-
-	w.Header().Set("ETag", `"`+etagPrefix+id+`"`)
-	writeEntryJSON(w, http.StatusCreated, map[string]any{
-		"name": fileName, "type": "file", "id": id, "size": size,
-	})
+	putEntryChunks(w, r, repo, path, fileName, body.Blocks)
 }
 
 // boundedBody applies the upload size limit to a request body, answering the
@@ -1031,11 +810,7 @@ func postEntry(w http.ResponseWriter, r *http.Request) {
 		Op string `json:"op"`
 		To string `json:"to"`
 	}
-	if appErr := decodeLimitedJSON(w, r, 64<<10, &body); appErr != nil {
-		if appErr.Code == http.StatusBadRequest {
-			appErr.Message = `Expected a JSON body such as {"op":"move","to":"/new/path"}`
-		}
-		http.Error(w, appErr.Message, appErr.Code)
+	if !decodeJSONBody(w, r, 64<<10, &body, `Expected a JSON body such as {"op":"move","to":"/new/path"}`) {
 		return
 	}
 	if body.Op != "move" && body.Op != "copy" {
@@ -1096,4 +871,184 @@ func matchesETag(header, etag string) bool {
 
 func weakETag(tag string) string {
 	return strings.TrimPrefix(strings.TrimSpace(tag), "W/")
+}
+
+// contentType = "application/octet-stream"
+func parseContentType(fileName string) string {
+	var contentType string
+
+	parts := strings.Split(fileName, ".")
+	if len(parts) >= 2 {
+		suffix := parts[len(parts)-1]
+		suffix = strings.ToLower(suffix)
+		switch suffix {
+		case "txt":
+			contentType = "text/plain"
+		case "doc":
+			contentType = "application/vnd.ms-word"
+		case "docx":
+			contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+		case "ppt":
+			contentType = "application/vnd.ms-powerpoint"
+		case "xls":
+			contentType = "application/vnd.ms-excel"
+		case "xlsx":
+			contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		case "pdf":
+			contentType = "application/pdf"
+		case "zip":
+			contentType = "application/zip"
+		case "mp3":
+			contentType = "audio/mp3"
+		case "mpeg":
+			contentType = "video/mpeg"
+		case "mp4":
+			contentType = "video/mp4"
+		case "ogv":
+			contentType = "video/ogg"
+		case "mov":
+			contentType = "video/mp4"
+		case "webm":
+			contentType = "video/webm"
+		case "mkv":
+			contentType = "video/x-matroska"
+		case "jpeg", "JPEG", "jpg", "JPG":
+			contentType = "image/jpeg"
+		case "png", "PNG":
+			contentType = "image/png"
+		case "gif", "GIF":
+			contentType = "image/gif"
+		case "svg", "SVG":
+			contentType = "image/svg+xml"
+		case "heic":
+			contentType = "image/heic"
+		case "ico":
+			contentType = "image/x-icon"
+		case "bmp":
+			contentType = "image/bmp"
+		case "tif", "tiff":
+			contentType = "image/tiff"
+		case "psd":
+			contentType = "image/vnd.adobe.photoshop"
+		case "webp":
+			contentType = "image/webp"
+		case "jfif":
+			contentType = "image/jpeg"
+		}
+	}
+
+	return contentType
+}
+
+// setCommonHeaders sets the content type and disposition for a file response.
+//
+// textCharset is appended to a text/* content type. The Seafile lane passes
+// "gbk", which is what upstream has always sent and is therefore what its
+// clients expect; the Silo lane passes "" and sends no charset at all, because
+// the server does not know the encoding of a file it is handing back. Guessing
+// wrong is worse than not saying: a client that trusts the declaration will
+// mangle text that was fine.
+func setCommonHeaders(rsp http.ResponseWriter, r *http.Request, operation, fileName, textCharset string) {
+	fileType := parseContentType(fileName)
+	if fileType != "" {
+		contentType := fileType
+		if textCharset != "" && strings.Contains(fileType, "text") {
+			contentType = fileType + "; charset=" + textCharset
+		}
+		rsp.Header().Set("Content-Type", contentType)
+	} else {
+		rsp.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	var contFileName string
+	if operation == "download" || operation == "download-link" ||
+		operation == "downloadblks" {
+		// Since the file name downloaded by safari will be garbled, we need to encode the filename.
+		// Safari cannot parse unencoded utf8 characters.
+		contFileName = fmt.Sprintf("attachment;filename*=utf-8''%s;filename=\"%s\"", url.PathEscape(fileName), fileName)
+	} else {
+		contFileName = fmt.Sprintf("inline;filename*=utf-8''%s;filename=\"%s\"", url.PathEscape(fileName), fileName)
+	}
+	rsp.Header().Set("Content-Disposition", contFileName)
+
+	if fileType != "image/jpg" {
+		rsp.Header().Set("X-Content-Type-Options", "nosniff")
+	}
+}
+
+// parseRange reads a single byte range out of a Range header.
+//
+// One range only: a multi-range request is answered as if it had asked for
+// nothing, because multipart/byteranges is a response format no client of this
+// server sends and half-implementing it is worse than not offering it.
+func parseRange(byteRanges string, fileSize uint64) (uint64, uint64, bool) {
+	start := strings.Index(byteRanges, "=")
+	end := strings.Index(byteRanges, "-")
+
+	if end < 0 {
+		return 0, 0, false
+	}
+
+	var startByte, endByte uint64
+
+	if start+1 == end {
+		retByte, err := strconv.ParseUint(byteRanges[end+1:], 10, 64)
+		if err != nil || retByte == 0 {
+			return 0, 0, false
+		}
+		startByte = fileSize - retByte
+		endByte = fileSize - 1
+	} else if end+1 == len(byteRanges) {
+		firstByte, err := strconv.ParseUint(byteRanges[start+1:end], 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+
+		startByte = firstByte
+		endByte = fileSize - 1
+	} else {
+		firstByte, err := strconv.ParseUint(byteRanges[start+1:end], 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		lastByte, err := strconv.ParseUint(byteRanges[end+1:], 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+
+		if lastByte > fileSize-1 {
+			lastByte = fileSize - 1
+		}
+
+		startByte = firstByte
+		endByte = lastByte
+	}
+
+	if startByte > endByte {
+		return 0, 0, false
+	}
+
+	return startByte, endByte, true
+}
+
+// decodeJSONBody reads a JSON request body into v, refusing anything past
+// limit, and answers the request itself when it cannot. It reports whether the
+// caller should carry on.
+//
+// The decoder streams, so the limit bounds the allocation rather than only
+// rejecting it after the fact. expected is what a well-formed body looks like,
+// and is shown only for a malformed one — a body that was merely too large
+// gets the size complaint, where repeating the shape would be noise.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, limit int64, v any, expected string) bool {
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(v)
+	if err == nil {
+		return true
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		http.Error(w, fmt.Sprintf("Request body is limited to %d bytes", limit), http.StatusRequestEntityTooLarge)
+		return false
+	}
+	http.Error(w, expected, http.StatusBadRequest)
+	return false
 }

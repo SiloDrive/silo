@@ -35,10 +35,9 @@ what to call instead.
 `{"token": "<JWT>"}`. Send it as `Authorization: Bearer <token>` on every
 `/api/silo/v1/…` request.
 
-This is a different credential from the `Authorization: Token …` that
-`/api2/…` and `/api/v2.1/…` use (SeaDrive's lane) and from the
-`Seafile-Repo-Token` on `/repo/…` (the sync lane). Three surfaces, three
-credentials; do not mix them.
+There is one surface and one credential now. The `Authorization: Token …` that
+`/api2/…` and `/api/v2.1/…` took, and the `Seafile-Repo-Token` on `/repo/…`,
+were deleted along with the lanes that read them.
 
 Missing or bad token → **401**. No permission on the library → **403**.
 
@@ -875,14 +874,15 @@ whole path: `DeriveCredentials`, `OpenIdentityWithPassword`, `UnwrapCK`.
 - **No chunk-parameter renegotiation.** A library's parameters are frozen at
   creation; changing them is a full rewrite, done deliberately or not at all.
 
-### The Seafile lanes are being deleted
+### The Seafile lanes are gone
 
-`/repo/…`, `/seafhttp/…`, `/api2/…` and `/api/v2.1/…` go away in this same
-work. Nothing in this brief depends on them, but if anything in porter still
+`/repo/…`, `/api2/…` and `/api/v2.1/…` have been deleted, along with the
+credentials that authenticated them. Every one of those paths answers **404**
+now. Nothing in this brief depended on them, but if anything in porter still
 reaches for one — `check-blocks` and `commit/HEAD` are the two that used to be
-tempting — move it to `/api/silo/v1` now. `seafile-compat-end` is the tag to
-revert to if that turns out to be wrong, and [`target.md`](target.md) records
-why it will not be.
+tempting — it is broken today and the replacement is on `/api/silo/v1`.
+`seafile-compat-end` is the tag to revert to if that turns out to be wrong,
+and [`target.md`](target.md) records why it will not be.
 
 ## The delta endpoint
 
@@ -1042,13 +1042,10 @@ If notifications are disabled server-side, step 1 returns **404**. Treat that as
 "fall back to polling", not as an error.
 
 **Older servers.** `notify-token` landed after 0.4.3. Against a server without
-it the request 404s the same way a disabled notification server does, and the
-two are worth telling apart only if you want the fallback: mint a repo token
-with `POST /api/silo/v1/repos/{repoid}/sync-token` (**Bearer** →
-`{"token":…}`), then `GET /repo/{repoid}/jwt-token` with header
-`Seafile-Repo-Token: <that token>` → `{"jwt_token":…}`, no `expires_at`. That
-pair is the Seafile lane's auth and is kept only for the upstream client; log
-when you use it so it stays visible rather than becoming a habit.
+it the request 404s the same way a disabled notification server does. There is
+no longer a fallback: the repo-token pair that used to serve as one
+(`POST repos/{id}/sync-token` then `GET /repo/{id}/jwt-token`) was the Seafile
+lane's own auth and went with that lane. Treat a 404 as "poll".
 
 ## Checking your work against the server
 
@@ -1084,13 +1081,12 @@ path directly on it.
 That is worth stating plainly because it was not true a day ago, and the
 workarounds it used to require are no longer worth their cost:
 
-- **You do not need the block lane** (`/repo/{id}/block/{id}` with a
-  `Seafile-Repo-Token`). That is what `seadrive-fuse` does, and the reason is
-  that it had no better option: reaching bytes at an offset meant fetching the
-  file's `Seafile` fs object for its block list and reassembling. It works, but
-  it puts you partway to replicating the object store, and blocks default to
-  8MB, so a 4KB read pulls a whole block. Use it only if you find a reason
-  `entries/` cannot serve.
+- **You do not need the block lane.** `seadrive-fuse` reached bytes at an
+  offset by fetching a file's fs object for its block list and reassembling,
+  because it had no better option. That put it partway to replicating the
+  object store, and blocks defaulted to 8MB, so a 4KB read pulled a whole
+  block. That lane no longer exists; `entries/` with a `Range` serves the same
+  reads in one request.
 - **You do not need a whole-file local cache to be correct** — though you may
   still want one for latency. `entries/` plus ETags gives cheap revalidation,
   which is most of what a cache needs anyway.

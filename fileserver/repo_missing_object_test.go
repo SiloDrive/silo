@@ -3,19 +3,20 @@ package silod
 import (
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/repomgr"
 )
 
 const (
 	damagedRepo = "328be500-9164-418a-a47f-ab805dbd5694"
 	goneRepo    = "d3f4cf83-1111-2222-3333-444455556666"
-	damagedHead = "ac9b78b5c6f7b1905277627bafef0fe99beb15ff"
 	repoOwner   = "owner@example.com"
 )
+
+// damagedHead is a well-formed head id for an object that was never written.
+var damagedHead = strings.Repeat("ab", 32)
 
 // damagedRepoTestDB seeds a library that exists in every table and whose head
 // commit object does not exist at all — a database that survived an object
@@ -23,14 +24,11 @@ const (
 // interrupted rsync, a bad disk or an over-eager GC leaves behind.
 func damagedRepoTestDB(t *testing.T) {
 	t.Helper()
-
-	syncAuthTestDB(t)
-	// An empty data directory is the whole point: every object is missing.
-	commitmgr.Init(t.TempDir(), filepath.Join(t.TempDir(), "seafile-data"))
+	sqliteTestDB(t)
 
 	insertTestRepo(t, damagedRepo)
-	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)",
-		damagedRepo, damagedHead)
+	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id, root_id) VALUES ('master', ?, ?, ?)",
+		damagedRepo, damagedHead, damagedHead)
 	dbExec(t, "INSERT INTO RepoHead (repo_id, branch_name) VALUES (?, 'master')", damagedRepo)
 	dbExec(t, "INSERT INTO RepoOwner (repo_id, account_id) VALUES (?, ?)", damagedRepo, mintAccount(t, repoOwner).ID)
 }
@@ -75,22 +73,6 @@ func TestEntryRepoStillReports404ForAnAbsentLibrary(t *testing.T) {
 	}
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
-	}
-}
-
-// The same rule at the api2 surface SeaDrive uses.
-func TestLoadRepoAndCommitDoesNotReport404ForAMissingObject(t *testing.T) {
-	damagedRepoTestDB(t)
-
-	w := httptest.NewRecorder()
-	if _, _, ok := loadRepoAndCommit(w, damagedRepo, acctFor(t, repoOwner).ID); ok {
-		t.Fatal("loadRepoAndCommit succeeded with a missing head commit")
-	}
-	if w.Code == http.StatusNotFound {
-		t.Fatal("a missing object told the client the library was deleted")
-	}
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
 }
 

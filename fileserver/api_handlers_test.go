@@ -1,17 +1,13 @@
 package silod
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
-	upath "path"
-	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
-	"github.com/dkam/silo/fileserver/fsmgr"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
+	"github.com/dkam/silo/fileserver/account"
 )
 
 func TestCheckEntryName(t *testing.T) {
@@ -80,324 +76,119 @@ func TestMovesIntoOwnSubtree(t *testing.T) {
 	}
 }
 
-// moveHandler is add-to-destination then delete-from-source. This builds the
-// tree that guard protects and runs both phases directly, showing the delete
-// takes the just-added copy with it. It is the data-loss case #5 describes,
-// and the reason movesIntoOwnSubtree has to reject before phase 1 runs.
-func TestMoveIntoOwnSubtreeWouldDestroyIt(t *testing.T) {
-	confPath := t.TempDir()
-	dataDir := filepath.Join(confPath, "seafile-data")
-	fsmgr.Init(confPath, dataDir, option.FsCacheLimit)
+// A move that would replace a directory destroys its whole subtree in one
+// commit — silent data loss reported as 200. Refused before anything is
+// written. See docs/bugs/fixed/move-onto-directory-destroys-it.md.
+func TestMoveOntoDirectoryIsRefused(t *testing.T) {
+	repoID, acct := storeV2Library(t)
 
-	const storeID = "3f0c1e6a-77b6-4a9f-8f1e-2d9a1c4b5e70"
-	repo := &repomgr.Repo{ID: storeID, StoreID: storeID, Version: 1}
+	mkdir(t, repoID, acct, "/dst")
+	put(t, repoID, acct, "/dst/keep.txt", []byte("precious"))
+	put(t, repoID, acct, "/src.txt", []byte("mover"))
 
-	modeDir := uint32(syscall.S_IFDIR | 0644)
-	modeFile := uint32(syscall.S_IFREG | 0644)
-
-	// /docs/keep.txt
-	file, err := fsmgr.NewSeafile(1, 4, []string{"4f616f98d6a264f75abffe1bc150019c880be239"})
-	if err != nil {
-		t.Fatalf("failed to create seafile: %v", err)
+	w := postOp(t, repoID, acct, "/src.txt", "move", "/dst")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("move onto a directory = %d (%s), want 409", w.Code, w.Body.String())
 	}
-	if err := fsmgr.SaveSeafile(storeID, file); err != nil {
-		t.Fatalf("failed to save seafile: %v", err)
-	}
-	docs, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
-		fsmgr.NewDirent(file.FileID, "keep.txt", modeFile, 0, "", 4),
-	})
-	if err != nil {
-		t.Fatalf("failed to create docs dir: %v", err)
-	}
-	if err := fsmgr.SaveSeafdir(storeID, docs); err != nil {
-		t.Fatalf("failed to save docs dir: %v", err)
-	}
-	root, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
-		fsmgr.NewDirent(docs.DirID, "docs", modeDir, 0, "", 0),
-	})
-	if err != nil {
-		t.Fatalf("failed to create root: %v", err)
-	}
-	if err := fsmgr.SaveSeafdir(storeID, root); err != nil {
-		t.Fatalf("failed to save root: %v", err)
-	}
-
-	if _, err := fsmgr.GetDirentByPath(storeID, root.DirID, "/docs/keep.txt"); err != nil {
-		t.Fatalf("test tree is wrong, /docs/keep.txt missing up front: %v", err)
-	}
-
-	// mv /docs -> /docs/nested, exactly as moveHandler would run it.
-	srcPath, dstDir, dstName := "/docs", "/docs", "nested"
-
-	newDent := fsmgr.NewDirent(docs.DirID, dstName, modeDir, 0, "", 0)
-	var names []string
-	rootAfterAdd, err := DoPostMultiFiles(repo, root.DirID, dstDir, []*fsmgr.SeafDirent{newDent}, "user@example.com", true, &names)
-	if err != nil {
-		t.Fatalf("phase 1 failed: %v", err)
-	}
-	if _, err := fsmgr.GetDirentByPath(storeID, rootAfterAdd, "/docs/nested/keep.txt"); err != nil {
-		t.Fatalf("phase 1 did not place the copy: %v", err)
-	}
-
-	rootAfterDel, err := DelFileFromTree(storeID, rootAfterAdd, upath.Dir(srcPath), upath.Base(srcPath))
-	if err != nil {
-		t.Fatalf("phase 2 failed: %v", err)
-	}
-
-	// Both the original and the copy are gone: the file is destroyed.
-	if _, err := fsmgr.GetDirentByPath(storeID, rootAfterDel, "/docs/nested/keep.txt"); err == nil {
-		t.Error("expected the copy to be destroyed by phase 2, but it survived — has moveHandler's algorithm changed?")
-	}
-	if _, err := fsmgr.GetDirentByPath(storeID, rootAfterDel, "/docs/keep.txt"); err == nil {
-		t.Error("expected the original to be gone after phase 2, but it survived")
-	}
-
-	// Which is why the guard must reject this move before phase 1 runs.
-	if !movesIntoOwnSubtree(srcPath, dstDir) {
-		t.Error("movesIntoOwnSubtree did not reject the move that destroys the subtree")
+	if !exists(t, repoID, acct, "/dst/keep.txt") {
+		t.Error("the refused move destroyed the destination subtree anyway")
 	}
 }
 
-// addNewEntries is the last chokepoint before a dirent is written into a tree,
-// so it must reject a traversal name even if a caller forgets to validate.
-func TestAddNewEntriesRejectsInvalidName(t *testing.T) {
-	var oldDents []*fsmgr.SeafDirent
-	var names []string
-	dent := fsmgr.NewDirent(fsmgr.EmptySha1, "../../../.ssh/authorized_keys", 0644, time.Now().Unix(), "", 0)
+// A move of a directory into its own subtree cannot be done at all: the
+// destination would be inside the thing being removed.
+func TestMoveIntoOwnSubtreeIsRefused(t *testing.T) {
+	repoID, acct := storeV2Library(t)
 
-	err := addNewEntries(nil, "user@example.com", &oldDents, []*fsmgr.SeafDirent{dent}, false, &names)
-	if err == nil {
-		t.Fatal("addNewEntries accepted a traversal name, want error")
+	mkdir(t, repoID, acct, "/docs")
+	put(t, repoID, acct, "/docs/keep.txt", []byte("precious"))
+
+	w := postOp(t, repoID, acct, "/docs", "move", "/docs/nested")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("move into own subtree = %d (%s), want 400", w.Code, w.Body.String())
 	}
-	if len(oldDents) != 0 || len(names) != 0 {
-		t.Errorf("addNewEntries mutated the tree on rejection: dents=%v names=%v", oldDents, names)
+	if !exists(t, repoID, acct, "/docs/keep.txt") {
+		t.Error("the refused move destroyed the subtree anyway")
 	}
 }
 
-func TestAddNewEntriesAcceptsValidName(t *testing.T) {
-	var oldDents []*fsmgr.SeafDirent
-	var names []string
-	dent := fsmgr.NewDirent(fsmgr.EmptySha1, "report.txt", 0644, time.Now().Unix(), "", 0)
-
-	if err := addNewEntries(nil, "user@example.com", &oldDents, []*fsmgr.SeafDirent{dent}, false, &names); err != nil {
-		t.Fatalf("addNewEntries rejected a valid name: %v", err)
-	}
-	if len(oldDents) != 1 || oldDents[0].Name != "report.txt" {
-		t.Errorf("addNewEntries did not add the entry: %v", oldDents)
-	}
-}
-
-func TestDestructiveCollision(t *testing.T) {
-	modeDir := uint32(syscall.S_IFDIR | 0644)
-	modeFile := uint32(syscall.S_IFREG | 0644)
-	dirent := func(mode uint32) *fsmgr.SeafDirent {
-		return fsmgr.NewDirent(fsmgr.EmptySha1, "dst", mode, 0, "", 0)
-	}
-
-	cases := []struct {
-		what    string
-		srcMode uint32
-		dst     *fsmgr.SeafDirent
-		want    bool
-	}{
-		{"nothing at the destination", modeFile, nil, false},
-		{"file onto file replaces, as PUT does", modeFile, dirent(modeFile), false},
-		{"file onto directory unlinks the subtree", modeFile, dirent(modeDir), true},
-		{"directory onto directory unlinks the subtree", modeDir, dirent(modeDir), true},
-		{"directory onto file discards the file", modeDir, dirent(modeFile), true},
-	}
-	for _, c := range cases {
-		if got := destructiveCollision(c.srcMode, c.dst) != ""; got != c.want {
-			t.Errorf("destructiveCollision(%s) = %v, want %v", c.what, got, c.want)
-		}
-	}
-}
-
-// The data loss destructiveCollision exists to prevent, run through the same two
-// phases moveHandler uses. Moving a file onto a directory swaps the directory's
-// dirent for the file's, and every descendant goes with it — on a 200, with no
-// error anywhere for a caller to notice.
-func TestMoveOntoDirectoryWouldDestroyIt(t *testing.T) {
-	confPath := t.TempDir()
-	dataDir := filepath.Join(confPath, "seafile-data")
-	fsmgr.Init(confPath, dataDir, option.FsCacheLimit)
-
-	const storeID = "9c2e4b81-3a5d-4f7e-b6c1-08e7a2d95f34"
-	repo := &repomgr.Repo{ID: storeID, StoreID: storeID, Version: 1}
-
-	modeDir := uint32(syscall.S_IFDIR | 0644)
-	modeFile := uint32(syscall.S_IFREG | 0644)
-
-	// /Precious/keep.txt, plus /junk.txt beside it at the root.
-	keep, err := fsmgr.NewSeafile(1, 4, []string{"4f616f98d6a264f75abffe1bc150019c880be239"})
-	if err != nil {
-		t.Fatalf("failed to create keep.txt: %v", err)
-	}
-	if err := fsmgr.SaveSeafile(storeID, keep); err != nil {
-		t.Fatalf("failed to save keep.txt: %v", err)
-	}
-	precious, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
-		fsmgr.NewDirent(keep.FileID, "keep.txt", modeFile, 0, "", 4),
-	})
-	if err != nil {
-		t.Fatalf("failed to create /Precious: %v", err)
-	}
-	if err := fsmgr.SaveSeafdir(storeID, precious); err != nil {
-		t.Fatalf("failed to save /Precious: %v", err)
-	}
-	junk, err := fsmgr.NewSeafile(1, 5, []string{"da39a3ee5e6b4b0d3255bfef95601890afd80709"})
-	if err != nil {
-		t.Fatalf("failed to create junk.txt: %v", err)
-	}
-	if err := fsmgr.SaveSeafile(storeID, junk); err != nil {
-		t.Fatalf("failed to save junk.txt: %v", err)
-	}
-	root, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
-		fsmgr.NewDirent(precious.DirID, "Precious", modeDir, 0, "", 0),
-		fsmgr.NewDirent(junk.FileID, "junk.txt", modeFile, 0, "", 5),
-	})
-	if err != nil {
-		t.Fatalf("failed to create root: %v", err)
-	}
-	if err := fsmgr.SaveSeafdir(storeID, root); err != nil {
-		t.Fatalf("failed to save root: %v", err)
-	}
-
-	if _, err := fsmgr.GetDirentByPath(storeID, root.DirID, "/Precious/keep.txt"); err != nil {
-		t.Fatalf("test tree is wrong, /Precious/keep.txt missing up front: %v", err)
-	}
-
-	// mv /junk.txt -> /Precious, exactly as moveHandler would run it.
-	srcPath, dstDir, dstName := "/junk.txt", "/", "Precious"
-
-	newDent := fsmgr.NewDirent(junk.FileID, dstName, modeFile, 0, "", 5)
-	var names []string
-	rootAfterAdd, err := DoPostMultiFiles(repo, root.DirID, dstDir, []*fsmgr.SeafDirent{newDent}, "user@example.com", true, &names)
-	if err != nil {
-		t.Fatalf("phase 1 failed: %v", err)
-	}
-	rootAfterDel, err := DelFileFromTree(storeID, rootAfterAdd, upath.Dir(srcPath), upath.Base(srcPath))
-	if err != nil {
-		t.Fatalf("phase 2 failed: %v", err)
-	}
-
-	if _, err := fsmgr.GetDirentByPath(storeID, rootAfterDel, "/Precious/keep.txt"); err == nil {
-		t.Error("expected /Precious/keep.txt to be destroyed by the move, but it survived — has moveHandler's algorithm changed?")
-	}
-
-	// Which is why the guard must reject this move before phase 1 runs.
-	dst, err := fsmgr.GetDirentByPath(storeID, root.DirID, "/Precious")
-	if err != nil {
-		t.Fatalf("failed to look up the destination: %v", err)
-	}
-	if destructiveCollision(modeFile, dst) == "" {
-		t.Error("destructiveCollision permitted the move that destroys /Precious/keep.txt")
-	}
-}
-
-// TestCopyLeavesTheSourceInPlace pins the one thing that separates copy from
-// move: phase 1 runs, phase 2 does not, and both paths end up naming the same
-// object. If a refactor ever lets the delete run for a copy, this fails.
+// A copy leaves the source where it was, and transfers no content: the new
+// entry names the object the source already names.
 func TestCopyLeavesTheSourceInPlace(t *testing.T) {
-	confPath := t.TempDir()
-	fsmgr.Init(confPath, filepath.Join(confPath, "seafile-data"), option.FsCacheLimit)
+	repoID, acct := storeV2Library(t)
+	put(t, repoID, acct, "/original.txt", []byte("content"))
 
-	const storeID = "1d0f5c92-77b4-4a1e-9c33-5b8e6a2f41d7"
-	repo := &repomgr.Repo{ID: storeID, StoreID: storeID, Version: 1}
-	modeFile := uint32(syscall.S_IFREG | 0644)
-
-	junk, err := fsmgr.NewSeafile(1, 5, []string{"da39a3ee5e6b4b0d3255bfef95601890afd80709"})
-	if err != nil {
-		t.Fatalf("failed to create junk.txt: %v", err)
+	w := postOp(t, repoID, acct, "/original.txt", "copy", "/duplicate.txt")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("copy = %d (%s), want 201", w.Code, w.Body.String())
 	}
-	if err := fsmgr.SaveSeafile(storeID, junk); err != nil {
-		t.Fatalf("failed to save junk.txt: %v", err)
+	if !exists(t, repoID, acct, "/original.txt") {
+		t.Error("the copy removed its source")
 	}
-	root, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
-		fsmgr.NewDirent(junk.FileID, "junk.txt", modeFile, 0, "", 5),
-	})
-	if err != nil {
-		t.Fatalf("failed to create root: %v", err)
-	}
-	if err := fsmgr.SaveSeafdir(storeID, root); err != nil {
-		t.Fatalf("failed to save root: %v", err)
+	if !exists(t, repoID, acct, "/duplicate.txt") {
+		t.Error("the copy did not appear")
 	}
 
-	// cp /junk.txt -> /copy.txt, exactly as copyHandler would run it: the new
-	// dirent carries the source's object id, so no bytes move.
-	newDent := fsmgr.NewDirent(junk.FileID, "copy.txt", modeFile, 0, "", 5)
-	var names []string
-	newRoot, err := DoPostMultiFiles(repo, root.DirID, "/", []*fsmgr.SeafDirent{newDent}, "user@example.com", true, &names)
-	if err != nil {
-		t.Fatalf("copy failed: %v", err)
+	// Content-addressed, so both names carry the same id — which is why a
+	// directory copies in constant time however large it is.
+	var made struct {
+		ID string `json:"id"`
 	}
-
-	src, err := fsmgr.GetDirentByPath(storeID, newRoot, "/junk.txt")
-	if err != nil || src == nil {
-		t.Fatalf("the source was removed by a copy: %v", err)
+	if err := json.Unmarshal(w.Body.Bytes(), &made); err != nil {
+		t.Fatal(err)
 	}
-	dst, err := fsmgr.GetDirentByPath(storeID, newRoot, "/copy.txt")
-	if err != nil || dst == nil {
-		t.Fatalf("the copy is missing: %v", err)
-	}
-	if src.ID != dst.ID {
-		t.Errorf("copy stored new content: src id %s, dst id %s — a copy shares the source's id", src.ID, dst.ID)
+	if made.ID == "" {
+		t.Error("the copy did not report the id it shares with its source")
 	}
 }
 
-// TestCopyIntoOwnSubtreeTerminates is the evidence for the exemption in
-// moveOrCopy: a move into its own subtree destroys the thing it moved, but a
-// copy names the subtree as it stands at this commit, so the result is a finite
-// snapshot and both the original and the copy are readable afterwards.
+// A copy into its own subtree terminates: the destination entry names the
+// source as it stands at this commit, so it is a snapshot of a finite thing.
+// This is the one case a move must refuse and a copy need not.
 func TestCopyIntoOwnSubtreeTerminates(t *testing.T) {
-	confPath := t.TempDir()
-	fsmgr.Init(confPath, filepath.Join(confPath, "seafile-data"), option.FsCacheLimit)
+	repoID, acct := storeV2Library(t)
+	mkdir(t, repoID, acct, "/docs")
+	put(t, repoID, acct, "/docs/keep.txt", []byte("precious"))
 
-	const storeID = "4b7a1e60-2c9d-48f3-a015-7e3d6c8b9042"
-	repo := &repomgr.Repo{ID: storeID, StoreID: storeID, Version: 1}
-	modeDir := uint32(syscall.S_IFDIR | 0644)
-	modeFile := uint32(syscall.S_IFREG | 0644)
+	w := postOp(t, repoID, acct, "/docs", "copy", "/docs/nested")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("copy into own subtree = %d (%s), want 201", w.Code, w.Body.String())
+	}
+	if !exists(t, repoID, acct, "/docs/nested/keep.txt") {
+		t.Error("the copy did not bring the subtree with it")
+	}
+	// One level only, and no deeper: the snapshot was taken before the copy
+	// landed, so it cannot contain itself.
+	if exists(t, repoID, acct, "/docs/nested/nested") {
+		t.Error("the copy contains itself; it was not a snapshot")
+	}
+}
 
-	keep, err := fsmgr.NewSeafile(1, 4, []string{"4f616f98d6a264f75abffe1bc150019c880be239"})
-	if err != nil {
-		t.Fatalf("failed to create keep.txt: %v", err)
+func mkdir(t *testing.T, repoID string, acct *account.Account, path string) {
+	t.Helper()
+	vars := map[string]string{"repoid": repoID, "path": strings.TrimPrefix(path, "/")}
+	if w := do(t, entriesHandler, acct, "PUT", "/x?type=dir", vars, nil); w.Code != http.StatusCreated {
+		t.Fatalf("mkdir %s = %d (%s)", path, w.Code, w.Body.String())
 	}
-	if err := fsmgr.SaveSeafile(storeID, keep); err != nil {
-		t.Fatalf("failed to save keep.txt: %v", err)
-	}
-	precious, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
-		fsmgr.NewDirent(keep.FileID, "keep.txt", modeFile, 0, "", 4),
-	})
-	if err != nil {
-		t.Fatalf("failed to create /Precious: %v", err)
-	}
-	if err := fsmgr.SaveSeafdir(storeID, precious); err != nil {
-		t.Fatalf("failed to save /Precious: %v", err)
-	}
-	root, err := fsmgr.NewSeafdir(1, []*fsmgr.SeafDirent{
-		fsmgr.NewDirent(precious.DirID, "Precious", modeDir, 0, "", 0),
-	})
-	if err != nil {
-		t.Fatalf("failed to create root: %v", err)
-	}
-	if err := fsmgr.SaveSeafdir(storeID, root); err != nil {
-		t.Fatalf("failed to save root: %v", err)
-	}
+}
 
-	// cp /Precious -> /Precious/Precious
-	newDent := fsmgr.NewDirent(precious.DirID, "Precious", modeDir, 0, "", 0)
-	var names []string
-	newRoot, err := DoPostMultiFiles(repo, root.DirID, "/Precious", []*fsmgr.SeafDirent{newDent}, "user@example.com", true, &names)
-	if err != nil {
-		t.Fatalf("copy failed: %v", err)
+func put(t *testing.T, repoID string, acct *account.Account, path string, content []byte) {
+	t.Helper()
+	vars := map[string]string{"repoid": repoID, "path": strings.TrimPrefix(path, "/")}
+	if w := do(t, entriesHandler, acct, "PUT", "/x", vars, content); w.Code != http.StatusCreated {
+		t.Fatalf("put %s = %d (%s)", path, w.Code, w.Body.String())
 	}
+}
 
-	for _, path := range []string{"/Precious/keep.txt", "/Precious/Precious/keep.txt"} {
-		if _, err := fsmgr.GetDirentByPath(storeID, newRoot, path); err != nil {
-			t.Errorf("%s is unreadable after copying a directory into itself: %v", path, err)
-		}
-	}
-	if _, err := fsmgr.GetDirentByPath(storeID, newRoot, "/Precious/Precious/Precious"); err == nil {
-		t.Error("the copy recursed: the snapshot should be one level deep, not infinite")
-	}
+func postOp(t *testing.T, repoID string, acct *account.Account, path, op, to string) *httptest.ResponseRecorder {
+	t.Helper()
+	vars := map[string]string{"repoid": repoID, "path": strings.TrimPrefix(path, "/")}
+	body, _ := json.Marshal(map[string]string{"op": op, "to": to})
+	return do(t, entriesHandler, acct, "POST", "/x", vars, body)
+}
+
+func exists(t *testing.T, repoID string, acct *account.Account, path string) bool {
+	t.Helper()
+	vars := map[string]string{"repoid": repoID, "path": strings.TrimPrefix(path, "/")}
+	return do(t, entriesHandler, acct, "HEAD", "/x", vars, nil).Code == http.StatusOK
 }

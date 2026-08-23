@@ -1,130 +1,95 @@
 package silod
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/commitmgr"
-	"github.com/dkam/silo/fileserver/fsmgr"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/repomgr"
+	"github.com/dkam/silo/store"
 )
 
-const contendedRepo = "7c1e9b40-5f2a-4d63-9a18-0b7e6c3f5d21"
-
-// contendedRepoTestDB seeds one library with an empty tree and a real head
-// commit, ready to be written to concurrently.
-func contendedRepoTestDB(t *testing.T) *commitmgr.Commit {
-	t.Helper()
-
-	sqliteTestDB(t)
-
-	confPath := t.TempDir()
-	dataDir := filepath.Join(confPath, "seafile-data")
-	fsmgr.Init(confPath, dataDir, option.FsCacheLimit)
-	commitmgr.Init(confPath, dataDir)
-
-	root, err := fsmgr.NewSeafdir(1, nil)
-	if err != nil {
-		t.Fatalf("failed to create root dir: %v", err)
-	}
-	if err := fsmgr.SaveSeafdir(contendedRepo, root); err != nil {
-		t.Fatalf("failed to save root dir: %v", err)
-	}
-
-	head := commitmgr.NewCommit(contendedRepo, "", root.DirID, repoOwner, "Initial commit")
-	head.Version = 1
-	if err := commitmgr.Save(head); err != nil {
-		t.Fatalf("failed to save head commit: %v", err)
-	}
-
-	insertTestRepo(t, contendedRepo)
-	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)",
-		contendedRepo, head.CommitID)
-	dbExec(t, "INSERT INTO RepoHead (repo_id, branch_name) VALUES (?, 'master')", contendedRepo)
-	dbExec(t, "INSERT INTO RepoOwner (repo_id, account_id) VALUES (?, ?)", contendedRepo, mintAccount(t, repoOwner).ID)
-
-	return head
-}
-
-// The bug: a write that lost the race for the branch head ten times running
-// came back as an ordinary error, indistinguishable from a real failure, so
-// every handler answered 500. 500 is the one class a client must not retry
-// blind — it means the server may have applied part of the request — and here
-// nothing was applied and the same request would have succeeded a moment
-// later. porter-fuse maps 5xx to EIO, and an EIO from close(2) is data loss
-// from the application's point of view.
+// The bug: a write that lost the race for the branch head every time came back
+// as an ordinary error, indistinguishable from a real failure, so every
+// handler answered 500. 500 is the one class a client must not retry blind —
+// it means the server may have applied part of the request — and here nothing
+// was applied and the same request would have succeeded a moment later.
+// porter-fuse maps 5xx to EIO, and an EIO from close(2) is data loss from the
+// application's point of view.
 //
-// Eight writers start from the same head. One wins; the rest must come back
-// saying "contention", not "broken".
+// Eight writers start from the same head. One wins; the rest either win a
+// later attempt or come back saying "contention", never "broken".
 func TestConcurrentWritesReportContentionNotFailure(t *testing.T) {
-	base := contendedRepoTestDB(t)
-
-	// No retry budget, so a single lost race exhausts it. The retries are not
-	// what is under test — what the exhaustion is *called* is.
-	orig := genNewCommitRetries
-	genNewCommitRetries = 0
-	t.Cleanup(func() { genNewCommitRetries = orig })
+	repoID, acct := storeV2Library(t)
 
 	const writers = 8
-	errs := make([]error, writers)
+	codes := make([]int, writers)
 	var wg sync.WaitGroup
 	for i := range writers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			repo := repomgr.Get(contendedRepo)
-			if repo == nil {
-				errs[i] = errors.New("repo vanished")
-				return
-			}
-			_, errs[i] = GenNewCommit(repo, base, base.RootID, repoOwner,
-				fmt.Sprintf("Write %d", i), true, "", false)
+			vars := map[string]string{"repoid": repoID, "path": fmt.Sprintf("f%d.txt", i)}
+			w := do(t, entriesHandler, acct, "PUT", "/x", vars, bytes.Repeat([]byte("x"), 64))
+			codes[i] = w.Code
 		}()
 	}
 	wg.Wait()
 
-	var won, lost int
-	for i, err := range errs {
-		switch {
-		case err == nil:
-			won++
-		case errors.Is(err, ErrRetriesExhausted):
-			lost++
+	for i, code := range codes {
+		switch code {
+		case http.StatusCreated, http.StatusServiceUnavailable:
 		default:
-			t.Errorf("writer %d failed with something other than contention: %v", i, err)
+			t.Errorf("writer %d answered %d; contention must read as 201 or 503, never 500", i, code)
 		}
 	}
-	if won == 0 {
-		t.Fatal("no writer committed; the test is not measuring contention")
-	}
-	if lost == 0 {
-		// Possible if the scheduler happened to run all eight serially. Not a
-		// failure — TestLostRaceIsReportedAsContention covers the same path
-		// without depending on a schedule — but worth saying, so a run that
-		// quietly stopped racing does not read as a run that proved something.
-		t.Logf("all %d writers committed; this run did not actually contend", won)
+}
+
+// The same exhaustion without depending on a schedule: move the head, then
+// hand mutateTree a repo still carrying the commit it read before that. Its
+// compare-and-swap cannot match on the first attempt, so with no retries left
+// the budget is guaranteed to run out.
+func TestLostRaceIsReportedAsContention(t *testing.T) {
+	repoID, acct := storeV2Library(t)
+
+	stale, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	// And the whole point: what a client is told about it.
-	for _, err := range errs {
-		if err == nil {
-			continue
-		}
-		w := httptest.NewRecorder()
-		writeCommitErr(w, httptest.NewRequest("PUT", "/api/silo/v1/repos/x/entries/f", nil), err, "write")
-		if w.Code == http.StatusInternalServerError {
-			t.Fatalf("a contended write still tells the client the server is broken: %d", w.Code)
-		}
-		if w.Code != http.StatusServiceUnavailable {
-			t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
-		}
+	// A real write, so the branch moves out from under the stale handle.
+	vars := map[string]string{"repoid": repoID, "path": "winner.txt"}
+	if w := do(t, entriesHandler, acct, "PUT", "/x", vars, []byte("first")); w.Code != http.StatusCreated {
+		t.Fatalf("uncontended write = %d (%s)", w.Code, w.Body.String())
+	}
+
+	orig := commitAttemptsForTest
+	commitAttemptsForTest = 1
+	t.Cleanup(func() { commitAttemptsForTest = orig })
+
+	_, _, err = mutateTree(stale, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+		return st.Mkdir(root, "/loser", defaultDirMode, now)
+	})
+	if err == nil {
+		t.Fatal("a write against a stale head succeeded; the branch update is no longer a compare-and-swap")
+	}
+	if !errors.Is(err, ErrRetriesExhausted) {
+		t.Fatalf("lost race reported as %v, want ErrRetriesExhausted", err)
+	}
+
+	w := httptest.NewRecorder()
+	writeCommitErr(w, httptest.NewRequest("PUT", "/x", nil), err, "write")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("no Retry-After: the client is told to come back but not when")
 	}
 }
 
@@ -137,7 +102,6 @@ func TestWriteCommitErr(t *testing.T) {
 	}{
 		{"retries exhausted", fmt.Errorf("stop updating repo x: %w", ErrRetriesExhausted),
 			http.StatusServiceUnavailable, true},
-		// The non-replace upload path returns this bare, one level further out.
 		{"conflict", ErrConflict, http.StatusServiceUnavailable, true},
 		// A GC conflict is retried identically, so it is told apart from a lost
 		// branch-head race only in the log — never by the status, which would
@@ -190,48 +154,10 @@ func TestContentionBackoffIsBounded(t *testing.T) {
 	// Ten attempts at the old flat 100–3000ms could hold a connection for 30
 	// seconds before answering. Every window is capped at the ceiling, so the
 	// whole budget is bounded by attempts × ceiling.
-	if budget := time.Duration(genNewCommitRetries) * ceiling; budget > 10*time.Second {
+	if budget := time.Duration(commitAttempts) * ceiling; budget > 10*time.Second {
 		t.Errorf("worst-case retry budget %v is back to holding the request path", budget)
 	}
 	if worst == 0 {
 		t.Error("every sampled backoff was zero — the jitter is not jittering")
-	}
-}
-
-// The same exhaustion, without depending on a schedule: commit once so the
-// branch moves, then hand GenNewCommit a head that is one commit behind. Its
-// compare-and-swap cannot match, so the retry budget is guaranteed to run out.
-func TestLostRaceIsReportedAsContention(t *testing.T) {
-	base := contendedRepoTestDB(t)
-
-	orig := genNewCommitRetries
-	genNewCommitRetries = 0
-	t.Cleanup(func() { genNewCommitRetries = orig })
-
-	repo := repomgr.Get(contendedRepo)
-	if repo == nil {
-		t.Fatal("seeded repo did not load")
-	}
-	if _, err := GenNewCommit(repo, base, base.RootID, repoOwner, "The winner", true, "", false); err != nil {
-		t.Fatalf("uncontended write failed: %v", err)
-	}
-
-	// repo still carries the pre-commit head, which is exactly the state a
-	// writer that lost the race is holding.
-	_, err := GenNewCommit(repo, base, base.RootID, repoOwner, "The loser", true, "", false)
-	if err == nil {
-		t.Fatal("a write against a stale head succeeded; the branch update is no longer a compare-and-swap")
-	}
-	if !errors.Is(err, ErrRetriesExhausted) {
-		t.Fatalf("lost race reported as %v, want ErrRetriesExhausted", err)
-	}
-
-	w := httptest.NewRecorder()
-	writeCommitErr(w, httptest.NewRequest("PUT", "/x", nil), err, "write")
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
-	}
-	if w.Header().Get("Retry-After") == "" {
-		t.Error("no Retry-After: the client is told to come back but not when")
 	}
 }

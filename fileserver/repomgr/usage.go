@@ -14,14 +14,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// ErrNotStoreV2 reports a library whose size this cannot answer for.
-//
-// Accounting reads manifests, and a Seafile-format library has none. Its
-// number, while it still has one, comes from the scheduler that dies with the
-// format. Callers that sweep a mixed account skip these rather than failing:
-// no library this server can create is one of them.
-var ErrNotStoreV2 = errors.New("repomgr: usage is a store-v2 number")
-
 // Usage returns what a library holds, bringing the stored total forward if the
 // library has moved since it was written.
 //
@@ -38,9 +30,6 @@ var ErrNotStoreV2 = errors.New("repomgr: usage is a store-v2 number")
 // bringing a row forward across one commit reads the directories along one
 // path. A library that has not moved costs one row read and no store at all.
 func Usage(repo *Repo) (objmgr.Usage, error) {
-	if !repo.IsStoreV2() {
-		return objmgr.Usage{}, ErrNotStoreV2
-	}
 	stored, at, err := readUsage(repo.ID)
 	if err != nil {
 		return objmgr.Usage{}, err
@@ -157,8 +146,8 @@ func AccountUsage(id account.ID) (objmgr.Usage, error) {
 			"JOIN Branch b ON b.repo_id = o.repo_id AND b.name = 'master' "+
 			"LEFT JOIN RepoUsage u ON u.repo_id = o.repo_id "+
 			"LEFT JOIN VirtualRepo v ON v.repo_id = o.repo_id "+
-			"WHERE o.account_id = ? AND v.repo_id IS NULL AND length(b.commit_id) = ?",
-		id, 2*storefmt.IDSize)
+			"WHERE o.account_id = ? AND v.repo_id IS NULL",
+		id)
 	if err != nil {
 		return objmgr.Usage{}, fmt.Errorf("failed to query owned libraries: %w", err)
 	}

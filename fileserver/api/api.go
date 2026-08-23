@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/dkam/silo/fileserver/authmgr"
-	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
@@ -302,7 +301,7 @@ func withUsage(repos []repoInfo) []repoInfo {
 			continue
 		}
 		repo := repomgr.Get(repos[i].ID)
-		if repo == nil || !repo.IsStoreV2() {
+		if repo == nil {
 			continue
 		}
 		u, err := repomgr.Usage(repo)
@@ -409,31 +408,6 @@ func AccountUsageHandler(w http.ResponseWriter, r *http.Request) {
 		resp.Quota = &quota
 	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-type syncTokenResponse struct {
-	Token string `json:"token"`
-}
-
-func CreateRepoSyncTokenHandler(w http.ResponseWriter, r *http.Request) {
-	id := middleware.GetAccountID(r)
-	vars := mux.Vars(r)
-	repoID := vars["repoid"]
-
-	perm := share.CheckPerm(repoID, id)
-	if perm == "" {
-		http.Error(w, "Permission denied", http.StatusForbidden)
-		return
-	}
-
-	token, err := repomgr.GenerateRepoToken(repoID, id)
-	if err != nil {
-		log.Errorf("Failed to generate repo token: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, syncTokenResponse{Token: token})
 }
 
 type createRepoRequest struct {
@@ -567,23 +541,15 @@ func ListDirByID(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, dir
 	writeJSON(w, http.StatusOK, entries[from:to])
 }
 
-// listEntries reads one directory in whichever format the library is.
+// listEntries reads one directory.
 //
-// The store-v2 branch reports no size, and that is a gap rather than a
-// decision about the wire: a store-v2 dirent does not carry one — the size
-// lives in the file's manifest — and reading N manifests to answer one listing
-// is exactly what the plan's listing bullet rules out. The size returns as the
-// advisory sidecar the server fills from its object index when a commit is
-// processed. Until that index exists, sizes are omitted rather than paid for.
+// It reports no size, and that is a gap rather than a decision about the wire:
+// a dirent does not carry one — the size lives in the file's manifest — and
+// reading N manifests to answer one listing is exactly what the plan's listing
+// bullet rules out. The size returns as the advisory sidecar the server fills
+// from its object index when a commit is processed. Until that index exists,
+// sizes are omitted rather than paid for.
 func listEntries(repo *repomgr.Repo, dirID string) ([]dirEntry, error) {
-	if !repo.IsStoreV2() {
-		dir, err := fsmgr.GetSeafdir(repo.StoreID, dirID)
-		if err != nil {
-			return nil, err
-		}
-		return dirEntries(dir), nil
-	}
-
 	st, err := repo.Store()
 	if err != nil {
 		return nil, err
@@ -610,23 +576,4 @@ func listEntries(repo *repomgr.Repo, dirID string) ([]dirEntry, error) {
 		})
 	}
 	return entries, nil
-}
-
-func dirEntries(dir *fsmgr.SeafDir) []dirEntry {
-	entries := make([]dirEntry, 0, len(dir.Entries))
-	for _, e := range dir.Entries {
-		entryType := "file"
-		if fsmgr.IsDir(e.Mode) {
-			entryType = "dir"
-		}
-		entries = append(entries, dirEntry{
-			Name:     e.Name,
-			Type:     entryType,
-			ID:       e.ID,
-			Size:     e.Size,
-			Mtime:    e.Mtime,
-			Modifier: e.Modifier,
-		})
-	}
-	return entries
 }

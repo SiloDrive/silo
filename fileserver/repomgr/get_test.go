@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
@@ -44,7 +43,6 @@ func getTestStore(t *testing.T) string {
 	dataDir := filepath.Join(dir, "seafile-data")
 	Init(pair.Read, pair.Write, dataDir)
 	account.Init(pair.Read, pair.Write)
-	commitmgr.Init(dir, dataDir)
 
 	// Faults are suppressed per (repo, kind) for five minutes, and the map is
 	// package state that outlives one test.
@@ -331,18 +329,5 @@ func TestRenamingALibraryDoesNotMoveItsHead(t *testing.T) {
 	}
 	if after.RootID != before.RootID {
 		t.Errorf("the root changed on a rename: %s -> %s", before.RootID, after.RootID)
-	}
-}
-
-// A store-v2 library has no Seafile key ceremony to read and no commit the old
-// decoder could parse, so nothing must try. The head id's width is what says
-// which format a library is in.
-func TestAStoreV2HeadIsNotHandedToTheSeafileCommitDecoder(t *testing.T) {
-	repo := &Repo{ID: "does-not-matter", HeadCommitID: strings.Repeat("a", 64)}
-	if err := loadSeafileCrypto(repo); err != nil {
-		t.Fatalf("a 64-character head went looking for a Seafile commit: %v", err)
-	}
-	if repo.IsEncrypted || repo.Version != 0 {
-		t.Error("a store-v2 head filled in the vestigial fields")
 	}
 }

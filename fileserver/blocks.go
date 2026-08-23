@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/blockmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/utils"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -66,51 +63,30 @@ func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Blocks []string `json:"blocks"`
 	}
-	if appErr := decodeLimitedJSON(w, r, maxBlockListBody, &body); appErr != nil {
-		if appErr.Code == http.StatusBadRequest {
-			appErr.Message = `Expected a JSON body such as {"blocks":["<sha1>",…]}`
-		}
-		http.Error(w, appErr.Message, appErr.Code)
+	if !decodeJSONBody(w, r, maxBlockListBody, &body, `Expected a JSON body such as {"blocks":["<sha1>",…]}`) {
 		return
 	}
 
-	var missing []string
-	if repo.IsStoreV2() {
-		ids := make([]store.ID, 0, len(body.Blocks))
-		for _, raw := range body.Blocks {
-			id, err := store.ParseID(raw)
-			if err != nil {
-				http.Error(w, "Not a chunk id: "+raw, http.StatusBadRequest)
-				return
-			}
-			ids = append(ids, id)
-		}
-		st, err := repo.Store()
+	ids := make([]store.ID, 0, len(body.Blocks))
+	for _, raw := range body.Blocks {
+		id, err := store.ParseID(raw)
 		if err != nil {
-			log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			http.Error(w, "Not a chunk id: "+raw, http.StatusBadRequest)
 			return
 		}
-		missing, _, err = chunkInventory(st, ids)
-		if err != nil {
-			log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory chunks in repo %s", repo.ID)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-	} else {
-		for _, id := range body.Blocks {
-			if !utils.IsObjectIDValid(id) {
-				http.Error(w, "Not a block id: "+id, http.StatusBadRequest)
-				return
-			}
-		}
-		var err error
-		missing, _, err = blockInventory(repo.StoreID, body.Blocks)
-		if err != nil {
-			log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory blocks in repo %s", repo.ID)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
+		ids = append(ids, id)
+	}
+	st, err := repo.Store()
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	missing, _, err := chunkInventory(st, ids)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory chunks in repo %s", repo.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	writeEntryJSON(w, http.StatusOK, map[string]any{"missing": missing})
@@ -175,98 +151,4 @@ func chunkInventory(st *objmgr.Store, ids []store.ID) (missing []string, size in
 		size += known
 	}
 	return missing, size, nil
-}
-
-func blockInventory(storeID string, ids []string) (missing []string, size int64, err error) {
-	// Never nil: an empty list has to encode as [] and not null, for the same
-	// reason GET /repos does. See docs/bugs/fixed/.
-	missing = []string{}
-	seen := make(map[string]int64, len(ids))
-	for _, id := range ids {
-		known, ok := seen[id]
-		if !ok {
-			if !blockmgr.Exists(storeID, id) {
-				seen[id] = -1
-				missing = append(missing, id)
-				continue
-			}
-			known, err = blockmgr.Stat(storeID, id)
-			if err != nil {
-				return nil, 0, fmt.Errorf("failed to stat block %s/%s: %w", storeID, id, err)
-			}
-			seen[id] = known
-		}
-		if known < 0 {
-			continue
-		}
-		size += known
-	}
-	return missing, size, nil
-}
-
-// putBlockHandler stores one block under the id it names.
-//
-// The id is not taken on trust: blockmgr.Write hashes the bytes on the way to
-// disk and refuses to publish content that does not match, because a
-// wrong-bytes-under-a-right-id write is permanent — every later writer of that
-// id skips it as already present, and every reader sharing the store gets the
-// wrong content. So this is also a complete integrity check of the transfer,
-// and the client gets told rather than finding out later.
-func putBlockHandler(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	repo := entryRepo(w, vars["repoid"], middleware.GetAccountID(r), true)
-	if repo == nil {
-		return
-	}
-	blockID := vars["id"]
-
-	// Answered before the body is read, which is what makes Expect:
-	// 100-continue worth sending here: a client that offers the header is told
-	// to stop before it transfers anything. Without it the bytes arrive and
-	// are discarded, which is no worse than the upload it was going to do.
-	//
-	// Blocks are immutable — the id is the content — so an id already present
-	// is the same bytes, and re-storing them could only cost a write.
-	if blockmgr.Exists(repo.StoreID, blockID) {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	// A block larger than the chunk size is not something any client of this
-	// store produces, and the cap keeps one request from being a whole file.
-	// Smaller is allowed: a short final block is normal, and a client free to
-	// chunk differently is merely one that dedups against nothing.
-	if r.ContentLength > int64(option.FixedBlockSize) {
-		http.Error(w, "Block is larger than the block size", http.StatusRequestEntityTooLarge)
-		return
-	}
-	body := http.MaxBytesReader(w, r.Body, int64(option.FixedBlockSize))
-
-	if err := blockmgr.Write(repo.StoreID, blockID, body); err != nil {
-		if errors.Is(err, objstore.ErrContentMismatch) {
-			http.Error(w, "Block content does not hash to "+blockID, http.StatusBadRequest)
-			return
-		}
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			http.Error(w, "Block is larger than the block size", http.StatusRequestEntityTooLarge)
-			return
-		}
-		if isNetworkErr(err) {
-			// The client hung up mid-block. Nothing was stored: the write is a
-			// temp file and a rename, so a partial block never gets a name.
-			return
-		}
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to write block %s in repo %s", blockID, repo.ID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	// Only when the length was declared: a chunked request reports -1, and
-	// that converted to unsigned is 16 exabytes of recorded traffic.
-	if r.ContentLength > 0 {
-		sendStatisticMsg(repo.ID, middleware.GetUserEmail(r), "web-file-upload", uint64(r.ContentLength))
-	}
-
-	w.WriteHeader(http.StatusCreated)
 }

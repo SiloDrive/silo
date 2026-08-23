@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/dkam/silo/fileserver/commitmgr"
-	"github.com/dkam/silo/fileserver/diff"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
@@ -133,43 +131,12 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 	// paged answer consistent: without it, a commit landing between pages
 	// changes the diff the offset indexes into, and items shift across the page
 	// boundary in both directions.
-	target, targetRoot := repo.HeadCommitID, repo.RootID
-	var changes []change
+	target := repo.HeadCommitID
 
-	if repo.IsStoreV2() {
-		target, changes, err = storeV2Changes(repo, since, pinned)
-		if err != nil {
-			writeChangesErr(w, err, since, target, repoID)
-			return
-		}
-	} else {
-		if pinned != "" {
-			targetCommit, err := commitmgr.Load(repoID, pinned)
-			if err != nil {
-				http.Error(w, "the commit this cursor was issued against is no longer reachable; start again from since", http.StatusGone)
-				return
-			}
-			target, targetRoot = pinned, targetCommit.RootID
-		}
-
-		// Commits live in the repo's own store; fs objects live in StoreID,
-		// which differs for a virtual repo. Mixing them up would diff the
-		// wrong tree.
-		sinceCommit, err := commitmgr.Load(repoID, since)
-		if err != nil {
-			http.Error(w, "since is no longer reachable; enumerate from scratch", http.StatusGone)
-			return
-		}
-
-		var entries []*diff.DiffEntry
-		// foldDirDiff false: a client maintaining per-item identity needs every
-		// path that changed, not a directory standing in for its contents.
-		if err := diff.DiffCommitRoots(repo.StoreID, sinceCommit.RootID, targetRoot, &entries, false); err != nil {
-			log.Errorf("Failed to diff %s..%s in repo %s: %v", since, target, repoID, err)
-			http.Error(w, "Failed to compute changes", http.StatusInternalServerError)
-			return
-		}
-		changes = changesFromDiff(entries)
+	target, changes, err := storeV2Changes(repo, since, pinned)
+	if err != nil {
+		writeChangesErr(w, err, since, target, repoID)
+		return
 	}
 
 	// Sorted so the order is a property of the data rather than of the tree
@@ -265,50 +232,6 @@ func writeChangesErr(w http.ResponseWriter, err error, since, target, repoID str
 	}
 	log.Errorf("Failed to diff %s..%s in repo %s: %v", since, target, repoID, err)
 	http.Error(w, "Failed to compute changes", http.StatusInternalServerError)
-}
-
-// changesFromDiff translates the diff package's vocabulary into the one a sync
-// client thinks in. The diff distinguishes files from directories by using a
-// different status letter for each; a client cares about the distinction, but
-// as a property of the item rather than of the operation, so it moves into
-// is_dir and the four operations collapse to create/delete/modify/move.
-func changesFromDiff(entries []*diff.DiffEntry) []change {
-	changes := make([]change, 0, len(entries))
-	for _, e := range entries {
-		c := change{Path: absPath(e.Name), ID: e.Sha1, Size: e.Size}
-
-		switch e.Status {
-		case diff.DiffStatusAdded:
-			c.Op = "create"
-		case diff.DiffStatusDeleted:
-			c.Op = "delete"
-			c.ID = ""
-		case diff.DiffStatusModified:
-			c.Op = "modify"
-		case diff.DiffStatusRenamed:
-			c.Op = "move"
-			c.OldPath = absPath(e.Name)
-			c.Path = absPath(e.NewName)
-		case diff.DiffStatusDirAdded:
-			c.Op, c.IsDir = "create", true
-		case diff.DiffStatusDirDeleted:
-			c.Op, c.IsDir, c.ID = "delete", true, ""
-		case diff.DiffStatusDirRenamed:
-			c.Op, c.IsDir = "move", true
-			c.OldPath = absPath(e.Name)
-			c.Path = absPath(e.NewName)
-		default:
-			// Unmerged, and anything a later diff version adds. Skipped rather
-			// than guessed at: a client that applies an operation the server
-			// did not mean corrupts its own view, and the fallback — a full
-			// enumeration — is always available.
-			log.Warnf("Skipping diff entry with unhandled status %q at %s", string(e.Status), e.Name)
-			continue
-		}
-
-		changes = append(changes, c)
-	}
-	return changes
 }
 
 // absPath makes a diff's repo-relative name into the rooted path the rest of
