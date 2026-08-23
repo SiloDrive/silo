@@ -1170,6 +1170,18 @@ Phases are sequential on the branch; each leaves the tree working.
    makes the library corrupted rather than merely unusual. `CreateRepo` refuses
    an E2EE library outright: its initial commit is sealed under a key the
    server never holds, which is the first thing the fold above has to build.
+
+   **Step 2 landed 2026-08-23**: the seam is pack-shaped. `storageBackend`
+   goes from four per-object verbs to write-and-seal, ranged read, whole read,
+   stat, list, remove and remove-repo, with the fs backend implementing it one
+   object per pack. Sealing turned out to be a name for what temp-file-and-
+   rename already did. Absence is normalised to one `ErrNotFound` so the
+   tiering logic is written once rather than per backend, and verification
+   takes a `hash.Hash` rather than a bool so one path covers SHA-1 block ids
+   and SHA-256 chunk ids — as do the path validators, since the new ids arrive
+   while the old ones are still here. `list`, `remove` and `readAt` have no
+   caller until phases 4 and 5; pinning the shape now is the point of doing
+   this step here.
 3. **E2EE.** — **folded into phase 2, 2026-08-23.** Identity keys, salt
    endpoint, split-derivation login (with or after auth.md's rewrite), CK
    wrapping, library creation with client UUIDs, Option A names, convergent
