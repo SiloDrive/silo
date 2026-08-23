@@ -43,6 +43,9 @@ type prepOp struct {
 	path     string
 	to       string
 	manifest store.ID
+	// size is what a create adds, kept so the batch can be weighed against
+	// quota once, before the tree is touched.
+	size int64
 }
 
 // batchV2 applies a whole batch to a store-v2 library and commits it once.
@@ -62,6 +65,25 @@ func batchV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, user st
 
 	prepped, ok := prepBatch(w, st, ops)
 	if !ok {
+		return
+	}
+
+	// Weighed once, before the tree is touched, because a batch is
+	// all-or-nothing: refusing halfway would mean refusing operations that
+	// have no bytes in them at all.
+	//
+	// Only the creates are counted. A copy adds bytes too — the same content
+	// twice is charged twice, since deleting one copy has to give its bytes
+	// back — but its size is not known until the tree is walked, and walking
+	// it here would cost the batch a lookup per operation to refuse a request
+	// the next one refuses anyway. Quota is exceeded by at most one request in
+	// this design regardless: the moment the head moves the tree is measured
+	// exactly, and the write after this one is refused.
+	var adds int64
+	for _, p := range prepped {
+		adds += p.size
+	}
+	if refuseOverQuota(w, repo, adds) {
 		return
 	}
 
@@ -140,7 +162,7 @@ func prepBatch(w http.ResponseWriter, st *objmgr.Store, ops []batchOp) ([]prepOp
 		}
 
 		if op.Op == "create" {
-			id, _, missing, fail := chunkManifest(st, op.Blocks)
+			id, size, missing, fail := chunkManifest(st, op.Blocks)
 			if len(missing) > 0 {
 				// The same instruction as the single-file path: upload these,
 				// then send the identical request again. A batch is
@@ -156,6 +178,7 @@ func prepBatch(w http.ResponseWriter, st *objmgr.Store, ops []batchOp) ([]prepOp
 				return nil, false
 			}
 			p.manifest = id
+			p.size = size
 		}
 		prepped[i] = p
 	}

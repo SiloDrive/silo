@@ -974,6 +974,12 @@ func removeVirtualRepoOndisk(repoID string, cloudMode bool) error {
 		return err
 	}
 
+	sqlStr = "DELETE FROM RepoUsage WHERE repo_id = ?"
+	_, err = seafileWriteDB.ExecContext(ctx, sqlStr, repoID)
+	if err != nil {
+		return err
+	}
+
 	_, err = seafileWriteDB.ExecContext(ctx, dbutil.InsertOrIgnore("GarbageRepos", "repo_id"), repoID)
 	if err != nil {
 		return err
@@ -1323,6 +1329,7 @@ func DeleteRepo(repoID string) error {
 		"DELETE FROM InnerPubRepo WHERE repo_id = ?",
 		"DELETE FROM RepoUserToken WHERE repo_id = ?",
 		"DELETE FROM RepoSize WHERE repo_id = ?",
+		"DELETE FROM RepoUsage WHERE repo_id = ?",
 		"DELETE FROM RepoHistoryLimit WHERE repo_id = ?",
 		"DELETE FROM RepoValidSince WHERE repo_id = ?",
 	}

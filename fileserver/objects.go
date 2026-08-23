@@ -212,12 +212,35 @@ func getChunkHandler(w http.ResponseWriter, r *http.Request) {
 // the server can check without the key. The id is the whole verification, and
 // for a plain library it is a real one — SHA-256 of exactly these bytes.
 func putChunkHandler(w http.ResponseWriter, r *http.Request) {
-	_, st, ok := storeV2Repo(w, r, true)
+	repo, st, ok := storeV2Repo(w, r, true)
 	if !ok {
 		return
 	}
 	id, ok := objectID(w, r)
 	if !ok {
+		return
+	}
+
+	// A soft ceiling, and worth being exact about what it does and does not
+	// bound, because this lane cannot have the check the path lane has.
+	//
+	// A chunk is admitted before the head that references it moves, so there
+	// is no honest moment to charge it: charging at admission bills a client
+	// that abandons an upload, and charging only at head move lets one push
+	// bytes indefinitely without ever moving a head. This is the first half of
+	// the shape that fits — refuse when the account is already over, or when
+	// this one chunk alone would put it over, and let the real accounting
+	// happen at the head move, where the tree says exactly what is reachable.
+	//
+	// What it bounds: a full account cannot keep uploading, and no single
+	// chunk can carry an account past its ceiling. What it does not bound: an
+	// account just under its ceiling can push unreferenced chunks until the
+	// collector takes them back, because nothing here counts bytes that no
+	// head names. Bounding that needs a per-account tally of unreferenced
+	// bytes, which is the mark phase's number and does not exist yet — see
+	// docs/plans/store-v2.md. Unreferenced bytes are what GC is for; this
+	// stops the case where a client is already out of room.
+	if refuseOverQuota(w, repo, declaredLength(r)) {
 		return
 	}
 

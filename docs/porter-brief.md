@@ -141,6 +141,58 @@ Deleting a library is not a `DELETE entries/` on its root — the root is not
 deletable (**400**), because removing a library is a different operation from
 emptying one.
 
+### Size and quota
+
+Feature-detect with `"usage"` in `server-info`'s `features`.
+
+Each row of `GET repos` carries `size` and `file_count` for that library, and
+the account's total lives on its own endpoint:
+
+```
+GET /api/silo/v1/account/usage
+{"usage": 5000000, "quota": 6000000, "kind": "logical-at-head"}
+```
+
+Four things about these numbers, all of which a GUI will otherwise get wrong.
+
+**`quota` is absent when there is no ceiling.** Not `-1`, not `0`, not `-2` —
+absent. If the key is missing the account has no limit; render it that way
+rather than as a number. Same rule on the listing: `size` and `file_count` are
+absent, not zero, when the server could not work out a library's size. Zero
+means an empty library, and showing "0 bytes" for "unknown" states a fact you
+were never told.
+
+**Per-library sizes are on the listing and not under `account/usage`, and this
+is not an oversight.** A library shared with you appears in your listing but is
+charged to its *owner's* quota. If per-library figures were reported under an
+account total they would either leak libraries you do not own into a sum they
+must not belong to, or omit them and leave you with rows you cannot size. On
+the listing each row carries its own number and nothing has to add up — do not
+sum the listing to reproduce `usage`.
+
+**`kind` says which number this is, and it matters.** `logical-at-head` is the
+sum of the sizes of the files the library currently holds — what you get back
+by deleting them. It is not bytes on disk. Deduplication and deferred
+compaction make those diverge by multiples in *both* directions: two identical
+5 MB files read as 10 MB of usage and occupy 5 MB on disk, and a freshly
+deleted file frees its usage immediately while its bytes sit on disk until the
+collector runs. Both are correct. If you show a figure next to anything a user
+might compare with `du`, label it.
+
+**Over quota is `507`.** Not 403 — 403 would tell you the request was not
+allowed and to stop, where the truth is to free some space and retry. It can
+come back from `PUT entries/{path}` (before the body is read, if you sent a
+`Content-Length`, and again after), from `POST batch` (before anything is
+applied — the batch is still all-or-nothing), and from `PUT blocks/{id}`.
+Treat it as a user-facing condition with an actionable message, not a
+transport error to retry blindly: retrying without freeing space returns 507
+again.
+
+The account may end up marginally over its ceiling — a single write is admitted
+against the figure before it, so the last one through can cross the line. The
+next one is refused. Do not build a client that depends on `usage <= quota`
+always holding.
+
 ## The entries endpoint
 
 ```
@@ -915,7 +967,8 @@ exercised against a running server.
 |---|---|
 | domain setup | `POST /api/silo/v1/auth/login` |
 | — | `GET /api/silo/v1/server-info` |
-| `enumerateItems` (root) | `GET /api/silo/v1/repos` |
+| `enumerateItems` (root) | `GET /api/silo/v1/repos` — rows carry `size`/`file_count` |
+| show storage used | `GET /api/silo/v1/account/usage` |
 | `enumerateItems` (dir) | `GET /api/silo/v1/repos/{id}/entries/{path}` |
 | `currentSyncAnchor` | `head_commit_id` from `GET /api/silo/v1/repos` |
 | `enumerateChanges` | `GET /api/silo/v1/repos/{id}/changes?since={commit}` |

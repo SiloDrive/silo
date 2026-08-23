@@ -155,6 +155,34 @@ CREATE TABLE IF NOT EXISTS RepoTokenPeerInfo (token CHAR(41) PRIMARY KEY, peer_i
 
 CREATE TABLE IF NOT EXISTS RepoHead (repo_id CHAR(37) PRIMARY KEY, branch_name VARCHAR(10));
 CREATE TABLE IF NOT EXISTS RepoSize (repo_id CHAR(37) PRIMARY KEY, size BIGINT UNSIGNED, head_id CHAR(41));
+-- What a library holds, as the number quota is charged on.
+--
+-- size is logical size at head: the sum of file_size over the files the head
+-- commit reaches. Not stored bytes and not disk. Under content-defined
+-- chunking, dedup and deferred compaction those three diverge by multiples in
+-- both directions, and only this one is predictable -- delete a 2 GB file, get
+-- 2 GB back -- and only this one holds still while the server works. A
+-- compaction run must never change what somebody is charged.
+--
+-- root_id is the root these totals are true at, and it is what makes the row
+-- self-correcting rather than a cache somebody has to remember to invalidate.
+-- A reader whose library is on a different root brings the row forward with a
+-- Merkle delta against this one and CASes on it, so a total that was never
+-- written, or was lost to a crash, costs the next reader a walk and nothing
+-- else. It is the root rather than the commit because the root is what the
+-- delta is computed between, and because a commit that publishes an identical
+-- root changes no total.
+--
+-- Separate from RepoSize, which the dying scheduler owns, because the two
+-- cover disjoint sets of libraries -- 40-hex heads there, 64-hex heads here --
+-- and sharing a row would have made the deletion a rewrite instead of a
+-- subtraction.
+CREATE TABLE IF NOT EXISTS RepoUsage (
+  repo_id    CHAR(37) PRIMARY KEY,
+  size       BIGINT   NOT NULL,
+  file_count BIGINT   NOT NULL,
+  root_id    CHAR(64) NOT NULL
+);
 CREATE TABLE IF NOT EXISTS RepoHistoryLimit (repo_id CHAR(37) PRIMARY KEY, days INTEGER);
 CREATE TABLE IF NOT EXISTS RepoValidSince (repo_id CHAR(37) PRIMARY KEY, timestamp BIGINT);
 

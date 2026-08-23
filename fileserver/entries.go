@@ -604,6 +604,14 @@ func putEntryFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, 
 		return
 	}
 
+	// Refused before the body is read when the request says how big it is.
+	// Receiving forty gigabytes and then declining them wastes the transfer on
+	// both ends, and the client learns nothing it could not have been told
+	// first.
+	if refuseOverQuota(w, repo, declaredLength(r)) {
+		return
+	}
+
 	// Content first, tree second. Chunks and the manifest are immutable and
 	// addressed by content, so writing them commits to nothing — until the
 	// head moves, the file does not exist and no path has changed. That is
@@ -633,6 +641,11 @@ func putEntryFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, 
 	// and no path changes, so the file does not exist.
 	if overBound(m.FileSize) {
 		http.Error(w, "File is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	// And asked again with the size the bytes actually were, because a chunked
+	// request declared nothing and a lying one declared whatever it liked.
+	if refuseOverQuota(w, repo, m.FileSize) {
 		return
 	}
 
@@ -699,6 +712,13 @@ func putEntryChunks(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, 
 		http.Error(w, fail.message, fail.code)
 		return
 	}
+	// The chunks are already here, so this refusal costs no transfer — but it
+	// still has to happen before the head moves, because until it does the file
+	// does not exist and the bytes are the collector's to reclaim.
+	if refuseOverQuota(w, repo, size) {
+		return
+	}
+
 	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.PutNode(root, path, objmgr.Node{
 			ID: manifestID, Type: store.NodeFile, Name: fileName,

@@ -987,15 +987,47 @@ store-v2 builds on never had it.
   sum to `file_size` and the count check rejects a mismatch, and those chunks
   are bytes the client actually uploaded. Overstating is possible and
   self-defeating — it charges the liar.
-- **The number comes from the object index, not a walk.** The
-  `(child_id → file_size)` map the server already populates at commit time for
-  the listing sidecar is the same table accounting reads. One population pass,
-  two consumers; a second walker built for sizes is the thing to not do.
-- **Steady state is incremental off the store-v2 diff** — the same diff
-  `changes?since=` needs, so build them together. Delta over added, modified
-  and deleted, applied to the stored total. The full walk survives as a repair
+- **Steady state is incremental off the store-v2 diff** — the same walk
+  `changes?since=` needs, and built with it. `MeasureDelta` is the diff's
+  arithmetic twin: a subtree whose id is unchanged contributes nothing and is
+  skipped unread, so bringing a total forward across a commit reads the
+  directories along one path. `Measure` — the full walk — survives as a repair
   path and as phase 4's recovery scan's natural companion, never as the
   routine.
+- **The total is a catalog row that repairs itself, and there is no hook on
+  the write path.** `RepoUsage` records `(size, file_count, root_id)`, where
+  `root_id` is the root the numbers are true at. A reader that finds a
+  different root computes the delta itself and publishes it with a conditional
+  update — `WHERE root_id = <the one it read>` — so two readers racing to
+  bring the same stale row forward cannot add their deltas on top of each
+  other, and the loser's skipped write is the correct outcome rather than an
+  error.
+
+  This is the shape rather than a hook at head-move because there is more than
+  one head-mover — `mutateTree` and `PUT head` — and a number kept right by
+  everyone remembering to update it is a number that eventually is not. A total
+  never written, or lost to a crash between the commit and the update, costs
+  the next reader one delta and is then right again. Nothing can forget to call
+  it, because everything wanting the number calls exactly it.
+
+  The quota check repairs before it compares, for the same reason: reading the
+  row raw would under-charge a burst of writes to one library for the length of
+  the burst. A write pays a delta walk when the row is behind, which is the
+  honest price of having no mandatory hook.
+
+  The delta needs the old tree to still be there and it will not always be — a
+  library written once and left past the history cutoff has the root its row
+  names collected out from under it. A missing object on the delta walk falls
+  back to measuring the current tree outright, which also covers an object lost
+  to corruption for free. That fallback is a full walk on a request path; it is
+  the price of the cheap answer having expired, and it happens once.
+- **The listing sidecar is still owed.** Accounting was supposed to read a
+  `(child_id → file_size)` index populated at commit time for the listing, and
+  that index does not exist: `entries/` listings still omit `size` on store-v2,
+  and accounting reaches its number by delta instead. When the sidecar lands
+  the two must not become two definitions of one number — the row above stays
+  the authority for what a library holds, and the index answers what a
+  directory shows.
 - **Dedup is not a discount, and a stored-bytes quota is refused.**
   Cross-library dedup exists only for plain libraries — a different CK mints a
   different frame (Content crypto) — so charging stored bytes would bill two
@@ -1015,26 +1047,49 @@ store-v2 builds on never had it.
   — inside the total the directory holds, because history-only is what its knob
   trades against. The split is within the disk number, never across the
   boundary: no part of it reaches quota.
-- **Open — where the check goes on the id-addressed lane.** `PUT entries/{path}`
-  checks `Content-Length` as today. `PUT objects/{id}` cannot: objects are
-  admitted before the head that references them moves, so charging at admission
-  over-charges a client that abandons an upload, and charging only at head-move
-  lets one push unbounded bytes first. The shape that fits is a soft ceiling at
-  admission to bound the damage and the real accounting at head-move, leaving
-  unreferenced bytes to GC — which is what GC is for. Decide this **with** the
-  surface, not after it.
-- File count rides along unchanged in shape: same diff, same index. Its only
-  reader today is `size_sched`'s own bookkeeping query, so whether
-  `RepoFileCount` survives turns on whether anything outside wants it.
+- **Where the check goes, decided with the surface.** `PUT entries/{path}`
+  asks twice: once on `Content-Length` before the body is read, because
+  receiving forty gigabytes and then declining them wastes the transfer on both
+  ends, and again on the size the bytes actually were, because a chunked
+  request declares nothing and a lying one declares whatever it likes. A batch
+  is weighed once, before the tree is touched, since all-or-nothing means a
+  refusal halfway would refuse operations carrying no bytes at all.
+
+  `PUT blocks/{id}` gets the soft ceiling, and its limits are worth stating
+  rather than implying. A chunk is admitted before the head that references it
+  moves, so there is no honest moment to charge it: at admission bills a client
+  that abandons an upload, at head-move alone lets one push bytes indefinitely
+  without ever moving a head. So it refuses an account already over, and any
+  single chunk that would alone carry one over. **It does not bound an account
+  just under its ceiling pushing unreferenced chunks** — nothing here counts
+  bytes no head names. That needs a per-account tally of unreferenced bytes,
+  which is the mark phase's number and does not exist yet; until it does,
+  unreferenced bytes are what GC is for.
+
+  Quota is therefore exceeded by at most one request, everywhere: the moment a
+  head moves the tree is measured exactly, and the write after it is refused.
+  An overwrite is charged as an addition, because the size it replaces is not
+  known without resolving the path first — which refuses slightly early at the
+  boundary, never late, and does not accumulate.
+
+  The refusal is **507 Insufficient Storage**, not the sync lane's invented
+  443, and not 403: a 403 tells a client the request was not allowed and to
+  stop, where the truth is that it should free some space and try again.
+- File count rides along in the same row and the same delta, and reaches the
+  wire on the listing. `RepoFileCount` is the dying scheduler's table and is
+  not it; the two accounting stores are kept apart deliberately, because they
+  cover disjoint sets of libraries — 40-hex heads there, 64-hex heads here —
+  and sharing a row would have made phase 2's deletion a rewrite instead of a
+  subtraction.
 - **The numbers need a wire surface, because they reach a GUI.** Today the only
   quota endpoint is the sync lane's `/repo/{id}/quota-check`
   (`server.go:668`) — it dies with the lanes, and it is a boolean admission
   check rather than a report. The silo API has nothing, and `porter-brief.md`
   never says "quota". The shape:
   - `GET account/usage` — the account's quota and its logical usage, and
-    nothing else. `server-info`'s `features` gains `"usage"` when the route
-    lands, so porter feature-detects rather than version-sniffs, and
-    porter-brief gets its section when it ships.
+    nothing else. Owned, not seen: a library shared with you is charged to
+    whoever owns it. `server-info`'s `features` carries `"usage"`, so porter
+    feature-detects rather than version-sniffs.
   - **Per-library `size` and `file_count` go on the repos listing, not on
     `account/usage`.** They are library facts, from the same catalog row as
     `update_time` and `last_modifier` — the server-observed columns — and
@@ -1046,7 +1101,12 @@ store-v2 builds on never had it.
     carries its own number and nothing has to add up.
   - **Unlimited is the absence of the field, never a sentinel.**
     `option.InfiniteQuota` is `-2`, and a widget rendering "-2 bytes" is the
-    predictable end of putting it on the wire.
+    predictable end of putting it on the wire. The same rule gives the listing
+    its `size`/`file_count` as optional fields: zero is an empty library, and
+    absent is a library whose size the server could not work out — a client
+    rendering that as 0 B would be stating a fact it was never told. And a
+    quota nobody configured is no quota: a server told nothing about ceilings
+    must not refuse every write on the grounds that zero bytes are allowed.
   - **Every figure is labelled by kind.** These are logical-at-head numbers and
     the client must be able to say so, because the first support question any
     of this generates is a mismatch against `du` — which is not a bug but the

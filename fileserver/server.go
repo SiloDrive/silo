@@ -697,6 +697,7 @@ func newHTTPRouter() *mux.Router {
 	apiRouter := r.PathPrefix("/api/silo/v1").Subrouter()
 	apiRouter.Use(middleware.RequireAuth)
 	apiRouter.HandleFunc("/access-tokens", api.CreateAccessTokenHandler).Methods("POST")
+	apiRouter.HandleFunc("/account/usage", api.AccountUsageHandler).Methods("GET")
 	apiRouter.HandleFunc("/repos", api.ListReposHandler).Methods("GET")
 	apiRouter.HandleFunc("/repos", api.CreateRepoHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}", api.DeleteRepoHandler).Methods("DELETE")

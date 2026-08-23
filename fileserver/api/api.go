@@ -59,6 +59,7 @@ func features() []string {
 		"blocks",             // blocks/missing, PUT blocks/{sha1}, PUT entries?type=blocks
 		"pagination",         // ?limit on changes and directory listings, Link: rel="next"
 		"batch",              // POST repos/{id}/batch — many operations, one commit
+		"usage",              // GET account/usage, and size/file_count on the repos listing
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification, POST repos/{id}/notify-token
@@ -220,6 +221,26 @@ type repoInfo struct {
 	// enumerate a library with no way to name the state it just enumerated,
 	// so its first delta call has nothing to pass as `since`.
 	HeadCommitID string `json:"head_commit_id,omitempty"`
+	// Size and FileCount are what the library holds, as logical size at head:
+	// the sum of the sizes of the files the head commit reaches. Not bytes on
+	// disk — dedup and deferred compaction move that number under the user
+	// without anything changing, and a figure that shifts because the server
+	// ran a background job is not one a client can explain.
+	//
+	// They are here rather than under an account total because they are
+	// library facts, and because sharing settles it: a library shared with you
+	// appears in your listing but is charged to its owner's quota, so
+	// per-library sizes in an account report would either leak libraries you
+	// do not own into a total they must not sum to, or omit them and leave the
+	// widget with rows it cannot size. On the listing each row carries its own
+	// number and nothing has to add up.
+	//
+	// Pointers because absent and zero are different answers. Zero is an empty
+	// library; absent is a library whose size this server could not work out,
+	// and a client that rendered that as 0 B would be stating a fact it was
+	// never told.
+	Size      *int64 `json:"size,omitempty"`
+	FileCount *int64 `json:"file_count,omitempty"`
 }
 
 // repoSelect is shared by the owned and shared queries so the two cannot drift
@@ -227,8 +248,13 @@ type repoInfo struct {
 // library with no branch row is broken but should still be listable — a client
 // that can see it can delete it.
 func repoSelect(alias string) string {
-	return "SELECT " + alias + ".repo_id, i.name, i.update_time, i.is_encrypted, b.commit_id "
+	return "SELECT " + alias + ".repo_id, i.name, i.update_time, i.is_encrypted, b.commit_id, " +
+		"b.root_id, u.size, u.file_count, u.root_id "
 }
+
+// usageJoin brings in the recorded totals. LEFT, like the branch join, because
+// a library nobody has asked the size of yet has no row and must still list.
+const usageJoin = "LEFT JOIN RepoUsage u ON u.repo_id = "
 
 func scanRepos(rows *sql.Rows) []repoInfo {
 	// Allocated rather than declared, so an empty result set marshals as [] and
@@ -241,9 +267,10 @@ func scanRepos(rows *sql.Rows) []repoInfo {
 	repos := make([]repoInfo, 0)
 	for rows.Next() {
 		var repo repoInfo
-		var name, isEncrypted, commitID sql.NullString
-		var updateTime sql.NullInt64
-		if err := rows.Scan(&repo.ID, &name, &updateTime, &isEncrypted, &commitID); err != nil {
+		var name, isEncrypted, commitID, headRoot, measuredAt sql.NullString
+		var updateTime, size, fileCount sql.NullInt64
+		if err := rows.Scan(&repo.ID, &name, &updateTime, &isEncrypted, &commitID,
+			&headRoot, &size, &fileCount, &measuredAt); err != nil {
 			log.Warnf("Failed to scan repo row: %v", err)
 			continue
 		}
@@ -251,7 +278,40 @@ func scanRepos(rows *sql.Rows) []repoInfo {
 		repo.UpdateTime = updateTime.Int64
 		repo.Encrypted = isEncrypted.String == "1"
 		repo.HeadCommitID = commitID.String
+		// A row measured at the root the library is on needs nothing computed,
+		// which is the case a listing is almost always in. The rest are
+		// brought forward one at a time below, so a poll pays only for the
+		// libraries that have been written to since the last one.
+		if measuredAt.Valid && headRoot.Valid && measuredAt.String == headRoot.String {
+			repo.Size, repo.FileCount = &size.Int64, &fileCount.Int64
+		}
 		repos = append(repos, repo)
+	}
+	return repos
+}
+
+// withUsage fills in the sizes the query could not answer from the catalog
+// alone, by asking each library to bring its total forward.
+//
+// A library that will not answer is left without the fields rather than
+// failing the listing. Being unable to size one library is not a reason to
+// tell a client it has none.
+func withUsage(repos []repoInfo) []repoInfo {
+	for i := range repos {
+		if repos[i].Size != nil {
+			continue
+		}
+		repo := repomgr.Get(repos[i].ID)
+		if repo == nil || !repo.IsStoreV2() {
+			continue
+		}
+		u, err := repomgr.Usage(repo)
+		if err != nil {
+			log.Warnf("Failed to size library %s for a listing: %v", repos[i].ID, err)
+			continue
+		}
+		size, count := u.Size, u.FileCount
+		repos[i].Size, repos[i].FileCount = &size, &count
 	}
 	return repos
 }
@@ -265,6 +325,7 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 		repoSelect("o")+
 			"FROM RepoOwner o LEFT JOIN RepoInfo i ON o.repo_id = i.repo_id "+
 			"LEFT JOIN Branch b ON b.repo_id = o.repo_id AND b.name = 'master' "+
+			usageJoin+"o.repo_id "+
 			"WHERE o.account_id = ?", id)
 	if err != nil {
 		log.Errorf("Failed to query repos: %v", err)
@@ -283,6 +344,7 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 		repoSelect("s")+
 			"FROM SharedRepo s LEFT JOIN RepoInfo i ON s.repo_id = i.repo_id "+
 			"LEFT JOIN Branch b ON b.repo_id = s.repo_id AND b.name = 'master' "+
+			usageJoin+"s.repo_id "+
 			"WHERE s.to_account_id = ?", id)
 	if err != nil {
 		log.Errorf("Failed to query shared repos: %v", err)
@@ -296,7 +358,57 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, repos)
+	writeJSON(w, http.StatusOK, withUsage(repos))
+}
+
+// usageKind labels every figure this server reports as a size.
+//
+// It is here because the first support question any of this generates is a
+// mismatch against du, and the answer is not that one of them is wrong: they
+// measure different things, and a client that can name which one it is showing
+// can say so instead of arguing. A later disk figure gets its own kind rather
+// than quietly replacing this one.
+const usageKind = "logical-at-head"
+
+type accountUsageResponse struct {
+	Usage int64 `json:"usage"`
+	// Quota is absent when there is no ceiling, never a sentinel.
+	// option.InfiniteQuota is -2, and a widget rendering "-2 bytes" is the
+	// predictable end of putting it on the wire.
+	Quota *int64 `json:"quota,omitempty"`
+	Kind  string `json:"kind"`
+}
+
+// AccountUsageHandler handles GET /api/silo/v1/account/usage.
+//
+// The account's quota and its logical usage, and nothing else. Per-library
+// figures are on the repos listing, for the sharing reason recorded on
+// repoInfo.
+//
+// Usage here is what the account owns, not what it can see. A library shared
+// with you is charged to whoever owns it, so it appears in your listing with
+// its own size and contributes nothing to this number.
+func AccountUsageHandler(w http.ResponseWriter, r *http.Request) {
+	id := middleware.GetAccountID(r)
+
+	usage, err := repomgr.AccountUsage(id)
+	if err != nil {
+		log.Errorf("Failed to total account usage: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	quota, err := repomgr.AccountQuota(id)
+	if err != nil {
+		log.Errorf("Failed to read account quota: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	resp := accountUsageResponse{Usage: usage.Size, Kind: usageKind}
+	if quota > 0 {
+		resp.Quota = &quota
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type syncTokenResponse struct {
