@@ -19,6 +19,7 @@ import (
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
@@ -521,6 +522,11 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 		}
 	}
 
+	if repo.IsStoreV2() {
+		putEntryFileV2(w, r, repo, parentDir, fileName, path)
+		return
+	}
+
 	// Resolved before the body is transferred: this is an in-memory key lookup
 	// that can reject the request outright, and spooling gigabytes to disk only
 	// to discover the library is locked is the case the ordering exists to
@@ -574,6 +580,77 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 	w.Header().Set("ETag", `"`+etagPrefix+id+`"`)
 	writeEntryJSON(w, http.StatusCreated, map[string]any{
 		"name": fileName, "type": "file", "id": id, "size": indexedSize,
+	})
+}
+
+// putEntryFileV2 stores an uploaded file in a store-v2 library.
+//
+// The body streams straight into the chunker rather than through a spool file.
+// The Seafile path spools because it has to know the size before it indexes;
+// this does not — WriteFile chunks a stream and the manifest records what it
+// found — so the temporary file, its cleanup and the disk it needed all go.
+//
+// An E2EE library is refused, and inside WriteFile rather than here: the
+// server cannot chunk what it cannot read, and chunking under the wrong seed
+// would be worse than refusing. Writing such a library is the id-addressed
+// surface's job, where the client chunks, seals and names every object.
+func putEntryFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, parentDir, fileName, path string) {
+	acct := middleware.GetAccount(r)
+
+	st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Content first, tree second. Chunks and the manifest are immutable and
+	// addressed by content, so writing them commits to nothing — until the
+	// head moves, the file does not exist and no path has changed. That is
+	// also what makes the retry in mutateTree free of them.
+	body := io.Reader(r.Body)
+	if option.MaxUploadSize > 0 {
+		// A chunked upload has no Content-Length to check, so the limit is
+		// enforced on the way through as well as up front.
+		body = io.LimitReader(body, int64(option.MaxUploadSize)+1)
+	}
+	m, err := st.WriteFile(body)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return // the client hung up; nothing was committed
+		}
+		if errors.Is(err, objmgr.ErrNoContentKey) {
+			http.Error(w, "This library is end-to-end encrypted; write its objects by id", http.StatusForbidden)
+			return
+		}
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to store %s in repo %s", path, repo.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	manifestID, err := st.PutManifest(m)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to store manifest for %s in repo %s", path, repo.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+		return st.PutNode(root, path, objmgr.Node{
+			ID: manifestID, Type: store.NodeFile, Name: fileName,
+			Mtime: now, Mode: defaultFileMode,
+		}, now)
+	}); err != nil {
+		writeCommitErr(w, r, err, fmt.Sprintf("commit of %s in repo %s", path, repo.ID))
+		return
+	}
+
+	sendStatisticMsg(repo.ID, acct.Email, "web-file-upload", uint64(m.FileSize))
+
+	// The ETag is the new content, so a client can record it without a
+	// follow-up GET — which is the whole point of returning it here.
+	w.Header().Set("ETag", `"`+etagPrefix+manifestID.String()+`"`)
+	writeEntryJSON(w, http.StatusCreated, map[string]any{
+		"name": fileName, "type": "file", "id": manifestID.String(), "size": m.FileSize,
 	})
 }
 

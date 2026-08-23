@@ -391,7 +391,7 @@ func editRepoNeedRetry(repoID, name, desc, user string) (bool, error) {
 
 	// A failed branch update means someone else moved the head first; the
 	// caller should reload and try again.
-	_, err = updateBranch(repoID, repo.StoreID, commit, parent.CommitID, "", false, "")
+	_, err = updateBranch(repoID, repo.StoreID, commitHeadMove(commit), parent.CommitID, "", false, "")
 	if err != nil {
 		return true, nil
 	}

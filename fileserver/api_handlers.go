@@ -1,6 +1,7 @@
 package silod
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,23 +14,53 @@ import (
 	"github.com/dkam/silo/fileserver/commitmgr"
 	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
+	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
 
-// loadRepoAndCommit loads the repo and its head commit, with rw permission check.
-func loadRepoAndCommit(w http.ResponseWriter, repoID string, user account.ID) (*repomgr.Repo, *commitmgr.Commit, bool) {
+// loadSeafileHead loads a Seafile library's head commit. Only the lanes that
+// still need one call it, and it dies with them.
+func loadSeafileHead(w http.ResponseWriter, repo *repomgr.Repo) (*commitmgr.Commit, bool) {
+	head, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
+	if err != nil {
+		log.Errorf("Failed to load head commit: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return nil, false
+	}
+	return head, true
+}
+
+// loadRepoRW loads the repo with an rw permission check, and nothing else.
+//
+// Split out from loadRepoAndCommit because the head commit is not a thing
+// every caller can load any more: a store-v2 commit is not a Seafile one and
+// commitmgr cannot read it. A handler that serves both formats has to decide
+// which it is holding BEFORE it asks for a commit — asking first turns a
+// perfectly good store-v2 library into a 500.
+func loadRepoRW(w http.ResponseWriter, repoID string, user account.ID) (*repomgr.Repo, bool) {
 	perm := share.CheckPerm(repoID, user)
 	if perm != "rw" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
-		return nil, nil, false
+		return nil, false
 	}
 	repo, err := repomgr.GetWithReason(repoID)
 	if err != nil {
 		code, msg := repomgr.StatusFor(err)
 		http.Error(w, msg, code)
+		return nil, false
+	}
+	return repo, true
+}
+
+// loadRepoAndCommit loads the repo and its Seafile head commit, with rw
+// permission check. It dies with the lanes that need a Seafile commit.
+func loadRepoAndCommit(w http.ResponseWriter, repoID string, user account.ID) (*repomgr.Repo, *commitmgr.Commit, bool) {
+	repo, ok := loadRepoRW(w, repoID, user)
+	if !ok {
 		return nil, nil, false
 	}
 	head, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
@@ -211,6 +242,34 @@ func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, newN
 	return true
 }
 
+// mkdirV2 creates one directory in a store-v2 library.
+//
+// Mkdir rather than MkdirAll: the parent must exist. A typo in a path should
+// not silently build a directory tree, and a client that wants mkdir -p asks
+// for it a directory at a time — the same rule putEntryFile applies to a
+// file's parent, stated once in each place it is enforced.
+func mkdirV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path, dirName string) {
+	acct := middleware.GetAccount(r)
+
+	if _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+		return st.Mkdir(root, path, defaultDirMode, now)
+	}); err != nil {
+		switch {
+		case errors.Is(err, objmgr.ErrExists):
+			http.Error(w, "Entry already exists", http.StatusConflict)
+		case errors.Is(err, objmgr.ErrNotFound):
+			http.Error(w, "Parent directory does not exist", http.StatusNotFound)
+		case errors.Is(err, objmgr.ErrNoContentKey):
+			http.Error(w, "This library is end-to-end encrypted; write its objects by id", http.StatusForbidden)
+		default:
+			writeCommitErr(w, r, err, fmt.Sprintf("mkdir %s in repo %s", path, repo.ID))
+		}
+		return
+	}
+
+	writeEntryJSON(w, http.StatusCreated, map[string]any{"name": dirName, "type": "dir"})
+}
+
 func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
 	user := acct.Email
@@ -229,7 +288,15 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
+	repo, ok := loadRepoRW(w, repoID, acct.ID)
+	if !ok {
+		return
+	}
+	if repo.IsStoreV2() {
+		mkdirV2(w, r, repo, path, dirName)
+		return
+	}
+	head, ok := loadSeafileHead(w, repo)
 	if !ok {
 		return
 	}
@@ -260,6 +327,30 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+// deleteV2 removes one entry from a store-v2 library. A directory goes with
+// everything under it — the tree is content-addressed, so dropping the edge
+// drops the subtree, and what that leaves unreferenced is the collector's
+// business rather than this request's.
+func deleteV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path string) {
+	acct := middleware.GetAccount(r)
+
+	if _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+		return st.Remove(root, path, now)
+	}); err != nil {
+		switch {
+		case errors.Is(err, objmgr.ErrNotFound):
+			http.Error(w, "Not found", http.StatusNotFound)
+		case errors.Is(err, objmgr.ErrNoContentKey):
+			http.Error(w, "This library is end-to-end encrypted; write its objects by id", http.StatusForbidden)
+		default:
+			writeCommitErr(w, r, err, fmt.Sprintf("delete %s in repo %s", path, repo.ID))
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
 	user := acct.Email
@@ -272,7 +363,15 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
+	repo, ok := loadRepoRW(w, repoID, acct.ID)
+	if !ok {
+		return
+	}
+	if repo.IsStoreV2() {
+		deleteV2(w, r, repo, path)
+		return
+	}
+	head, ok := loadSeafileHead(w, repo)
 	if !ok {
 		return
 	}

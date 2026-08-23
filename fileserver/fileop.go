@@ -2075,7 +2075,7 @@ func genCommitNeedRetry(repo *repomgr.Repo, base *commitmgr.Commit, commit *comm
 		mergedCommit = commit
 	}
 
-	gcConflict, err := updateBranch(repoID, repo.StoreID, mergedCommit, currentHead.CommitID, secondParentID, checkGC, lastGCID)
+	gcConflict, err := updateBranch(repoID, repo.StoreID, commitHeadMove(mergedCommit), currentHead.CommitID, secondParentID, checkGC, lastGCID)
 	if gcConflict {
 		return false, err
 	}
@@ -2109,8 +2109,23 @@ func genMergeDesc(repo *repomgr.Repo, mergedRoot, p1Root, p2Root string) string 
 // current. The same call is where the catalog learns who moved the head and
 // when, which are the server's own observations rather than anything read back
 // out of the commit.
-func updateBranch(repoID, originRepoID string, newCommit *commitmgr.Commit, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
-	newCommitID := newCommit.CommitID
+// headMove is a proposed new head: the commit, the root it names, and who
+// moved it when.
+//
+// It exists so that updateBranch takes facts rather than a Seafile commit
+// object. Those four values are all it ever read out of one, and a store-v2
+// commit has the same four — so the compare-and-swap, the GC generation check
+// and the catalog record are written once and serve both formats, rather than
+// being copied into a parallel implementation that then drifts.
+type headMove struct {
+	CommitID string
+	RootID   string
+	Author   string
+	Ctime    int64
+}
+
+func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
+	newCommitID := move.CommitID
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	trans, err := siloPair.Write.BeginTx(ctx, nil)
@@ -2161,14 +2176,14 @@ func updateBranch(repoID, originRepoID string, newCommit *commitmgr.Commit, oldC
 	}
 
 	sqlStr = "UPDATE Branch SET commit_id = ?, root_id = ? WHERE name = ? AND repo_id = ?"
-	_, err = trans.ExecContext(ctx, sqlStr, newCommitID, newCommit.RootID, name, repoID)
+	_, err = trans.ExecContext(ctx, sqlStr, newCommitID, move.RootID, name, repoID)
 	if err != nil {
 		_ = trans.Rollback()
 		return false, err
 	}
 
 	// In the same transaction as the head it describes: see RecordHeadMove.
-	if err := repomgr.RecordHeadMove(ctx, trans, repoID, newCommit.CreatorName, newCommit.Ctime); err != nil {
+	if err := repomgr.RecordHeadMove(ctx, trans, repoID, move.Author, move.Ctime); err != nil {
 		_ = trans.Rollback()
 		return false, err
 	}
@@ -3781,4 +3796,9 @@ func removeFileopExpireCache() {
 	}
 
 	blockMapCacheTable.Range(deleteBlockMaps)
+}
+
+// commitHeadMove is the adapter for the Seafile lane, and dies with it.
+func commitHeadMove(c *commitmgr.Commit) headMove {
+	return headMove{CommitID: c.CommitID, RootID: c.RootID, Author: c.CreatorName, Ctime: c.Ctime}
 }
