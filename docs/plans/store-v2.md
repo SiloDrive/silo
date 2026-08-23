@@ -724,10 +724,59 @@ Implementations:
 
 Tier policy: sealed packs (and their index files, per Pack indexes above)
 upload to durable backends asynchronously; local acts as cache and may evict
-only packs whose durable copy is verified. S3's 50–100 ms first-byte is fine
-behind the cache and unusable in front of it — object storage is a tier, not
-a substitution. Lookups never leave local disk; the remote index copies
-exist only for recovery.
+only packs whose durable copy is **verified**, as defined below. S3's
+50–100 ms first-byte is fine behind the cache and unusable in front of it —
+object storage is a tier, not a substitution. Lookups never leave local disk;
+the remote index copies exist only for recovery.
+
+#### What "verified" means
+
+Eviction deletes the only fast copy of data, so the word has to name a check
+rather than a feeling:
+
+1. **HEAD**, confirming the object exists and its length is exactly the pack's.
+2. **The pack's SHA-256, computed by us**, checked against
+   `x-amz-checksum-sha256` where the backend supports it.
+3. **Where it does not**, a ranged read-back of the frame headers.
+
+**ETag is not the check.** It is MD5 *sometimes* — not with SSE-KMS, not on
+multipart, and not at all on several clones. A check that silently means
+"MD5 of one part" on some backends and "an opaque string" on others is not a
+check, and the failure it misses is the one that matters: a truncated or
+partially-written object whose length happens to match.
+
+The corollary belongs in the durability story rather than being left implicit:
+**a sealed-but-unuploaded pack is single-copy data.** Between sealing and
+verification there is exactly one copy of those bytes, on one disk, and the
+window is as long as the upload queue is deep. So the queue is a first-class
+thing: **packs without a verified remote copy**. It is derivable by scan —
+that is the recovery path and the thing that makes the column safe to lose —
+and persisted as a catalog column so the ordinary case does not scan, and so
+an operator can ask how much of this server exists once.
+
+#### The S3 feature floor
+
+**PUT, ranged GET, DELETE, LIST. Nothing else.** Every additional API a
+backend is assumed to have is a backend that stops working, and the clones
+worth supporting — MinIO, Ceph RGW, Backblaze B2, Cloudflare R2, Wasabi —
+diverge exactly where the API surface widens.
+
+Conditional writes are **not required**, and that is a consequence of three
+things the design already guarantees rather than an omission: one writer per
+bucket-prefix (an invariant, stated in ops docs, not enforced by the store),
+pack ids that never collide, and packs that are immutable once sealed.
+
+Where `If-None-Match: *` exists — AWS, R2, current MinIO — send it, as an
+**assertion rather than a mechanism**. A precondition failure then means one
+of the two things that invariant forbids, split-brain or an id collision, and
+it should log loudly rather than be retried. Feature-detect it and never
+depend on it: Ceph RGW, B2 and older clones do not have it, and a store that
+needs it does not run there.
+
+**Single PUT per pack, no multipart.** 512 MB is under every backend's
+single-PUT ceiling, and multipart is precisely where clone behaviour diverges
+— part sizing, completion semantics, and the point at which ETag stops meaning
+anything at all.
 
 Pack sizing stands on fsync amortisation and compaction-rewrite granularity
 with no S3 in the room; object-storage economics corroborate the number
@@ -752,6 +801,17 @@ same mark phase.
   "quiet hours". Rewrite live frames into a new pack, fsync, swap index
   entries atomically, delete the old pack (locally and on remote tiers).
   Idempotent and interruptible at every step.
+- **Compaction prefers packs that are locally present.** Compacting a
+  remote-only pack means downloading all 512 MB of it first, so the same
+  rewrite costs nothing on a cached pack and costs egress on an evicted one —
+  a real bill the mark phase should price in rather than discover. `PackStats`
+  already carries the dead fraction; **local presence joins it as a scheduling
+  input**, so the autovacuum-style limiter spends its I/O budget on the free
+  rewrites before the paid ones. Dead fraction still decides *whether* a pack
+  wants compacting; locality decides *which* of the wanting packs goes first.
+  A remote-only pack that is mostly dead still gets compacted eventually —
+  starving it would leave paid storage full of garbage, which is the bill this
+  is trying to avoid.
 
 ## End-to-end encryption
 
@@ -1103,8 +1163,11 @@ Phases are sequential on the branch; each leaves the tree working.
 5. **GC + compaction.** Tracing mark, `PackStats`, threshold + throttled
    rewrite. Built together with per-repo GC from
    [`future-features.md`](../future-features.md) — same mark, build it once.
-6. **Durable backends.** NAS fs root and S3, async upload of sealed packs,
-   verified-then-evictable local cache, replication as pack copy.
+6. **Durable backends.** NAS fs root and S3 against the four-verb feature
+   floor, async upload of sealed packs, verified-then-evictable local cache
+   (with verification meaning what Backends and tiering says it means, not
+   ETag), the "no verified remote copy" catalog column and the scan that
+   rebuilds it, replication as pack copy.
 
 porter-mac proceeds against the vectors from the end of phase 1 and the wire
 from the end of phase 2 — it does not wait for packs, which it can never
@@ -1144,7 +1207,15 @@ ones from this plan:
   frozen lanes die in phase 2); the xxh3-gate and batching arguments stand and
   are cited here.
 - `backup.md` — add `storage.key` and `link.key` (sharing.md) as the first
-  items in the must-not-lose set.
+  items in the must-not-lose set. Also the single-copy window: a sealed pack
+  with no verified remote copy exists once, so "how many packs are awaiting
+  verification" is a number an operator taking a backup wants in front of them.
+- **Ops documentation gains the one-writer invariant.** Exactly one Silo
+  server writes a given bucket-prefix. It is not enforced by the store —
+  nothing in the S3 feature floor can enforce it — and two servers pointed at
+  one prefix is the failure the `If-None-Match: *` assertion exists to make
+  loud rather than to prevent. It belongs beside the backup ordering rule,
+  which is the other thing that is correct only because a human read it.
 - `store-v2-hash-bench.md` — the G2 x86 run is appended (2026-08-22); the file
   moved here from the repo root, where the plan cited it but git did not have it.
 - `target.md` — S3 is promoted from "does not get a vote in any decision" to
