@@ -114,55 +114,55 @@
       "why": "unpadded base64, as the PHC string specifies"
     }
   ],
-  "holders_refused": [
+  "identifiers_refused": [
     {
       "name": "uppercase",
-      "holder": "0192F0A1-3C5D-7E4B-8F26-9A7D5C3E1B04",
-      "why": "one spelling per account id: an upper-case UUID is different bytes and therefore different associated data"
+      "identifier": "0192F0A1-3C5D-7E4B-8F26-9A7D5C3E1B04",
+      "why": "one spelling per id: an upper-case UUID is different bytes and therefore different associated data"
     },
     {
       "name": "unhyphenated",
-      "holder": "0192f0a13c5d7e4b8f269a7d5c3e1b04",
+      "identifier": "0192f0a13c5d7e4b8f269a7d5c3e1b04",
       "why": "the thirty-two character form a permissive parser accepts and a byte comparison does not"
     },
     {
       "name": "braced",
-      "holder": "{0192f0a1-3c5d-7e4b-8f26-9a7d5c3e1b04}",
+      "identifier": "{0192f0a1-3c5d-7e4b-8f26-9a7d5c3e1b04}",
       "why": "Microsoft's registry spelling, which several UUID libraries still parse"
     },
     {
       "name": "urn-prefixed",
-      "holder": "urn:uuid:0192f0a1-3c5d-7e4b-8f26-9a7d5c3e1b04",
+      "identifier": "urn:uuid:0192f0a1-3c5d-7e4b-8f26-9a7d5c3e1b04",
       "why": "RFC 4122's URN form, likewise"
     },
     {
       "name": "trailing-space",
-      "holder": "0192f0a1-3c5d-7e4b-8f26-9a7d5c3e1b04 ",
-      "why": "no trimming anywhere: a holder is compared as the bytes it is"
+      "identifier": "0192f0a1-3c5d-7e4b-8f26-9a7d5c3e1b04 ",
+      "why": "no trimming anywhere: an identifier is compared as the bytes it is"
     },
     {
       "name": "hyphen-misplaced",
-      "holder": "0192f0a13-c5d-7e4b-8f26-9a7d5c3e1b04",
+      "identifier": "0192f0a13-c5d-7e4b-8f26-9a7d5c3e1b04",
       "why": "thirty-six characters and still not a UUID; the length check alone does not catch it"
     },
     {
       "name": "nil-uuid",
-      "holder": "00000000-0000-0000-0000-000000000000",
-      "why": "well formed and names nobody, which is the empty holder wearing a UUID"
+      "identifier": "00000000-0000-0000-0000-000000000000",
+      "why": "well formed and names nobody, which is the empty identifier wearing a UUID"
     },
     {
       "name": "empty",
-      "holder": "",
+      "identifier": "",
       "why": "a wrap that binds to nothing binds nothing"
     },
     {
       "name": "account-scheme",
-      "holder": "account:7",
-      "why": "not a UUID at all — the shape these vectors themselves carried before the rule was enforced"
+      "identifier": "account:7",
+      "why": "not a UUID at all — the shape these vectors carried as a holder before the rule was enforced"
     },
     {
       "name": "email-address",
-      "holder": "person@example.com",
+      "identifier": "person@example.com",
       "why": "an address is mutable and an account may hold several, so a wrap bound to one stops opening the day it changes"
     }
   ],

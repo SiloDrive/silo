@@ -305,56 +305,80 @@ func TestAWrapRefusesAnIdentifierItCannotBind(t *testing.T) {
 	id := testIdentity(t)
 	wrapKey := testWrapKey(t)
 
-	for _, tc := range []struct{ what, holder string }{
-		{"an empty holder", ""},
-		{"an over-long holder", string(bytes.Repeat([]byte{'a'}, HolderBytes+1))},
-		{"an upper-case UUID", strings.ToUpper(testHolder)},
+	// One table, both identifiers, because it is one rule. A case that is
+	// refused as an account id and accepted as a library id would be the
+	// asymmetry this table exists to keep from reappearing.
+	for _, tc := range []struct{ what, id string }{
+		{"empty", ""},
+		{"over-long", string(bytes.Repeat([]byte{'a'}, UUIDTextBytes+1))},
+		{"upper case", strings.ToUpper(testHolder)},
 		{"the unhyphenated form", strings.ReplaceAll(testHolder, "-", "")},
-		{"a braced UUID", "{" + testHolder + "}"},
-		{"a urn-prefixed UUID", "urn:uuid:" + testHolder},
-		{"a holder with a trailing space", testHolder + " "},
+		{"braced", "{" + testHolder + "}"},
+		{"urn-prefixed", "urn:uuid:" + testHolder},
+		{"a trailing space", testHolder + " "},
 		{"a hyphen in the wrong place", "0192f0a13-c5d-7e4b-8f26-9a7d5c3e1b04"},
 		{"a non-hex digit", strings.Replace(testHolder, "f", "g", 1)},
 		{"the nil UUID", nilUUID},
 		{"an account-scheme id", "account:7"},
 		{"an email address", "person@example.com"},
 	} {
-		if _, err := WrapIdentity(wrapKey, tc.holder, cheapParams(), id.Private()); !errors.Is(err, ErrWrap) {
-			t.Errorf("wrapped to %s (%q): %v", tc.what, tc.holder, err)
+		if _, err := WrapIdentity(wrapKey, tc.id, cheapParams(), id.Private()); !errors.Is(err, ErrWrap) {
+			t.Errorf("wrapped an identity to %s as a holder (%q): %v", tc.what, tc.id, err)
+		}
+		if _, err := WrapCK(id.Public(), tc.id, bytes.Repeat([]byte{1}, CKSize)); !errors.Is(err, ErrWrap) {
+			t.Errorf("wrapped a content key to %s as a library (%q): %v", tc.what, tc.id, err)
 		}
 	}
 
-	if _, err := WrapCK(id.Public(), "", bytes.Repeat([]byte{1}, CKSize)); !errors.Is(err, ErrWrap) {
-		t.Error("wrapped a content key to no library")
-	}
 	if _, err := WrapCK(id.Public(), testLibrary, []byte("short")); !errors.Is(err, ErrWrap) {
 		t.Error("wrapped a content key of the wrong width")
 	}
 }
 
 // The spelling rule has to hold on the way in as well as on the way out, and
-// this is the case that proves it: a holder is fixed-width, so a blob carrying
-// a mis-spelled one is structurally identical to a good blob and a reader that
-// only compares strings would report nothing worse than "belongs to somebody
-// else". Splicing rather than wrapping is the only way to build one, because
-// wrapSecret now refuses to.
-func TestABlobCarryingAMisspelledHolderIsRefusedOnRead(t *testing.T) {
+// this is the case that proves it: both identifiers are fixed-width, so a blob
+// carrying a mis-spelled one is structurally identical to a good blob and a
+// reader that only compares strings would report nothing worse than "belongs to
+// somebody else". Splicing rather than wrapping is the only way to build one,
+// because the writers now refuse to.
+func TestABlobCarryingAMisspelledIdentifierIsRefusedOnRead(t *testing.T) {
 	id := testIdentity(t)
 	wrapKey := testWrapKey(t)
-	blob, err := WrapIdentity(wrapKey, testHolder, cheapParams(), id.Private())
+	ck := bytes.Repeat([]byte{7}, CKSize)
+
+	identityBlob, err := WrapIdentity(wrapKey, testHolder, cheapParams(), id.Private())
 	if err != nil {
 		t.Fatal(err)
 	}
-	at := bytes.Index(blob, []byte(testHolder))
-	if at < 0 {
-		t.Fatal("the holder is not in the blob it is meant to bind")
+	ckBlob, err := WrapCK(id.Public(), testLibrary, ck)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	for _, spelling := range []string{strings.ToUpper(testHolder), nilUUID} {
-		spliced := bytes.Clone(blob)
-		copy(spliced[at:], spelling)
-		if _, err := UnwrapIdentity(wrapKey, spelling, spliced); !errors.Is(err, ErrWrap) {
-			t.Errorf("a blob holding %q was read: %v", spelling, err)
+	for _, tc := range []struct {
+		what, original string
+		blob           []byte
+		open           func(spelling string, spliced []byte) error
+	}{
+		{"holder", testHolder, identityBlob, func(spelling string, spliced []byte) error {
+			_, err := UnwrapIdentity(wrapKey, spelling, spliced)
+			return err
+		}},
+		{"library", testLibrary, ckBlob, func(spelling string, spliced []byte) error {
+			_, err := UnwrapCK(id, spelling, spliced)
+			return err
+		}},
+	} {
+		at := bytes.Index(tc.blob, []byte(tc.original))
+		if at < 0 {
+			t.Fatalf("the %s is not in the blob it is meant to bind", tc.what)
+		}
+		for _, spelling := range []string{strings.ToUpper(tc.original), nilUUID} {
+			spliced := bytes.Clone(tc.blob)
+			copy(spliced[at:], spelling)
+			if err := tc.open(spelling, spliced); !errors.Is(err, ErrWrap) {
+				t.Errorf("a blob holding %s %q was read: %v", tc.what, spelling, err)
+			}
 		}
 	}
 }

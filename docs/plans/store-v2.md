@@ -1025,6 +1025,10 @@ in one place.
 - **Every wrap binds who and what it is for** — holder and library as
   associated data, both immutable UUID text — so a server can neither move a
   blob between accounts nor replay a content-key wrap into another library.
+  Enforced as a spelling rule on read and on write since 2026-08-23, by one
+  function over both: this decision was stated here from the start and the
+  code bounded the two at 255 free-form bytes for a while, which is the drift a
+  rule nobody checks always has.
 - **What the wraps do not vouch for, stated rather than left to be
   rediscovered.** Binding the recipient's public key stops blob-swapping; it
   does not vouch that the key is the person's. A server substituting a public

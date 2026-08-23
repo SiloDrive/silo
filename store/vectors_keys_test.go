@@ -12,17 +12,17 @@ import (
 const keyVectorFile = "testdata/vectors/keys.json"
 
 type keyVectorDoc struct {
-	Format          string                `json:"format"`
-	Note            string                `json:"note"`
-	Bounds          kdfBoundsVector       `json:"kdf_bounds"`
-	KDF             []kdfVector           `json:"kdf"`
-	KDFRefused      []kdfRefusedVector    `json:"kdf_refused"`
-	HolderRefused   []holderRefusedVector `json:"holders_refused"`
-	Identities      []identityVector      `json:"identities"`
-	IdentityWraps   []identityWrapVector  `json:"identity_wraps"`
-	ContentKeyWraps []ckWrapVector        `json:"content_key_wraps"`
-	RecoveryCodes   []recoveryVector      `json:"recovery_codes"`
-	RecoveryWraps   []recoveryWrapVector  `json:"recovery_wraps"`
+	Format          string               `json:"format"`
+	Note            string               `json:"note"`
+	Bounds          kdfBoundsVector      `json:"kdf_bounds"`
+	KDF             []kdfVector          `json:"kdf"`
+	KDFRefused      []kdfRefusedVector   `json:"kdf_refused"`
+	IDsRefused      []idRefusedVector    `json:"identifiers_refused"`
+	Identities      []identityVector     `json:"identities"`
+	IdentityWraps   []identityWrapVector `json:"identity_wraps"`
+	ContentKeyWraps []ckWrapVector       `json:"content_key_wraps"`
+	RecoveryCodes   []recoveryVector     `json:"recovery_codes"`
+	RecoveryWraps   []recoveryWrapVector `json:"recovery_wraps"`
 }
 
 // The floor and ceiling as numbers, so a port checks against the same bytes
@@ -55,15 +55,19 @@ type kdfRefusedVector struct {
 	Why       string `json:"why"`
 }
 
-// The holder rejection vectors, described rather than stored for the reason
-// the KDF ones are: what must not happen is a blob being built at all, so
-// there is no blob to commit. A holder is associated data, so a port that
-// accepts a second spelling of one account id seals blobs the rest of the
-// world cannot open — while passing every other vector in this file.
-type holderRefusedVector struct {
-	Name   string `json:"name"`
-	Holder string `json:"holder"`
-	Why    string `json:"why"`
+// The identifier rejection vectors, described rather than stored for the reason
+// the KDF ones are: what must not happen is a blob being built at all, so there
+// is no blob to commit. Holder and library are both associated data, so a port
+// that accepts a second spelling of either seals blobs the rest of the world
+// cannot open — while passing every other vector in this file.
+//
+// One list, because it is one rule. Each entry has to be refused as an account
+// id and as a library id; a port that enforces the spelling on one and not the
+// other is the asymmetry this format used to have.
+type idRefusedVector struct {
+	Name       string `json:"name"`
+	Identifier string `json:"identifier"`
+	Why        string `json:"why"`
 }
 
 type identityVector struct {
@@ -144,15 +148,15 @@ func vectorSaltFromHex(t *testing.T, s string) [WrapSaltSize]byte {
 	return salt
 }
 
-// otherHolder returns a different, equally well-formed account id: the last
-// hex digit changed. Proving a holder is bound needs an id that is somebody
+// otherIdentifier returns a different, equally well-formed id: the last hex
+// digit changed. Proving an identifier is bound needs one that is somebody
 // else's rather than one that is merely misspelled — the second is refused for
 // its spelling, which would look like the binding working when it is not.
-func otherHolder(holder string) string {
-	if holder[len(holder)-1] == '0' {
-		return holder[:len(holder)-1] + "1"
+func otherIdentifier(id string) string {
+	if id[len(id)-1] == '0' {
+		return id[:len(id)-1] + "1"
 	}
-	return holder[:len(holder)-1] + "0"
+	return id[:len(id)-1] + "0"
 }
 
 func vectorPrivate(t *testing.T, label string) *Identity {
@@ -248,9 +252,9 @@ func buildKeyVectors(t *testing.T) keyVectorDoc {
 	// pinned. They are built from testHolder where they can be, so that a
 	// changed test id does not quietly turn "the upper-case spelling of this
 	// holder" into an unrelated string.
-	doc.HolderRefused = []holderRefusedVector{
+	doc.IDsRefused = []idRefusedVector{
 		{"uppercase", strings.ToUpper(testHolder),
-			"one spelling per account id: an upper-case UUID is different bytes and therefore different associated data"},
+			"one spelling per id: an upper-case UUID is different bytes and therefore different associated data"},
 		{"unhyphenated", strings.ReplaceAll(testHolder, "-", ""),
 			"the thirty-two character form a permissive parser accepts and a byte comparison does not"},
 		{"braced", "{" + testHolder + "}",
@@ -258,15 +262,15 @@ func buildKeyVectors(t *testing.T) keyVectorDoc {
 		{"urn-prefixed", "urn:uuid:" + testHolder,
 			"RFC 4122's URN form, likewise"},
 		{"trailing-space", testHolder + " ",
-			"no trimming anywhere: a holder is compared as the bytes it is"},
+			"no trimming anywhere: an identifier is compared as the bytes it is"},
 		{"hyphen-misplaced", "0192f0a13-c5d-7e4b-8f26-9a7d5c3e1b04",
 			"thirty-six characters and still not a UUID; the length check alone does not catch it"},
 		{"nil-uuid", nilUUID,
-			"well formed and names nobody, which is the empty holder wearing a UUID"},
+			"well formed and names nobody, which is the empty identifier wearing a UUID"},
 		{"empty", "",
 			"a wrap that binds to nothing binds nothing"},
 		{"account-scheme", "account:7",
-			"not a UUID at all — the shape these vectors themselves carried before the rule was enforced"},
+			"not a UUID at all — the shape these vectors carried as a holder before the rule was enforced"},
 		{"email-address", "person@example.com",
 			"an address is mutable and an account may hold several, so a wrap bound to one stops opening the day it changes"},
 	}
@@ -485,19 +489,23 @@ func TestKeyVectorsAreReproducibleFromTheFile(t *testing.T) {
 	// the write side is checked here: it is where the damage is done, and the
 	// read side is a unit test because a blob carrying a refused holder cannot
 	// be built through the public API by construction.
-	t.Run("holders-refused", func(t *testing.T) {
-		if len(doc.HolderRefused) == 0 {
-			t.Fatal("the file commits no refused holders")
+	t.Run("identifiers-refused", func(t *testing.T) {
+		if len(doc.IDsRefused) == 0 {
+			t.Fatal("the file commits no refused identifiers")
 		}
 		priv := mustKey(t, doc.Identities[0].Private)
+		pub := mustKey(t, doc.Identities[0].Public)
 		wrapKey := mustHex(t, doc.IdentityWraps[0].WrapKey)
 		p, err := ParseKDFParams(doc.IdentityWraps[0].Params)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, v := range doc.HolderRefused {
-			if _, err := WrapIdentity(wrapKey, v.Holder, p, priv); !errors.Is(err, ErrWrap) {
-				t.Errorf("%s: wrapped to holder %q (%s): %v", v.Name, v.Holder, v.Why, err)
+		for _, v := range doc.IDsRefused {
+			if _, err := WrapIdentity(wrapKey, v.Identifier, p, priv); !errors.Is(err, ErrWrap) {
+				t.Errorf("%s: wrapped as a holder %q (%s): %v", v.Name, v.Identifier, v.Why, err)
+			}
+			if _, err := WrapCK(pub, v.Identifier, priv[:]); !errors.Is(err, ErrWrap) {
+				t.Errorf("%s: wrapped as a library %q (%s): %v", v.Name, v.Identifier, v.Why, err)
 			}
 		}
 	})
@@ -546,10 +554,10 @@ func TestKeyVectorsAreReproducibleFromTheFile(t *testing.T) {
 				t.Errorf("%s: rebuilt to %s, vector says %s", v.Name, hex.EncodeToString(rebuilt), v.Blob)
 			}
 			// The holder is bound, not decoration. The wrong holder has to be
-			// a well-formed one: a mis-spelled id is refused by checkHolder
-			// before the associated data is ever consulted, which would make
-			// this pass without testing the binding at all.
-			if _, err := UnwrapIdentity(wrapKey, otherHolder(v.Holder), blob); err == nil {
+			// a well-formed one: a mis-spelled id is refused by
+			// checkIdentifier before the associated data is ever consulted,
+			// which would make this pass without testing the binding at all.
+			if _, err := UnwrapIdentity(wrapKey, otherIdentifier(v.Holder), blob); err == nil {
 				t.Errorf("%s: opened as the wrong holder", v.Name)
 			}
 		}
@@ -571,7 +579,10 @@ func TestKeyVectorsAreReproducibleFromTheFile(t *testing.T) {
 			if hex.EncodeToString(got) != v.ContentKey {
 				t.Errorf("%s: opened to a different content key", v.Name)
 			}
-			if _, err := UnwrapCK(recipient, v.Library+"x", blob); err == nil {
+			// A well-formed other library, for the reason the holder case
+			// above uses one: "libraryx" is refused for its spelling and
+			// would prove nothing about the binding.
+			if _, err := UnwrapCK(recipient, otherIdentifier(v.Library), blob); err == nil {
 				t.Errorf("%s: opened for the wrong library", v.Name)
 			}
 
