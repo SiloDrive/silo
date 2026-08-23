@@ -80,10 +80,10 @@ const defaultDirMode = 0o755
 // to the head that won, not re-proposed against the one that lost. It is
 // handed the attempt's timestamp too, so the mtime a dirent records and the
 // commit's created_at are the same instant rather than two calls to the clock.
-func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store, root store.ID, now int64) (store.ID, error)) (store.ID, error) {
+func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store, root store.ID, now int64) (store.ID, error)) (store.ID, bool, error) {
 	st, err := repo.Store()
 	if err != nil {
-		return store.ID{}, err
+		return store.ID{}, false, err
 	}
 
 	head := repo
@@ -93,17 +93,17 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 		// about to publish.
 		gcID, err := repomgr.GetCurrentGCID(head.StoreID)
 		if err != nil {
-			return store.ID{}, fmt.Errorf("failed to read gc id: %w", err)
+			return store.ID{}, false, fmt.Errorf("failed to read gc id: %w", err)
 		}
 
 		oldRoot, err := store.ParseID(head.RootID)
 		if err != nil {
-			return store.ID{}, err
+			return store.ID{}, false, err
 		}
 		now := time.Now().Unix()
 		newRoot, err := mutate(st, oldRoot, now)
 		if err != nil {
-			return store.ID{}, err
+			return store.ID{}, false, err
 		}
 
 		// A mutation that changed nothing mints no commit. The tree is
@@ -112,12 +112,12 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 		// parent's would make changes?since= report a modification that did
 		// not happen.
 		if newRoot == oldRoot {
-			return oldRoot, nil
+			return oldRoot, false, nil
 		}
 
 		parent, err := store.ParseID(head.HeadCommitID)
 		if err != nil {
-			return store.ID{}, err
+			return store.ID{}, false, err
 		}
 		commitID, err := st.PutCommit(&store.Commit{
 			Root:      newRoot,
@@ -126,7 +126,7 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 			Author:    author,
 		})
 		if err != nil {
-			return store.ID{}, err
+			return store.ID{}, false, err
 		}
 
 		_, err = updateBranch(repo.ID, head.StoreID, headMove{
@@ -136,10 +136,10 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 			Ctime:    now,
 		}, head.HeadCommitID, "", true, gcID)
 		if err == nil {
-			return newRoot, nil
+			return newRoot, true, nil
 		}
 		if errors.Is(err, ErrGCConflict) {
-			return store.ID{}, err
+			return store.ID{}, false, err
 		}
 
 		// Lost the head, or lost it to a GC generation change. Re-read and
@@ -148,7 +148,7 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 		// ones the losing commit orphaned are the collector's business.
 		head, err = repomgr.GetWithReason(repo.ID)
 		if err != nil {
-			return store.ID{}, err
+			return store.ID{}, false, err
 		}
 	}
 	// Wrapped in the sentinel the Seafile lane's own bounded loop uses, so
@@ -157,5 +157,5 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 	// usually succeed. Left bare it fell to the default arm — a 500 with no
 	// Retry-After, filed to Sentry — which is exactly the outcome
 	// docs/bugs/fixed/write-contention-returns-500.md exists to prevent.
-	return store.ID{}, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", commitAttempts, repo.ID, ErrRetriesExhausted)
+	return store.ID{}, false, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", commitAttempts, repo.ID, ErrRetriesExhausted)
 }

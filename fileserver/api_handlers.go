@@ -232,7 +232,7 @@ func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, newN
 func mkdirV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path, dirName string) {
 	acct := middleware.GetAccount(r)
 
-	if _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Mkdir(root, path, defaultDirMode, now)
 	}); err != nil {
 		writeTreeErr(w, r, err, "Parent directory does not exist",
@@ -307,7 +307,7 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 func deleteV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path string) {
 	acct := middleware.GetAccount(r)
 
-	if _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Remove(root, path, now)
 	}); err != nil {
 		writeTreeErr(w, r, err, "Not found",

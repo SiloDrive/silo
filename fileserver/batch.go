@@ -68,8 +68,8 @@ func batchHandler(w http.ResponseWriter, r *http.Request) {
 	user := acct.Email
 	repoID := mux.Vars(r)["repoid"]
 
-	repo, head, ok := loadRepoAndCommit(w, repoID, acct.ID)
-	if !ok {
+	repo := entryRepo(w, repoID, acct.ID, true)
+	if repo == nil {
 		return
 	}
 
@@ -97,6 +97,15 @@ func batchHandler(w http.ResponseWriter, r *http.Request) {
 	// GET entries/ returns it — so "apply only if the library is still what I
 	// read" is spelled the same way here as anywhere else.
 	if !preconditionsHold(w, r, repo, "/") {
+		return
+	}
+
+	if repo.IsStoreV2() {
+		batchV2(w, r, repo, user, body.Ops)
+		return
+	}
+	head, ok := loadSeafileHead(w, repo)
+	if !ok {
 		return
 	}
 

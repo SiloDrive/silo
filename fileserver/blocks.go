@@ -10,7 +10,6 @@ import (
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/utils"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
@@ -86,7 +85,7 @@ func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			ids = append(ids, id)
 		}
-		st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+		st, err := repo.Store()
 		if err != nil {
 			log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)

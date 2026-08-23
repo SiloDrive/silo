@@ -68,7 +68,7 @@ func storeV2Repo(w http.ResponseWriter, r *http.Request, write bool) (*repomgr.R
 		http.Error(w, "This library does not have an object surface", http.StatusNotFound)
 		return nil, nil, false
 	}
-	st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+	st, err := repo.Store()
 	if err != nil {
 		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
