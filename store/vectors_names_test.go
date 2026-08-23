@@ -77,8 +77,12 @@ func buildNameVectors(t *testing.T) nameVectorDoc {
 			DirSalt: hex.EncodeToString(d.salt[:]),
 			NameKey: hex.EncodeToString(key),
 		}
+		c, err := NewNameCipher(key)
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, name := range nameVectorInputs {
-			ct, err := EncryptName(key, name)
+			ct, err := c.Encrypt(name)
 			if err != nil {
 				t.Fatalf("%q: %v", name, err)
 			}
@@ -119,8 +123,12 @@ func TestNameVectorsAreReproducibleFromTheFile(t *testing.T) {
 			if hex.EncodeToString(key) != d.NameKey {
 				t.Fatalf("derived name key %s, vector says %s", hex.EncodeToString(key), d.NameKey)
 			}
+			c, err := NewNameCipher(key)
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, n := range d.Names {
-				ct, err := EncryptName(key, n.Plaintext)
+				ct, err := c.Encrypt(n.Plaintext)
 				if err != nil {
 					t.Fatalf("%q: %v", n.Plaintext, err)
 				}
@@ -131,7 +139,7 @@ func TestNameVectorsAreReproducibleFromTheFile(t *testing.T) {
 				if NameToURL(ct) != n.URL {
 					t.Fatalf("%q rendered to %s, vector says %s", n.Plaintext, NameToURL(ct), n.URL)
 				}
-				got, err := DecryptName(key, mustHex(t, n.CiphertextHex))
+				got, err := c.Decrypt(mustHex(t, n.CiphertextHex))
 				if err != nil || got != n.Plaintext {
 					t.Fatalf("the vector's own ciphertext opened to %q (%v)", got, err)
 				}

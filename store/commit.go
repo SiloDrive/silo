@@ -214,11 +214,11 @@ func decodeCommit(b, ck []byte) (*Commit, error) {
 }
 
 func (c *Commit) readAttribution(b []byte, p *int) error {
-	author, err := readBounded(b, p, MaxAuthorBytes, "author")
+	author, err := readBounded(b, p, MaxAuthorBytes, ErrEncoding, "commit", "author")
 	if err != nil {
 		return err
 	}
-	message, err := readBounded(b, p, MaxMessageBytes, "message")
+	message, err := readBounded(b, p, MaxMessageBytes, ErrEncoding, "commit", "message")
 	if err != nil {
 		return err
 	}
@@ -226,17 +226,24 @@ func (c *Commit) readAttribution(b []byte, p *int) error {
 	return nil
 }
 
-func readBounded(b []byte, p *int, max int, what string) (string, error) {
+// readBounded reads one length-prefixed string and advances the cursor past it.
+//
+// Every length-prefixed string in this format is read here — commit
+// attribution, and the labels and parameters a wrapped key binds itself to —
+// so the bound is applied before the slice is taken exactly once, in one
+// place. The sentinel and subject are parameters because the callers report
+// into different error families; the parsing is the same parsing.
+func readBounded(b []byte, p *int, max int, sentinel error, subject, what string) (string, error) {
 	n, adv, err := readUvarint(b[*p:])
 	if err != nil {
-		return "", fmt.Errorf("%w: commit %s length", ErrEncoding, what)
+		return "", fmt.Errorf("%w: %s %s length", sentinel, subject, what)
 	}
 	*p += adv
 	if n > uint64(max) {
-		return "", fmt.Errorf("%w: commit %s is %d bytes, above %d", ErrEncoding, what, n, max)
+		return "", fmt.Errorf("%w: %s %s is %d bytes, above %d", sentinel, subject, what, n, max)
 	}
 	if uint64(len(b)-*p) < n {
-		return "", fmt.Errorf("%w: commit ends inside its %s", ErrEncoding, what)
+		return "", fmt.Errorf("%w: %s ends inside its %s", sentinel, subject, what)
 	}
 	s := string(b[*p : *p+int(n)])
 	*p += int(n)

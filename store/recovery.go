@@ -2,6 +2,7 @@ package store
 
 import (
 	"crypto/rand"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"strings"
@@ -121,43 +122,31 @@ func NormalizeRecoveryCode(s string) (string, error) {
 	return b.String(), nil
 }
 
-// crockfordEncode renders bytes most-significant-bit first. Twenty bytes is
-// 160 bits is exactly 32 characters, so no padding case exists and none is
-// defined.
-func crockfordEncode(b []byte) string {
-	out := make([]byte, 0, RecoveryCodeChars)
-	var acc uint32
-	var n uint
-	for _, c := range b {
-		acc = acc<<8 | uint32(c)
-		n += 8
-		for n >= 5 {
-			n -= 5
-			out = append(out, crockfordAlphabet[(acc>>n)&0x1f])
-		}
-	}
-	return string(out)
-}
+// crockfordCoding is base32 over the alphabet above: five bits a character,
+// most-significant first, which is what RFC 4648 base32 already is once the
+// alphabet is swapped. Twenty bytes is 160 bits is exactly 32 characters, so
+// there is no padding case and none is defined — hence NoPadding rather than a
+// padding character that would never appear.
+//
+// A port on a platform without base32 writes the accumulator loop by hand; the
+// rule it has to implement is stated here, and the vectors pin the result. That
+// is not a reason for this side to hand-roll it too.
+var crockfordCoding = base32.NewEncoding(crockfordAlphabet).WithPadding(base32.NoPadding)
+
+// crockfordEncode renders the twenty bytes of a code.
+func crockfordEncode(b []byte) string { return crockfordCoding.EncodeToString(b) }
 
 // decodeRecoveryCode reverses crockfordEncode over an already-normalized code.
+// NormalizeRecoveryCode has already guaranteed the length and the alphabet, so
+// the decode below cannot fail on well-formed input; the error is returned
+// because this is also the function a port checks its own decoder against.
 func decodeRecoveryCode(normalized string) ([]byte, error) {
 	if len(normalized) != RecoveryCodeChars {
 		return nil, fmt.Errorf("%w: %d characters, want %d", ErrRecoveryCode, len(normalized), RecoveryCodeChars)
 	}
-	out := make([]byte, 0, RecoveryCodeSize)
-	var acc uint32
-	var n uint
-	for i := 0; i < len(normalized); i++ {
-		v := strings.IndexByte(crockfordAlphabet, normalized[i])
-		if v < 0 {
-			return nil, fmt.Errorf("%w: %q is not a code character", ErrRecoveryCode, normalized[i])
-		}
-		acc = acc<<5 | uint32(v)
-		n += 5
-		if n >= 8 {
-			n -= 8
-			out = append(out, byte(acc>>n))
-		}
+	out, err := crockfordCoding.DecodeString(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRecoveryCode, err)
 	}
 	return out, nil
 }

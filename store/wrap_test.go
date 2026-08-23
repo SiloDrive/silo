@@ -4,12 +4,18 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
+	"sync"
 	"testing"
 )
 
 const (
-	testHolder  = "account:7"
-	testLibrary = "3f2a1c58-9b0d-4e77-8a61-5c2d0e4f9ab3"
+	testHolder = "account:7"
+	// The two libraries every wrap test binds to. They are UUIDs because the
+	// spec says a library id is one; the vectors bind these exact strings, so a
+	// second spelling of either is a blob that opens against nothing.
+	testLibrary      = "3f2a1c58-9b0d-4e77-8a61-5c2d0e4f9ab3"
+	testOtherLibrary = "00000000-0000-4000-8000-000000000000"
+	testPassword     = "correct horse battery staple"
 )
 
 func testIdentity(t *testing.T) *Identity {
@@ -21,13 +27,21 @@ func testIdentity(t *testing.T) *Identity {
 	return id
 }
 
-func testWrapKey(t *testing.T) []byte {
-	t.Helper()
-	creds, err := DeriveCredentials("correct horse battery staple", cheapParams())
+// testWrapKey is a wrapKey from a real derivation, computed once for the whole
+// package. Every call site wants the same thing — thirty-two bytes that came
+// out of the real flow — under the same password and the same floor
+// parameters, and argon2id at the floor costs 15 ms a call.
+var testWrapKeyOnce = sync.OnceValue(func() []byte {
+	creds, err := DeriveCredentials(testPassword, cheapParams())
 	if err != nil {
-		t.Fatal(err)
+		panic(err) // floor parameters are legal by construction
 	}
 	return creds.WrapKey
+})
+
+func testWrapKey(t *testing.T) []byte {
+	t.Helper()
+	return testWrapKeyOnce()
 }
 
 func TestAnIdentityRoundTripsThroughItsWrap(t *testing.T) {
@@ -122,7 +136,7 @@ func TestABlobCarryingWeakParametersIsRefusedAtOpen(t *testing.T) {
 	id := testIdentity(t)
 	var salt [WrapSaltSize]byte
 	blob, err := wrapSecret([]byte("whatever key that cost bought"), domainWrapIdentity,
-		wrapKindPassword, salt, weak, testHolder, keyBytes(id.Private()))
+		wrapKindPassword, salt, weak, testHolder, privBytes(id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +156,7 @@ func TestABlobCarryingWeakParametersIsRefusedAtOpen(t *testing.T) {
 func TestTheBootstrapPathIsTheWholeFlow(t *testing.T) {
 	id := testIdentity(t)
 	p := cheapParams()
-	creds, err := DeriveCredentials("correct horse battery staple", p)
+	creds, err := DeriveCredentials(testPassword, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +166,7 @@ func TestTheBootstrapPathIsTheWholeFlow(t *testing.T) {
 	}
 
 	// A new device holds the password and whatever the server hands over.
-	got, back, err := OpenIdentityWithPassword("correct horse battery staple", testHolder, blob)
+	got, back, err := OpenIdentityWithPassword(testPassword, testHolder, blob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +237,7 @@ func TestAContentKeyWrapIsNotPortableBetweenLibraries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := UnwrapCK(member, "00000000-0000-4000-8000-000000000000", blob); !errors.Is(err, ErrWrap) {
+	if _, err := UnwrapCK(member, testOtherLibrary, blob); !errors.Is(err, ErrWrap) {
 		t.Fatalf("the wrap opened for a library it was not made for: %v", err)
 	}
 }
@@ -374,6 +388,9 @@ func TestEphemeralKeysAreNotReusedAcrossRecipients(t *testing.T) {
 	}
 }
 
-// keyBytes is the slice form of a private key, for the hand-built blobs the
-// attack tests need.
-func keyBytes(k [X25519KeySize]byte) []byte { return k[:] }
+// privBytes is the slice form of an identity's private key, for the hand-built
+// blobs the attack tests need.
+func privBytes(id *Identity) []byte {
+	k := id.Private()
+	return k[:]
+}

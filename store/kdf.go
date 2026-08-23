@@ -187,25 +187,23 @@ func ParseKDFParams(s string) (KDFParams, error) {
 	return p, nil
 }
 
-// kdfCost reads one "m=65536" field, rejecting the leading zeros and plus
-// signs ParseUint would otherwise accept — two spellings of one number is one
-// spelling too many for a string that has to round-trip byte for byte.
+// kdfCost reads one "m=65536" field.
+//
+// The leading-zero rule is the only one ParseUint does not already apply: it
+// takes no sign, no underscores, no spaces and no non-ASCII digits, but it
+// reads "03" as 3. Two spellings of one number is one spelling too many for a
+// string that has to round-trip byte for byte, so that one is refused here.
 func kdfCost(field, name string) (uint32, error) {
 	digits, ok := strings.CutPrefix(field, name+"=")
 	if !ok {
 		return 0, fmt.Errorf("%w: %q is not %s=", ErrKDFParams, field, name)
 	}
-	if digits == "" || (len(digits) > 1 && digits[0] == '0') {
+	if len(digits) > 1 && digits[0] == '0' {
 		return 0, fmt.Errorf("%w: %q is not a canonical number", ErrKDFParams, field)
-	}
-	for _, c := range digits {
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("%w: %q is not a number", ErrKDFParams, field)
-		}
 	}
 	v, err := strconv.ParseUint(digits, 10, 32)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %q: %v", ErrKDFParams, field, err)
+		return 0, fmt.Errorf("%w: %q is not a number", ErrKDFParams, field)
 	}
 	return uint32(v), nil
 }

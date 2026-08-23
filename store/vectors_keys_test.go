@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"encoding/hex"
+	"strings"
 	"testing"
 )
 
@@ -95,16 +96,39 @@ type recoveryWrapVector struct {
 	Blob     string `json:"blob_hex"`
 }
 
+// vectorSalt mints a reproducible salt. It serves both the KDF salt and the
+// wrap salt because the two are the same width; should either move, this stops
+// compiling at the call sites for the other, which is the right place to find
+// out.
 func vectorSalt(label string) [KDFSaltSize]byte {
 	var s [KDFSaltSize]byte
 	copy(s[:], pseudoRandom(label, KDFSaltSize))
 	return s
 }
 
-func vectorWrapSalt(label string) [WrapSaltSize]byte {
-	var s [WrapSaltSize]byte
-	copy(s[:], pseudoRandom(label, WrapSaltSize))
-	return s
+// mustKey decodes a hex field into a fixed-width key. The width is checked
+// rather than left to copy, which silently short-fills a truncated field.
+func mustKey(t *testing.T, s string) [X25519KeySize]byte {
+	t.Helper()
+	b := mustHex(t, s)
+	if len(b) != X25519KeySize {
+		t.Fatalf("%s is %d bytes, want a %d-byte key", s, len(b), X25519KeySize)
+	}
+	var k [X25519KeySize]byte
+	copy(k[:], b)
+	return k
+}
+
+// vectorSaltFromHex decodes a committed wrap salt.
+func vectorSaltFromHex(t *testing.T, s string) [WrapSaltSize]byte {
+	t.Helper()
+	b := mustHex(t, s)
+	if len(b) != WrapSaltSize {
+		t.Fatalf("%s is %d bytes, want a %d-byte salt", s, len(b), WrapSaltSize)
+	}
+	var salt [WrapSaltSize]byte
+	copy(salt[:], b)
+	return salt
 }
 
 func vectorPrivate(t *testing.T, label string) *Identity {
@@ -143,13 +167,10 @@ func buildKeyVectors(t *testing.T) keyVectorDoc {
 		name, password string
 		p              KDFParams
 	}{
-		{"default-params", "correct horse battery staple", DefaultKDFParams(vectorSalt("kdf/default"))},
-		{"floor-params", "correct horse battery staple", KDFParams{
-			Memory: MinKDFMemory, Time: MinKDFTime, Lanes: MinKDFLanes, Salt: vectorSalt("kdf/floor")}},
-		{"unicode-password", "pässwörd — naïve 🔐", KDFParams{
-			Memory: MinKDFMemory, Time: MinKDFTime, Lanes: MinKDFLanes, Salt: vectorSalt("kdf/unicode")}},
-		{"empty-password", "", KDFParams{
-			Memory: MinKDFMemory, Time: MinKDFTime, Lanes: MinKDFLanes, Salt: vectorSalt("kdf/empty")}},
+		{"default-params", testPassword, DefaultKDFParams(vectorSalt("kdf/default"))},
+		{"floor-params", testPassword, floorParams(vectorSalt("kdf/floor"))},
+		{"unicode-password", "pässwörd — naïve 🔐", floorParams(vectorSalt("kdf/unicode"))},
+		{"empty-password", "", floorParams(vectorSalt("kdf/empty"))},
 	} {
 		creds, err := DeriveCredentials(tc.password, tc.p)
 		if err != nil {
@@ -164,18 +185,25 @@ func buildKeyVectors(t *testing.T) keyVectorDoc {
 		})
 	}
 
+	// The bounds cases are built from the constants rather than typed out, so
+	// that "just below the floor" keeps meaning that after the floor is raised.
+	// A literal would quietly become "far below the floor", and -update would
+	// regenerate the file around it without a word.
+	refused := func(m, t uint32, lanes uint8) string {
+		return KDFParams{Memory: m, Time: t, Lanes: lanes}.String()
+	}
 	doc.KDFRefused = []kdfRefusedVector{
-		{"memory-below-floor", "$argon2id$v=19$m=8,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA", "bounds",
+		{"memory-below-floor", refused(8, DefaultKDFTime, DefaultKDFLanes), "bounds",
 			"argon2's own minimum, and far under this format's floor"},
-		{"memory-just-below-floor", "$argon2id$v=19$m=19455,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA", "bounds",
+		{"memory-just-below-floor", refused(MinKDFMemory-1, DefaultKDFTime, DefaultKDFLanes), "bounds",
 			"one KiB under the floor; the off-by-one a port is most likely to get wrong"},
-		{"time-below-floor", "$argon2id$v=19$m=65536,t=1,p=4$AAAAAAAAAAAAAAAAAAAAAA", "bounds",
+		{"time-below-floor", refused(DefaultKDFMemory, MinKDFTime-1, DefaultKDFLanes), "bounds",
 			"a single pass"},
-		{"lanes-zero", "$argon2id$v=19$m=65536,t=3,p=0$AAAAAAAAAAAAAAAAAAAAAA", "bounds",
+		{"lanes-zero", refused(DefaultKDFMemory, DefaultKDFTime, MinKDFLanes-1), "bounds",
 			"zero lanes"},
-		{"memory-above-ceiling", "$argon2id$v=19$m=2097152,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA", "bounds",
+		{"memory-above-ceiling", refused(MaxKDFMemory*2, DefaultKDFTime, DefaultKDFLanes), "bounds",
 			"two GiB: not weaker, just a client the server can take down"},
-		{"time-above-ceiling", "$argon2id$v=19$m=65536,t=17,p=4$AAAAAAAAAAAAAAAAAAAAAA", "bounds",
+		{"time-above-ceiling", refused(DefaultKDFMemory, MaxKDFTime+1, DefaultKDFLanes), "bounds",
 			"above the pass ceiling"},
 		{"wrong-algorithm", "$argon2i$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA", "parse",
 			"argon2i is not what this format defines"},
@@ -206,17 +234,16 @@ func buildKeyVectors(t *testing.T) keyVectorDoc {
 		name, holder string
 		p            KDFParams
 	}{
-		{"default-params", "account:7", DefaultKDFParams(vectorSalt("kdf/default"))},
-		{"floor-params", "d@nmilne.com", KDFParams{
-			Memory: MinKDFMemory, Time: MinKDFTime, Lanes: MinKDFLanes, Salt: vectorSalt("kdf/floor")}},
+		{"default-params", testHolder, DefaultKDFParams(vectorSalt("kdf/default"))},
+		{"floor-params", "d@nmilne.com", floorParams(vectorSalt("kdf/floor"))},
 	} {
-		creds, err := DeriveCredentials("correct horse battery staple", tc.p)
+		creds, err := DeriveCredentials(testPassword, tc.p)
 		if err != nil {
 			t.Fatal(err)
 		}
 		id := vectorPrivate(t, "identity/a")
 		priv := id.Private()
-		salt := vectorWrapSalt("wrap/" + tc.name)
+		salt := vectorSalt("wrap/" + tc.name)
 		blob, err := wrapSecret(creds.WrapKey, domainWrapIdentity, wrapKindPassword,
 			salt, tc.p.String(), tc.holder, priv[:])
 		if err != nil {
@@ -241,11 +268,11 @@ func buildKeyVectors(t *testing.T) keyVectorDoc {
 		name, library, recipient, ephemeral string
 		ck                                  []byte
 	}{
-		{"member-a", "3f2a1c58-9b0d-4e77-8a61-5c2d0e4f9ab3", "identity/a", "ephemeral/1",
+		{"member-a", testLibrary, "identity/a", "ephemeral/1",
 			pseudoRandom("ck/one", CKSize)},
-		{"member-b-same-key", "3f2a1c58-9b0d-4e77-8a61-5c2d0e4f9ab3", "identity/b", "ephemeral/2",
+		{"member-b-same-key", testLibrary, "identity/b", "ephemeral/2",
 			pseudoRandom("ck/one", CKSize)},
-		{"member-a-other-library", "00000000-0000-4000-8000-000000000000", "identity/a", "ephemeral/3",
+		{"member-a-other-library", testOtherLibrary, "identity/a", "ephemeral/3",
 			pseudoRandom("ck/one", CKSize)},
 	} {
 		recipient := vectorPrivate(t, tc.recipient)
@@ -260,7 +287,7 @@ func buildKeyVectors(t *testing.T) keyVectorDoc {
 		if err != nil {
 			t.Fatal(err)
 		}
-		blob, err := wrapCKWith(eph, recipientPub, pub, tc.library, tc.ck)
+		blob, err := wrapCKWith(eph, pub, tc.library, tc.ck)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -284,12 +311,12 @@ func buildKeyVectors(t *testing.T) keyVectorDoc {
 	canonical := FormatRecoveryCode(crockfordEncode(pseudoRandom("recovery/one", RecoveryCodeSize)))
 	for _, tc := range []struct{ name, in string }{
 		{"as-printed", canonical},
-		{"lower-case", lower(canonical)},
-		{"no-separators", strip(canonical)},
-		{"spaces-for-hyphens", spaced(canonical)},
-		{"O-for-zero", subst(canonical, '0', 'O')},
-		{"I-for-one", subst(canonical, '1', 'I')},
-		{"lower-l-for-one", subst(lower(canonical), '1', 'l')},
+		{"lower-case", strings.ToLower(canonical)},
+		{"no-separators", strings.ReplaceAll(canonical, "-", "")},
+		{"spaces-for-hyphens", strings.ReplaceAll(canonical, "-", " ")},
+		{"O-for-zero", strings.ReplaceAll(canonical, "0", "O")},
+		{"I-for-one", strings.ReplaceAll(canonical, "1", "I")},
+		{"lower-l-for-one", strings.ReplaceAll(strings.ToLower(canonical), "1", "l")},
 	} {
 		normalized, err := NormalizeRecoveryCode(tc.in)
 		if err != nil {
@@ -315,18 +342,18 @@ func buildKeyVectors(t *testing.T) keyVectorDoc {
 		if err != nil {
 			t.Fatal(err)
 		}
-		salt := vectorWrapSalt("wrap/recovery")
-		blob, err := wrapSecret(secret, domainWrapRecovery, wrapKindRecovery, salt, "", "account:7", priv[:])
+		salt := vectorSalt("wrap/recovery")
+		blob, err := wrapSecret(secret, domainWrapRecovery, wrapKindRecovery, salt, "", testHolder, priv[:])
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got, err := UnwrapWithRecovery(canonical, "account:7", blob); err != nil || got != priv {
+		if got, err := UnwrapWithRecovery(canonical, testHolder, blob); err != nil || got != priv {
 			t.Fatalf("the recovery vector does not open: %v", err)
 		}
 		doc.RecoveryWraps = append(doc.RecoveryWraps, recoveryWrapVector{
 			Name:     "identity-a",
 			Code:     canonical,
-			Holder:   "account:7",
+			Holder:   testHolder,
 			WrapSalt: hex.EncodeToString(salt[:]),
 			Private:  hex.EncodeToString(priv[:]),
 			Blob:     hex.EncodeToString(blob),
@@ -334,46 +361,6 @@ func buildKeyVectors(t *testing.T) keyVectorDoc {
 	}
 
 	return doc
-}
-
-func lower(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + 'a' - 'A'
-		}
-	}
-	return string(b)
-}
-
-func strip(s string) string {
-	var out []byte
-	for i := 0; i < len(s); i++ {
-		if s[i] != '-' {
-			out = append(out, s[i])
-		}
-	}
-	return string(out)
-}
-
-func spaced(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c == '-' {
-			b[i] = ' '
-		}
-	}
-	return string(b)
-}
-
-func subst(s string, from, to byte) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c == from {
-			b[i] = to
-		}
-	}
-	return string(b)
 }
 
 func TestKeyVectors(t *testing.T) {
@@ -443,8 +430,7 @@ func TestKeyVectorsAreReproducibleFromTheFile(t *testing.T) {
 
 	t.Run("identities", func(t *testing.T) {
 		for _, v := range doc.Identities {
-			var priv [X25519KeySize]byte
-			copy(priv[:], mustHex(t, v.Private))
+			priv := mustKey(t, v.Private)
 			id, err := IdentityFromPrivate(priv)
 			if err != nil {
 				t.Fatalf("%s: %v", v.Name, err)
@@ -475,10 +461,8 @@ func TestKeyVectorsAreReproducibleFromTheFile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var salt [WrapSaltSize]byte
-			copy(salt[:], mustHex(t, v.WrapSalt))
-			var priv [X25519KeySize]byte
-			copy(priv[:], mustHex(t, v.Private))
+			salt := vectorSaltFromHex(t, v.WrapSalt)
+			priv := mustKey(t, v.Private)
 			rebuilt, err := wrapSecret(wrapKey, domainWrapIdentity, wrapKindPassword,
 				salt, p.String(), v.Holder, priv[:])
 			if err != nil {
@@ -496,8 +480,7 @@ func TestKeyVectorsAreReproducibleFromTheFile(t *testing.T) {
 
 	t.Run("content-key-wraps", func(t *testing.T) {
 		for _, v := range doc.ContentKeyWraps {
-			var priv [X25519KeySize]byte
-			copy(priv[:], mustHex(t, v.RecipientKey))
+			priv := mustKey(t, v.RecipientKey)
 			recipient, err := IdentityFromPrivate(priv)
 			if err != nil {
 				t.Fatal(err)
@@ -515,19 +498,17 @@ func TestKeyVectorsAreReproducibleFromTheFile(t *testing.T) {
 				t.Errorf("%s: opened for the wrong library", v.Name)
 			}
 
-			var ephPriv [X25519KeySize]byte
-			copy(ephPriv[:], mustHex(t, v.EphemeralKey))
+			ephPriv := mustKey(t, v.EphemeralKey)
 			eph, err := ecdh.X25519().NewPrivateKey(ephPriv[:])
 			if err != nil {
 				t.Fatal(err)
 			}
-			var pubBytes [X25519KeySize]byte
-			copy(pubBytes[:], mustHex(t, v.RecipientPub))
+			pubBytes := mustKey(t, v.RecipientPub)
 			pub, err := ecdh.X25519().NewPublicKey(pubBytes[:])
 			if err != nil {
 				t.Fatal(err)
 			}
-			rebuilt, err := wrapCKWith(eph, pubBytes, pub, v.Library, mustHex(t, v.ContentKey))
+			rebuilt, err := wrapCKWith(eph, pub, v.Library, mustHex(t, v.ContentKey))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -546,8 +527,7 @@ func TestKeyVectorsAreReproducibleFromTheFile(t *testing.T) {
 			if a.Blob == b.Blob {
 				t.Fatal("one content key wrapped to two members gave one blob")
 			}
-			var priv [X25519KeySize]byte
-			copy(priv[:], mustHex(t, a.RecipientKey))
+			priv := mustKey(t, a.RecipientKey)
 			alice, err := IdentityFromPrivate(priv)
 			if err != nil {
 				t.Fatal(err)
@@ -603,10 +583,8 @@ func TestKeyVectorsAreReproducibleFromTheFile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var salt [WrapSaltSize]byte
-			copy(salt[:], mustHex(t, v.WrapSalt))
-			var priv [X25519KeySize]byte
-			copy(priv[:], mustHex(t, v.Private))
+			salt := vectorSaltFromHex(t, v.WrapSalt)
+			priv := mustKey(t, v.Private)
 			rebuilt, err := wrapSecret(secret, domainWrapRecovery, wrapKindRecovery, salt, "", v.Holder, priv[:])
 			if err != nil {
 				t.Fatal(err)

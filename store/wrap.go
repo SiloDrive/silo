@@ -47,6 +47,15 @@ const WrapSaltSize = 16
 const (
 	MaxWrapHolderBytes  = 255
 	MaxWrapLibraryBytes = 255
+
+	// MaxKDFParamsBytes bounds the parameter string a wrapped identity
+	// carries, so a hostile blob cannot make a parser allocate on a length it
+	// chose. The longest string this format can write is 57 bytes — 15 for
+	// "$argon2id$v=19$", 19 for "m=1048576,t=16,p=16" at the ceilings above,
+	// 1 for the separator, and 22 for a 16-byte salt in unpadded base64 — so
+	// this is that with room for a longer future parameter set, and the number
+	// a reader enforces rather than the number a writer happens to produce.
+	MaxKDFParamsBytes = 128
 )
 
 // ErrWrap reports a wrapped blob this format cannot have produced, or one that
@@ -204,12 +213,6 @@ func OpenIdentityWithPassword(password, holder string, blob []byte) (*Identity, 
 // Sharing a library is one more call to this. A password change re-wraps only
 // the member's own identity key and touches no CK at all.
 func WrapCK(recipientPub [X25519KeySize]byte, library string, ck []byte) ([]byte, error) {
-	if len(ck) != CKSize {
-		return nil, fmt.Errorf("%w: content key is %d bytes, want %d", ErrWrap, len(ck), CKSize)
-	}
-	if err := checkLabel(library, MaxWrapLibraryBytes, "library"); err != nil {
-		return nil, err
-	}
 	pub, err := ecdh.X25519().NewPublicKey(recipientPub[:])
 	if err != nil {
 		return nil, fmt.Errorf("%w: not an X25519 public key: %v", ErrWrap, err)
@@ -218,7 +221,7 @@ func WrapCK(recipientPub [X25519KeySize]byte, library string, ck []byte) ([]byte
 	if err != nil {
 		return nil, fmt.Errorf("store: ephemeral key: %w", err)
 	}
-	return wrapCKWith(eph, recipientPub, pub, library, ck)
+	return wrapCKWith(eph, pub, library, ck)
 }
 
 // wrapCKWith is WrapCK with the ephemeral key supplied, so the test vectors
@@ -226,7 +229,17 @@ func WrapCK(recipientPub [X25519KeySize]byte, library string, ck []byte) ([]byte
 // vector generator may choose this key: reusing an ephemeral across two wraps
 // reuses a (key, nonce) pair, which is the one thing the zero nonce cannot
 // survive.
-func wrapCKWith(eph *ecdh.PrivateKey, recipientPub [X25519KeySize]byte, pub *ecdh.PublicKey, library string, ck []byte) ([]byte, error) {
+//
+// The checks live here rather than in WrapCK because this is what emits the
+// bytes, and the vector generator calls it directly. A rule enforced one layer
+// above the writer is a rule the normative vectors are minted without.
+func wrapCKWith(eph *ecdh.PrivateKey, pub *ecdh.PublicKey, library string, ck []byte) ([]byte, error) {
+	if len(ck) != CKSize {
+		return nil, fmt.Errorf("%w: content key is %d bytes, want %d", ErrWrap, len(ck), CKSize)
+	}
+	if err := checkLabel(library, MaxWrapLibraryBytes, "library"); err != nil {
+		return nil, err
+	}
 	ss, err := sharedSecret(eph, pub)
 	if err != nil {
 		return nil, err
@@ -234,7 +247,7 @@ func wrapCKWith(eph *ecdh.PrivateKey, recipientPub [X25519KeySize]byte, pub *ecd
 
 	b := []byte{WrapVersion}
 	b = append(b, eph.PublicKey().Bytes()...)
-	b = append(b, recipientPub[:]...)
+	b = append(b, pub.Bytes()...)
 	b = appendUvarint(b, uint64(len(library)))
 	b = append(b, library...)
 	ad := bytes.Clone(b)
@@ -269,16 +282,14 @@ func UnwrapCK(id *Identity, library string, blob []byte) ([]byte, error) {
 	}
 
 	p := head
-	n, adv, err := readUvarint(blob[p:])
+	got, err := readBounded(blob, &p, MaxWrapLibraryBytes, ErrWrap, "blob", "library")
 	if err != nil {
-		return nil, fmt.Errorf("%w: library length", ErrWrap)
+		return nil, err
 	}
-	p += adv
-	if n > MaxWrapLibraryBytes || uint64(len(blob)-p) < n {
-		return nil, fmt.Errorf("%w: library field is %d bytes", ErrWrap, n)
+	if err := checkLabel(got, MaxWrapLibraryBytes, "library"); err != nil {
+		return nil, err
 	}
-	p += int(n)
-	if got := string(blob[p-int(n) : p]); got != library {
+	if got != library {
 		return nil, fmt.Errorf("%w: wrapped for library %q, opened as %q", ErrWrap, got, library)
 	}
 	ad := blob[:p]
@@ -293,7 +304,7 @@ func UnwrapCK(id *Identity, library string, blob []byte) ([]byte, error) {
 	}
 	ck, err := openSection(ss, domainWrapCK, ad, blob[p:])
 	if err != nil {
-		return nil, ErrWrap
+		return nil, fmt.Errorf("%w: %w", ErrWrap, err)
 	}
 	if len(ck) != CKSize {
 		return nil, fmt.Errorf("%w: unwrapped %d bytes, want a %d-byte content key", ErrWrap, len(ck), CKSize)
@@ -393,10 +404,16 @@ func parseWrap(blob []byte) (wrapFields, error) {
 
 	p := head
 	var err error
-	if f.params, p, err = readWrapString(blob, p, MaxKDFParamsBytes, "parameters"); err != nil {
+	if f.params, err = readBounded(blob, &p, MaxKDFParamsBytes, ErrWrap, "blob", "parameters"); err != nil {
 		return wrapFields{}, err
 	}
-	if f.holder, p, err = readWrapString(blob, p, MaxWrapHolderBytes, "holder"); err != nil {
+	if f.holder, err = readBounded(blob, &p, MaxWrapHolderBytes, ErrWrap, "blob", "holder"); err != nil {
+		return wrapFields{}, err
+	}
+	// "Neither may be empty" is a rule of the format, so it is applied where a
+	// blob is read as well as where one is written — checkLabel is the same
+	// check WrapIdentity and WrapForRecovery run before they seal.
+	if err := checkLabel(f.holder, MaxWrapHolderBytes, "holder"); err != nil {
 		return wrapFields{}, err
 	}
 	if len(blob)-p < X25519KeySize+TagSize {
@@ -435,33 +452,13 @@ func unwrapIdentity(secret []byte, domain string, kind byte, holder string, blob
 
 	priv, err := openSection(secret, domain, f.ad, f.sealed)
 	if err != nil {
-		return out, ErrWrap
+		return out, fmt.Errorf("%w: %w", ErrWrap, err)
 	}
 	if len(priv) != X25519KeySize {
 		return out, fmt.Errorf("%w: unwrapped %d bytes, want %d", ErrWrap, len(priv), X25519KeySize)
 	}
 	copy(out[:], priv)
 	return out, nil
-}
-
-// MaxKDFParamsBytes bounds the parameter string a blob may carry. An argon2
-// encoded string at this format's ceilings is well under sixty bytes; the
-// bound is there so a hostile blob cannot make a parser allocate.
-const MaxKDFParamsBytes = 128
-
-func readWrapString(b []byte, p, max int, what string) (string, int, error) {
-	n, adv, err := readUvarint(b[p:])
-	if err != nil {
-		return "", 0, fmt.Errorf("%w: %s length", ErrWrap, what)
-	}
-	p += adv
-	if n > uint64(max) {
-		return "", 0, fmt.Errorf("%w: %s is %d bytes, above %d", ErrWrap, what, n, max)
-	}
-	if uint64(len(b)-p) < n {
-		return "", 0, fmt.Errorf("%w: blob ends inside its %s", ErrWrap, what)
-	}
-	return string(b[p : p+int(n)]), p + int(n), nil
 }
 
 // checkLabel bounds the identifiers a wrap binds to. They are refused rather

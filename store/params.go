@@ -70,9 +70,13 @@ func DefaultParams(seed [32]byte) Params {
 // It is defined as a hash of its own domain string rather than written out as
 // 32 hex bytes so that a second implementation can derive it instead of
 // copying it, and so that nobody has to wonder where the number came from.
-func PlainSeed() [32]byte {
-	return sha256.Sum256([]byte("silo/chunker/plain/v1"))
-}
+// It is computed once rather than per call because Format.Validate reaches it
+// on every repository load, and re-hashing a compile-time constant was most of
+// what that validation cost. Returning the array by value keeps it as
+// uncopyable-from-outside as it was.
+func PlainSeed() [32]byte { return plainSeed }
+
+var plainSeed = sha256.Sum256([]byte("silo/chunker/plain/v1"))
 
 // ChunkerSeed derives an E2EE library's gear seed from its content key.
 //

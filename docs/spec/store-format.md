@@ -1,10 +1,9 @@
 # Silo store format v1 — normative specification
 
-Status: **in progress.** This document is the interop contract between the Go
-implementation in [`store/`](../../store) and porter-mac's Swift port. It is
-being written section by section as [`plans/store-v2.md`](../plans/store-v2.md)
-phase 1 lands; sections marked *(not yet specified)* are pinned in the plan but
-not yet restated here as bytes.
+Status: **complete for phase 1.** This document is the interop contract between
+the Go implementation in [`store/`](../../store) and porter-mac's Swift port.
+Every section [`plans/store-v2.md`](../plans/store-v2.md) phase 1 pins is now
+restated here as bytes.
 
 | Section | State |
 |---|---|
@@ -15,7 +14,7 @@ not yet restated here as bytes.
 | Content crypto (E2EE) | specified |
 | Names (AES-SIV) | specified |
 | Directory and commit objects | specified |
-| Key wrapping | not yet specified |
+| Key wrapping | specified |
 
 Everything here is normative. Where this document and the plan disagree, this
 one is wrong and should be fixed — the plan holds the arguments, this holds the
@@ -860,6 +859,13 @@ same 32 bytes.
 | ciphertext (32) ‖ tag (16)         |
 +------------------------------------+
 ```
+
+`params_len` is bounded at **128 bytes** and `holder_len` at **255**; a reader
+enforces both before it allocates. The longest parameter string this format can
+write is 57 bytes — `$argon2id$v=19$` plus `m=1048576,t=16,p=16` at the
+ceilings, a separator, and a 16-byte salt in unpadded base64 — so 128 is that
+with room for a longer future parameter set. A reader that takes `params_len`
+on trust allocates whatever a hostile blob asks for.
 
 ```
 AD = bytes 0 .. start of ciphertext

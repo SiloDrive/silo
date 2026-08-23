@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"encoding/hex"
+	"strconv"
 	"testing"
 )
 
@@ -105,7 +106,7 @@ func buildObjectVectors(t *testing.T) objectVectorDoc {
 			t.Fatal(err)
 		}
 		doc.Chunks = append(doc.Chunks, chunkSealVector{
-			Name:          in.Generator + "-" + itoa(in.Length),
+			Name:          in.Generator + "-" + strconv.Itoa(in.Length),
 			Input:         in,
 			PlaintextHash: sc.PlaintextHash.String(),
 			FrameLen:      len(sc.Frame),
@@ -229,18 +230,6 @@ func encodeCommit(c *Commit) func(bool) ([]byte, error) {
 		}
 		return c.Encode()
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
 }
 
 func TestObjectVectors(t *testing.T) {
