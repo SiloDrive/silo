@@ -480,7 +480,8 @@ Enrolment — password login or the OIDC device grant, either one:
 Every request after that:
 
   Authorization: Silo <credential-id>
-  Signature-Input: sig=("@method" "@target-uri" "date" "nonce");created=…
+  Signature-Input: sig=("@method" "@target-uri" "date");created=1755950400
+                       ;nonce="AAECAwQFBgcICQoLDA0ODw"
   Signature: sig=:<base64>:
 ```
 
@@ -496,6 +497,51 @@ a credential. The close relatives are SSH `publickey` auth, mTLS, and AWS
 SigV4; of those SigV4 is the right mental model, because it signs the request
 rather than asserting an identity. The wire format is RFC 9421 HTTP Message
 Signatures, which is the standardised version of what SigV4 does by hand.
+
+#### The wire format, pinned
+
+RFC 9421 is a framework, not a format: it leaves the algorithm, the signature
+encoding, the covered components and the parameter set to the profile using it.
+Every one of those is a place where a signer and a verifier are each correct
+and do not interoperate, so each is pinned here rather than chosen twice.
+
+- **Algorithm: `ecdsa-p256-sha256`.** One algorithm, not a negotiation. The
+  cost note below compares P-256 with Ed25519; that comparison is settled and
+  P-256 wins on platform key stores — the Secure Enclave and most TPMs hold
+  P-256 and will not hold Ed25519, and a non-exportable key is the whole point
+  of this lane.
+- **Signature encoding: raw `r ‖ s`, 64 bytes.** Not DER. Go's
+  `ecdsa.SignASN1` and CryptoKit's `derRepresentation` both default to DER, and
+  a DER signature verified as raw fails; a raw signature parsed as DER fails
+  differently. `rawRepresentation` on the Swift side, `r` and `s` fixed to 32
+  bytes each and left-padded on the Go side.
+- **The stored SPKI is authoritative for the key *and* the curve.** The
+  verifier reads `Credential.public_key`, and nothing the request says about
+  which key or which algorithm to use is honored. A signature the request gets
+  to describe is a signature the request gets to weaken.
+- **The nonce is a signature parameter, not a covered component.**
+  `;nonce="…"` per RFC 9421 §2.3 — *not* `"nonce"` in the component list, which
+  would require inventing a `Nonce:` request header this profile has no other
+  use for. The parameter form is the RFC's own definition, and it keeps the
+  nonce out of the header-canonicalization surface entirely: parameters are
+  covered by the signature regardless, through `@signature-params`. Sixteen
+  random bytes, base64.
+- **`created` is required, and the skew window measures against it.** A
+  signature whose `created` is more than **60 seconds** from the verifier's now
+  — in either direction — is rejected before the key is even loaded. The nonce
+  cache therefore needs to span exactly that window and no longer, which is
+  what keeps it bounded with no cleanup logic beyond expiry.
+- **`created` and `nonce` are the only parameters honored.** Not `expires`, not
+  `alg`, not `tag`. `expires` would let a signer widen its own replay window;
+  `alg` is the algorithm-confusion door, already closed by the previous point.
+- **`keyid` is not used.** The credential id travels in
+  `Authorization: Silo <id>` and nowhere else. A request that carries a `keyid`
+  parameter anyway is **rejected on mismatch, not ignored**: two fields naming
+  the key is two fields that can disagree, and a verifier that silently prefers
+  one of them is the confused-deputy bug somebody builds on later.
+
+That list closes every degree of freedom in this lane. A signer and a verifier
+written from it on different days should meet in the middle.
 
 #### The body is mostly not in the signature
 
@@ -547,9 +593,10 @@ with no cleanup logic beyond expiry.
 
 #### Cost, and who cannot play
 
-Ed25519 verification is around fifty microseconds and P-256 about twice that. A
-directory walk issuing a few hundred requests pays single-digit milliseconds in
-total, comfortably under the storage reads it is making anyway.
+P-256 verification is around a hundred microseconds — roughly twice Ed25519's
+fifty, which is the price paid for a key the Secure Enclave will actually hold.
+A directory walk issuing a few hundred requests pays single-digit milliseconds
+in total, comfortably under the storage reads it is making anyway.
 
 The clients that can do this are the ones we control: Porter, the File Provider
 extension, the TUI, the CLI, and any future SFTP frontend by way of SSH keys.
