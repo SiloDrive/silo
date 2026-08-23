@@ -687,34 +687,55 @@ API in a way worth designing for now.
 
 - **A plain library** works exactly as documented above. `entries/{path}`,
   ranged GETs, conditional writes, the block surface, the delta endpoint.
-- **An E2EE library refuses `entries/{path}` outright.** Not "no ranges" and
-  not "not yet" — the server cannot resolve a path at all, because names are
-  AES-SIV ciphertext under a per-directory key derived from the content key,
-  and the server never holds that key. Everything in an encrypted library is
-  addressed by id.
+- **An E2EE library keeps `entries/{path}` for structure and loses it for
+  content.** The line is not where you might guess, so it is worth stating
+  precisely.
 
-This is the threat model showing up in the route table rather than a gap
-somebody will close. Build **one interface with two implementations** — the
-thing that answers *list this directory*, *read this file*, *write these
-bytes* — rather than branching on `e2ee` at each call site. The plain
-implementation is what exists today; the encrypted one is below.
+**The server can route on an encrypted path, and you supply it.** Names are
+AES-SIV ciphertext, and SIV is used *because* it is deterministic: you compute
+the same bytes the directory object holds, base64url-encode each segment
+(unpadded, RFC 4648 §5) and send that as the path. The server matches
+ciphertext against ciphertext without knowing what either says. So resolve,
+`HEAD`, listing, delete and move all work on an E2EE library — a listing comes
+back with ciphertext names and you decrypt them.
 
-**Reading an E2EE library, by id:**
+Two things do not, and both are about bytes rather than names:
+
+- **Content reads.** The stored bytes are per-chunk sealed, so a byte range of
+  the plaintext is not a byte range of anything the server holds. Read the
+  manifest's chunk list and fetch chunks.
+- **All writes.** The server cannot chunk an encrypted library — the chunker
+  seed is derived from the content key — and cannot build a manifest or a
+  directory object. Writes are addressed by id, below.
+
+So: **structure by path, content and writes by id.** Build one interface with
+two implementations — the thing that answers *list this directory*, *read this
+file*, *write these bytes* — rather than branching on `e2ee` at each call site.
+
+**Reading an E2EE library:**
+
+```
+GET  repos/{repo}/entries/{ct-path}              → listing, names as ciphertext
+GET  repos/{repo}/entries/{ct-path}?type=blocks  → the ordered chunk list
+GET  repos/{repo}/blocks/{id}                    → chunk ciphertext → decrypt
+```
+
+or straight down the object graph, which is what a cold start does:
 
 ```
 GET  repos/{repo}                      → head_commit_id
 GET  repos/{repo}/objects/{commit}     → decode → root directory id
 GET  repos/{repo}/objects/{dir}        → decrypt names → child ids and types
 GET  repos/{repo}/objects/{manifest}   → chunk list, or the inline bytes
-GET  repos/{repo}/blocks/{id}          → chunk ciphertext → decrypt
 ```
 
-**Resolving a depth-N path is N sequential fetches**, and no amount of
-cleverness removes it: encrypting a path segment needs its parent directory's
-salt, so the parent has to be read before the child can be named. Cache the
-salt map beside your local index — a cold resolve is a tree walk, and that is
-why the local index earns its keep here in a way it does not on a plain
-library.
+**Encrypting a depth-N path costs N sequential fetches the first time**, and no
+amount of cleverness removes it: each segment's key is derived from its parent
+directory's salt, so the parent has to be read before the child can be named.
+That is a cost you pay to *build* the ciphertext path, not one the server pays
+to route it. Cache the salt map beside your local index — a cold resolve is a
+tree walk, and that is why the local index earns its keep here in a way it does
+not on a plain library.
 
 **Writing, and this shape is the same for both library types:**
 

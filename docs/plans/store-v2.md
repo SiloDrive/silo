@@ -1367,12 +1367,24 @@ Phases are sequential on the branch; each leaves the tree working.
    head, and a writer that loses re-reads rather than having its edit merged
    for it.
 
-   *`entries/{path}` is a plain-library surface.* The server cannot resolve a
-   path, list a directory or name a file in an E2EE library: names are
-   ciphertext under a per-directory key derived from CK. The path-addressed
-   API therefore refuses encrypted libraries outright. This is not a gap to
-   close later — it is the threat model arriving in the route table, and a
-   version of it that worked would mean the server held the key.
+   *`entries/{path}` keeps structure and loses content under E2EE* —
+   **corrected 2026-08-23**, having first been written down as "refuses
+   encrypted libraries outright". That was wrong, and the Names section says
+   so in as many words: SIV is deterministic *because* `entries/{path}` routes
+   on the ciphertext. A client encrypts each segment, base64urls it, and sends
+   it; the server matches ciphertext against ciphertext and never learns what
+   either says. Resolve, `HEAD`, listing, delete and move therefore all work on
+   an E2EE library, and a listing returns ciphertext names for the client to
+   decrypt.
+
+   What the server genuinely cannot do is anything with the *bytes*. A byte
+   range of the plaintext is not a byte range of a per-chunk sealed object, so
+   content reads go through the manifest and the chunks; and it cannot chunk
+   (the seed is CK's), cannot build a manifest and cannot build a directory
+   object, so every write is by id. **Structure by path, content and writes by
+   id.** The blunter version of this rule would have cost `changes?since=` its
+   paths for no reason — the delta can carry ciphertext paths just as the
+   entries route can.
 
    *So the write shape for an E2EE library is by id, and it is the one both
    types share.* `POST blocks/missing`, `PUT blocks/{id}` and batched
