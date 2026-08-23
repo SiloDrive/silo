@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/dkam/silo/fileserver/repomgr"
@@ -193,5 +194,96 @@ func TestNamingAnAbsentChunkIsRefused(t *testing.T) {
 		map[string]string{"repoid": repoID, "path": "holey.dat"}, body)
 	if w.Code != http.StatusFailedDependency {
 		t.Fatalf("naming an absent chunk = %d (%s), want 424", w.Code, w.Body.String())
+	}
+}
+
+// A name the rest of the server would refuse must not enter a library through
+// a batch. objmgr.SplitPath rejects only "." and "..", so length, encoding and
+// the ignore list are this package's rule — and the batch was the one write
+// path that did not apply it.
+func TestABatchRefusesANameTheSingleOpPathWouldRefuse(t *testing.T) {
+	repoID, acct := storeV2Library(t)
+	before, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	long := strings.Repeat("n", 300)
+	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
+		map[string]string{"repoid": repoID},
+		[]byte(`{"ops":[{"op":"mkdir","path":"/fine"},{"op":"mkdir","path":"/`+long+`"}]}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("batch with a 300-character name = %d (%s), want 400", w.Code, w.Body.String())
+	}
+
+	after, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.HeadCommitID != before.HeadCommitID {
+		t.Error("a refused batch still moved the head")
+	}
+}
+
+// An unknown verb is refused before any of the batch is applied, so a typo in
+// the last operation of a long batch costs nothing — no manifests built, no
+// tree rewritten, nothing to throw away.
+func TestABatchRefusesAnUnknownOpBeforeApplyingAnything(t *testing.T) {
+	repoID, acct := storeV2Library(t)
+	before, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
+		map[string]string{"repoid": repoID},
+		[]byte(`{"ops":[{"op":"mkdir","path":"/a"},{"op":"frobnicate","path":"/b"}]}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("batch with an unknown op = %d (%s), want 400", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if idx, _ := out["index"].(float64); int(idx) != 1 {
+		t.Errorf("index = %v, want 1", out["index"])
+	}
+
+	after, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.HeadCommitID != before.HeadCommitID {
+		t.Error("the head moved for a batch that was never applied")
+	}
+}
+
+// The commit_id a batch reports is the commit it just minted.
+//
+// It used to be read back out of the library row after the swap, which is a
+// query for a value the server had just written — and one that returns a
+// different writer's commit if theirs lands in between.
+func TestABatchReportsTheCommitItMinted(t *testing.T) {
+	repoID, acct := storeV2Library(t)
+
+	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
+		map[string]string{"repoid": repoID}, []byte(`{"ops":[{"op":"mkdir","path":"/d"}]}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch = %d (%s)", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if changed, _ := out["changed"].(bool); !changed {
+		t.Error("changed = false for a batch that made a directory")
+	}
+
+	after, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := out["commit_id"].(string); got != after.HeadCommitID {
+		t.Errorf("commit_id = %q, want the new head %q", got, after.HeadCommitID)
 	}
 }

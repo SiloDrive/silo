@@ -41,16 +41,39 @@ const errE2EEWriteByID = "This library is end-to-end encrypted; write its object
 // everywhere. Anything unrecognised falls through to writeCommitErr, which
 // owns the contention-versus-breakage decision and keeps it.
 func writeTreeErr(w http.ResponseWriter, r *http.Request, err error, notFound, what string) {
+	if fail := treeFailure(err, notFound); fail != nil {
+		http.Error(w, fail.message, fail.code)
+		return
+	}
+	writeCommitErr(w, r, err, what)
+}
+
+// treeFailure is that fixed set as a value rather than a response, for the
+// callers that cannot let the check answer for them — a batch names the
+// operation that failed, so it needs the status without the writing.
+//
+// It is the same table for both, which is the point: before this, a batch had
+// its own copy, and the copies had already diverged. Writing a file over an
+// existing directory answered 409 inside a batch and 500 outside it, on the
+// same library. nil means "not one of these", and the caller decides
+// what an unrecognised error is — for the wire that is writeCommitErr, which
+// owns the contention-versus-breakage decision and keeps it.
+func treeFailure(err error, notFound string) *batchFailure {
 	switch {
 	case errors.Is(err, objmgr.ErrExists):
-		http.Error(w, "Entry already exists", http.StatusConflict)
+		return &batchFailure{http.StatusConflict, "Entry already exists"}
 	case errors.Is(err, objmgr.ErrNotFound):
-		http.Error(w, notFound, http.StatusNotFound)
-	case errors.Is(err, objmgr.ErrNoContentKey):
-		http.Error(w, errE2EEWriteByID, http.StatusForbidden)
-	default:
-		writeCommitErr(w, r, err, what)
+		return &batchFailure{http.StatusNotFound, notFound}
+	case errors.Is(err, objmgr.ErrIsDir):
+		return &batchFailure{http.StatusConflict, "That path is a directory"}
+	case errors.Is(err, objmgr.ErrNotDir):
+		return &batchFailure{http.StatusConflict, "A path component is not a directory"}
+	case errors.Is(err, objmgr.ErrInvalidPath):
+		return &batchFailure{http.StatusBadRequest, err.Error()}
+	case errors.Is(err, objmgr.ErrNoContentKey), errors.Is(err, objmgr.ErrSealedChunks):
+		return &batchFailure{http.StatusForbidden, errE2EEWriteByID}
 	}
+	return nil
 }
 
 // defaultFileMode is the mode a server-written regular file gets. The format
@@ -80,10 +103,21 @@ const defaultDirMode = 0o755
 // to the head that won, not re-proposed against the one that lost. It is
 // handed the attempt's timestamp too, so the mtime a dirent records and the
 // commit's created_at are the same instant rather than two calls to the clock.
-func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store, root store.ID, now int64) (store.ID, error)) (store.ID, bool, error) {
+//
+// The commit id comes back because this is the function that has it, and a
+// caller that needs it otherwise re-reads the library row to recover a value
+// that was just written — and can read back a different writer's commit that
+// landed in between. A zero id means nothing was committed, which is a real
+// outcome rather than a failure: a mutation that changed nothing mints no
+// commit, so the head is still the one the caller already holds.
+//
+// An error from the mutation abandons the whole attempt: no commit, no retry,
+// and the tree is left exactly as it was. That is what makes it safe for a
+// caller applying several changes at once to stop partway.
+func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store, root store.ID, now int64) (store.ID, error)) (store.ID, store.ID, error) {
 	st, err := repo.Store()
 	if err != nil {
-		return store.ID{}, false, err
+		return store.ID{}, store.ID{}, err
 	}
 
 	head := repo
@@ -93,17 +127,17 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 		// about to publish.
 		gcID, err := repomgr.GetCurrentGCID(head.StoreID)
 		if err != nil {
-			return store.ID{}, false, fmt.Errorf("failed to read gc id: %w", err)
+			return store.ID{}, store.ID{}, fmt.Errorf("failed to read gc id: %w", err)
 		}
 
 		oldRoot, err := store.ParseID(head.RootID)
 		if err != nil {
-			return store.ID{}, false, err
+			return store.ID{}, store.ID{}, err
 		}
 		now := time.Now().Unix()
 		newRoot, err := mutate(st, oldRoot, now)
 		if err != nil {
-			return store.ID{}, false, err
+			return store.ID{}, store.ID{}, err
 		}
 
 		// A mutation that changed nothing mints no commit. The tree is
@@ -112,12 +146,12 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 		// parent's would make changes?since= report a modification that did
 		// not happen.
 		if newRoot == oldRoot {
-			return oldRoot, false, nil
+			return oldRoot, store.ID{}, nil
 		}
 
 		parent, err := store.ParseID(head.HeadCommitID)
 		if err != nil {
-			return store.ID{}, false, err
+			return store.ID{}, store.ID{}, err
 		}
 		commitID, err := st.PutCommit(&store.Commit{
 			Root:      newRoot,
@@ -126,7 +160,7 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 			Author:    author,
 		})
 		if err != nil {
-			return store.ID{}, false, err
+			return store.ID{}, store.ID{}, err
 		}
 
 		_, err = updateBranch(repo.ID, head.StoreID, headMove{
@@ -136,10 +170,10 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 			Ctime:    now,
 		}, head.HeadCommitID, "", true, gcID)
 		if err == nil {
-			return newRoot, true, nil
+			return newRoot, commitID, nil
 		}
 		if errors.Is(err, ErrGCConflict) {
-			return store.ID{}, false, err
+			return store.ID{}, store.ID{}, err
 		}
 
 		// Lost the head, or lost it to a GC generation change. Re-read and
@@ -148,7 +182,7 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 		// ones the losing commit orphaned are the collector's business.
 		head, err = repomgr.GetWithReason(repo.ID)
 		if err != nil {
-			return store.ID{}, false, err
+			return store.ID{}, store.ID{}, err
 		}
 	}
 	// Wrapped in the sentinel the Seafile lane's own bounded loop uses, so
@@ -157,5 +191,5 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 	// usually succeed. Left bare it fell to the default arm — a 500 with no
 	// Retry-After, filed to Sentry — which is exactly the outcome
 	// docs/bugs/fixed/write-contention-returns-500.md exists to prevent.
-	return store.ID{}, false, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", commitAttempts, repo.ID, ErrRetriesExhausted)
+	return store.ID{}, store.ID{}, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", commitAttempts, repo.ID, ErrRetriesExhausted)
 }

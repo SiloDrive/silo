@@ -40,6 +40,17 @@ import (
 // for an E2EE library, not a failure.
 var ErrNoContentKey = errors.New("objmgr: operation needs the library's content key")
 
+// ErrSealedChunks refuses to assemble a manifest from chunks already stored in
+// an E2EE library.
+//
+// Not a permission rule — an impossibility, and worth writing down as one. A
+// sealed chunk is opened with a key derived from its PLAINTEXT hash, and that
+// hash lives only in the manifest's sealed section. So building the manifest
+// needs the plaintext hashes, and getting the plaintext hashes needs the
+// manifest. An encrypted client already holds both, which is why it builds its
+// manifest itself and PUTs it by id.
+var ErrSealedChunks = errors.New("objmgr: a manifest cannot be assembled from sealed chunks")
+
 // ErrIDMismatch reports bytes that do not hash to the id they were offered
 // under.
 var ErrIDMismatch = errors.New("objmgr: content does not match its id")
@@ -145,6 +156,43 @@ func (s *Store) HasChunk(id store.ID) (bool, error) {
 	return s.chunks.Exists(s.storeID, id.String())
 }
 
+// ChunkSize returns a chunk's plaintext length without reading it.
+//
+// This is the number a manifest records, and it is derived rather than read
+// because storage framing is exactly the difference: a sealed chunk is
+// TagSize longer on disk than the bytes it holds, and store.ChunkRef pins
+// Size as plaintext so a client can map a read offset onto a chunk. Deriving
+// it is the same rule putChunkData applies from the other direction.
+//
+// Callers that want a size and nothing else must use this rather than
+// GetChunk. A 4 MiB chunk read in full to have its length measured is roughly
+// eight hundred times the cost of asking the filesystem, and allocates the
+// whole chunk to throw it away.
+func (s *Store) ChunkSize(id store.ID) (int64, error) {
+	size, err := s.ChunkStoredSize(id)
+	if err != nil {
+		return 0, err
+	}
+	if !s.e2ee {
+		return size, nil
+	}
+	if size < store.TagSize {
+		return 0, fmt.Errorf("%w: chunk %s is %d bytes, shorter than a sealed frame", ErrIDMismatch, id, size)
+	}
+	return size - store.TagSize, nil
+}
+
+// ChunkStoredSize returns what the chunk occupies on disk, tag included.
+//
+// The distinction from ChunkSize is the whole reason both exist: a caller
+// answering "how many bytes does this take" wants this one, and a caller
+// filling in a manifest wants the plaintext length. Under E2EE they differ by
+// TagSize, and picking the wrong one is invisible in a plain library and wrong
+// in an encrypted one — which is the worst way for a difference to be found.
+func (s *Store) ChunkStoredSize(id store.ID) (int64, error) {
+	return s.chunks.Stat(s.storeID, id.String())
+}
+
 // PutObject stores an already-encoded object under its id, verifying it.
 //
 // This is the server's ingest path for manifests, directories and commits in
@@ -186,7 +234,18 @@ func (s *Store) putEncoded(encoded []byte) (store.ID, error) {
 }
 
 // PutManifest encodes a manifest for this library's type and stores it.
+//
+// Validate runs here rather than in the writers because this is the seam every
+// manifest crosses on its way to becoming an id, and there are three ways to
+// reach it: WriteFile from bytes, ManifestFromChunks from ids already stored,
+// and a handler assembling one directly. A manifest that breaks the format's
+// rules — inline-iff-small, chunk sizes summing to FileSize — must not get an
+// id, because once it has one it is a real object and the failure surfaces on
+// a client at read time, a long way from whoever wrote it.
 func (s *Store) PutManifest(m *store.Manifest) (store.ID, error) {
+	if err := m.Validate(); err != nil {
+		return store.ID{}, err
+	}
 	encoded, err := s.encodeManifest(m)
 	if err != nil {
 		return store.ID{}, err
@@ -372,10 +431,80 @@ func (s *Store) WriteFile(r io.Reader) (*store.Manifest, error) {
 		m.FileSize += ref.Size
 		m.Chunks = append(m.Chunks, ref)
 	}
-	if err := m.Validate(); err != nil {
-		return nil, err
-	}
 	return m, nil
+}
+
+// ManifestFromChunks builds the manifest for a file whose chunks are already
+// stored, named in order.
+//
+// This is WriteFile's other half: the same verb — content in, manifest out —
+// for a resumable upload, where the bytes arrived one chunk at a time through
+// the block surface and all that is left is to say what order they go in. It
+// lives beside WriteFile because it answers the same format questions, and
+// answering them twice is how two writers come to disagree about a 30 KB file
+// and mint two ids for identical content.
+//
+// Every occurrence gets a ref, including a repeat: a file that repeats a chunk
+// — a run of zeroes, a duplicated section — is one object on disk and two
+// entries in the manifest, and the size counts it twice because the repeat is
+// a real part of the file. A missing id is reported once however often it
+// appears, so a client is never told to upload the same bytes twice.
+//
+// A non-empty missing list is not an error: the request was well formed and
+// the content it names is simply not here yet, which is a different thing from
+// a request that can never succeed. The caller gets the list so it can say
+// which chunks to send.
+func (s *Store) ManifestFromChunks(ids []store.ID) (*store.Manifest, []store.ID, error) {
+	if s.e2ee {
+		return nil, nil, ErrSealedChunks
+	}
+
+	var missing []store.ID
+	seen := make(map[store.ID]bool, len(ids))
+	sizes := make(map[store.ID]int64, len(ids))
+	refs := make([]store.ChunkRef, 0, len(ids))
+	var size int64
+
+	for _, id := range ids {
+		sz, known := sizes[id]
+		if !known {
+			var err error
+			sz, err = s.ChunkSize(id)
+			if err != nil {
+				if errors.Is(err, objstore.ErrNotFound) {
+					if !seen[id] {
+						seen[id] = true
+						missing = append(missing, id)
+					}
+					continue
+				}
+				return nil, nil, fmt.Errorf("chunk %s: %w", id, err)
+			}
+			sizes[id] = sz
+		}
+		refs = append(refs, store.ChunkRef{ID: id, Size: sz})
+		size += sz
+	}
+	if len(missing) > 0 {
+		return nil, missing, nil
+	}
+
+	// Whether a file inlines is decided by its size and never by a writer, so a
+	// small file assembled from chunks becomes an inline manifest here — which
+	// means reading those chunks back to put the bytes in. WriteFile decides it
+	// the same way from the other direction.
+	if !store.Inlined(size) {
+		return &store.Manifest{FileSize: size, Chunks: refs}, nil, nil
+	}
+	inline := make([]byte, 0, size)
+	for i, ref := range refs {
+		data, err := s.openChunk(ref, i, len(refs))
+		if err != nil {
+			return nil, nil, err
+		}
+		inline = append(inline, data...)
+	}
+	return &store.Manifest{FileSize: size, Inline: inline}, nil, nil
 }
 
 // putChunkData stores one chunk of plaintext, sealing it first in an E2EE

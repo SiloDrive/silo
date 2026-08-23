@@ -1,7 +1,6 @@
 package silod
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,7 +20,6 @@ import (
 	"github.com/dkam/silo/fileserver/fsmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
@@ -671,15 +669,11 @@ func putEntryFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, 
 //
 // This is the resumable upload's second half, and it transfers no content: the
 // chunks went up one at a time through the block surface, and this names them.
-// The server builds the manifest, which is what limits it to a plain library —
-// an E2EE manifest carries a plaintext hash per chunk, sealed under the
-// content key, and the server has neither. An encrypted client builds its own
-// manifest and PUTs it by id, which is why that surface exists.
 //
-// The size is summed from the store rather than taken from the request. A
-// client-supplied length that disagreed with the chunks would produce a file
-// whose recorded size is a lie, and nothing downstream would notice — reads
-// take their length from the manifest, not from the chunks.
+// The size is never taken from the request. A client-supplied length that
+// disagreed with the chunks would produce a file whose recorded size is a lie,
+// and nothing downstream would notice — reads take their length from the
+// manifest, not from the chunks.
 func putEntryChunks(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path, fileName string, ids []string) {
 	acct := middleware.GetAccount(r)
 
@@ -689,60 +683,22 @@ func putEntryChunks(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, 
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	if repo.Format.E2EE {
-		http.Error(w, errE2EEWriteByID, http.StatusForbidden)
-		return
-	}
 
-	parsed := make([]store.ID, 0, len(ids))
-	for _, raw := range ids {
-		id, err := store.ParseID(raw)
-		if err != nil {
-			http.Error(w, "Not a chunk id: "+raw, http.StatusBadRequest)
-			return
-		}
-		parsed = append(parsed, id)
-	}
-
-	refs, missing, err := chunkRefs(st, parsed)
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory chunks for %s in repo %s", path, repo.ID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
+	manifestID, size, missing, fail := chunkManifest(st, ids)
 	// 424 rather than 400: the request is well formed and the content it names
 	// is simply not here yet, and the recovery is exact — upload these, then
 	// send this same request again.
 	if len(missing) > 0 {
 		writeEntryJSON(w, http.StatusFailedDependency, map[string]any{
 			"error":   "Some chunks are not on the server; upload them and retry",
-			"missing": missing,
+			"missing": idStrings(missing),
 		})
 		return
 	}
-
-	var size int64
-	for _, ref := range refs {
-		size += ref.Size
-	}
-	if overBound(size) {
-		http.Error(w, "File is too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-
-	m, fail := manifestFor(st, size, refs)
 	if fail != nil {
 		http.Error(w, fail.message, fail.code)
 		return
 	}
-
-	manifestID, err := st.PutManifest(m)
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to store manifest for %s in repo %s", path, repo.ID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
 	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.PutNode(root, path, objmgr.Node{
 			ID: manifestID, Type: store.NodeFile, Name: fileName,
@@ -760,63 +716,58 @@ func putEntryChunks(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, 
 	})
 }
 
-// manifestFor builds the manifest for a file assembled from chunks already in
-// the store.
+// chunkManifest turns a client's ordered list of chunk ids into a stored
+// manifest id, and is the whole of what the single-file path and a batch's
+// create operation have in common.
 //
-// Whether a file inlines is decided by its size and never by a writer, so a
-// small file assembled from chunks becomes an inline manifest here rather than
-// a chunked one — which means reading those chunks back to put the bytes in.
-// Two writers disagreeing about a 30 KB file would mint two manifest ids for
-// identical content, and every reader downstream would see a modification that
-// did not happen.
-func manifestFor(st *objmgr.Store, size int64, refs []store.ChunkRef) (*store.Manifest, *batchFailure) {
-	if !store.Inlined(size) {
-		return &store.Manifest{FileSize: size, Chunks: refs}, nil
-	}
-	var buf bytes.Buffer
-	if err := st.ReadFileRange(&store.Manifest{FileSize: size, Chunks: refs}, 0, -1, &buf); err != nil {
-		return nil, &batchFailure{http.StatusInternalServerError, "Failed to read the chunks"}
-	}
-	return &store.Manifest{FileSize: size, Inline: buf.Bytes()}, nil
-}
-
-// chunkRefs turns an ordered list of chunk ids into the manifest's chunk list,
-// and reports any the store does not hold.
+// Written out at both call sites it was seven decisions duplicated — the
+// refusal, the id parsing, the size bound, the assembly, the write — and they
+// had already drifted where a client could see it. What differs is only how
+// each caller reports a refusal, so that is all each caller keeps: missing
+// chunks come back as a list rather than a rendered answer, because the
+// single-file path names them all and a batch names a count and the first.
 //
-// Every occurrence gets a ref, including a repeat: a file that repeats a chunk
-// — a run of zeroes, a duplicated section — is one object on disk and two
-// entries in the manifest, and the length counts it twice because the repeat
-// is a real part of the file. A missing id is reported once however often it
-// appears, so the client is not told to upload the same bytes twice.
-func chunkRefs(st *objmgr.Store, ids []store.ID) ([]store.ChunkRef, []string, error) {
-	missing := []string{}
-	reported := make(map[store.ID]bool, len(ids))
-	sizes := make(map[store.ID]int64, len(ids))
-	refs := make([]store.ChunkRef, 0, len(ids))
-
-	for _, id := range ids {
-		size, known := sizes[id]
-		if !known {
-			data, err := st.GetChunk(id)
-			if err != nil {
-				if errors.Is(err, objstore.ErrNotFound) {
-					if !reported[id] {
-						reported[id] = true
-						missing = append(missing, id.String())
-					}
-					continue
-				}
-				return nil, nil, fmt.Errorf("failed to read chunk %s: %w", id, err)
-			}
-			size = int64(len(data))
-			sizes[id] = size
+// The upload bound stays here rather than in objmgr because it is server
+// policy and not a rule about the format: another deployment sets it
+// differently, and a manifest that is legal is legal at any size.
+func chunkManifest(st *objmgr.Store, blocks []string) (store.ID, int64, []store.ID, *batchFailure) {
+	ids := make([]store.ID, 0, len(blocks))
+	for _, raw := range blocks {
+		id, err := store.ParseID(raw)
+		if err != nil {
+			return store.ID{}, 0, nil, &batchFailure{http.StatusBadRequest, "Not a chunk id: " + raw}
 		}
-		refs = append(refs, store.ChunkRef{ID: id, Size: size})
+		ids = append(ids, id)
+	}
+
+	m, missing, err := st.ManifestFromChunks(ids)
+	if err != nil {
+		if fail := treeFailure(err, "A chunk is not on the server"); fail != nil {
+			return store.ID{}, 0, nil, fail
+		}
+		return store.ID{}, 0, nil, &batchFailure{http.StatusInternalServerError, "Failed to assemble the manifest"}
 	}
 	if len(missing) > 0 {
-		return nil, missing, nil
+		return store.ID{}, 0, missing, nil
 	}
-	return refs, nil, nil
+	if overBound(m.FileSize) {
+		return store.ID{}, 0, nil, &batchFailure{http.StatusRequestEntityTooLarge, "File is too large"}
+	}
+
+	id, err := st.PutManifest(m)
+	if err != nil {
+		return store.ID{}, 0, nil, &batchFailure{http.StatusInternalServerError, "Failed to write the manifest"}
+	}
+	return id, m.FileSize, nil, nil
+}
+
+// idStrings renders ids for a JSON reply.
+func idStrings(ids []store.ID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id.String())
+	}
+	return out
 }
 
 // putEntryBlocks commits a file whose content is already in the store, named

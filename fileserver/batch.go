@@ -63,6 +63,11 @@ type batchFailure struct {
 	message string
 }
 
+// errUnsupportedOp names the operations both lanes accept. One string because
+// the set is one set: a client reading it after a typo must not be told
+// different things depending on which lane its library is on.
+const errUnsupportedOp = `Unsupported op; the operations are "mkdir", "delete", "move", "copy" and "create"`
+
 func batchHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
 	user := acct.Email
@@ -125,12 +130,7 @@ func batchHandler(w http.ResponseWriter, r *http.Request) {
 			// Nothing is committed, so nothing has to be undone: every tree
 			// written so far is an unreferenced object, which is exactly what
 			// an abandoned upload leaves behind and is handled the same way.
-			writeEntryJSON(w, fail.code, map[string]any{
-				"error": fail.message,
-				"index": i,
-				"op":    op.Op,
-				"path":  op.Path,
-			})
+			batchFailed(w, i, op, fail)
 			return
 		}
 		root = next
@@ -186,8 +186,7 @@ func applyBatchOp(repo *repomgr.Repo, root, user string, op batchOp) (string, *b
 	case "create":
 		return batchCreate(repo, root, user, path, op.Blocks)
 	default:
-		return "", &batchFailure{http.StatusBadRequest,
-			`Unsupported op; the operations are "mkdir", "delete", "move", "copy" and "create"`}
+		return "", &batchFailure{http.StatusBadRequest, errUnsupportedOp}
 	}
 }
 

@@ -151,7 +151,13 @@ func chunkInventory(st *objmgr.Store, ids []store.ID) (missing []string, size in
 	for _, id := range ids {
 		known, ok := seen[id]
 		if !ok {
-			data, err := st.GetChunk(id)
+			// ChunkStoredSize and not GetChunk: the only thing wanted is the
+			// number, and reading a 4 MiB chunk to measure it costs some eight
+			// hundred times a stat and allocates the whole chunk to throw it
+			// away — on the one endpoint whose entire purpose is to avoid
+			// moving those bytes. Stored and not plaintext, per the paragraph
+			// above.
+			sz, err := st.ChunkStoredSize(id)
 			if err != nil {
 				if errors.Is(err, objstore.ErrNotFound) {
 					seen[id] = -1
@@ -160,7 +166,7 @@ func chunkInventory(st *objmgr.Store, ids []store.ID) (missing []string, size in
 				}
 				return nil, 0, fmt.Errorf("failed to read chunk %s: %w", id, err)
 			}
-			known = int64(len(data))
+			known = sz
 			seen[id] = known
 		}
 		if known < 0 {

@@ -218,3 +218,27 @@ func TestAStoreV2UploadOverTheLimitIsRefusedNotTruncated(t *testing.T) {
 		})
 	}
 }
+
+// Writing a file over an existing directory is refused as a conflict, not
+// reported as a server fault.
+//
+// writeTreeErr's whole reason for existing is that the set of objmgr sentinels
+// deserving an answer other than 500 is fixed, and every handler was deciding
+// it again. It had three arms; the batch had six; so this request answered 409
+// inside a batch and 500 outside it, on the same library. One table now, and
+// this is an arm that was missing from it.
+func TestWritingAFileOverADirectoryIsAConflictNotAServerError(t *testing.T) {
+	repoID, acct := storeV2Library(t)
+
+	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
+		map[string]string{"repoid": repoID}, []byte(`{"ops":[{"op":"mkdir","path":"/d"}]}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("mkdir = %d (%s)", w.Code, w.Body.String())
+	}
+
+	vars := map[string]string{"repoid": repoID, "path": "d"}
+	w = do(t, putEntry, acct, http.MethodPut, "/entries/d", vars, []byte("nope"))
+	if w.Code != http.StatusConflict {
+		t.Errorf("PUT over a directory = %d (%s), want 409", w.Code, w.Body.String())
+	}
+}
