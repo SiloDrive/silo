@@ -1289,6 +1289,20 @@ Phases are sequential on the branch; each leaves the tree working.
    while the old ones are still here. `list`, `remove` and `readAt` have no
    caller until phases 4 and 5; pinning the shape now is the point of doing
    this step here.
+
+   **Step 3 landed 2026-08-23**: [`objmgr`](../../fileserver/objmgr), the join
+   between the format and the seam — chunk, manifest, directory and commit
+   stores, plus `WriteFile`/`ReadFile`. It sits beside `fsmgr`/`blockmgr`/
+   `commitmgr` rather than replacing them yet. A `Store` has **three** states,
+   not two: plain, E2EE-with-key, and E2EE-without — the server's permanent
+   view of an encrypted library, where bytes go in and out under verified ids
+   and manifests give up their public chunk list, and everything else returns
+   `ErrNoContentKey`. That third state is the product, not a degraded mode.
+   `New` refuses a seed that disagrees with the library type, since an E2EE
+   library on the plain seed would make `seal_hash` reproducible without the
+   key. It also needed `store.DecodeManifestPublic`, which did not exist —
+   without it a server cannot enumerate an E2EE library's chunks at all, and a
+   server that cannot enumerate them can never reclaim one.
 3. **E2EE.** — **folded into phase 2, 2026-08-23.** Identity keys, salt
    endpoint, split-derivation login (with or after auth.md's rewrite), CK
    wrapping, library creation with client UUIDs, Option A names, convergent
