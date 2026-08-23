@@ -1062,7 +1062,8 @@ Phases are sequential on the branch; each leaves the tree working.
    X25519 content-key wraps, recovery codes.
    No server changes, by design. This is the artifact porter-mac builds
    against, so it lands first and alone.
-2. **Server store cutover, loose chunks.** New ids, manifests, per-library
+2. **Server store cutover, loose chunks — and E2EE with it** (phase 3 folded
+   in; see below). New ids, manifests, per-library
    params in the catalog, keyed chunker — on the existing fs backend,
    write-temp-rename, no packs yet. Delete the Seafile object formats, the
    JSON encoder, `keycache`, `parseCryptKey`, the `IsEncrypted` branches in
@@ -1072,10 +1073,30 @@ Phases are sequential on the branch; each leaves the tree working.
    write/seal, ranged read, list, delete — with the loose-object store as a
    degenerate implementation (one chunk per "pack", seal a no-op), so phase
    4 swaps implementations, not interfaces, and the seam changes shape once.
-3. **E2EE.** Identity keys, salt endpoint, split-derivation login (with or
-   after auth.md's rewrite), CK wrapping, library creation with client UUIDs,
-   Option A names, convergent content crypto in the shared package, TUI and
-   porter-fuse reading/writing encrypted libraries.
+
+   **Step 1 landed 2026-08-23**: the catalog carries the chunker. `Repo` gains
+   the algorithm, sizes, normalisation and the e2ee flag, with no DEFAULT — a
+   creation path that forgets them fails at the INSERT. The seed is not stored,
+   because a plain library and an E2EE one derive it differently from the same
+   row. Parameters are validated on every read, so a row describing no chunker
+   makes the library corrupted rather than merely unusual. `CreateRepo` refuses
+   an E2EE library outright: its initial commit is sealed under a key the
+   server never holds, which is the first thing the fold above has to build.
+3. **E2EE.** — **folded into phase 2, 2026-08-23.** Identity keys, salt
+   endpoint, split-derivation login (with or after auth.md's rewrite), CK
+   wrapping, library creation with client UUIDs, Option A names, convergent
+   content crypto in the shared package, TUI and porter-fuse reading/writing
+   encrypted libraries.
+
+   The split existed to keep each step small, and it was written assuming the
+   phases would ship in order to somebody. There is nobody: no installs, no
+   upgrade path, and decision 9 makes E2EE the default, so the plain-only case
+   is not even the common one. Building `serveFile` and `putEntryFile` against
+   plain libraries and then rewriting them for sealed manifests and encrypted
+   names is work that exists only because of a phase boundary. Both library
+   types are live from the start of the cutover instead; what phase 2 gains is
+   the client-side CK plumbing and an earlier coupling to auth.md's login
+   rewrite, and what it loses is one full rewrite of the read and write paths.
 4. **Packs.** Pack format, per-pack indexes, `storage.key` generation +
    backup-set wiring + init warning, recovery scan. The fs backend becomes the
    pack store; step 2's loose store was the scaffold.
