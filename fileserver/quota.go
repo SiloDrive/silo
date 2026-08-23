@@ -10,11 +10,6 @@ import (
 	"github.com/dkam/silo/fileserver/repomgr"
 )
 
-// InfiniteQuota indicates that the quota is unlimited.
-const (
-	InfiniteQuota = -2
-)
-
 func checkQuota(repoID string, delta int64) (int, error) {
 	if repoID == "" {
 		err := fmt.Errorf("bad argumets")
@@ -46,7 +41,7 @@ func checkQuota(repoID string, delta int64) (int, error) {
 		return -1, err
 	}
 
-	if quota == InfiniteQuota {
+	if quota == option.InfiniteQuota {
 		return 0, nil
 	}
 	usage, err := getUserUsage(user)
