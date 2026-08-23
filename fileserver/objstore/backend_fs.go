@@ -8,6 +8,7 @@ package objstore
 
 import (
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -44,10 +45,22 @@ func newFSBackend(seafileDataDir string, objType string) (*fsBackend, error) {
 	return backend, nil
 }
 
-// sha1Hash is the digest a verified write of a legacy object is checked
-// against. It lives here rather than at the call site so that the one place
-// that knows this store's ids are SHA-1 is the store.
-func sha1Hash() hash.Hash { return sha1.New() }
+// verifierFor returns the digest an id names, chosen by the id's width.
+//
+// A 40-character id is SHA-1 — a commit, fs object or block from the format
+// being replaced. A 64-character id is SHA-256 — a store-v2 chunk, manifest,
+// directory or commit. There is exactly one right answer per width, and both
+// widths are in the store at once during the cutover, so deriving it here
+// beats threading a hash choice through every caller and giving each one a
+// chance to pick the wrong one.
+//
+// validPackID has already established that the width is one of the two.
+func verifierFor(id string) hash.Hash {
+	if len(id) == sha256.Size*2 {
+		return sha256.New()
+	}
+	return sha1.New()
+}
 
 // validPackID reports whether an id is one this store will build a path from.
 //

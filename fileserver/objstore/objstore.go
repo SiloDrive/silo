@@ -49,11 +49,19 @@ const (
 	TypeCommits = "commits"
 	TypeFS      = "fs"
 	TypeBlocks  = "blocks"
+
+	// The store-v2 stores. Chunks are the large content objects — the ones
+	// packs exist for — and objects are the small ones that describe them:
+	// manifests, directories and commits. Separate because their access
+	// patterns and their eventual packing are different, the same way blocks
+	// and fs objects are separate today.
+	TypeChunks  = "chunks"
+	TypeObjects = "objects"
 )
 
 // Types lists every object store a repository has, for callers that must
 // cover all of them.
-var Types = []string{TypeCommits, TypeFS, TypeBlocks}
+var Types = []string{TypeCommits, TypeFS, TypeBlocks, TypeChunks, TypeObjects}
 
 // Root returns the directory holding every object store.
 func Root(seafileDataDir string) string {
@@ -195,10 +203,14 @@ func (s *ObjectStore) Write(repoID string, objID string, r io.Reader, sync bool)
 // WriteVerified writes an object and publishes it only if its content hashes
 // to objID.
 //
-// For blocks — the only object type whose id is the SHA-1 of exactly the bytes
-// stored — this is the invariant of the store itself, so it is enforced here
-// rather than at each caller. Commit and fs ids are computed over other
-// representations and cannot use this.
+// This is for the object types whose id is the hash of exactly the bytes
+// stored: blocks in the format being replaced, and every store-v2 object —
+// chunks, manifests, directories and commits. For those it is the invariant of
+// the store itself, so it is enforced here rather than at each caller. Legacy
+// commit and fs ids are computed over other representations and cannot use it.
+//
+// Which digest is decided by the id's width, not by the caller. See
+// verifierFor.
 //
 // The check runs before the publish, not after the write, which matters: the
 // object may already exist with the correct content, and a verify-then-delete
@@ -207,7 +219,7 @@ func (s *ObjectStore) WriteVerified(repoID string, objID string, r io.Reader, sy
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.write(repoID, objID, r, writeOpts{sync: sync, verify: sha1Hash()})
+	return s.backend.write(repoID, objID, r, writeOpts{sync: sync, verify: verifierFor(objID)})
 }
 
 // Exists reports whether an object is present and usable.
