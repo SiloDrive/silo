@@ -1,6 +1,7 @@
 package objstore
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -229,5 +230,261 @@ func TestObjStoreRejectsInvalidObjectID(t *testing.T) {
 		if _, err := bend.Stat(repoID, id); err == nil {
 			t.Errorf("Stat(%q) returned nil error, want rejection", id)
 		}
+	}
+}
+
+// A 64-character id is a store-v2 chunk or pack. Both widths have to work at
+// once: the old objects are still here while the new ones start arriving.
+const sha256ObjID = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+
+func writeTestObject(t *testing.T, s *ObjectStore, id, content string) {
+	t.Helper()
+	if err := s.Write(repoID, id, strings.NewReader(content), false); err != nil {
+		t.Fatalf("Write(%s): %v", id, err)
+	}
+}
+
+func TestBothIDWidthsAreStorable(t *testing.T) {
+	s := New(seafileConfPath, seafileDataDir, "widths")
+	for _, id := range []string{objID, sha256ObjID} {
+		writeTestObject(t, s, id, "content for "+id)
+		var got strings.Builder
+		if err := s.Read(repoID, id, &got); err != nil {
+			t.Fatalf("Read(%s): %v", id, err)
+		}
+		if got.String() != "content for "+id {
+			t.Fatalf("Read(%s) = %q", id, got.String())
+		}
+	}
+}
+
+// The ranged read is the whole reason the seam changed shape: a chunk read
+// becomes a read of one byte range out of the pack holding it.
+func TestReadAtReturnsOneRange(t *testing.T) {
+	s := New(seafileConfPath, seafileDataDir, "readat")
+	writeTestObject(t, s, objID, "0123456789abcdef")
+
+	for _, tc := range []struct {
+		off  int64
+		n    int
+		want string
+	}{
+		{0, 4, "0123"},
+		{6, 4, "6789"},
+		{12, 4, "cdef"},
+		{15, 1, "f"},
+	} {
+		p := make([]byte, tc.n)
+		got, err := s.ReadAt(repoID, objID, p, tc.off)
+		if err != nil {
+			t.Fatalf("ReadAt(%d,%d): %v", tc.off, tc.n, err)
+		}
+		if got != tc.n || string(p) != tc.want {
+			t.Fatalf("ReadAt(%d,%d) = %q (%d bytes), want %q", tc.off, tc.n, p[:got], got, tc.want)
+		}
+	}
+}
+
+// io.ReaderAt semantics, not Read's. A pack index asking for a frame at a
+// known offset and length has to be able to tell "the pack is shorter than
+// the index says" from "the read happened to be short".
+func TestReadAtPastTheEndReportsEOF(t *testing.T) {
+	s := New(seafileConfPath, seafileDataDir, "readat-eof")
+	writeTestObject(t, s, objID, "0123456789")
+
+	p := make([]byte, 8)
+	n, err := s.ReadAt(repoID, objID, p, 6)
+	if err != io.EOF {
+		t.Fatalf("err = %v, want io.EOF", err)
+	}
+	if n != 4 || string(p[:n]) != "6789" {
+		t.Fatalf("got %q (%d bytes), want %q", p[:n], n, "6789")
+	}
+
+	if _, err := s.ReadAt(repoID, objID, p, 100); err != io.EOF {
+		t.Fatalf("reading entirely past the end: err = %v, want io.EOF", err)
+	}
+}
+
+// One sentinel for absence, whichever backend answered. The tiering logic
+// above this asks "is it here" once rather than once per backend.
+func TestAMissingObjectIsErrNotFound(t *testing.T) {
+	s := New(seafileConfPath, seafileDataDir, "notfound")
+	missing := "1111111111111111111111111111111111111111"
+
+	if _, err := s.Stat(repoID, missing); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Stat: %v, want ErrNotFound", err)
+	}
+	if err := s.Read(repoID, missing, io.Discard); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Read: %v, want ErrNotFound", err)
+	}
+	if _, err := s.ReadAt(repoID, missing, make([]byte, 1), 0); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ReadAt: %v, want ErrNotFound", err)
+	}
+	// Exists is the one that maps it back to an answer rather than an error.
+	exists, err := s.Exists(repoID, missing)
+	if exists || err != nil {
+		t.Errorf("Exists = (%v, %v), want (false, nil)", exists, err)
+	}
+}
+
+func TestListYieldsEveryObjectWithItsSize(t *testing.T) {
+	s := New(seafileConfPath, seafileDataDir, "list")
+	want := map[string]int64{
+		objID:           4,
+		sha256ObjID:     11,
+		"a" + objID[1:]: 2,
+	}
+	for id, size := range want {
+		writeTestObject(t, s, id, strings.Repeat("x", int(size)))
+	}
+
+	got := map[string]int64{}
+	if err := s.List(repoID, func(id string, size int64) error {
+		got[id] = size
+		return nil
+	}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("listed %d objects, want %d: %v", len(got), len(want), got)
+	}
+	for id, size := range want {
+		if got[id] != size {
+			t.Errorf("%s listed as %d bytes, want %d", id, got[id], size)
+		}
+	}
+}
+
+// A repo with no objects and a repo that never existed are the same answer,
+// and neither is an error.
+func TestListOfAnEmptyRepoIsEmptyNotAnError(t *testing.T) {
+	s := New(seafileConfPath, seafileDataDir, "list-empty")
+	n := 0
+	if err := s.List("00000000-0000-0000-0000-000000000000", func(string, int64) error {
+		n++
+		return nil
+	}); err != nil {
+		t.Fatalf("List of a repo that was never written: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("listed %d objects in an empty repo", n)
+	}
+}
+
+// The debris of an interrupted write shares a directory with fs and commit
+// objects. It is not a pack: nothing references it, and reporting it as one
+// would have the caller asking a pack index about an id it never held.
+func TestListSkipsTheDebrisOfAnInterruptedWrite(t *testing.T) {
+	s := New(seafileConfPath, seafileDataDir, "list-debris")
+	writeTestObject(t, s, objID, "good")
+
+	fanout := filepath.Join(TypeDir(seafileDataDir, "list-debris"), repoID, objID[:2])
+	if err := os.WriteFile(filepath.Join(fanout, objID[2:]+".123456"), []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var ids []string
+	if err := s.List(repoID, func(id string, _ int64) error {
+		ids = append(ids, id)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != objID {
+		t.Fatalf("listed %v, want just %s", ids, objID)
+	}
+}
+
+func TestListStopsOnTheCallbacksError(t *testing.T) {
+	s := New(seafileConfPath, seafileDataDir, "list-stop")
+	writeTestObject(t, s, objID, "one")
+	writeTestObject(t, s, sha256ObjID, "two")
+
+	sentinel := errors.New("stop")
+	seen := 0
+	err := s.List(repoID, func(string, int64) error {
+		seen++
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("List returned %v, want the callback's error", err)
+	}
+	if seen != 1 {
+		t.Fatalf("callback ran %d times after returning an error", seen)
+	}
+}
+
+// Deletion is idempotent because compaction has to be interruptible at every
+// step: a retry that finds the pack already gone must carry on, not stop.
+func TestRemoveIsIdempotent(t *testing.T) {
+	s := New(seafileConfPath, seafileDataDir, "remove")
+	writeTestObject(t, s, objID, "doomed")
+
+	for i := range 2 {
+		if err := s.Remove(repoID, objID); err != nil {
+			t.Fatalf("Remove call %d: %v", i+1, err)
+		}
+	}
+	if exists, err := s.Exists(repoID, objID); exists || err != nil {
+		t.Fatalf("after Remove: Exists = (%v, %v)", exists, err)
+	}
+	if err := s.Remove(repoID, "bad"); err == nil {
+		t.Error("Remove accepted a malformed id")
+	}
+}
+
+func TestRemoveRepoTakesEverythingAndIsIdempotent(t *testing.T) {
+	s := New(seafileConfPath, seafileDataDir, "remove-repo")
+	writeTestObject(t, s, objID, "one")
+	writeTestObject(t, s, sha256ObjID, "two")
+
+	for i := range 2 {
+		if err := s.RemoveRepo(repoID); err != nil {
+			t.Fatalf("RemoveRepo call %d: %v", i+1, err)
+		}
+	}
+	n := 0
+	if err := s.List(repoID, func(string, int64) error { n++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d objects survived RemoveRepo", n)
+	}
+}
+
+// The backend that could not be built used to be a nil pointer every call
+// dereferenced. It now says what happened, on whichever call reaches it first.
+func TestAStoreWithNoBackendReportsWhy(t *testing.T) {
+	// A data directory that cannot hold a store, because it is a file.
+	blocked := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New(seafileConfPath, blocked, "commits")
+
+	if err := s.Read(repoID, objID, io.Discard); err == nil {
+		t.Error("Read on a store with no backend returned nil")
+	}
+	if err := s.Write(repoID, objID, strings.NewReader("x"), false); err == nil {
+		t.Error("Write on a store with no backend returned nil")
+	}
+	if _, err := s.Stat(repoID, objID); err == nil {
+		t.Error("Stat on a store with no backend returned nil")
+	}
+	if _, err := s.Exists(repoID, objID); err == nil {
+		t.Error("Exists on a store with no backend returned nil")
+	}
+	if err := s.List(repoID, func(string, int64) error { return nil }); err == nil {
+		t.Error("List on a store with no backend returned nil")
+	}
+	if err := s.Remove(repoID, objID); err == nil {
+		t.Error("Remove on a store with no backend returned nil")
+	}
+	if err := s.RemoveRepo(repoID); err == nil {
+		t.Error("RemoveRepo on a store with no backend returned nil")
+	}
+	if _, err := s.ReadAt(repoID, objID, make([]byte, 1), 0); err == nil {
+		t.Error("ReadAt on a store with no backend returned nil")
 	}
 }
