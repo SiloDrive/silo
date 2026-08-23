@@ -1319,6 +1319,25 @@ Phases are sequential on the branch; each leaves the tree working.
    rather than resolved. The server's view can enumerate chunks but cannot
    walk an encrypted tree at all, and there is no version of this where it
    can. Still wired to nothing; the handlers come next.
+
+   **Step 5 landed 2026-08-23**: the inverse — put, mkdir, `mkdir -p`, remove,
+   rename, each returning a new root id. A mutation rewrites the spine from the
+   changed directory up and carries every untouched subtree by id. Three rules
+   about what the rewrite *carries forward* rather than what it writes: the
+   salt comes from the object being replaced (a fresh one would remint every
+   ancestor's id and make `changes?since=` report the whole tree); only the
+   directory whose entry list changed gets a new mtime, and that mtime lives
+   one level up in its parent's entry, so exactly one ancestor is touched
+   beyond having its child id swapped; and the mutation's own timestamp is a
+   separate argument from the node's mtime, because a client preserves a file's
+   mtime, which may be years old, while the directory it lands in changed just
+   now. Rewrites operate on stored entries, so only the one name involved is
+   encrypted or decrypted. Refusals are refusals rather than policy: a put over
+   a directory drops a subtree as a side effect of a write, a rename onto an
+   occupied name is a collision only the caller can decide, and a directory
+   moved into its own subtree detaches from the root. Remove takes the subtree
+   without complaint — older commits still reach every object, and the
+   collector reclaims what nothing can.
 3. **E2EE.** — **folded into phase 2, 2026-08-23.** Identity keys, salt
    endpoint, split-derivation login (with or after auth.md's rewrite), CK
    wrapping, library creation with client UUIDs, Option A names, convergent
@@ -1353,6 +1372,19 @@ Phases are sequential on the branch; each leaves the tree working.
    `storage.key` generation + backup-set wiring + init warning, recovery scan.
    The fs backend becomes the pack store; step 2's loose store was the
    scaffold.
+
+   **The recovery scan also ingests a phase-2 loose store**, pinned 2026-08-23.
+   The folds above are all justified by "there are no installs", and that is
+   true right up until the first one — which will be running the loose store,
+   because phase 2 ships before phase 4. Leaving that unwritten would make the
+   one migration this project claims not to need the one it discovers in
+   production. It is cheap when planned and awkward when not: ids do not
+   change across the boundary, a pack is a container rather than a new naming
+   scheme, and the scan that rebuilds an index from pack bytes is most of the
+   machinery already. Ingest is that scan pointed at loose objects: read each,
+   append its frame to an open pack, index it, delete the loose copy once the
+   index is durable — restartable at every step, because it is the same
+   append → fsync → index update the writer uses.
 5. **GC + compaction.** Tracing mark, `PackStats`, threshold + throttled
    rewrite, with locality and undersize as scheduling inputs and **two
    budgets** — disk I/O for every rewrite, egress for the ones that have to
