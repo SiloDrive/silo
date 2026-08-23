@@ -300,5 +300,42 @@
         }
       ]
     }
+  ],
+  "params_refused": [
+    {
+      "name": "e2ee-under-the-plain-seed",
+      "e2ee": true,
+      "content_key_utf8": "",
+      "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+      "why": "the one the spec states in bold: seal_hash becomes a CK-free content-confirmation oracle, and every other vector here still reproduces"
+    },
+    {
+      "name": "e2ee-with-key-under-the-plain-seed",
+      "e2ee": true,
+      "content_key_utf8": "silo test content key, not secret",
+      "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+      "why": "the same library with the key in hand; holding CK is not permission to ignore the seed"
+    },
+    {
+      "name": "e2ee-under-another-librarys-seed",
+      "e2ee": true,
+      "content_key_utf8": "silo test content key, not secret",
+      "seed": "25f1fe5ca7c8c4b013ac558dfef7f6a00f30e2d72af3fc095fa4345cca693aeb",
+      "why": "a real derived seed, derived from the wrong key — the case a client hits by reusing a Config across libraries"
+    },
+    {
+      "name": "plain-under-a-derived-seed",
+      "e2ee": false,
+      "content_key_utf8": "",
+      "seed": "8499673f3b10cbf1a4af52423d9da81ff0573564697dd85045007f96af1a92a6",
+      "why": "the other direction: a plain library off the published seed dedups against nothing"
+    },
+    {
+      "name": "plain-with-a-content-key",
+      "e2ee": false,
+      "content_key_utf8": "silo test content key, not secret",
+      "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+      "why": "the seed is right and the pair is not; a plain library has no content key"
+    }
   ]
 }

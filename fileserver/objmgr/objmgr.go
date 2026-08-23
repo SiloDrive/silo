@@ -74,44 +74,23 @@ type Store struct {
 
 // New opens a Store on a library.
 //
-// The seed check is the load-bearing one. An E2EE library chunks under a seed
+// The seed check is the load-bearing one, and it is store.Params.ValidateFor
+// rather than a check written out here. An E2EE library chunks under a seed
 // derived from its content key and a plain library under the published
 // constant, and the spec says in as many words that an E2EE library must never
-// chunk under the plain seed — doing so would turn the manifest's seal_hash,
-// which is computed over plaintext hashes, into a content-confirmation oracle
-// that needs no key. Catching a mismatched seed here means it cannot be
-// reached by assembling a Config wrong.
+// chunk under the plain seed — doing so turns the manifest's seal_hash, which
+// is computed over plaintext hashes, into a content-confirmation oracle that
+// needs no key. That is a rule about the format, so it lives with the format:
+// every client is a second implementation of store/, and one that reimplements
+// the codecs but not a rule enforced up here ships the oracle silently.
+// chunker.json's params_refused is the same rule as bytes, for the ports that
+// never read this file.
 func New(cfg Config) (*Store, error) {
-	if err := cfg.Params.Validate(); err != nil {
+	if err := cfg.Params.ValidateFor(cfg.E2EE, cfg.CK); err != nil {
 		return nil, err
-	}
-	if !cfg.E2EE && len(cfg.CK) > 0 {
-		return nil, errors.New("objmgr: a plain library has no content key")
 	}
 	if cfg.StoreID == "" {
 		return nil, errors.New("objmgr: no store id")
-	}
-
-	switch {
-	case len(cfg.CK) > 0:
-		if want := store.ChunkerSeed(cfg.CK); cfg.Params.Seed != want {
-			return nil, errors.New("objmgr: chunker seed is not this library's content key's")
-		}
-	case !cfg.E2EE:
-		if cfg.Params.Seed != store.PlainSeed() {
-			return nil, errors.New("objmgr: a plain library must chunk under the published seed")
-		}
-	default:
-		// An E2EE library with no key here: the seed cannot be checked
-		// against a content key there isn't one of, but it can still be
-		// checked against the one value it must never be. A server view
-		// carrying the published seed would be a store that could chunk an
-		// encrypted library, which is the oracle the case above exists to
-		// prevent — reachable by assembling a Config from a plain library's
-		// parameters and an E2EE flag.
-		if cfg.Params.Seed == store.PlainSeed() {
-			return nil, errors.New("objmgr: an E2EE library must not chunk under the published seed")
-		}
 	}
 
 	s := &Store{

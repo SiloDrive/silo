@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -69,10 +70,11 @@ func loadVectors(t *testing.T, file string, doc any) {
 }
 
 type vectorDoc struct {
-	Format string       `json:"format"`
-	Note   string       `json:"note"`
-	Gear   []gearVector `json:"gear"`
-	Chunks []cutVector  `json:"chunker"`
+	Format        string                `json:"format"`
+	Note          string                `json:"note"`
+	Gear          []gearVector          `json:"gear"`
+	Chunks        []cutVector           `json:"chunker"`
+	ParamsRefused []paramsRefusedVector `json:"params_refused"`
 }
 
 type gearVector struct {
@@ -89,6 +91,26 @@ type cutVector struct {
 	Input  inputVector  `json:"input"`
 	Count  int          `json:"chunk_count"`
 	Chunks []chunkEntry `json:"chunks"`
+}
+
+// The seed rejection vectors. Described rather than stored, like the KDF and
+// identifier ones: what must not happen is a library chunking at all, so there
+// is nothing to commit but the parameters that must be refused.
+//
+// This is the half a port passes every other vector in this file without. Every
+// cut vector above is reproducible whether or not an implementation checks that
+// the seed belongs to the library it is chunking, and an implementation that
+// skips the check produces correct chunks under the wrong seed — which for an
+// E2EE library is a content-confirmation oracle the server needs no key to use.
+type paramsRefusedVector struct {
+	Name string `json:"name"`
+	E2EE bool   `json:"e2ee"`
+	// ContentKey is what the client holds, empty for one holding none. It is
+	// the same key objects.json uses, spelled out so a port can derive the
+	// seeds below rather than copy them.
+	ContentKey string `json:"content_key_utf8"`
+	Seed       string `json:"seed"`
+	Why        string `json:"why"`
 }
 
 type paramsVector struct {
@@ -139,6 +161,12 @@ func (p paramsVector) params(t *testing.T) Params {
 		MaxSize:       p.MaxSize,
 		Normalization: p.Normalization,
 	}
+}
+
+// seedOf is ChunkerSeed as a slice, for the vector table's hex rendering.
+func seedOf(ck []byte) []byte {
+	s := ChunkerSeed(ck)
+	return s[:]
 }
 
 func vectorParams(seed [32]byte) paramsVector {
@@ -212,10 +240,59 @@ func buildVectors(t *testing.T) vectorDoc {
 		v.Count = len(v.Chunks)
 		doc.Chunks = append(doc.Chunks, v)
 	}
+
+	otherCK := []byte("a second library's content key!!!")
+	plain, derived := PlainSeed(), ChunkerSeed(vectorCK)
+	doc.ParamsRefused = []paramsRefusedVector{
+		{"e2ee-under-the-plain-seed", true, "", hex.EncodeToString(plain[:]),
+			"the one the spec states in bold: seal_hash becomes a CK-free content-confirmation " +
+				"oracle, and every other vector here still reproduces"},
+		{"e2ee-with-key-under-the-plain-seed", true, string(vectorCK), hex.EncodeToString(plain[:]),
+			"the same library with the key in hand; holding CK is not permission to ignore the seed"},
+		{"e2ee-under-another-librarys-seed", true, string(vectorCK),
+			hex.EncodeToString(seedOf(otherCK)),
+			"a real derived seed, derived from the wrong key — the case a client hits by " +
+				"reusing a Config across libraries"},
+		{"plain-under-a-derived-seed", false, "", hex.EncodeToString(derived[:]),
+			"the other direction: a plain library off the published seed dedups against nothing"},
+		{"plain-with-a-content-key", false, string(vectorCK), hex.EncodeToString(plain[:]),
+			"the seed is right and the pair is not; a plain library has no content key"},
+	}
 	return doc
 }
 
 func TestVectors(t *testing.T) {
 	checkVectorFile(t, vectorFile, buildVectors(t),
 		"every existing library's ids move, and porter-mac stops interoperating")
+}
+
+// What a port has to pass on top of reproducing every cut above: refuse every
+// parameter set the file says must be refused. Nothing else in this file
+// notices an implementation that omits the seed check — the cuts reproduce
+// either way, which is exactly why this is committed separately.
+func TestTheCommittedParameterRefusalsAreRefused(t *testing.T) {
+	var doc vectorDoc
+	loadVectors(t, vectorFile, &doc)
+	if len(doc.ParamsRefused) == 0 {
+		t.Fatal("the file commits no refused parameters")
+	}
+	for _, v := range doc.ParamsRefused {
+		raw, err := hex.DecodeString(v.Seed)
+		if err != nil || len(raw) != 32 {
+			t.Fatalf("%s: seed is not 32 hex-encoded bytes", v.Name)
+		}
+		p := DefaultParams([32]byte(raw))
+		var ck []byte
+		if v.ContentKey != "" {
+			ck = []byte(v.ContentKey)
+		}
+		if err := p.ValidateFor(v.E2EE, ck); !errors.Is(err, ErrParams) {
+			t.Errorf("%s: accepted, and the vector says it must not (%s): %v", v.Name, v.Why, err)
+		}
+		// The shape rules pass on all of these, which is the point: Validate
+		// cannot see what is wrong here.
+		if err := p.Validate(); err != nil {
+			t.Errorf("%s: refused by the shape check, so it proves nothing about the seed rule: %v", v.Name, err)
+		}
+	}
 }

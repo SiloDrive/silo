@@ -134,6 +134,50 @@ func (p Params) Validate() error {
 	return nil
 }
 
+// ValidateFor reports whether these parameters describe the chunker a library
+// of this type must use. Validate answers "can a chunker be built from this";
+// this answers "is it the right chunker for this library", which is the
+// question with a confidentiality answer.
+//
+// The rule the spec states in bold — an E2EE library must never chunk under
+// the plain seed — lives here rather than in a caller, because a rule enforced
+// above the shared package is a rule the second implementation of that package
+// silently ships without. This one fails quiet: a client that chunks an E2EE
+// library under PlainSeed produces manifests that open, verify and sync, and
+// hands the server a content-confirmation oracle it needs no key to use. There
+// is no error to notice and nothing in the bytes that looks wrong.
+//
+// ck is what the caller holds, not what the library is: e2ee says which kind
+// of library this is, and a nil ck under e2ee is a server, or a client before
+// it has unwrapped anything. That case still gets a check — the seed cannot be
+// compared against a key there isn't one of, but it can be compared against
+// the one value it must never be, which is the value a Config assembled from a
+// plain library's parameters and an E2EE flag would carry.
+//
+// The refusals are pinned in chunker.json's params_refused.
+func (p Params) ValidateFor(e2ee bool, ck []byte) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	switch {
+	case !e2ee && len(ck) > 0:
+		return fmt.Errorf("%w: a plain library has no content key", ErrParams)
+	case len(ck) > 0:
+		if p.Seed != ChunkerSeed(ck) {
+			return fmt.Errorf("%w: the seed is not this content key's", ErrParams)
+		}
+	case !e2ee:
+		if p.Seed != PlainSeed() {
+			return fmt.Errorf("%w: a plain library must chunk under the published seed", ErrParams)
+		}
+	default:
+		if p.Seed == PlainSeed() {
+			return fmt.Errorf("%w: an E2EE library must not chunk under the published seed", ErrParams)
+		}
+	}
+	return nil
+}
+
 // targetBits is floor(log2(target)). The target is not required to be a power
 // of two — restic's is not — so the rule is stated in terms that hold either
 // way, and both masks derive from this one number.
