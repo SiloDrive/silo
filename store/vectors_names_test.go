@@ -2,8 +2,6 @@ package store
 
 import (
 	"encoding/hex"
-	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 )
@@ -37,18 +35,16 @@ type nameVector struct {
 // at sixteen and over it is XORed into its own end. Silo's names sit mostly on
 // the short side, which is the side the RFC's headline example never
 // exercises.
-func nameVectorInputs() []string {
-	return []string{
-		"a",
-		"notes.txt",
-		strings.Repeat("n", 14),
-		strings.Repeat("n", 15),
-		strings.Repeat("n", 16),
-		strings.Repeat("n", 17),
-		strings.Repeat("n", 32),
-		strings.Repeat("n", MaxPlainNameBytes),
-		"Ünïcödé — naïve.pdf",
-	}
+var nameVectorInputs = []string{
+	"a",
+	"notes.txt",
+	strings.Repeat("n", 14),
+	strings.Repeat("n", 15),
+	strings.Repeat("n", 16),
+	strings.Repeat("n", 17),
+	strings.Repeat("n", 32),
+	strings.Repeat("n", MaxPlainNameBytes),
+	"Ünïcödé — naïve.pdf",
 }
 
 func buildNameVectors(t *testing.T) nameVectorDoc {
@@ -81,7 +77,7 @@ func buildNameVectors(t *testing.T) nameVectorDoc {
 			DirSalt: hex.EncodeToString(d.salt[:]),
 			NameKey: hex.EncodeToString(key),
 		}
-		for _, name := range nameVectorInputs() {
+		for _, name := range nameVectorInputs {
 			ct, err := EncryptName(key, name)
 			if err != nil {
 				t.Fatalf("%q: %v", name, err)
@@ -100,42 +96,15 @@ func buildNameVectors(t *testing.T) nameVectorDoc {
 }
 
 func TestNameVectors(t *testing.T) {
-	encoded, err := json.MarshalIndent(buildNameVectors(t), "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded = append(encoded, '\n')
-
-	if *updateVectors {
-		if err := os.WriteFile(nameVectorFile, encoded, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("wrote %s (%d bytes)", nameVectorFile, len(encoded))
-		return
-	}
-	want, err := os.ReadFile(nameVectorFile)
-	if err != nil {
-		t.Fatalf("reading vectors: %v (regenerate with -update)", err)
-	}
-	if string(encoded) != string(want) {
-		t.Fatalf("this build no longer reproduces %s.\n"+
-			"That is a format change: every entry name in every E2EE library "+
-			"re-encrypts, so every directory object id moves. If it is "+
-			"deliberate, regenerate with -update and review the diff.", nameVectorFile)
-	}
+	checkVectorFile(t, nameVectorFile, buildNameVectors(t),
+		"every entry name in every E2EE library re-encrypts, so every directory object id moves")
 }
 
 // What a port has to pass: derive the key from the committed salt, reproduce
 // every ciphertext, and open the committed ciphertexts back to their names.
 func TestNameVectorsAreReproducibleFromTheFile(t *testing.T) {
-	raw, err := os.ReadFile(nameVectorFile)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var doc nameVectorDoc
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatal(err)
-	}
+	loadVectors(t, nameVectorFile, &doc)
 	ck := []byte(doc.ContentKey)
 
 	for _, d := range doc.Directories {

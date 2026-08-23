@@ -20,6 +20,54 @@ var updateVectors = flag.Bool("update", false, "regenerate testdata/vectors")
 
 const vectorFile = "testdata/vectors/chunker.json"
 
+// checkVectorFile is the whole -update protocol, in one place for all three
+// vector files: with the flag it rewrites the file and reports what it wrote,
+// without it the build has to reproduce the committed bytes exactly. drift
+// says what a difference would mean for the format, because that is the only
+// part that differs between the three.
+func checkVectorFile(t *testing.T, file string, doc any, drift string) {
+	t.Helper()
+	encoded, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatalf("encoding vectors: %v", err)
+	}
+	encoded = append(encoded, '\n')
+
+	if *updateVectors {
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, encoded, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("wrote %s (%d bytes)", file, len(encoded))
+		return
+	}
+
+	want, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("reading vectors: %v (regenerate with -update)", err)
+	}
+	if !bytes.Equal(encoded, want) {
+		t.Fatalf("this build no longer reproduces %s.\n"+
+			"That is a format change: %s. If it is deliberate, regenerate "+
+			"with -update and review the diff.", file, drift)
+	}
+}
+
+// loadVectors reads a committed vector file back, for the tests that check a
+// port could reproduce it from the file alone.
+func loadVectors(t *testing.T, file string, doc any) {
+	t.Helper()
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, doc); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type vectorDoc struct {
 	Format string       `json:"format"`
 	Note   string       `json:"note"`
@@ -168,68 +216,6 @@ func buildVectors(t *testing.T) vectorDoc {
 }
 
 func TestVectors(t *testing.T) {
-	got := buildVectors(t)
-	encoded, err := json.MarshalIndent(got, "", "  ")
-	if err != nil {
-		t.Fatalf("encoding vectors: %v", err)
-	}
-	encoded = append(encoded, '\n')
-
-	if *updateVectors {
-		if err := os.MkdirAll(filepath.Dir(vectorFile), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(vectorFile, encoded, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("wrote %s (%d bytes)", vectorFile, len(encoded))
-		return
-	}
-
-	want, err := os.ReadFile(vectorFile)
-	if err != nil {
-		t.Fatalf("reading vectors: %v (regenerate with -update)", err)
-	}
-	if !bytes.Equal(encoded, want) {
-		t.Fatalf("this build no longer reproduces %s.\n"+
-			"That is a format change: every existing library's ids move, and "+
-			"porter-mac stops interoperating. If it is deliberate, regenerate "+
-			"with -update and review the diff.", vectorFile)
-	}
-}
-
-// TestVectorsAreReproducibleFromTheFile is the check a port actually has to
-// pass: read the committed file, rebuild the inputs from their descriptions,
-// and chunk them. It shares no code with the generator above beyond the
-// chunker itself, so a bug in the generator cannot hide here.
-func TestVectorsAreReproducibleFromTheFile(t *testing.T) {
-	raw, err := os.ReadFile(vectorFile)
-	if err != nil {
-		t.Fatalf("reading vectors: %v", err)
-	}
-	var doc vectorDoc
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("decoding vectors: %v", err)
-	}
-	if len(doc.Chunks) == 0 {
-		t.Fatal("vector file describes no cases")
-	}
-	for _, v := range doc.Chunks {
-		t.Run(v.Name, func(t *testing.T) {
-			chunks := chunkAll(t, v.Params.params(t), v.Input.bytes())
-			if len(chunks) != v.Count {
-				t.Fatalf("cut %d chunks, vector says %d", len(chunks), v.Count)
-			}
-			for i, ch := range chunks {
-				want := v.Chunks[i]
-				if int(ch.Offset) != want.Offset || len(ch.Data) != want.Size {
-					t.Fatalf("chunk %d is (offset %d, size %d), vector says (%d, %d)",
-						i, ch.Offset, len(ch.Data), want.Offset, want.Size)
-				}
-				if got := ChunkID(ch.Data).String(); got != want.ID {
-					t.Fatalf("chunk %d id %s, vector says %s", i, got, want.ID)
-				}
-			}
-		})
-	}
+	checkVectorFile(t, vectorFile, buildVectors(t),
+		"every existing library's ids move, and porter-mac stops interoperating")
 }

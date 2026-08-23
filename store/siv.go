@@ -20,13 +20,6 @@ import (
 // surface, and there should never be one: a caller who wanted randomness would
 // be asking for a different scheme, not a different argument.
 
-// sivKeySizes are the total key lengths this implementation accepts. RFC 5297
-// splits the key into equal halves — the left half keys S2V, the right half
-// keys CTR — so a 64-byte key means AES-256 on both, which is what this format
-// uses. The narrower widths exist so the RFC's own test vectors, which are all
-// 128-bit, can be run against the same code the format uses.
-var sivKeySizes = map[int]bool{32: true, 48: true, 64: true}
-
 // SIVKeySize is the key length this format's names use: AES-256 for both
 // halves. It is stated as a constant rather than implied by the derivation,
 // so a port cannot arrive at 32 by reading only the RFC's examples.
@@ -41,20 +34,27 @@ type siv struct {
 	ctr cipher.Block // the right half
 }
 
+// newSIV splits the key and prepares both halves. RFC 5297 splits into equal
+// halves — the left keys S2V, the right keys CTR — so a 64-byte key means
+// AES-256 on both, which is what this format uses and what NewNameCipher is
+// the only caller to allow. The narrower widths are accepted so the RFC's own
+// test vectors, which are all 128-bit, run against the same code.
 func newSIV(key []byte) (*siv, error) {
-	if !sivKeySizes[len(key)] {
+	switch len(key) {
+	case 32, 48, 64:
+	default:
 		return nil, fmt.Errorf("store: SIV key is %d bytes, want 32, 48 or 64", len(key))
 	}
 	half := len(key) / 2
-	s2vKey, err := aes.NewCipher(key[:half])
+	s2vBlock, err := aes.NewCipher(key[:half])
 	if err != nil {
 		return nil, fmt.Errorf("store: SIV S2V cipher: %w", err)
 	}
-	ctrKey, err := aes.NewCipher(key[half:])
+	ctrBlock, err := aes.NewCipher(key[half:])
 	if err != nil {
 		return nil, fmt.Errorf("store: SIV CTR cipher: %w", err)
 	}
-	return &siv{mac: newCMAC(s2vKey), ctr: ctrKey}, nil
+	return &siv{mac: newCMAC(s2vBlock), ctr: ctrBlock}, nil
 }
 
 // s2v is RFC 5297's string-to-vector construction: a CMAC chain over the
@@ -67,15 +67,11 @@ func newSIV(key []byte) (*siv, error) {
 // so the short branch is the hot path, and it is the branch a hand-written
 // implementation is most likely to get wrong. Both are covered by vectors
 // either side of the boundary.
+//
+// The RFC's S2V(<empty>) case is not implemented: seal and open always pass
+// the plaintext as the final component, so components is never empty, and an
+// unreachable branch is one no vector can ever check.
 func (s *siv) s2v(components ...[]byte) [16]byte {
-	if len(components) == 0 {
-		// Unreachable from seal and open, which always pass the plaintext as
-		// a component. Present because the RFC defines it.
-		var one [16]byte
-		one[15] = 1
-		return s.mac.sum(one[:])
-	}
-
 	var zero [16]byte
 	d := s.mac.sum(zero[:])
 	for _, c := range components[:len(components)-1] {
@@ -144,9 +140,7 @@ func (s *siv) open(sealed []byte, ad ...[]byte) ([]byte, error) {
 
 	want := s.s2v(append(append([][]byte(nil), ad...), plain)...)
 	if subtle.ConstantTimeCompare(want[:], v[:]) != 1 {
-		for i := range plain {
-			plain[i] = 0
-		}
+		clear(plain)
 		return nil, ErrDecrypt
 	}
 	return plain, nil

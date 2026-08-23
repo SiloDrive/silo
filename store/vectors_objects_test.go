@@ -3,8 +3,6 @@ package store
 import (
 	"bytes"
 	"encoding/hex"
-	"encoding/json"
-	"os"
 	"testing"
 )
 
@@ -246,42 +244,15 @@ func itoa(n int) string {
 }
 
 func TestObjectVectors(t *testing.T) {
-	encoded, err := json.MarshalIndent(buildObjectVectors(t), "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded = append(encoded, '\n')
-
-	if *updateVectors {
-		if err := os.WriteFile(objectVectorFile, encoded, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("wrote %s (%d bytes)", objectVectorFile, len(encoded))
-		return
-	}
-	want, err := os.ReadFile(objectVectorFile)
-	if err != nil {
-		t.Fatalf("reading vectors: %v (regenerate with -update)", err)
-	}
-	if string(encoded) != string(want) {
-		t.Fatalf("this build no longer reproduces %s.\n"+
-			"That is a format change: every manifest id in every library moves, "+
-			"and porter-mac stops interoperating. If it is deliberate, "+
-			"regenerate with -update and review the diff.", objectVectorFile)
-	}
+	checkVectorFile(t, objectVectorFile, buildObjectVectors(t),
+		"every manifest id in every library moves, and porter-mac stops interoperating")
 }
 
 // The check a port has to pass: rebuild every object from its description and
 // confirm the bytes, then decode the committed hex back and confirm it opens.
 func TestObjectVectorsAreReproducibleFromTheFile(t *testing.T) {
-	raw, err := os.ReadFile(objectVectorFile)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var doc objectVectorDoc
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatal(err)
-	}
+	loadVectors(t, objectVectorFile, &doc)
 	ck := []byte(doc.ContentKey)
 
 	for _, v := range doc.Chunks {

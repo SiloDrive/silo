@@ -38,10 +38,20 @@ const (
 	// MaxCommitBytes bounds an encoded commit.
 	MaxCommitBytes = 128 << 10
 
-	// MaxNameBytes bounds one entry's name field. Plain names cap at 255
-	// bytes; an AES-SIV ciphertext caps at 16 + 175 = 191, which is where the
-	// ~175-character plaintext limit for E2EE libraries comes from.
+	// MaxNameBytes bounds one entry's name field, and with it the base64url
+	// form an encrypted name takes in entries/{path}: that form is itself a
+	// path segment, so it is held to the same ceiling as a plain name. The
+	// two E2EE bounds below are what applying it twice comes to.
 	MaxNameBytes = 255
+	// MaxNameCTBytes bounds an E2EE entry's name ciphertext — the most SIV
+	// bytes whose base64url form still fits MaxNameBytes, since
+	// ceil(4n/3) <= 255 gives n <= 191.
+	MaxNameCTBytes = MaxNameBytes * 3 / 4
+	// MaxPlainNameBytes is the longest filename an E2EE library can hold:
+	// the ciphertext ceiling less the synthetic IV that SIV prepends. Plain
+	// libraries keep the full MaxNameBytes, because their names are not
+	// wrapped in anything.
+	MaxPlainNameBytes = MaxNameCTBytes - SIVOverhead
 	// MaxParents bounds a commit's parent list.
 	MaxParents = 16
 	// MaxAuthorBytes and MaxMessageBytes bound a commit's two free-text

@@ -22,6 +22,14 @@ import (
 // the deterministic example's 14-byte plaintext takes the short branch, the
 // nonce-based example's 47-byte plaintext takes xorend, and every case would
 // fail if bits 31 and 63 of the synthetic IV were not cleared before counting.
+// The two key widths under test, each written once. RFC 5297's own vectors are
+// all 128-bit subkeys; the production width is 256-bit halves.
+const (
+	sivKey128 = "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+	sivKey256 = "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f06f6e6d6c6b6a696867666564636261" +
+		"60f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f"
+)
+
 func TestSIVMatchesPublishedVectors(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -33,7 +41,7 @@ func TestSIVMatchesPublishedVectors(t *testing.T) {
 		{
 			// RFC 5297 A.1
 			name:       "rfc5297/deterministic/128-bit subkeys",
-			key:        "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+			key:        sivKey128,
 			ad:         []string{"101112131415161718191a1b1c1d1e1f2021222324252627"},
 			plaintext:  "112233445566778899aabbccddee",
 			ciphertext: "85632d07c6e8f37f950acd320a2ecc9340c02b9690c4dc04daef7f6afe5c",
@@ -54,7 +62,7 @@ func TestSIVMatchesPublishedVectors(t *testing.T) {
 		},
 		{
 			name:       "empty ad and plaintext/128-bit subkeys",
-			key:        "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+			key:        sivKey128,
 			ad:         nil,
 			plaintext:  "",
 			ciphertext: "f2007a5beb2b8900c588a7adf599f172",
@@ -63,16 +71,15 @@ func TestSIVMatchesPublishedVectors(t *testing.T) {
 			// Exactly on the 16-byte boundary: the first length that takes
 			// xorend rather than the pad-and-double branch.
 			name:       "block-sized plaintext/128-bit subkeys",
-			key:        "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+			key:        sivKey128,
 			ad:         nil,
 			plaintext:  "00112233445566778899aabbccddeeff",
 			ciphertext: "f304f912863e303d5b540e5057c7010c942ffaf45b0e5ca5fb9a56a5263bb065",
 		},
 		{
 			// The production width. Same construction, AES-256 halves.
-			name: "miscreant/deterministic/256-bit subkeys",
-			key: "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f06f6e6d6c6b6a696867666564636261" +
-				"60f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f",
+			name:       "miscreant/deterministic/256-bit subkeys",
+			key:        sivKey256,
 			ad:         []string{"101112131415161718191a1b1c1d1e1f2021222324252627"},
 			plaintext:  "112233445566778899aabbccddee",
 			ciphertext: "f125274c598065cfc26b0e71575029088b035217e380cac8919ee800c126",
@@ -124,8 +131,7 @@ func TestSIVMatchesPublishedVectors(t *testing.T) {
 // must differ from its neighbours.
 func TestSIVBothS2VBranchesAcrossTheBoundary(t *testing.T) {
 	s, err := newSIV(mustHex(t,
-		"fffefdfcfbfaf9f8f7f6f5f4f3f2f1f06f6e6d6c6b6a696867666564636261"+
-			"60f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f"))
+		sivKey256))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +162,7 @@ func TestSIVBothS2VBranchesAcrossTheBoundary(t *testing.T) {
 // to the mode, so the rule has to be explicit: nothing unauthenticated is
 // returned, not even for the caller to look at.
 func TestSIVReleasesNoPlaintextOnAFailedTag(t *testing.T) {
-	s, err := newSIV(mustHex(t, "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"))
+	s, err := newSIV(mustHex(t, sivKey128))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +184,7 @@ func TestSIVReleasesNoPlaintextOnAFailedTag(t *testing.T) {
 }
 
 func TestSIVRefusesKeysItCannotSplit(t *testing.T) {
-	for _, n := range []int{0, 16, 31, 33, 48 + 1, 63, 65, 128} {
+	for _, n := range []int{0, 16, 31, 33, 49, 63, 65, 128} {
 		if _, err := newSIV(make([]byte, n)); err == nil {
 			t.Errorf("a %d-byte key was accepted", n)
 		}

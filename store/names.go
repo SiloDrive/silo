@@ -9,15 +9,6 @@ import (
 	"fmt"
 )
 
-// MaxPlainNameBytes is the longest filename an E2EE library can hold.
-//
-// The arithmetic, so nobody has to rediscover it: a directory entry's name
-// field is capped at 255 bytes, SIV prepends a 16-byte synthetic IV, and the
-// URL form is base64url of the whole thing — ceil(4(16+n)/3) <= 255 gives
-// n <= 175. Plain libraries keep the full 255, because their names are not
-// wrapped in anything.
-const MaxPlainNameBytes = 175
-
 // ErrName reports a name this format will not carry: too long, empty, or
 // holding a byte that would make it a path rather than a name.
 var ErrName = errors.New("invalid entry name")
@@ -47,7 +38,8 @@ func NameKey(ck []byte, salt [DirSaltSize]byte) ([]byte, error) {
 	return key, nil
 }
 
-// ValidName reports whether a plaintext name is one this format will carry.
+// ValidName returns an error if a plaintext name is not one this format will
+// carry, and nil if it is.
 //
 // The path bytes are refused rather than escaped, in both directions. A
 // separator or a NUL inside a name is how a directory entry becomes a path
@@ -68,35 +60,56 @@ func ValidName(name []byte) error {
 	return nil
 }
 
-// EncryptName encrypts one path segment for an E2EE library. The result goes
-// into a directory entry's Name field as raw bytes — never base64, which is
-// the URL encoding only.
-func EncryptName(nameKey []byte, name string) ([]byte, error) {
-	if err := ValidName([]byte(name)); err != nil {
-		return nil, err
-	}
-	if len(name) > MaxPlainNameBytes {
-		return nil, fmt.Errorf("%w: %d bytes, above the %d an E2EE library can carry",
-			ErrName, len(name), MaxPlainNameBytes)
-	}
-	s, err := newSIV(nameKey)
-	if err != nil {
-		return nil, err
-	}
-	return s.seal([]byte(name)), nil
+// NameCipher encrypts and decrypts the entry names of one directory.
+//
+// It exists as a prepared value because the alternative shape — a free
+// function taking the key — hides two AES-256 key schedules and a CMAC subkey
+// derivation inside every call, and names are encrypted once per directory
+// entry. A thousand-entry listing would pay for two thousand key schedules
+// instead of two. Build one per directory and reuse it across the listing.
+//
+// It is also the only place the format's key width is enforced: newSIV accepts
+// the RFC's narrower widths so the RFC's own vectors run against this code, and
+// without this check a caller who derived a 32-byte key would get working,
+// self-consistent names that no conforming client could read.
+type NameCipher struct {
+	siv *siv
 }
 
-// DecryptName reverses EncryptName, and applies ValidName to what comes back.
-func DecryptName(nameKey, ciphertext []byte) (string, error) {
-	if len(ciphertext) > SIVOverhead+MaxPlainNameBytes {
-		return "", fmt.Errorf("%w: ciphertext is %d bytes, above %d",
-			ErrName, len(ciphertext), SIVOverhead+MaxPlainNameBytes)
+// NewNameCipher prepares the cipher for a directory whose name key is
+// nameKey, which must be SIVKeySize bytes — what NameKey returns.
+func NewNameCipher(nameKey []byte) (*NameCipher, error) {
+	if len(nameKey) != SIVKeySize {
+		return nil, fmt.Errorf("store: name key is %d bytes, want %d", len(nameKey), SIVKeySize)
 	}
 	s, err := newSIV(nameKey)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	plain, err := s.open(ciphertext)
+	return &NameCipher{siv: s}, nil
+}
+
+// Encrypt encrypts one path segment. The result goes into a directory entry's
+// Name field as raw bytes — never base64, which is the URL encoding only.
+func (c *NameCipher) Encrypt(name string) ([]byte, error) {
+	plain := []byte(name)
+	if err := ValidName(plain); err != nil {
+		return nil, err
+	}
+	if len(plain) > MaxPlainNameBytes {
+		return nil, fmt.Errorf("%w: %d bytes, above the %d an E2EE library can carry",
+			ErrName, len(plain), MaxPlainNameBytes)
+	}
+	return c.siv.seal(plain), nil
+}
+
+// Decrypt reverses Encrypt, and applies ValidName to what comes back.
+func (c *NameCipher) Decrypt(ciphertext []byte) (string, error) {
+	if len(ciphertext) > MaxNameCTBytes {
+		return "", fmt.Errorf("%w: ciphertext is %d bytes, above %d",
+			ErrName, len(ciphertext), MaxNameCTBytes)
+	}
+	plain, err := c.siv.open(ciphertext)
 	if err != nil {
 		return "", err
 	}
@@ -104,6 +117,25 @@ func DecryptName(nameKey, ciphertext []byte) (string, error) {
 		return "", err
 	}
 	return string(plain), nil
+}
+
+// EncryptName encrypts a single name under a key, for callers with one name to
+// encrypt. Anything encrypting a directory's worth should hold a NameCipher.
+func EncryptName(nameKey []byte, name string) ([]byte, error) {
+	c, err := NewNameCipher(nameKey)
+	if err != nil {
+		return nil, err
+	}
+	return c.Encrypt(name)
+}
+
+// DecryptName is the one-name counterpart to EncryptName.
+func DecryptName(nameKey, ciphertext []byte) (string, error) {
+	c, err := NewNameCipher(nameKey)
+	if err != nil {
+		return "", err
+	}
+	return c.Decrypt(ciphertext)
 }
 
 // NameToURL renders an encrypted name for the entries/{path} route.
@@ -122,7 +154,7 @@ func NameFromURL(s string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %q is not unpadded base64url", ErrName, s)
 	}
-	if len(b) < SIVOverhead || len(b) > SIVOverhead+MaxPlainNameBytes {
+	if len(b) < SIVOverhead || len(b) > MaxNameCTBytes {
 		return nil, fmt.Errorf("%w: %d bytes decoded", ErrName, len(b))
 	}
 	return b, nil

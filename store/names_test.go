@@ -102,6 +102,10 @@ func TestAnotherLibraryCannotReadTheName(t *testing.T) {
 // handed.
 func TestPathBytesAreRefusedInBothDirections(t *testing.T) {
 	key := testNameKey(t, saltA)
+	s, err := newSIV(key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, bad := range []string{"", ".", "..", "../etc/passwd", "a/b", "a\x00b"} {
 		if _, err := EncryptName(key, bad); !errors.Is(err, ErrName) {
 			t.Errorf("EncryptName(%q) = %v, want ErrName", bad, err)
@@ -109,10 +113,6 @@ func TestPathBytesAreRefusedInBothDirections(t *testing.T) {
 		// And the same name arriving from a directory object is refused, even
 		// though its tag verifies — a buggy writer is not a reason to act on a
 		// path.
-		s, err := newSIV(key)
-		if err != nil {
-			t.Fatal(err)
-		}
 		if _, err := DecryptName(key, s.seal([]byte(bad))); !errors.Is(err, ErrName) {
 			t.Errorf("DecryptName(%q) = %v, want ErrName", bad, err)
 		}
@@ -140,9 +140,16 @@ func TestNameLengthCeiling(t *testing.T) {
 // different sealing key and a different object id for an identical tree.
 func TestURLEncodingIsUnpaddedBase64URL(t *testing.T) {
 	key := testNameKey(t, saltA)
-	ct, err := EncryptName(key, "quarterly report.pdf")
+	// A name whose ciphertext length is not a multiple of three, so the padded
+	// encoding below really is padded — at a multiple of three base64 emits no
+	// padding and there would be nothing to refuse.
+	const name = "quarterly report.md"
+	ct, err := EncryptName(key, name)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(ct)%3 == 0 {
+		t.Fatalf("%q seals to %d bytes, which base64 pads to nothing", name, len(ct))
 	}
 	url := NameToURL(ct)
 	if strings.ContainsAny(url, "=+/") {
@@ -153,9 +160,7 @@ func TestURLEncodingIsUnpaddedBase64URL(t *testing.T) {
 		t.Fatalf("URL round trip: %v", err)
 	}
 	if _, err := NameFromURL(base64.URLEncoding.EncodeToString(ct)); err == nil {
-		if len(ct)%3 != 0 {
-			t.Error("a padded encoding was accepted")
-		}
+		t.Error("a padded encoding was accepted")
 	}
 	if _, err := NameFromURL("not base64!"); !errors.Is(err, ErrName) {
 		t.Error("a non-base64 segment was accepted")

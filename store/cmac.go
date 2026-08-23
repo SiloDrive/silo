@@ -54,21 +54,18 @@ func dbl(in [16]byte) [16]byte {
 
 // sum computes the CMAC tag over msg.
 func (c *cmac) sum(msg []byte) [16]byte {
-	n := (len(msg) + 15) / 16
-
-	// The final block is padded and XORed with k1 when the message is a
-	// whole number of blocks, and with k2 otherwise. An empty message counts
-	// as one padded block.
+	// The final block is XORed with k1 when the message is a whole number of
+	// blocks, and padded and XORed with k2 otherwise. An empty message takes
+	// the padded branch with an empty tail, which is what makes it one block
+	// rather than none.
+	var n int
 	var last [16]byte
-	switch {
-	case len(msg) == 0:
-		n = 1
-		last = c.k2
-		last[0] ^= 0x80
-	case len(msg)%16 == 0:
+	if len(msg) > 0 && len(msg)%16 == 0 {
+		n = len(msg) / 16
 		copy(last[:], msg[(n-1)*16:])
 		subtle.XORBytes(last[:], last[:], c.k1[:])
-	default:
+	} else {
+		n = len(msg)/16 + 1
 		tail := msg[(n-1)*16:]
 		copy(last[:], tail)
 		last[len(tail)] = 0x80
