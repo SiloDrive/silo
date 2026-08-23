@@ -405,6 +405,74 @@ func (s *Store) putChunkData(data []byte) (store.ChunkRef, error) {
 	return store.ChunkRef{ID: sealed.ID, Size: size, PlaintextHash: sealed.PlaintextHash}, nil
 }
 
+// ReadFileRange writes n bytes of a manifest's file content to w, starting at
+// off. A negative or over-long n means "to the end of the file".
+//
+// The whole point of the manifest carrying PLAINTEXT chunk sizes is here: the
+// range maps to a run of chunks by arithmetic on those sizes alone, so a read
+// at an offset fetches only the chunks it overlaps rather than the file. The
+// stored size differs (+16 for the content tag under E2EE), which is exactly
+// why the plaintext size is the one pinned in the format — client arithmetic
+// must never depend on storage framing.
+//
+// An inline manifest is sliced directly; there are no chunks to walk, and a
+// file small enough to inline is small enough that this is the whole cost.
+func (s *Store) ReadFileRange(m *store.Manifest, off, n int64, w io.Writer) error {
+	if err := m.Validate(); err != nil {
+		return err
+	}
+	if off < 0 {
+		return fmt.Errorf("objmgr: negative read offset %d", off)
+	}
+	if off >= m.FileSize {
+		return nil
+	}
+	end := m.FileSize
+	if n >= 0 && off+n < end {
+		end = off + n
+	}
+
+	if store.Inlined(m.FileSize) {
+		_, err := w.Write(m.Inline[off:end])
+		return err
+	}
+	if s.e2ee && !s.HasKey() {
+		return ErrNoContentKey
+	}
+
+	var pos int64
+	for i, ref := range m.Chunks {
+		next := pos + ref.Size
+		// Wholly before the range, or wholly after it. The second case ends
+		// the walk rather than continuing it — the chunks are ordered, so
+		// nothing later can overlap either.
+		if next <= off {
+			pos = next
+			continue
+		}
+		if pos >= end {
+			break
+		}
+		data, err := s.openChunk(ref, i, len(m.Chunks))
+		if err != nil {
+			return err
+		}
+		lo := int64(0)
+		if off > pos {
+			lo = off - pos
+		}
+		hi := ref.Size
+		if end < next {
+			hi = end - pos
+		}
+		if _, err := w.Write(data[lo:hi]); err != nil {
+			return err
+		}
+		pos = next
+	}
+	return nil
+}
+
 // ReadFile writes a manifest's file content to w.
 func (s *Store) ReadFile(m *store.Manifest, w io.Writer) error {
 	if err := m.Validate(); err != nil {
@@ -419,29 +487,41 @@ func (s *Store) ReadFile(m *store.Manifest, w io.Writer) error {
 	}
 
 	for i, ref := range m.Chunks {
-		stored, err := s.GetChunk(ref.ID)
+		data, err := s.openChunk(ref, i, len(m.Chunks))
 		if err != nil {
-			return fmt.Errorf("chunk %d of %d (%s): %w", i+1, len(m.Chunks), ref.ID, err)
-		}
-		data := stored
-		if s.e2ee {
-			data, err = store.OpenChunk(s.ck, ref.PlaintextHash, stored)
-			if err != nil {
-				return fmt.Errorf("chunk %d of %d (%s): %w", i+1, len(m.Chunks), ref.ID, err)
-			}
-		} else if store.ChunkID(data) != ref.ID {
-			// A plain library has no tag to catch a substituted chunk, so the
-			// id is the check, and it is worth making rather than assuming:
-			// the bytes came off a disk the threat model does not trust.
-			return fmt.Errorf("chunk %d of %d: %w: %s", i+1, len(m.Chunks), ErrIDMismatch, ref.ID)
-		}
-		if int64(len(data)) != ref.Size {
-			return fmt.Errorf("chunk %d of %d (%s): %d bytes, manifest says %d",
-				i+1, len(m.Chunks), ref.ID, len(data), ref.Size)
+			return err
 		}
 		if _, err := w.Write(data); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// openChunk fetches one chunk of a manifest and returns its plaintext, having
+// checked that it is the chunk the manifest named and the length the manifest
+// claimed. i and total are for the error message only — "chunk 3 of 900" says
+// where a file went wrong, which a bare id does not.
+func (s *Store) openChunk(ref store.ChunkRef, i, total int) ([]byte, error) {
+	stored, err := s.GetChunk(ref.ID)
+	if err != nil {
+		return nil, fmt.Errorf("chunk %d of %d (%s): %w", i+1, total, ref.ID, err)
+	}
+	data := stored
+	if s.e2ee {
+		data, err = store.OpenChunk(s.ck, ref.PlaintextHash, stored)
+		if err != nil {
+			return nil, fmt.Errorf("chunk %d of %d (%s): %w", i+1, total, ref.ID, err)
+		}
+	} else if store.ChunkID(data) != ref.ID {
+		// A plain library has no tag to catch a substituted chunk, so the
+		// id is the check, and it is worth making rather than assuming:
+		// the bytes came off a disk the threat model does not trust.
+		return nil, fmt.Errorf("chunk %d of %d: %w: %s", i+1, total, ErrIDMismatch, ref.ID)
+	}
+	if int64(len(data)) != ref.Size {
+		return nil, fmt.Errorf("chunk %d of %d (%s): %d bytes, manifest says %d",
+			i+1, total, ref.ID, len(data), ref.Size)
+	}
+	return data, nil
 }

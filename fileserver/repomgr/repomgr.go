@@ -257,6 +257,17 @@ func GetWithReason(id string) (*Repo, error) {
 	return repo, nil
 }
 
+// IsStoreV2 reports whether this library's objects are the store-v2 format.
+//
+// The head id's width says which, exactly as it does for loadSeafileCrypto and
+// for the object store's choice of digest: forty hex characters is a SHA-1
+// Seafile commit, sixty-four is SHA-256. It is a real discriminator rather
+// than a heuristic — the two formats cannot mint an id of the other's width —
+// and it disappears with the Seafile lanes, when there is only one answer.
+func (repo *Repo) IsStoreV2() bool {
+	return len(repo.HeadCommitID) == 2*storefmt.IDSize
+}
+
 // checkHeadPresent verifies a store-v2 library's head commit object is
 // actually there.
 //
@@ -272,7 +283,7 @@ func GetWithReason(id string) (*Repo, error) {
 // A stat, not a read. It is strictly cheaper than what the old format paid on
 // the same path.
 func checkHeadPresent(repo *Repo) error {
-	if len(repo.HeadCommitID) != 2*storefmt.IDSize {
+	if !repo.IsStoreV2() {
 		return nil
 	}
 	id, err := storefmt.ParseID(repo.HeadCommitID)

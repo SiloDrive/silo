@@ -11,6 +11,7 @@ import (
 	"os"
 	upath "path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/utils"
+	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
@@ -143,6 +145,9 @@ func resolve(repo *repomgr.Repo, path string) (*resolved, error) {
 	if path == "/" {
 		return &resolved{id: repo.RootID, isDir: true}, nil
 	}
+	if repo.IsStoreV2() {
+		return resolveV2(repo, path)
+	}
 	dent, err := fsmgr.GetDirentByPath(repo.StoreID, repo.RootID, path)
 	if err != nil {
 		return nil, err
@@ -151,6 +156,34 @@ func resolve(repo *repomgr.Repo, path string) (*resolved, error) {
 		id:    dent.ID,
 		isDir: fsmgr.IsDir(dent.Mode),
 		mtime: dent.Mtime,
+	}, nil
+}
+
+// resolveV2 walks a store-v2 tree to a path.
+//
+// It refuses an E2EE library rather than failing further in. The server has no
+// content key, so it cannot encrypt the path segments it would have to match
+// on — a resolve by path is a client operation there, and the id-addressed
+// surface is how such a library is read. Saying so here keeps the refusal next
+// to the reason instead of surfacing as "not found", which would be a lie
+// about whether the file exists.
+func resolveV2(repo *repomgr.Repo, path string) (*resolved, error) {
+	st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+	if err != nil {
+		return nil, err
+	}
+	root, err := store.ParseID(repo.RootID)
+	if err != nil {
+		return nil, err
+	}
+	node, err := st.Resolve(root, path)
+	if err != nil {
+		return nil, err
+	}
+	return &resolved{
+		id:    node.ID.String(),
+		isDir: node.IsDir(),
+		mtime: node.Mtime,
 	}, nil
 }
 
@@ -195,7 +228,7 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 	// re-walks the tree from the root — the listing and the file body are read
 	// straight from the object the ETag was just computed from.
 	if entry.isDir {
-		api.ListDirByID(w, r, repo.StoreID, entry.id)
+		api.ListDirByID(w, r, repo, entry.id)
 		return
 	}
 	serveFile(w, r, repo, entry.id, upath.Base(path), user)
@@ -224,6 +257,11 @@ func isPaged(r *http.Request) bool {
 // See docs/capability-urls.md. The redirect is still correct for the Seafile
 // lane and is untouched there.
 func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID, fileName, user string) {
+	if repo.IsStoreV2() {
+		serveFileV2(w, r, repo, fileID, fileName)
+		return
+	}
+
 	// Advertised even when this request has no Range, so a client learns it can
 	// seek without having to try one and see — and *denied* on an encrypted
 	// library, where the whole-file path below ignores Range and answers 200
@@ -259,6 +297,77 @@ func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileI
 	}
 	if e := doFile(w, r, repo, fileID, fileName, "download", cryptKey, user, siloTextCharset); e != nil {
 		http.Error(w, e.Message, e.Code)
+	}
+}
+
+// serveFileV2 streams a store-v2 file, whole or ranged.
+//
+// The ranged path is arithmetic rather than I/O planning, which is the
+// manifest earning its keep: chunk sizes are recorded as PLAINTEXT lengths, so
+// the run of chunks a range touches is computable from the manifest alone. The
+// Seafile path has to stat every block to learn the same thing, and caches the
+// result to avoid doing it twice.
+//
+// An E2EE library is refused rather than served here, inside GetManifest and
+// ReadFile: the server holds no key, so what it could stream is ciphertext,
+// and a client that asked for a file and received sealed bytes has no way to
+// tell that apart from the file. Such a library is read through the
+// id-addressed surface, where the client opens the chunks itself.
+func serveFileV2(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID, fileName string) {
+	st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+	if err != nil {
+		log.Errorf("failed to open store for repo %s: %v", repo.ID, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	id, err := store.ParseID(fileID)
+	if err != nil {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+	m, err := st.GetManifest(id)
+	if err != nil {
+		log.Errorf("failed to read manifest %s in repo %s: %v", fileID, repo.ID, err)
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Accept-Ranges", "bytes")
+	if parseContentType(fileName) == "image/svg+xml" {
+		w.Header().Set("Content-Security-Policy", "sandbox")
+	}
+	setCommonHeaders(w, r, "download", fileName, siloTextCharset)
+
+	byteRanges := strings.Join(r.Header["Range"], "")
+	if byteRanges == "" {
+		w.Header().Set("Content-Length", strconv.FormatInt(m.FileSize, 10))
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodHead {
+			return
+		}
+		if err := st.ReadFile(m, w); err != nil {
+			// The status is already written, so this cannot become a 500. Log
+			// it and let the body end short of Content-Length, which is what
+			// tells the client it is incomplete.
+			log.Errorf("failed to stream %s in repo %s: %v", fileID, repo.ID, err)
+		}
+		return
+	}
+
+	start, end, ok := parseRange(byteRanges, uint64(m.FileSize))
+	if !ok {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", m.FileSize))
+		http.Error(w, "", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	w.Header().Set("Content-Length", strconv.FormatUint(end-start+1, 10))
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, m.FileSize))
+	w.WriteHeader(http.StatusPartialContent)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if err := st.ReadFileRange(m, int64(start), int64(end-start+1), w); err != nil {
+		log.Errorf("failed to stream range of %s in repo %s: %v", fileID, repo.ID, err)
 	}
 }
 

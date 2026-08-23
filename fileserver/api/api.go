@@ -12,6 +12,7 @@ import (
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/tokenstore"
+	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
@@ -407,7 +408,7 @@ type dirEntry struct {
 // way down is a fresh read and inflate. The old GET /repos/{id}/dir/?path=
 // handler did exactly that second walk and was deleted with the rest of the
 // pre-entries surface; do not reintroduce a path-taking variant.
-func ListDirByID(w http.ResponseWriter, r *http.Request, storeID, dirID string) {
+func ListDirByID(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, dirID string) {
 	limit, ok := parseLimit(w, r)
 	if !ok {
 		return
@@ -437,14 +438,13 @@ func ListDirByID(w http.ResponseWriter, r *http.Request, storeID, dirID string) 
 		w.Header().Del("Last-Modified")
 	}
 
-	dir, err := fsmgr.GetSeafdir(storeID, dirID)
+	entries, err := listEntries(repo, dirID)
 	if err != nil {
-		log.Errorf("Failed to get directory object %s in store %s: %v", dirID, storeID, err)
+		log.Errorf("Failed to get directory object %s in store %s: %v", dirID, repo.StoreID, err)
 		http.Error(w, "Directory not found", http.StatusNotFound)
 		return
 	}
 
-	entries := dirEntries(dir)
 	from, to, more := window(len(entries), offset, limit)
 	if more {
 		setNextLink(w, r, encodeCursor(pageCursor{Dir: dirID, Offset: to}))
@@ -453,6 +453,51 @@ func ListDirByID(w http.ResponseWriter, r *http.Request, storeID, dirID string) 
 	// a header precisely so that adding it did not change the shape of a
 	// response every existing client already parses.
 	writeJSON(w, http.StatusOK, entries[from:to])
+}
+
+// listEntries reads one directory in whichever format the library is.
+//
+// The store-v2 branch reports no size, and that is a gap rather than a
+// decision about the wire: a store-v2 dirent does not carry one — the size
+// lives in the file's manifest — and reading N manifests to answer one listing
+// is exactly what the plan's listing bullet rules out. The size returns as the
+// advisory sidecar the server fills from its object index when a commit is
+// processed. Until that index exists, sizes are omitted rather than paid for.
+func listEntries(repo *repomgr.Repo, dirID string) ([]dirEntry, error) {
+	if !repo.IsStoreV2() {
+		dir, err := fsmgr.GetSeafdir(repo.StoreID, dirID)
+		if err != nil {
+			return nil, err
+		}
+		return dirEntries(dir), nil
+	}
+
+	st, err := repomgr.OpenStore(repo.StoreID, repo.Format)
+	if err != nil {
+		return nil, err
+	}
+	id, err := store.ParseID(dirID)
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := st.List(id)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]dirEntry, 0, len(nodes))
+	for _, n := range nodes {
+		entryType := "file"
+		if n.IsDir() {
+			entryType = "dir"
+		}
+		entries = append(entries, dirEntry{
+			Name:  n.Name,
+			Type:  entryType,
+			ID:    n.ID.String(),
+			Mtime: n.Mtime,
+		})
+	}
+	return entries, nil
 }
 
 func dirEntries(dir *fsmgr.SeafDir) []dirEntry {
