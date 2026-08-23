@@ -46,6 +46,11 @@ type Repo struct {
 	// ID for fs and block store
 	StoreID string
 
+	// Format is how this library's bytes are made — the chunker parameters
+	// every client has to agree with, and whether the content is end-to-end
+	// encrypted. Frozen at creation; see format.go.
+	Format Format
+
 	// Encrypted repo info
 	IsEncrypted   bool
 	EncVersion    int
@@ -108,21 +113,53 @@ func Get(id string) *Repo {
 	return repo
 }
 
+// repoSelect is the one row shape both loaders read.
+//
+// It lives in a constant because the column list and the Scan that consumes it
+// have to agree, and two copies of a pair that has to agree is one copy too
+// many — the format columns were added to one of them first, and the second
+// loader silently returned libraries with a zeroed chunker until it wasn't.
+const repoSelect = `SELECT r.repo_id, b.commit_id, v.origin_repo, v.path, v.base_commit, ` +
+	`r.chunker, r.chunk_min, r.chunk_target, r.chunk_max, r.chunk_norm, r.e2ee FROM ` +
+	`Repo r LEFT JOIN Branch b ON r.repo_id = b.repo_id ` +
+	`LEFT JOIN VirtualRepo v ON r.repo_id = v.repo_id ` +
+	`WHERE r.repo_id = ? AND b.name = 'master'`
+
+// scanRepoRow reads one repoSelect row, including the virtual-repo columns and
+// the store id they decide.
+func scanRepoRow(rows *sql.Rows, id string, repo *Repo) error {
+	var originRepoID, path, baseCommitID sql.NullString
+	if err := rows.Scan(&repo.ID, &repo.HeadCommitID, &originRepoID, &path, &baseCommitID,
+		&repo.Format.Chunker, &repo.Format.MinSize, &repo.Format.TargetSize,
+		&repo.Format.MaxSize, &repo.Format.Normalization, &repo.Format.E2EE); err != nil {
+		return err
+	}
+
+	if !originRepoID.Valid {
+		repo.StoreID = repo.ID
+		return nil
+	}
+	repo.VirtualInfo = &VRepoInfo{RepoID: id, OriginRepoID: originRepoID.String}
+	repo.StoreID = originRepoID.String
+	if path.Valid {
+		repo.VirtualInfo.Path = path.String
+	}
+	if baseCommitID.Valid {
+		repo.VirtualInfo.BaseCommitID = baseCommitID.String
+	}
+	return nil
+}
+
 // GetWithReason returns the repo, or the reason it could not be returned —
 // one of ErrRepoNotFound, ErrRepoCorrupted or ErrRepoUnavailable, wrapped with
 // the detail. Faults are logged here, once per repo per repoFaultInterval, so
 // callers should not log again.
 func GetWithReason(id string) (*Repo, error) {
-	query := `SELECT r.repo_id, b.commit_id, v.origin_repo, v.path, v.base_commit FROM ` +
-		`Repo r LEFT JOIN Branch b ON r.repo_id = b.repo_id ` +
-		`LEFT JOIN VirtualRepo v ON r.repo_id = v.repo_id ` +
-		`WHERE r.repo_id = ? AND b.name = 'master'`
-
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	stmt, err := seafileDB.PrepareContext(ctx, query)
+	stmt, err := seafileDB.PrepareContext(ctx, repoSelect)
 	if err != nil {
-		return nil, fault(id, ErrRepoUnavailable, "failed to prepare sql %s: %v", query, err)
+		return nil, fault(id, ErrRepoUnavailable, "failed to prepare sql %s: %v", repoSelect, err)
 	}
 	defer func() { _ = stmt.Close() }()
 
@@ -134,12 +171,8 @@ func GetWithReason(id string) (*Repo, error) {
 
 	repo := new(Repo)
 
-	var originRepoID sql.NullString
-	var path sql.NullString
-	var baseCommitID sql.NullString
 	if rows.Next() {
-		err := rows.Scan(&repo.ID, &repo.HeadCommitID, &originRepoID, &path, &baseCommitID)
-		if err != nil {
+		if err := scanRepoRow(rows, id, repo); err != nil {
 			return nil, fault(id, ErrRepoUnavailable, "failed to scan sql rows: %v", err)
 		}
 	} else if err := rows.Err(); err != nil {
@@ -155,21 +188,10 @@ func GetWithReason(id string) (*Repo, error) {
 		return nil, fault(id, ErrRepoCorrupted, "Branch holds no head commit")
 	}
 
-	if originRepoID.Valid {
-		repo.VirtualInfo = new(VRepoInfo)
-		repo.VirtualInfo.RepoID = id
-		repo.VirtualInfo.OriginRepoID = originRepoID.String
-		repo.StoreID = originRepoID.String
-
-		if path.Valid {
-			repo.VirtualInfo.Path = path.String
-		}
-
-		if baseCommitID.Valid {
-			repo.VirtualInfo.BaseCommitID = baseCommitID.String
-		}
-	} else {
-		repo.StoreID = repo.ID
+	// A library whose stored parameters do not describe a chunker cannot be
+	// read by anybody, so it is corrupted rather than merely unusual.
+	if err := repo.Format.Validate(); err != nil {
+		return nil, fault(id, ErrRepoCorrupted, "%v", err)
 	}
 
 	commit, err := commitmgr.Load(repo.ID, repo.HeadCommitID)
@@ -331,14 +353,9 @@ func RepoToCommit(repo *Repo, commit *commitmgr.Commit) {
 // GetEx return repo object even if it's corrupted.
 func GetEx(id string) *Repo {
 	repo := new(Repo)
-	query := `SELECT r.repo_id, b.commit_id, v.origin_repo, v.path, v.base_commit FROM ` +
-		`Repo r LEFT JOIN Branch b ON r.repo_id = b.repo_id ` +
-		`LEFT JOIN VirtualRepo v ON r.repo_id = v.repo_id ` +
-		`WHERE r.repo_id = ? AND b.name = 'master'`
-
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	stmt, err := seafileDB.PrepareContext(ctx, query)
+	stmt, err := seafileDB.PrepareContext(ctx, repoSelect)
 	if err != nil {
 		repo.IsCorrupted = true
 		return repo
@@ -352,15 +369,10 @@ func GetEx(id string) *Repo {
 	}
 	defer func() { _ = rows.Close() }()
 
-	var originRepoID sql.NullString
-	var path sql.NullString
-	var baseCommitID sql.NullString
 	if rows.Next() {
-		err := rows.Scan(&repo.ID, &repo.HeadCommitID, &originRepoID, &path, &baseCommitID)
-		if err != nil {
+		if err := scanRepoRow(rows, id, repo); err != nil {
 			repo.IsCorrupted = true
 			return repo
-
 		}
 	} else if rows.Err() != nil {
 		repo.IsCorrupted = true
@@ -368,24 +380,14 @@ func GetEx(id string) *Repo {
 	} else {
 		return nil
 	}
-	if originRepoID.Valid {
-		repo.VirtualInfo = new(VRepoInfo)
-		repo.VirtualInfo.RepoID = id
-		repo.VirtualInfo.OriginRepoID = originRepoID.String
-		repo.StoreID = originRepoID.String
-
-		if path.Valid {
-			repo.VirtualInfo.Path = path.String
-		}
-
-		if baseCommitID.Valid {
-			repo.VirtualInfo.BaseCommitID = baseCommitID.String
-		}
-	} else {
-		repo.StoreID = repo.ID
-	}
 
 	if repo.HeadCommitID == "" {
+		repo.IsCorrupted = true
+		return repo
+	}
+
+	if err := repo.Format.Validate(); err != nil {
+		_ = fault(id, ErrRepoCorrupted, "%v", err)
 		repo.IsCorrupted = true
 		return repo
 	}
@@ -1067,7 +1069,24 @@ const emptySHA1 = "0000000000000000000000000000000000000000"
 // RepoInfo.last_modifier record what the creator was called at the time, and
 // those are display data — the commit's is baked into its content hash and
 // could not be rewritten later even if it should be.
-func CreateRepo(name string, owner *account.Account) (string, error) {
+// CreateRepo makes a library owned by owner, in the given format.
+//
+// format is a parameter rather than a default because it is frozen for the
+// life of the library: every client that ever reads it chunks to these
+// numbers, so the one moment it can be chosen is this one.
+//
+// Note what this cannot yet do. An end-to-end encrypted library's initial
+// commit is sealed under a content key the server never holds, so the server
+// cannot mint one — creating an E2EE library is a client operation with a
+// client-generated id, and this path handles the server-readable case until
+// that lands.
+func CreateRepo(name string, owner *account.Account, format Format) (string, error) {
+	if err := format.Validate(); err != nil {
+		return "", err
+	}
+	if format.E2EE {
+		return "", fmt.Errorf("cannot create an end-to-end encrypted library server-side: %w", ErrNoContentKey)
+	}
 	repoID := uuid.New().String()
 
 	// Create initial commit with empty root
@@ -1088,7 +1107,10 @@ func CreateRepo(name string, owner *account.Account) (string, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, "INSERT INTO Repo (repo_id) VALUES (?)", repoID); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO Repo (repo_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		repoID, format.Chunker, format.MinSize, format.TargetSize, format.MaxSize,
+		format.Normalization, format.E2EE); err != nil {
 		return "", fmt.Errorf("failed to insert repo: %v", err)
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)", repoID, commit.CommitID); err != nil {

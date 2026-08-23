@@ -84,7 +84,30 @@ CREATE TABLE IF NOT EXISTS GroupStructure (group_id INTEGER PRIMARY KEY, path VA
 
 -- Repositories, shares, tokens, permissions, quotas.
 CREATE TABLE IF NOT EXISTS Branch (name VARCHAR(10), repo_id CHAR(40), commit_id CHAR(40), PRIMARY KEY (repo_id, name));
-CREATE TABLE IF NOT EXISTS Repo (repo_id CHAR(37) PRIMARY KEY);
+-- A library, and how its bytes are made.
+--
+-- The chunker parameters are stored per library rather than compiled in,
+-- because a client that chunks differently computes different ids: they are
+-- part of the library's identity, not a server setting that may drift under
+-- it. Frozen at creation; changing one is the convert operation, which
+-- rewrites every object, not an UPDATE.
+--
+-- They are also why there is no DEFAULT here. A creation path that forgets to
+-- write them should fail loudly at the INSERT, not quietly produce a library
+-- whose parameters came from whatever the schema happened to say.
+--
+-- e2ee is the library's own answer to "can the server read this", and it is
+-- not seafile's is_encrypted: that was a password over a server-side key, and
+-- it is being deleted along with the columns that fed it.
+CREATE TABLE IF NOT EXISTS Repo (
+  repo_id      CHAR(37) PRIMARY KEY,
+  chunker      TEXT     NOT NULL,
+  chunk_min    INTEGER  NOT NULL,
+  chunk_target INTEGER  NOT NULL,
+  chunk_max    INTEGER  NOT NULL,
+  chunk_norm   INTEGER  NOT NULL,
+  e2ee         INTEGER  NOT NULL
+);
 CREATE TABLE IF NOT EXISTS RepoOwner (repo_id CHAR(37) PRIMARY KEY, account_id BLOB NOT NULL REFERENCES Account(id));
 CREATE INDEX IF NOT EXISTS OwnerIndex ON RepoOwner (account_id);
 

@@ -12,6 +12,7 @@ import (
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/repomgr"
 )
 
 // sqliteTestDB points the package's seafile connection at a throwaway SQLite file
@@ -84,7 +85,7 @@ func TestUnsafeToReclaim(t *testing.T) {
 		liveVirt = "66666666-6666-6666-6666-666666666666"
 	)
 
-	dbExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", resurrec)
+	insertTestRepo(t, resurrec)
 	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)",
 		branched, "0401fc662e3bc87a41f299a907c056aaf8322a27")
 	// A live virtual repo whose objects are written into the dead origin's store.
@@ -153,7 +154,7 @@ func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
 	}
 
 	dbExec(t, "INSERT INTO GarbageRepos (repo_id) VALUES (?)", dead)
-	dbExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", live)
+	insertTestRepo(t, live)
 
 	repos, err := collectGarbageRepos()
 	if err != nil {
@@ -221,7 +222,7 @@ func TestCollectSkipsOriginOfLiveVirtualRepo(t *testing.T) {
 	}
 
 	dbExec(t, "INSERT INTO GarbageRepos (repo_id) VALUES (?)", origin)
-	dbExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", virtual)
+	insertTestRepo(t, virtual)
 	dbExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, '/sub', ?)",
 		virtual, origin, "0401fc662e3bc87a41f299a907c056aaf8322a27")
 
@@ -243,4 +244,14 @@ func TestCollectSkipsOriginOfLiveVirtualRepo(t *testing.T) {
 	if _, err := os.Stat(obj); err != nil {
 		t.Errorf("the virtual repo's object was disturbed: %v", err)
 	}
+}
+
+// insertTestRepo creates the catalog row a library needs to exist, in the
+// default server-readable format. The format columns have no DEFAULT — a
+// creation path that forgets them should fail — so tests write them too.
+func insertTestRepo(t *testing.T, repoID string) {
+	t.Helper()
+	f := repomgr.DefaultFormat(false)
+	dbExec(t, "INSERT INTO Repo (repo_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		repoID, f.Chunker, f.MinSize, f.TargetSize, f.MaxSize, f.Normalization, f.E2EE)
 }

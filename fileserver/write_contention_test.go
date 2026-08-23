@@ -45,7 +45,7 @@ func contendedRepoTestDB(t *testing.T) *commitmgr.Commit {
 		t.Fatalf("failed to save head commit: %v", err)
 	}
 
-	dbExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", contendedRepo)
+	insertTestRepo(t, contendedRepo)
 	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)",
 		contendedRepo, head.CommitID)
 	dbExec(t, "INSERT INTO RepoHead (repo_id, branch_name) VALUES (?, 'master')", contendedRepo)

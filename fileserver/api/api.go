@@ -345,7 +345,10 @@ func CreateRepoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoID, err := repomgr.CreateRepo(req.Name, acct)
+	// Server-readable for now: an E2EE library's initial commit is sealed
+	// under a key the server never holds, so creating one is a client
+	// operation. See repomgr.CreateRepo.
+	repoID, err := repomgr.CreateRepo(req.Name, acct, repomgr.DefaultFormat(false))
 	if err != nil {
 		log.Errorf("Failed to create repo: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)

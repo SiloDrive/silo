@@ -143,7 +143,9 @@ func SeaDriveCreateRepoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoID, err := repomgr.CreateRepo(name, acct)
+	// SeaDrive cannot hold a content key, so this lane creates
+	// server-readable libraries and always will.
+	repoID, err := repomgr.CreateRepo(name, acct, repomgr.DefaultFormat(false))
 	if err != nil {
 		log.Errorf("Failed to create repo: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)

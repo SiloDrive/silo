@@ -15,7 +15,7 @@ const (
 
 func seedRepo(t *testing.T, repoID, email, token string) {
 	t.Helper()
-	dbExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", repoID)
+	insertTestRepo(t, repoID)
 	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES (?, ?, ?)",
 		"master", repoID, "0401fc662e3bc87a41f299a907c056aaf8322a27")
 	dbExec(t, "INSERT INTO RepoHead (repo_id, branch_name) VALUES (?, ?)", repoID, "master")

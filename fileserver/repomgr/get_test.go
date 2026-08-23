@@ -14,6 +14,7 @@ import (
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/store"
 )
 
 const (
@@ -95,7 +96,7 @@ func TestGetWithReasonMissingRowIsNotFound(t *testing.T) {
 func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 	dataDir := getTestStore(t)
 
-	repoID, err := CreateRepo("Porter Test", testAccount(t))
+	repoID, err := CreateRepo("Porter Test", testAccount(t), DefaultFormat(false))
 	if err != nil {
 		t.Fatalf("CreateRepo: %v", err)
 	}
@@ -145,7 +146,10 @@ func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 func TestGetWithReasonEmptyHeadIsCorrupted(t *testing.T) {
 	getTestStore(t)
 
-	if _, err := seafileWriteDB.Exec("INSERT INTO Repo (repo_id) VALUES (?)", testRepoID); err != nil {
+	f := DefaultFormat(false)
+	if _, err := seafileWriteDB.Exec(
+		"INSERT INTO Repo (repo_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		testRepoID, f.Chunker, f.MinSize, f.TargetSize, f.MaxSize, f.Normalization, f.E2EE); err != nil {
 		t.Fatalf("seed Repo: %v", err)
 	}
 	if _, err := seafileWriteDB.Exec(
@@ -208,5 +212,56 @@ func TestFaultIsReportedOnceUntilRepaired(t *testing.T) {
 	clearFaults(testRepoID)
 	if !firstReport(testRepoID, ErrRepoCorrupted) {
 		t.Error("a recurrence after a repair was suppressed")
+	}
+}
+
+// The write and the read have to agree, and they are in different functions
+// with the column list spelled out twice. A transposed pair here — target and
+// max, say — produces a library that loads, chunks, and cuts in places no
+// other client will reproduce, with nothing anywhere reporting a problem.
+func TestALibrarysFormatSurvivesTheCatalog(t *testing.T) {
+	getTestStore(t)
+
+	want := Format{
+		Chunker:       store.ChunkerAlgorithm,
+		MinSize:       128 << 10,
+		TargetSize:    512 << 10,
+		MaxSize:       2 << 20,
+		Normalization: 1,
+		E2EE:          false,
+	}
+	if err := want.Validate(); err != nil {
+		t.Fatalf("the test's own format is invalid: %v", err)
+	}
+
+	// Deliberately not the defaults: defaults would survive a loader that
+	// dropped the columns entirely and filled them in from store's constants.
+	repoID, err := CreateRepo("Formatted", testAccount(t), want)
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+
+	repo, err := GetWithReason(repoID)
+	if err != nil {
+		t.Fatalf("a freshly created repo did not load: %v", err)
+	}
+	if repo.Format != want {
+		t.Fatalf("loaded %+v, created %+v", repo.Format, want)
+	}
+
+	// GetEx reads the same row through its own copy of the query.
+	if ex := GetEx(repoID); ex == nil || ex.Format != want {
+		t.Fatalf("GetEx loaded %+v, created %+v", ex, want)
+	}
+}
+
+// An E2EE library's initial commit is sealed under a key the server does not
+// have, so the server must refuse to mint one rather than create a library
+// whose history it silently wrote in the clear.
+func TestTheServerWillNotCreateAnEncryptedLibrary(t *testing.T) {
+	getTestStore(t)
+
+	if _, err := CreateRepo("Secret", testAccount(t), DefaultFormat(true)); !errors.Is(err, ErrNoContentKey) {
+		t.Fatalf("the server created an E2EE library: %v", err)
 	}
 }

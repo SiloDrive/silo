@@ -28,7 +28,7 @@ func damagedRepoTestDB(t *testing.T) {
 	// An empty data directory is the whole point: every object is missing.
 	commitmgr.Init(t.TempDir(), filepath.Join(t.TempDir(), "seafile-data"))
 
-	dbExec(t, "INSERT INTO Repo (repo_id) VALUES (?)", damagedRepo)
+	insertTestRepo(t, damagedRepo)
 	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)",
 		damagedRepo, damagedHead)
 	dbExec(t, "INSERT INTO RepoHead (repo_id, branch_name) VALUES (?, 'master')", damagedRepo)
