@@ -313,16 +313,42 @@ const SchemaVersion = 1
 // database in an incompatible shape produces a confusing failure on whichever
 // statement first names the mismatch instead of a clear one up front.
 //
-// A database with no stamp yet — freshly created, or from before this check
-// existed — is let through. If its actual shape disagrees with siloSchema,
-// execSchema below still fails on the mismatched statement, exactly as it
-// always has; only once the schema has been applied without error is
-// user_version set, so a database is only ever stamped as a version it has
-// actually been verified against.
+// A database with no stamp is the interesting case, because it is two
+// populations wearing one value. PRAGMA user_version is 0 both for a database
+// this call is about to create and for every database written before the stamp
+// existed — and the second group is not hypothetical. The library rename had
+// already shipped when the stamp landed, so the unstamped population is
+// exactly the one the stamp was introduced to protect, and letting it through
+// meant the guard covered the next rename while doing nothing about the one
+// that had happened.
+//
+// One query separates them: a database this call is about to create has an
+// empty sqlite_master. Unstamped and empty is a fresh start. Unstamped and
+// already holding tables is from before versioning, and is refused with the
+// same message as a version mismatch, because for the operator it is the same
+// situation.
+//
+// Only once the schema has been applied without error is user_version set, so
+// a database is only ever stamped as a version it has actually been verified
+// against.
 func CreateSiloTables(db *sql.DB) error {
 	stored, err := schemaVersion(db)
 	if err != nil {
 		return fmt.Errorf("failed to read schema version: %w", err)
+	}
+	if stored == 0 {
+		populated, err := hasTables(db)
+		if err != nil {
+			return fmt.Errorf("failed to inspect the database: %w", err)
+		}
+		if populated {
+			return fmt.Errorf("this database has tables but no schema version stamp, so it was written "+
+				"before this build's schema (schema version %d); "+
+				"refusing to start rather than run a mismatched schema against it. "+
+				"If this database is disposable, delete it and let Silo recreate it; "+
+				"otherwise migrate it by hand — this package has no migration path",
+				SchemaVersion)
+		}
 	}
 	if stored != 0 && stored != SchemaVersion {
 		return fmt.Errorf("database schema version %d does not match what this build expects (schema version %d); "+
@@ -342,6 +368,18 @@ func CreateSiloTables(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// hasTables reports whether the database holds any table of its own.
+//
+// sqlite_% is excluded because those are SQLite's: sqlite_sequence appears on
+// its own the first time an AUTOINCREMENT column is written, and counting it
+// would make a database SQLite populated look like one Silo populated.
+func hasTables(db *sql.DB) (bool, error) {
+	var n int
+	err := db.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&n)
+	return n > 0, err
 }
 
 func schemaVersion(db *sql.DB) (int, error) {
