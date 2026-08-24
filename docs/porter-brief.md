@@ -263,19 +263,49 @@ GET /api/silo/v1/libraries/{library}/entries/
 ```
 ```json
 [
-  {"name":"sub",   "type":"dir",  "id":"60db574ab801e71078e8dc55dc5764d9ab60adf6","mtime":1786965293},
-  {"name":"empty", "type":"dir",  "id":"0000000000000000000000000000000000000000","mtime":1786965305},
-  {"name":"a.txt", "type":"file", "id":"164d2dec219b7dad29247649cf8d20aff5d7e225",
-   "size":2,"mtime":1786965292,"modifier":"d@nmilne.com"}
+  {"name":"a.txt", "type":"file",
+   "id":"f7eef0341b337c218dce12bb06c55e52bf98f863a0a749097682016e3ae84cb1",
+   "size":2,"mtime":1787578220},
+  {"name":"empty", "type":"dir",
+   "id":"fb50dc0717ff266cf9baf82b1ce7a1c2ef6d9247859680b11a19fb7077f5f222",
+   "mtime":1787578220},
+  {"name":"sub",   "type":"dir",
+   "id":"fb50dc0717ff266cf9baf82b1ce7a1c2ef6d9247859680b11a19fb7077f5f222",
+   "mtime":1787578220}
 ]
 ```
 
-The all-zeros id is the id of an empty object, not an error. Both an empty
-directory and a zero-byte file carry it — ids are content hashes and empty
-content hashes to one value — so it says nothing about which one you have. Read
-`type` for that, and do not use the id to tell them apart or as a cache key: a
-content-addressed cache keyed on it collides every empty object in the account
-onto one entry.
+**Those are the only keys.** A file row carries `id`, `mtime`, `name`, `size`
+and `type`; a directory row the same without `size`. An earlier draft of this
+example showed a `modifier` on file rows. No code path has ever set one, so it
+never reached a client — only this page — and it is now gone from the struct
+too. Pinned by a test, so the example and the wire cannot drift apart again.
+
+**Two of those rows share an id, and that is the format working.** `empty` and
+`sub` are both empty directories, so they are the same object and have the same
+name. An id names content, never an item.
+
+That has a consequence worth sitting with if you are building a File Provider
+extension: **an id is not an identity.** Two paths holding identical bytes share
+one, and a file that is edited back to its previous content returns to the id it
+had. If you need a handle that survives a rename and stays distinct between two
+identical files — and macOS requires exactly that — the id cannot be it. Keep
+your own mapping. As a *cache* key it is not merely safe but ideal, since two
+identical objects sharing one entry is the point.
+
+**There is no all-zeros sentinel, and there never will be again.** This page
+used to say an empty directory and a zero-byte file both carried an all-zeros
+id, and warned against keying a cache on it. Under store-v2 objects are typed,
+so those two hash differently — an empty directory is
+`fb50dc07…`, a zero-byte file is `d7b3d401…` — and the collision that warning
+described cannot occur. If your client has a constant for the empty-directory
+id, delete it rather than widening it to 64 characters: it was a workaround for
+an ambiguity that no longer exists.
+
+For symmetry, the id of an empty directory is also what an empty library's root
+listing reports as its `ETag` — the root *is* an empty directory. That is
+consistent rather than special, and nothing should read meaning into the two
+matching.
 
 ### Reading a file
 
@@ -287,7 +317,7 @@ HTTP/1.1 200 OK
 Accept-Ranges: bytes
 Content-Length: 14
 Content-Type: text/plain
-Etag: "v1-b8d0fa06b4d2412e9695f1f3561ecee173a5ae4b"
+Etag: "v1-f7eef0341b337c218dce12bb06c55e52bf98f863a0a749097682016e3ae84cb1"
 Last-Modified: Mon, 17 Aug 2026 11:38:12 GMT
 ```
 
@@ -425,9 +455,11 @@ and the answer is to rename and retry.
 
 A trailing slash also means "directory", but prefer the explicit `?type=dir`.
 The distinction is load-bearing: a bare `PUT` stores the body, so dropping the
-marker creates an empty file where a directory was meant — silently, with a
-`201`, and indistinguishable by id from an empty directory (both carry the
-all-zeros sentinel).
+marker creates an empty file where a directory was meant — silently, and with a
+`201`. It is at least detectable now: an empty file and an empty directory are
+typed objects with different ids, where they once shared an all-zeros sentinel
+and could not be told apart at all. Detectable is not the same as noticed,
+though, and nothing will raise it for you.
 
 Prefer the parameter because the slash does not survive ordinary path handling.
 Go's `path.Join` and `path.Clean` both drop it; `url.PathEscape` turns it into

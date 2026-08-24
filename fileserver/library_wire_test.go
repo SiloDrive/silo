@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -162,6 +164,53 @@ func TestTheIDAddressedRoutesAnswer(t *testing.T) {
 		if code == http.StatusNotFound {
 			t.Errorf("POST %s: 404, so the route is not registered "+
 				"(a registered route answers 405 to a method it does not serve)", path)
+		}
+	}
+}
+
+// TestAListingEntryCarriesExactlyTheseKeys pins what a client actually
+// receives, because the brief had been promising a key that no code path sets.
+//
+// dirEntry carried a Modifier field, tagged omitempty and never once assigned,
+// so it could not reach the wire — but it could and did reach the
+// documentation, whose listing example showed "modifier":"…" on every file row.
+// A client written to that example waits for a field that will never arrive.
+// Nothing catches that: the server is correct, the struct compiles, and the
+// only disagreement is between a document and a value no test looked at.
+func TestAListingEntryCarriesExactlyTheseKeys(t *testing.T) {
+	base, token := wire(t)
+	id := makeLibrary(t, base, token)
+	lib := base + "/api/silo/v1/libraries/" + id
+
+	if code, body := call(t, "PUT", lib+"/entries/sub?type=dir", token, ""); code >= 300 {
+		t.Fatalf("mkdir: %d %s", code, body)
+	}
+	if code, body := call(t, "PUT", lib+"/entries/a.txt", token, "hi"); code >= 300 {
+		t.Fatalf("put file: %d %s", code, body)
+	}
+
+	_, body := call(t, "GET", lib+"/entries/", token, "")
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(body), &rows); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2: %s", len(rows), body)
+	}
+
+	want := map[string][]string{
+		"dir":  {"id", "mtime", "name", "type"},
+		"file": {"id", "mtime", "name", "size", "type"},
+	}
+	for _, row := range rows {
+		kind, _ := row["type"].(string)
+		got := make([]string, 0, len(row))
+		for k := range row {
+			got = append(got, k)
+		}
+		sort.Strings(got)
+		if !slices.Equal(got, want[kind]) {
+			t.Errorf("a %s row carries %v, want %v", kind, got, want[kind])
 		}
 	}
 }

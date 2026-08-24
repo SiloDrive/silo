@@ -541,9 +541,15 @@ type dirEntry struct {
 	// server never gave. A directory never carries one — a directory object
 	// has no file_size, and the sum of what is under it is a different
 	// question with a different endpoint.
-	Size     *int64 `json:"size,omitempty"`
-	Mtime    int64  `json:"mtime"`
-	Modifier string `json:"modifier,omitempty"`
+	Size  *int64 `json:"size,omitempty"`
+	Mtime int64  `json:"mtime"`
+	// There is deliberately no Modifier. There was one, tagged omitempty and
+	// never assigned by any code path, so it could not reach a client — but it
+	// reached the documentation, whose listing example showed it on every file
+	// row, and a client written to that example waits for a field that never
+	// arrives. Who last wrote a file is a real thing to want and is not
+	// recorded anywhere the listing can reach; if it comes back it comes back
+	// with a value.
 }
 
 // ListDirByID writes the listing of a directory the caller has already resolved
