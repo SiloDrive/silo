@@ -53,12 +53,12 @@ Three coexisting auth mechanisms, each for a different client surface:
 |---|---|---|---|
 | JWT Bearer | `Authorization: Bearer <jwt>` | silo (TUI), Porter, porter-fuse, `/api/silo/v1/*` | `authmgr.ValidateSessionToken` (24h expiry) |
 | API Token | `Authorization: Token <40-hex>` | SeaDrive, `/api2/*` | `apitokenstore.Lookup` (persistent in `ApiToken` SQL table) |
-| Repo Token | `Seafile-Repo-Token: <40-hex>` | All sync clients, `/repo/*`, `/accessible-repos` | `repomgr.GetEmailByToken` (persistent in `RepoUserToken` SQL table) |
+| Library Token | `Seafile-Repo-Token: <40-hex>` | All sync clients, `/repo/*`, `/accessible-libraries` | `libmgr.GetEmailByToken` (persistent in `LibraryUserToken` SQL table) |
 
 The middleware for each lives in `fileserver/middleware/`:
 - `RequireAuth` (Bearer JWT)
 - `RequireAPIToken` (Token)
-- (repo-token validation is inline in `sync_api.go:validateToken`)
+- (library-token validation is inline in `sync_api.go:validateToken`)
 
 ## Endpoints
 
@@ -72,16 +72,16 @@ credential: one to learn what it is talking to, one to get a token.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.6","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. No chunker parameters: they belong to the library, and the repos listing carries them |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.6","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. No chunker parameters: they belong to the library, and the libraries listing carries them |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
 | POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
-| GET | `/api/silo/v1/repos` | List the caller's libraries — owned, plus any shared directly to them through `SharedRepo` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |
-| POST | `/api/silo/v1/repos` | Create a new repo |
-| DELETE | `/api/silo/v1/repos/{repoid}` | Delete a repo |
-| PATCH | `/api/silo/v1/repos/{repoid}` | `{"name":"New name"}` — rename a library. `PATCH` because the body names only what changes |
-| POST | `/api/silo/v1/repos/{repoid}/sync-token` | Generate a repo sync token (for subsequent sync-protocol calls) |
-| POST | `/api/silo/v1/repos/{repoid}/batch` | `{"ops":[…]}` — many operations, one commit. See the batch surface below |
-| POST | `/api/silo/v1/repos/{repoid}/notify-token` | Mint a notification JWT for `WS /notification` (72h; `404` if notifications are disabled) |
+| GET | `/api/silo/v1/libraries` | List the caller's libraries — owned, plus any shared directly to them through `SharedLibrary` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |
+| POST | `/api/silo/v1/libraries` | Create a new library |
+| DELETE | `/api/silo/v1/libraries/{libraryid}` | Delete a library |
+| PATCH | `/api/silo/v1/libraries/{libraryid}` | `{"name":"New name"}` — rename a library. `PATCH` because the body names only what changes |
+| POST | `/api/silo/v1/libraries/{libraryid}/sync-token` | Generate a library sync token (for subsequent sync-protocol calls) |
+| POST | `/api/silo/v1/libraries/{libraryid}/batch` | `{"ops":[…]}` — many operations, one commit. See the batch surface below |
+| POST | `/api/silo/v1/libraries/{libraryid}/notify-token` | Mint a notification JWT for `WS /notification` (72h; `404` if notifications are disabled) |
 
 #### The entries surface
 
@@ -92,15 +92,15 @@ in [`responses.md`](responses.md).
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/repos/{repoid}/entries/{path}` | Read a file's bytes, or list a directory. Ranged; `ETag`/`304` |
-| HEAD | `/api/silo/v1/repos/{repoid}/entries/{path}` | The same headers as `GET`, no body. On a directory `Content-Length` is the size of the listing, not of its contents |
-| PUT | `/api/silo/v1/repos/{repoid}/entries/{path}` | Store a file — body is the content |
-| PUT | `/api/silo/v1/repos/{repoid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter) |
-| PUT | `/api/silo/v1/repos/{repoid}/entries/{path}?type=blocks` | Store a file from blocks already uploaded — body is `{"blocks":[sha1,…]}`, no content. See the block surface below |
-| POST | `/api/silo/v1/repos/{repoid}/entries/{path}` | `{"op":"move","to":"/dst"}` — moving covers renaming |
-| POST | `/api/silo/v1/repos/{repoid}/entries/{path}` | `{"op":"copy","to":"/dst"}` — server-side copy; `201` and the source's `ETag`, no content transferred |
-| DELETE | `/api/silo/v1/repos/{repoid}/entries/{path}` | Delete a file or directory |
-| GET | `/api/silo/v1/repos/{repoid}/changes?since=` | Changes since an anchor (`410` when the anchor is too old) |
+| GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Read a file's bytes, or list a directory. Ranged; `ETag`/`304` |
+| HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | The same headers as `GET`, no body. On a directory `Content-Length` is the size of the listing, not of its contents |
+| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Store a file — body is the content |
+| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter) |
+| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=blocks` | Store a file from blocks already uploaded — body is `{"blocks":[sha1,…]}`, no content. See the block surface below |
+| POST | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"op":"move","to":"/dst"}` — moving covers renaming |
+| POST | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"op":"copy","to":"/dst"}` — server-side copy; `201` and the source's `ETag`, no content transferred |
+| DELETE | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Delete a file or directory |
+| GET | `/api/silo/v1/libraries/{libraryid}/changes?since=` | Changes since an anchor (`410` when the anchor is too old) |
 | GET | *any of the above* `?limit=N` | Page the answer. `Link: …; rel="next"` until the last page. See pagination below |
 
 `{path}` is relative to the library root and never repeats the library name;
@@ -125,7 +125,7 @@ reason WebDAV's `MKCOL` answers `409` rather than building the tree.
 Feature name `batch`.
 
 ```
-POST /api/silo/v1/repos/{repo}/batch
+POST /api/silo/v1/libraries/{library}/batch
 {"ops":[
   {"op":"mkdir",  "path":"/reports"},
   {"op":"create", "path":"/reports/q3.txt", "blocks":["<sha1>", …]},
@@ -177,7 +177,7 @@ whole, exactly as before. With `limit`, the body keeps the shape it always had
 and the next page arrives as an RFC 8288 header:
 
 ```
-Link: </api/silo/v1/repos/{repo}/changes?cursor=eyJ2Ijox…&limit=1000>; rel="next"
+Link: </api/silo/v1/libraries/{library}/changes?cursor=eyJ2Ijox…&limit=1000>; rel="next"
 ```
 
 Follow it verbatim. The cursor is opaque; it carries an offset today and may
@@ -212,7 +212,7 @@ server's work: a diff is recomputed per page, because a Merkle diff is
 proportional to what changed and cannot be resumed part-way. A client that wants
 the server to do less should ask more often, not for smaller pages.
 
-`GET /repos` does not page. A library count is bounded by how many an account
+`GET /libraries` does not page. A library count is bounded by how many an account
 has, which is tens, not by anything a client can grow without noticing.
 
 #### The block surface
@@ -221,14 +221,14 @@ Feature name `blocks`. Three calls, and the shape of every resumable upload:
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/silo/v1/repos/{repoid}/blocks/missing` | `{"blocks":[id,…]}` → `{"missing":[id,…]}` — which of these do you not already have? |
-| PUT | `/api/silo/v1/repos/{repoid}/blocks/{id}` | Upload one chunk. `201` when stored, `204` when it was already there |
-| PUT | `/api/silo/v1/repos/{repoid}/entries/{path}?type=blocks` | `{"blocks":[id,…]}` — create the file from them. `201` and an `ETag`, as any other write |
+| POST | `/api/silo/v1/libraries/{libraryid}/blocks/missing` | `{"blocks":[id,…]}` → `{"missing":[id,…]}` — which of these do you not already have? |
+| PUT | `/api/silo/v1/libraries/{libraryid}/blocks/{id}` | Upload one chunk. `201` when stored, `204` when it was already there |
+| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=blocks` | `{"blocks":[id,…]}` — create the file from them. `201` and an `ETag`, as any other write |
 
 An id is the SHA-256 of the chunk's bytes, so a client computes the names the
 server would without asking. Where the cuts fall is the other half, and that
 one is per library: the chunker is content-defined, and its parameters come
-from the `chunker` object on the repos listing. Chunking under anything else
+from the `chunker` object on the libraries listing. Chunking under anything else
 still uploads correctly and still reads back — the server verifies bytes
 against the id it was given — but the ids match nothing already in the store,
 so nothing dedups. **A client that cannot read a library's parameters must
@@ -303,12 +303,12 @@ were duplicates rather than capabilities, and they are gone.
 
 | removed | call instead |
 |---|---|
-| `GET /repos/{repoid}/dir/?path=` | `GET repos/{repoid}/entries/{path}` on a directory |
-| `POST /repos/{repoid}/mkdir` | `PUT repos/{repoid}/entries/{path}?type=dir` |
-| `DELETE /repos/{repoid}/file?path=` | `DELETE repos/{repoid}/entries/{path}` |
-| `GET /repos/{repoid}/download?path=` | `GET repos/{repoid}/entries/{path}` — streams on the same response |
-| `POST /repos/{repoid}/rename` | `POST repos/{repoid}/entries/{path}` with `{"op":"move"}` |
-| `POST /repos/{repoid}/move` | `POST repos/{repoid}/entries/{path}` with `{"op":"move"}` |
+| `GET /libraries/{libraryid}/dir/?path=` | `GET libraries/{libraryid}/entries/{path}` on a directory |
+| `POST /libraries/{libraryid}/mkdir` | `PUT libraries/{libraryid}/entries/{path}?type=dir` |
+| `DELETE /libraries/{libraryid}/file?path=` | `DELETE libraries/{libraryid}/entries/{path}` |
+| `GET /libraries/{libraryid}/download?path=` | `GET libraries/{libraryid}/entries/{path}` — streams on the same response |
+| `POST /libraries/{libraryid}/rename` | `POST libraries/{libraryid}/entries/{path}` with `{"op":"move"}` |
+| `POST /libraries/{libraryid}/move` | `POST libraries/{libraryid}/entries/{path}` with `{"op":"move"}` |
 
 `download`'s `302` to `/files/{token}/{name}` is the one behaviour that does not
 survive verbatim, and its removal was already the plan: this lane has no
@@ -318,21 +318,21 @@ capability URL is overhead — for a FUSE client, two round trips per read. See
 the last route that still contradicted it.
 
 The mechanism is untouched. `/files/{token}/{name}` still serves the Seafile
-lane, and `POST /api/silo/v1/access-tokens` with `{"repo_id":…, "obj_id":<file
+lane, and `POST /api/silo/v1/access-tokens` with `{"library_id":…, "obj_id":<file
 id>, "op":"download"}` still mints the same token the redirect used, if a
 browser-usable URL is ever wanted here.
 
 ### Change notifications — `WS /notification`
 
 A WebSocket, served in-process when `EnableNotification` is set (it is, by
-default). Clients subscribe per library and receive `repo-update` when a commit
+default). Clients subscribe per library and receive `library-update` when a commit
 lands, which is what lets a sync client react in about a second instead of
 polling.
 
 Since 0.4.4 getting a subscribe token is one call on this lane:
 
 ```
-POST /api/silo/v1/repos/{id}/notify-token   Authorization: Bearer <jwt>
+POST /api/silo/v1/libraries/{id}/notify-token   Authorization: Bearer <jwt>
   → {"jwt_token": "<jwt>", "expires_at": 1787312025}
 ```
 
@@ -344,20 +344,20 @@ of responses that are otherwise strings.
 Then connect to `/notification` and send one frame per batch of libraries:
 
 ```json
-{"type": "subscribe", "content": {"repos": [{"id": "<repo>", "jwt_token": "<jwt>"}]}}
+{"type": "subscribe", "content": {"libraries": [{"id": "<library>", "jwt_token": "<jwt>"}]}}
 ```
 
-Inbound frames are `{"type": "repo-update", "content": {"repo_id": …, "commit_id": …}}`
+Inbound frames are `{"type": "library-update", "content": {"library_id": …, "commit_id": …}}`
 and `{"type": "jwt-expired", "content": …}`; unknown types are ignored rather
 than closing the socket. `unsubscribe` takes the same frame shape as
 `subscribe`. The server pings every 30s and drops a client that has not ponged
 within 90s; most WebSocket libraries answer pings for you.
 
 The older two-hop route still exists and is what the Seafile clients use:
-`POST /api/silo/v1/repos/{id}/sync-token` for a repo token, then
+`POST /api/silo/v1/libraries/{id}/sync-token` for a library token, then
 `GET /repo/{id}/jwt-token` presenting it. That second call rejects a Bearer JWT
 with `403 Invalid token`, because `validateToken` resolves against the
-`RepoUserToken` table and a Silo-lane client has no row in it — which looks
+`LibraryUserToken` table and a Silo-lane client has no row in it — which looks
 exactly like a missing endpoint. `notify-token` exists so no new client has to
 learn that.
 
@@ -376,11 +376,11 @@ the login endpoint itself.
 | GET | `/api2/auth/ping/` | Yes | Returns `"pong"`. SeaDrive uses as a token-validity probe |
 | GET | `/api2/account/info/` | Yes | Returns `{email, name, usage, total, institution}` |
 | GET | `/api2/server-info/` | Yes | Returns `{version, features}` |
-| GET | `/api2/repos/` | Yes | List accessible repos (owned + shared + group) in Seahub format |
-| POST | `/api2/repos/` | Yes | Create a new repo. SeaDrive calls this when you `mkdir` in "My Libraries" |
-| GET | `/api2/repos/{repoid}/download-info/` | Yes | Returns token + metadata + file server URL so SeaDrive can begin sync |
-| POST | `/api2/repos/{repoid}/?op=rename` | Yes | Form-encoded `repo_name` → rename a library. Same handler as the `/api/v2.1/` spelling below |
-| POST | `/api2/repos/{repoid}/repo-tokens/` | Yes | Alternate path to generate a repo sync token (unused by current SeaDrive; kept for other clients) |
+| GET | `/api2/repos/` | Yes | List accessible libraries (owned + shared + group) in Seahub format |
+| POST | `/api2/repos/` | Yes | Create a new library. SeaDrive calls this when you `mkdir` in "My Libraries" |
+| GET | `/api2/repos/{id}/download-info/` | Yes | Returns token + metadata + file server URL so SeaDrive can begin sync |
+| POST | `/api2/repos/{id}/?op=rename` | Yes | Form-encoded `library_name` → rename a library. Same handler as the `/api/v2.1/` spelling below |
+| POST | `/api2/repos/{id}/repo-tokens/` | Yes | Alternate path to generate a library sync token (unused by current SeaDrive; kept for other clients) |
 
 Handler implementations: `fileserver/api/seadrive.go`.
 
@@ -392,8 +392,8 @@ exist so a client that picked the newer path finds it there.
 
 | Method | Path | Auth? | Notes |
 |---|---|---|---|
-| POST | `/api/v2.1/repos/{repoid}/?op=rename` | Yes | Rename a library |
-| DELETE | `/api/v2.1/repos/{repoid}/` | Yes | Delete a library |
+| POST | `/api/v2.1/repos/{id}/?op=rename` | Yes | Rename a library |
+| DELETE | `/api/v2.1/repos/{id}/` | Yes | Delete a library |
 
 Nothing else under `/api/v2.1/` routes; the rest is a 404, logged as `WARN`.
 
@@ -401,14 +401,14 @@ Nothing else under `/api/v2.1/` routes; the rest is a 404, logged as `WARN`.
 
 The file-level protocol spoken by all Seafile-family clients (SeaDrive,
 desktop client, CLI). Authentication is via `Seafile-Repo-Token` header,
-validated against the `RepoUserToken` SQL table per request (with a
+validated against the `LibraryUserToken` SQL table per request (with a
 2-hour in-memory cache).
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/protocol-version` | Returns `{"version": 2}` |
-| GET | `/accessible-repos?repo_id={id}` | List accessible repos in sync-protocol format |
-| GET | `/repo/{id}/permission-check` | Verify user can read or write the repo |
+| GET | `/accessible-libraries?library_id={id}` | List accessible libraries in sync-protocol format |
+| GET | `/repo/{id}/permission-check` | Verify user can read or write the library |
 | GET/PUT | `/repo/{id}/commit/HEAD` | Read or advance the HEAD commit pointer |
 | GET/PUT | `/repo/{id}/commit/{commit_id}` | Read or upload a commit object |
 | GET/PUT | `/repo/{id}/block/{block_id}` | Read or upload a content block |
@@ -419,10 +419,10 @@ validated against the `RepoUserToken` SQL table per request (with a
 | POST | `/repo/{id}/recv-fs` | Upload FS objects |
 | POST | `/repo/{id}/check-blocks` | Check which blocks exist server-side |
 | GET | `/repo/{id}/quota-check?delta=N` | Will this write fit in quota? |
-| GET | `/repo/{id}/jwt-token` | Get a JWT for subscribing to `/notification`. Wants a **repo token**, not a Bearer JWT — a Silo-lane client calls [`notify-token`](#change-notifications--ws-notification) instead |
-| POST | `/repo/head-commits-multi` | Get HEAD commits for multiple repos in one round-trip. Silo requires a sync token here and answers only for repos that token's owner can read; upstream leaves it unauthenticated. A client that sends no token gets 400 and should fall back to per-repo `GET /commit/HEAD`. |
+| GET | `/repo/{id}/jwt-token` | Get a JWT for subscribing to `/notification`. Wants a **library token**, not a Bearer JWT — a Silo-lane client calls [`notify-token`](#change-notifications--ws-notification) instead |
+| POST | `/repo/head-commits-multi` | Get HEAD commits for multiple libraries in one round-trip. Silo requires a sync token here and answers only for libraries that token's owner can read; upstream leaves it unauthenticated. A client that sends no token gets 400 and should fall back to per-library `GET /commit/HEAD`. |
 | GET | `/files/{token}/{filename}` | Download a file via a short-lived access token |
-| GET | `/repos/{repoid}/files/{filepath}` | Download a file by path (uses repo token) |
+| GET | `/libraries/{libraryid}/files/{filepath}` | Download a file by path (uses library token) |
 
 Uploads and updates also accept tokenized URLs:
 `/upload-api/{token}`, `/upload-blks-api/{token}`, `/upload-raw-blks-api/{token}`,
@@ -469,7 +469,7 @@ SeaDrive release ships:
 3. Look at what the real Seahub returns for that endpoint (either from
    docs, source, or a packet capture against a real Seafile instance).
 4. Add a shim in `fileserver/api/seadrive.go` that reuses existing logic
-   (e.g., `share.CheckPerm`, `repomgr.*`).
+   (e.g., `share.CheckPerm`, `libmgr.*`).
 5. Update the tables in this document.
 
 The goal is that this document stays in sync with what the server actually

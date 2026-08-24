@@ -1,4 +1,4 @@
-package repomgr
+package libmgr
 
 import (
 	"context"

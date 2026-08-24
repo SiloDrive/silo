@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -19,11 +19,11 @@ import (
 // The id-addressed surface: how a client reads and writes a library the server
 // cannot read.
 //
-//	GET  /api/silo/v1/repos/{repo}/objects/{id}   manifest, directory or commit
-//	PUT  /api/silo/v1/repos/{repo}/objects/{id}   the same, verified and stored
-//	GET  /api/silo/v1/repos/{repo}/blocks/{id}    a chunk, as stored
-//	PUT  /api/silo/v1/repos/{repo}/blocks/{id}    a chunk, verified and stored
-//	PUT  /api/silo/v1/repos/{repo}/head           If-Match: <current head>
+//	GET  /api/silo/v1/libraries/{library}/objects/{id}   manifest, directory or commit
+//	PUT  /api/silo/v1/libraries/{library}/objects/{id}   the same, verified and stored
+//	GET  /api/silo/v1/libraries/{library}/blocks/{id}    a chunk, as stored
+//	PUT  /api/silo/v1/libraries/{library}/blocks/{id}    a chunk, verified and stored
+//	PUT  /api/silo/v1/libraries/{library}/head           If-Match: <current head>
 //
 // This exists because of one fact and its consequences. The server holds no
 // content key for an E2EE library, so it cannot chunk a file, cannot build a
@@ -53,19 +53,19 @@ import (
 // request that is not an object at all.
 const maxObjectBody = store.MaxManifestBytes + (1 << 20)
 
-// idAddressedRepo loads a library and its store for the id-addressed surface.
-func idAddressedRepo(w http.ResponseWriter, r *http.Request, write bool) (*repomgr.Repo, *objmgr.Store, bool) {
-	repo := entryRepo(w, mux.Vars(r)["repoid"], middleware.GetAccountID(r), write)
-	if repo == nil {
+// idAddressedLibrary loads a library and its store for the id-addressed surface.
+func idAddressedLibrary(w http.ResponseWriter, r *http.Request, write bool) (*libmgr.Library, *objmgr.Store, bool) {
+	library := entryLibrary(w, mux.Vars(r)["libraryid"], middleware.GetAccountID(r), write)
+	if library == nil {
 		return nil, nil, false
 	}
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return nil, nil, false
 	}
-	return repo, st, true
+	return library, st, true
 }
 
 // objectID parses the id out of the route. The route regex already constrains
@@ -88,7 +88,7 @@ func objectID(w http.ResponseWriter, r *http.Request) (store.ID, bool) {
 // to ask again, which matters most to the client that has to walk a whole
 // object graph to resolve one path.
 func getObjectHandler(w http.ResponseWriter, r *http.Request) {
-	_, st, ok := idAddressedRepo(w, r, false)
+	_, st, ok := idAddressedLibrary(w, r, false)
 	if !ok {
 		return
 	}
@@ -125,7 +125,7 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request) {
 // object was already there, which is the one bit of information the retry
 // might want and costs an Exists call to provide.
 func putObjectHandler(w http.ResponseWriter, r *http.Request) {
-	_, st, ok := idAddressedRepo(w, r, true)
+	_, st, ok := idAddressedLibrary(w, r, true)
 	if !ok {
 		return
 	}
@@ -167,7 +167,7 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request) {
 // handing over and does not need to: the client that asked holds the key, or
 // does not need one.
 func getChunkHandler(w http.ResponseWriter, r *http.Request) {
-	_, st, ok := idAddressedRepo(w, r, false)
+	_, st, ok := idAddressedLibrary(w, r, false)
 	if !ok {
 		return
 	}
@@ -203,7 +203,7 @@ func getChunkHandler(w http.ResponseWriter, r *http.Request) {
 // the server can check without the key. The id is the whole verification, and
 // for a plain library it is a real one — SHA-256 of exactly these bytes.
 func putChunkHandler(w http.ResponseWriter, r *http.Request) {
-	repo, st, ok := idAddressedRepo(w, r, true)
+	library, st, ok := idAddressedLibrary(w, r, true)
 	if !ok {
 		return
 	}
@@ -231,7 +231,7 @@ func putChunkHandler(w http.ResponseWriter, r *http.Request) {
 	// bytes, which is the mark phase's number and does not exist yet — see
 	// docs/plans/store-v2.md. Unreferenced bytes are what GC is for; this
 	// stops the case where a client is already out of room.
-	if refuseOverQuota(w, repo, declaredLength(r)) {
+	if refuseOverQuota(w, library, declaredLength(r)) {
 		return
 	}
 
@@ -329,7 +329,7 @@ func putObjectError(w http.ResponseWriter, r *http.Request, err error, kind stri
 
 // putHeadHandler moves a library's head, and is a compare-and-swap.
 //
-//	PUT /api/silo/v1/repos/{repo}/head
+//	PUT /api/silo/v1/libraries/{library}/head
 //	If-Match: <current head commit id>
 //	<new head commit id>
 //
@@ -345,7 +345,7 @@ func putObjectError(w http.ResponseWriter, r *http.Request, err error, kind stri
 // looked, silently. There is no sensible default for that, so there is no
 // default.
 func putHeadHandler(w http.ResponseWriter, r *http.Request) {
-	repo, st, ok := idAddressedRepo(w, r, true)
+	library, st, ok := idAddressedLibrary(w, r, true)
 	if !ok {
 		return
 	}
@@ -395,9 +395,9 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gcID, err := repomgr.GetCurrentGCID(repo.StoreID)
+	gcID, err := libmgr.GetCurrentGCID(library.StoreID)
 	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to read gc id for repo %s", repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to read gc id for library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -407,34 +407,34 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 	// head move is what makes it reachable. The lock is held through the
 	// commit below, because the exact number this measures is only true until
 	// something else changes the owner's usage.
-	owner, err := repomgr.GetRepoOwner(repo.ID)
+	owner, err := libmgr.GetLibraryOwner(library.ID)
 	if err != nil || owner.IsZero() {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to find the owner of %s for a quota check", repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to find the owner of %s for a quota check", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	unlock := lockOwner(owner)
 	defer unlock()
 
-	oldRoot, err := store.ParseID(repo.RootID)
+	oldRoot, err := store.ParseID(library.RootID)
 	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to parse current root of repo %s", repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to parse current root of library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	delta, err := st.MeasureDelta(oldRoot, commit.Root)
 	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to measure usage delta for repo %s", repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to measure usage delta for library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	if fail := checkQuotaLocked(repo, owner, delta.Size); fail != nil {
+	if fail := checkQuotaLocked(library, owner, delta.Size); fail != nil {
 		http.Error(w, fail.message, fail.code)
 		return
 	}
 
 	acct := middleware.GetAccount(r)
-	_, err = updateBranch(repo.ID, repo.StoreID, headMove{
+	_, err = updateBranch(library.ID, library.StoreID, headMove{
 		CommitID: newHead.String(),
 		RootID:   commit.Root.String(),
 		Author:   acct.Email,

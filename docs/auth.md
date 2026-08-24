@@ -16,10 +16,10 @@ this server, so the decision is worth making now.
 | Account password | `EmailUser.passwd` | PBKDF2-SHA256, 600k rounds, 32-byte random salt | — | n/a |
 | Session JWT | not stored — signed with `option.JWTPrivateKey` | HS256, `aud=silo:session` | 24h | **no** |
 | API token | `ApiToken.token` | **cleartext**, 160-bit random | 30d, sliding | yes |
-| Sync token | `RepoUserToken.token` | **cleartext**, SHA1(uuid) | **never expires** | yes |
+| Sync token | `LibraryUserToken.token` | **cleartext**, SHA1(uuid) | **never expires** | yes |
 | Access token | `tokenstore`, memory only | uuid v4, cleartext | 1h | n/a |
-| Notification JWT | not stored — same key | HS256, `aud=silo:notif` | 72h, per repo | no |
-| Encrypted-repo key | `keycache`, memory only | derived key, never persisted | process | n/a |
+| Notification JWT | not stored — same key | HS256, `aud=silo:notif` | 72h, per library | no |
+| Encrypted-library key | `keycache`, memory only | derived key, never persisted | process | n/a |
 
 Three lanes, three credentials, and a client that wants all of Silo needs all
 three: `Authorization: Bearer <jwt>` on `/api/silo/v1`, `Authorization: Token
@@ -60,7 +60,7 @@ None of that changes below. What changes is everything around it.
 ### 1. The token columns are cleartext
 
 `apitokenstore.Create` (`apitokenstore.go:62`) inserts the raw token;
-`repomgr.GenerateRepoToken` (`repomgr.go:987`) does the same. A read of
+`libmgr.GenerateLibraryToken` (`libmgr.go:987`) does the same. A read of
 `silo.db` — a backup, a snapshot, a stray `SELECT` through some future admin
 surface — yields immediately usable credentials for every device of every user,
 with no cracking required.
@@ -118,8 +118,8 @@ ceiling that a credential could lower.
 
 `silo token list` prints indistinguishable 40-char hex strings with no label,
 no last-used timestamp, and no client identity. Deciding which one to revoke is
-a guess. And `GenerateRepoToken` mints a fresh row per call with no expiry, so
-`RepoUserToken` only ever grows.
+a guess. And `GenerateLibraryToken` mints a fresh row per call with no expiry, so
+`LibraryUserToken` only ever grows.
 
 ### 7. Login says which accounts exist
 
@@ -134,12 +134,12 @@ address rather than ten, and Argon2id widens the gap rather than closing it.
 
 ### 8. The credential model was inherited, not chosen
 
-`RepoUserToken.token` is `CHAR(41)` because the C daemon hashed a UUID to forty
+`LibraryUserToken.token` is `CHAR(41)` because the C daemon hashed a UUID to forty
 hex characters and left room for a NUL — the hash accomplishing nothing, since
 a UUID through SHA-1 is still exactly a UUID's worth of randomness. There are
 three credentials on three headers because Seahub and `seaf-server` were
 separate programs that had to authenticate callers to each other. Sync tokens
-are per repo, never expire, and only ever accumulate, because that was the
+are per library, never expire, and only ever accumulate, because that was the
 cheapest thing for a daemon holding no session state.
 
 Not one of those is a decision Silo made. They are the seams of a distributed
@@ -193,10 +193,10 @@ protects the human as much as the service.
 
 Email is not a column on the user today. It *is* the key, repeated as a foreign
 key across fourteen tables and 59 SQL statements in 16 files:
-`RepoOwner.owner_id`, `SharedRepo.from_email`/`to_email`, `RepoUserToken.email`,
+`LibraryOwner.owner_id`, `SharedLibrary.from_email`/`to_email`, `LibraryUserToken.email`,
 `ApiToken.email`, `FolderUserPerm.user`, `GroupUser.user_name`,
-`RepoGroup.user_name`, `UserQuota.user`, `UserShareQuota.user`,
-`RepoTrash.owner_id`, `OrgRepo.user`, `OrgSharedRepo.from_email`/`to_email`,
+`LibraryGroup.user_name`, `UserQuota.user`, `UserShareQuota.user`,
+`LibraryTrash.owner_id`, `OrgLibrary.user`, `OrgSharedLibrary.from_email`/`to_email`,
 `UserRole.email`, `Binding.email`.
 
 Four consequences, in rising order of how much they hurt:
@@ -252,13 +252,13 @@ v1.6.0`, which `go.mod` already requires — no new dependency.
 
 **Nine tables carry an account id, not fifteen.** Several of the tables listed
 above are queried by no Go code at all: `Binding`, `UserRole` and `LDAPUsers`
-by nothing, `RepoTrash`, `FileLocks`, `FolderUserPerm` and `FolderGroupPerm`
+by nothing, `LibraryTrash`, `FileLocks`, `FolderUserPerm` and `FolderGroupPerm`
 because trash, locking and folder-level permissions are unimplemented,
 `UserShareQuota` because only `UserQuota` is read, and all six `Org` tables
 because both callers of the org-aware share functions pass `orgID = -1` and the
 branch reading them is unreachable. They are dropped along with the branch,
-rather than carried. What remains: `RepoOwner`, `RepoGroup`, `GroupUser`,
-`Group`, `UserQuota`, `SharedRepo` (both ends), `RepoUserToken`, `ApiToken` and
+rather than carried. What remains: `LibraryOwner`, `LibraryGroup`, `GroupUser`,
+`Group`, `UserQuota`, `SharedLibrary` (both ends), `LibraryUserToken`, `ApiToken` and
 `Credential`.
 
 **A separate password table, because not every account has a password.** An
@@ -333,8 +333,8 @@ settling — but it gates nothing, because the answer only picks an encoding.
 
 ### What we stop carrying
 
-- **Per-repo sync tokens, for anything that is not a legacy client.** Look at
-  what they are: no expiry, no label, no last-used, one row per (repo, device)
+- **Per-library sync tokens, for anything that is not a legacy client.** Look at
+  what they are: no expiry, no label, no last-used, one row per (library, device)
   forever, and a README paragraph explaining that changing your password does
   not revoke them. A device credential reaches every library the account
   reaches, and narrowing is `scope` and `perm` on the row — not a second token
@@ -356,7 +356,7 @@ settling — but it gates nothing, because the answer only picks an encoding.
 ### A legacy client is a legacy trust level
 
 This should be visible rather than discovered. A `legacy` credential is a
-bearer secret, is account-wide or repo-wide with no ceiling, and cannot
+bearer secret, is account-wide or library-wide with no ceiling, and cannot
 participate in [proof of possession](#proof-of-possession). That is not a
 defect awaiting a fix; it is what an unmodifiable client can support. So `silo
 credential list` labels it as such, and an operator who wants the stronger
@@ -392,10 +392,10 @@ guessing at one, which is why `ghp_` tokens carry the same thing.
 
 | Kind | Held by | Presented as | Lifetime | Scope |
 |---|---|---|---|---|
-| `device` | Porter, the File Provider extension | a signature — [proof of possession](#proof-of-possession) | absolute, default 90d | optional repo + permission ceiling |
+| `device` | Porter, the File Provider extension | a signature — [proof of possession](#proof-of-possession) | absolute, default 90d | optional library + permission ceiling |
 | `session` | the TUI, the CLI | a signature, or a bearer secret where there is no key store | 24h | account |
 | `access` | capability URLs (`/files/`, `/zip/`) | bearer, memory only | 1h | one object, one op |
-| `legacy` | SeaDrive, Seafile Desktop | bearer, forty hex characters | absolute | account on `/api2`, one repo on `Seafile-Repo-Token` |
+| `legacy` | SeaDrive, Seafile Desktop | bearer, forty hex characters | absolute | account on `/api2`, one library on `Seafile-Repo-Token` |
 | `s3` | an S3 frontend, if it is ever built | SigV4 | absolute | see [S3](#s3-needs-a-master-key-not-a-column) |
 
 `legacy` is what was going to be a `sync` kind. One kind rather than two,
@@ -412,7 +412,7 @@ CREATE TABLE Credential (
   public_key  BLOB,                  -- SPKI, for proof-of-possession kinds
   account_id  BLOB    NOT NULL REFERENCES Account(id),
   label       TEXT    NOT NULL,      -- "dan's macbook, porter-fuse"
-  scope       TEXT,                  -- NULL = all libraries; else a repo id
+  scope       TEXT,                  -- NULL = all libraries; else a library id
   perm        TEXT    NOT NULL,      -- 'r' | 'rw' — a ceiling, never a grant
   client_id   TEXT,                  -- device identity, when the lane has one
   ctime       INTEGER NOT NULL,
@@ -624,12 +624,12 @@ Those stay bearer, and say so.
 
 ### Permission ceilings
 
-`share.CheckPerm(repoID, user)` keeps answering what the *user* may do.
+`share.CheckPerm(libraryID, user)` keeps answering what the *user* may do.
 `Credential.scope` and `Credential.perm` intersect with it:
 
 ```
-effective = min(CheckPerm(repo, cred.account_id),
-                cred.perm  if cred.scope in (NULL, repo) else "")
+effective = min(CheckPerm(library, cred.account_id),
+                cred.perm  if cred.scope in (NULL, library) else "")
 ```
 
 A credential can only ever narrow. That is what makes a read-only,
@@ -669,7 +669,7 @@ those buckets stop colliding with legitimate traffic altogether.
 Cache by credential id, and hold a per-account generation counter that a
 revocation, a password change, or a deactivation bumps. A cache hit checks the
 generation, so revocation is immediate rather than lagging `AuthCacheTTL`.
-`invalidateRepoAuth` (`sync_api.go:1453`) already does the repo-scoped version
+`invalidateLibraryAuth` (`sync_api.go:1453`) already does the library-scoped version
 of this; the account-scoped version is the same idea one level up.
 
 ## What Porter does
@@ -716,7 +716,7 @@ POST /api/silo/v1/auth/login
   "kind": "device",                       // default "session"
   "client_name": "Porter 1.2 (macOS)",    // becomes label
   "public_key": "<base64 SPKI>",          // optional; bearer secret if absent
-  "perm": "r", "scope": "<repo-id>" }     // optional, narrowing only
+  "perm": "r", "scope": "<library-id>" }     // optional, narrowing only
 
 201 { "credential": "silo_device_…", "expires_at": …, "email": "…" }
 ```
@@ -873,7 +873,7 @@ it must satisfy, neither of which falls out of writing the obvious handler:
 ### Enrolling into an account that already exists
 
 Sharing a library with an address nobody has enrolled under is a thing people
-do, and it has to mint something for `SharedRepo.to_account_id` to point at:
+do, and it has to mint something for `SharedLibrary.to_account_id` to point at:
 an inactive `Account` with the address claimed and no `AccountPassword`, which
 cannot be signed in to. Enrolment then finds the address already taken and
 claims that account rather than colliding with it, which reunites the shares

@@ -33,63 +33,63 @@ class BlocksTest < Minitest::Test
   end
 
   def test_missing_reports_only_what_is_absent
-    repo_id = create_test_repo
+    library_id = create_test_library
     present = "held content #{SecureRandom.hex(8)}"
     absent = sha1("never uploaded #{SecureRandom.hex(8)}")
 
-    assert client.put_block(repo_id, sha1(present), present).ok?
+    assert client.put_block(library_id, sha1(present), present).ok?
 
-    resp = client.missing_blocks(repo_id, [sha1(present), absent])
+    resp = client.missing_blocks(library_id, [sha1(present), absent])
     assert resp.ok?, resp.to_s
     assert_equal [absent], resp["missing"]
   end
 
   def test_missing_of_nothing_is_an_empty_array_not_null
-    repo_id = create_test_repo
-    resp = client.missing_blocks(repo_id, [])
+    library_id = create_test_library
+    resp = client.missing_blocks(library_id, [])
     assert resp.ok?
     assert_equal [], resp["missing"], "null here breaks every client that is not Go"
   end
 
   def test_a_block_that_does_not_hash_to_its_id_is_refused
-    repo_id = create_test_repo
+    library_id = create_test_library
     wrong_id = sha1("one thing")
 
-    resp = client.put_block(repo_id, wrong_id, "a different thing")
+    resp = client.put_block(library_id, wrong_id, "a different thing")
     assert_equal 400, resp.status, "the store accepted content under an id that is not its hash"
 
     # And nothing was published under that name, or a later writer of the same
     # id would skip it as already present and serve the wrong bytes forever.
-    assert_equal [wrong_id], client.missing_blocks(repo_id, [wrong_id])["missing"]
+    assert_equal [wrong_id], client.missing_blocks(library_id, [wrong_id])["missing"]
   end
 
   def test_a_block_already_held_answers_204
-    repo_id = create_test_repo
+    library_id = create_test_library
     content = "sent twice #{SecureRandom.hex(8)}"
 
-    assert_equal 201, client.put_block(repo_id, sha1(content), content).status
-    assert_equal 204, client.put_block(repo_id, sha1(content), content).status
+    assert_equal 201, client.put_block(library_id, sha1(content), content).status
+    assert_equal 204, client.put_block(library_id, sha1(content), content).status
   end
 
   def test_a_file_uploaded_as_blocks_reads_back_whole
-    repo_id = create_test_repo
+    library_id = create_test_library
     # Small blocks would not match the server's chunking, so use its own size
     # for the first block and a short second one — the two cases a file has.
     content = "S" * (block_size + 100)
     blocks = chunk(content, block_size)
     ids = blocks.map { |b| sha1(b) }
 
-    missing = client.missing_blocks(repo_id, ids)["missing"]
+    missing = client.missing_blocks(library_id, ids)["missing"]
     missing.each do |id|
       body = blocks[ids.index(id)]
-      assert client.put_block(repo_id, id, body).ok?
+      assert client.put_block(library_id, id, body).ok?
     end
 
-    created = client.create_from_blocks(repo_id, "/big.bin", ids)
+    created = client.create_from_blocks(library_id, "/big.bin", ids)
     assert_equal 201, created.status, created.to_s
     assert created.header("ETag"), "a write returns the new ETag so a client need not re-read"
 
-    got = client.get(client.entries_url(repo_id, "/big.bin"))
+    got = client.get(client.entries_url(library_id, "/big.bin"))
     assert got.ok?
     assert_equal content.bytesize, got.body.bytesize
     assert_equal content, got.body
@@ -98,35 +98,35 @@ class BlocksTest < Minitest::Test
   # The property that makes an interrupted upload resumable: asking again is
   # the whole recovery, and the second answer is shorter.
   def test_re_asking_after_uploading_returns_a_shorter_list
-    repo_id = create_test_repo
+    library_id = create_test_library
     parts = 3.times.map { "part #{SecureRandom.hex(8)}" }
     ids = parts.map { |p| sha1(p) }
 
-    assert_equal ids, client.missing_blocks(repo_id, ids)["missing"]
+    assert_equal ids, client.missing_blocks(library_id, ids)["missing"]
 
-    client.put_block(repo_id, ids[0], parts[0])
-    assert_equal ids[1..], client.missing_blocks(repo_id, ids)["missing"]
+    client.put_block(library_id, ids[0], parts[0])
+    assert_equal ids[1..], client.missing_blocks(library_id, ids)["missing"]
 
-    parts[1..].each_with_index { |p, i| client.put_block(repo_id, ids[i + 1], p) }
-    assert_equal [], client.missing_blocks(repo_id, ids)["missing"]
+    parts[1..].each_with_index { |p, i| client.put_block(library_id, ids[i + 1], p) }
+    assert_equal [], client.missing_blocks(library_id, ids)["missing"]
   end
 
   def test_creating_from_blocks_that_are_not_there_is_424_and_names_them
-    repo_id = create_test_repo
+    library_id = create_test_library
     absent = sha1("never sent #{SecureRandom.hex(8)}")
 
-    resp = client.create_from_blocks(repo_id, "/nope.bin", [absent])
+    resp = client.create_from_blocks(library_id, "/nope.bin", [absent])
     assert_equal 424, resp.status, "a commit naming absent blocks must not read as a client error"
     assert_equal [absent], resp["missing"], "the reply has to say which, or the fix is a re-upload of everything"
   end
 
   def test_nothing_exists_until_the_last_call
-    repo_id = create_test_repo
+    library_id = create_test_library
     content = "uploaded but never committed #{SecureRandom.hex(8)}"
 
-    assert client.put_block(repo_id, sha1(content), content).ok?
+    assert client.put_block(library_id, sha1(content), content).ok?
 
-    listing = client.list_dir(repo_id, "/")
+    listing = client.list_dir(library_id, "/")
     assert listing.ok?
     assert_equal [], listing.json, "uploading blocks created something in the tree"
   end

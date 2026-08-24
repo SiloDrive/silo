@@ -17,12 +17,12 @@ import (
 
 // postNotifyToken invokes CreateNotifyTokenHandler as `user` would, seeding the
 // context the way RequireAuth does and the route var the way mux would.
-func postNotifyToken(t *testing.T, user, repoID string) *httptest.ResponseRecorder {
+func postNotifyToken(t *testing.T, user, libraryID string) *httptest.ResponseRecorder {
 	t.Helper()
 
-	req := httptest.NewRequest("POST", "/api/silo/v1/repos/"+repoID+"/notify-token", nil)
+	req := httptest.NewRequest("POST", "/api/silo/v1/libraries/"+libraryID+"/notify-token", nil)
 	req = middleware.WithAccount(req, accountOf(t, user))
-	req = mux.SetURLVars(req, map[string]string{"repoid": repoID})
+	req = mux.SetURLVars(req, map[string]string{"libraryid": libraryID})
 
 	rr := httptest.NewRecorder()
 	CreateNotifyTokenHandler(rr, req)
@@ -34,25 +34,25 @@ func TestCreateNotifyTokenPermissions(t *testing.T) {
 	option.EnableNotification = true
 
 	tests := []struct {
-		name     string
-		user     string
-		repoID   string
-		wantCode int
+		name      string
+		user      string
+		libraryID string
+		wantCode  int
 	}{
-		{"owner can mint", ownerUser, testRepoID, http.StatusOK},
-		{"rw share can mint", rwShareUser, testRepoID, http.StatusOK},
+		{"owner can mint", ownerUser, testLibraryID, http.StatusOK},
+		{"rw share can mint", rwShareUser, testLibraryID, http.StatusOK},
 		// Read-only is enough: subscribing to a library you can read tells you
 		// nothing you could not learn by polling it.
-		{"read-only share can mint", roShareUser, testRepoID, http.StatusOK},
-		{"stranger cannot mint", strangerUser, testRepoID, http.StatusForbidden},
-		// A repo that doesn't exist looks the same as one you can't see, so the
-		// endpoint can't be used to probe for valid repo IDs.
-		{"missing repo is forbidden not 404", ownerUser, missingRepoID, http.StatusForbidden},
+		{"read-only share can mint", roShareUser, testLibraryID, http.StatusOK},
+		{"stranger cannot mint", strangerUser, testLibraryID, http.StatusForbidden},
+		// A library that doesn't exist looks the same as one you can't see, so the
+		// endpoint can't be used to probe for valid library IDs.
+		{"missing library is forbidden not 404", ownerUser, missingLibraryID, http.StatusForbidden},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rr := postNotifyToken(t, tt.user, tt.repoID)
+			rr := postNotifyToken(t, tt.user, tt.libraryID)
 			if rr.Code != tt.wantCode {
 				t.Errorf("expected %d, got %d (%s)", tt.wantCode, rr.Code, strings.TrimSpace(rr.Body.String()))
 			}
@@ -65,13 +65,13 @@ func TestCreateNotifyTokenPermissions(t *testing.T) {
 
 // TestCreateNotifyTokenClaims checks the minted token is the same token the
 // deleted sync-lane endpoint issued — the notification server verifies a signature,
-// an audience and a repo id, and has never known how the holder authenticated.
+// an audience and a library id, and has never known how the holder authenticated.
 func TestCreateNotifyTokenClaims(t *testing.T) {
 	setupPerms(t)
 	option.EnableNotification = true
 
 	before := time.Now()
-	rr := postNotifyToken(t, ownerUser, testRepoID)
+	rr := postNotifyToken(t, ownerUser, testLibraryID)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", rr.Code, rr.Body.String())
 	}
@@ -92,8 +92,8 @@ func TestCreateNotifyTokenClaims(t *testing.T) {
 	if err != nil || !tok.Valid {
 		t.Fatalf("minted token does not verify as a notification token: %v", err)
 	}
-	if claims.RepoID != testRepoID {
-		t.Errorf("expected repo %s, got %s", testRepoID, claims.RepoID)
+	if claims.LibraryID != testLibraryID {
+		t.Errorf("expected library %s, got %s", testLibraryID, claims.LibraryID)
 	}
 	if claims.UserName != ownerUser {
 		t.Errorf("expected user %s, got %s", ownerUser, claims.UserName)
@@ -117,7 +117,7 @@ func TestCreateNotifyTokenWithNotificationDisabled(t *testing.T) {
 	setupPerms(t)
 	option.EnableNotification = false
 
-	rr := postNotifyToken(t, ownerUser, testRepoID)
+	rr := postNotifyToken(t, ownerUser, testLibraryID)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d (%s)", rr.Code, strings.TrimSpace(rr.Body.String()))
 	}

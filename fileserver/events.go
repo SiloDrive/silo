@@ -12,23 +12,23 @@ import (
 )
 
 type statsEventData struct {
-	eType  string
-	user   string
-	repoID string
-	bytes  uint64
+	eType     string
+	user      string
+	libraryID string
+	bytes     uint64
 }
 
-func sendStatisticMsg(repoID, user, operation string, bytes uint64) {
-	rData := &statsEventData{operation, user, repoID, bytes}
+func sendStatisticMsg(libraryID, user, operation string, bytes uint64) {
+	rData := &statsEventData{operation, user, libraryID, bytes}
 
 	publishStatsEvent(rData)
 }
 
 func publishStatsEvent(rData *statsEventData) {
-	log.Infof("stats event: type=%s user=%s repo=%s bytes=%d",
-		rData.eType, rData.user, rData.repoID, rData.bytes)
+	log.Infof("stats event: type=%s user=%s library=%s bytes=%d",
+		rData.eType, rData.user, rData.libraryID, rData.bytes)
 }
 
-func publishUpdateEvent(repoID string, commitID string) {
-	log.Infof("update event: repo=%s commit=%s", repoID, commitID)
+func publishUpdateEvent(libraryID string, commitID string) {
+	log.Infof("update event: library=%s commit=%s", libraryID, commitID)
 }

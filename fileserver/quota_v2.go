@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/repomgr"
+	"github.com/dkam/silo/fileserver/libmgr"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -40,15 +40,15 @@ const errOverQuota = "The owner of this library is out of quota"
 // because the lookup failed is how a quota comes to be unenforced without
 // anybody noticing, which is the failure this lane already had and is the
 // reason this function exists.
-func checkQuotaV2(repo *repomgr.Repo, delta int64) *batchFailure {
-	owner, err := repomgr.GetRepoOwner(repo.ID)
+func checkQuotaV2(library *libmgr.Library, delta int64) *batchFailure {
+	owner, err := libmgr.GetLibraryOwner(library.ID)
 	if err != nil || owner.IsZero() {
-		log.Errorf("Failed to find the owner of %s for a quota check: %v", repo.ID, err)
+		log.Errorf("Failed to find the owner of %s for a quota check: %v", library.ID, err)
 		return &batchFailure{http.StatusInternalServerError, "Internal server error"}
 	}
 	unlock := lockOwner(owner)
 	defer unlock()
-	return checkQuotaLocked(repo, owner, delta)
+	return checkQuotaLocked(library, owner, delta)
 }
 
 // ownerLocks serializes quota admission per account, so that two requests
@@ -58,7 +58,7 @@ func checkQuotaV2(repo *repomgr.Repo, delta int64) *batchFailure {
 // A bare read-then-decide, run twice concurrently, admits both: each reads
 // the same usage, each computes usage+delta<=quota as true, and together they
 // land the owner over quota by more than either alone would have. The lock is
-// keyed by owner rather than by repo because the same owner can hold many
+// keyed by owner rather than by library because the same owner can hold many
 // libraries and a head move on any of them changes the one total every other
 // library's check is weighed against.
 var ownerLocks sync.Map // account.ID -> *sync.Mutex
@@ -83,18 +83,18 @@ func lockOwner(id account.ID) func() {
 // already holds owner's admission lock (see lockOwner) across a write that
 // changes usage — the head-move gate keeps the lock through its commit so
 // the total this decides against cannot be admitted against twice.
-func checkQuotaLocked(repo *repomgr.Repo, owner account.ID, delta int64) *batchFailure {
-	quota, err := repomgr.AccountQuota(owner)
+func checkQuotaLocked(library *libmgr.Library, owner account.ID, delta int64) *batchFailure {
+	quota, err := libmgr.AccountQuota(owner)
 	if err != nil {
-		log.Errorf("Failed to read the quota of the owner of %s: %v", repo.ID, err)
+		log.Errorf("Failed to read the quota of the owner of %s: %v", library.ID, err)
 		return &batchFailure{http.StatusInternalServerError, "Internal server error"}
 	}
 	if quota <= 0 {
 		return nil // no ceiling was ever set
 	}
-	usage, err := repomgr.AccountUsage(owner)
+	usage, err := libmgr.AccountUsage(owner)
 	if err != nil {
-		log.Errorf("Failed to total the usage of the owner of %s: %v", repo.ID, err)
+		log.Errorf("Failed to total the usage of the owner of %s: %v", library.ID, err)
 		return &batchFailure{http.StatusInternalServerError, "Internal server error"}
 	}
 	if usage.Size+delta > quota {
@@ -105,8 +105,8 @@ func checkQuotaLocked(repo *repomgr.Repo, owner account.ID, delta int64) *batchF
 
 // refuseOverQuota writes the refusal, and reports whether the caller should
 // stop.
-func refuseOverQuota(w http.ResponseWriter, repo *repomgr.Repo, delta int64) bool {
-	fail := checkQuotaV2(repo, delta)
+func refuseOverQuota(w http.ResponseWriter, library *libmgr.Library, delta int64) bool {
+	fail := checkQuotaV2(library, delta)
 	if fail == nil {
 		return false
 	}

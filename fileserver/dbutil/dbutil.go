@@ -11,8 +11,8 @@ import (
 // InsertOrReplace returns an upsert statement that inserts a row or
 // overwrites it if a conflict on the primary key is found.
 //
-//	dbutil.InsertOrReplace("RepoHead", "repo_id, branch_name")
-//	→ "INSERT OR REPLACE INTO RepoHead (repo_id, branch_name) VALUES (?, ?)"
+//	dbutil.InsertOrReplace("LibraryHead", "library_id, branch_name")
+//	→ "INSERT OR REPLACE INTO LibraryHead (library_id, branch_name) VALUES (?, ?)"
 func InsertOrReplace(table, columns string) string {
 	return fmt.Sprintf("INSERT OR REPLACE INTO %s (%s) VALUES (%s)",
 		table, columns, makePlaceholders(countColumns(columns)))
@@ -21,8 +21,8 @@ func InsertOrReplace(table, columns string) string {
 // InsertOrIgnore returns a statement that inserts a row or silently
 // does nothing if a conflict on the primary key is found.
 //
-//	dbutil.InsertOrIgnore("GarbageRepos", "repo_id")
-//	→ "INSERT OR IGNORE INTO GarbageRepos (repo_id) VALUES (?)"
+//	dbutil.InsertOrIgnore("GarbageLibraries", "library_id")
+//	→ "INSERT OR IGNORE INTO GarbageLibraries (library_id) VALUES (?)"
 func InsertOrIgnore(table, columns string) string {
 	return fmt.Sprintf("INSERT OR IGNORE INTO %s (%s) VALUES (%s)",
 		table, columns, makePlaceholders(countColumns(columns)))

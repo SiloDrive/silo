@@ -9,13 +9,13 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/google/uuid"
 )
 
 // setupShareTest opens a fresh database and wires every package CheckPerm
-// reaches through — account, repomgr and share itself all read the same
+// reaches through — account, libmgr and share itself all read the same
 // handle a real server would share. It returns the write handle, because
 // share.go only ever holds a read one: seeding the relations it checks is
 // the test's job, not something Init gives a caller a way to do.
@@ -34,7 +34,7 @@ func setupShareTest(t *testing.T, cloud bool) *sql.DB {
 	t.Cleanup(func() { _ = pair.Close() })
 
 	account.Init(pair.Read, pair.Write)
-	repomgr.Init(pair.Read, pair.Write, t.TempDir())
+	libmgr.Init(pair.Read, pair.Write, t.TempDir())
 	Init(pair.Read, "Group", cloud)
 	return pair.Write
 }
@@ -53,33 +53,33 @@ func makeAccount(t *testing.T, email string) *account.Account {
 	return acct
 }
 
-func makeRepo(t *testing.T, owner *account.Account) string {
+func makeLibrary(t *testing.T, owner *account.Account) string {
 	t.Helper()
-	repoID, err := repomgr.CreateRepo("t", owner, repomgr.DefaultFormat(false))
+	libraryID, err := libmgr.CreateLibrary("t", owner, libmgr.DefaultFormat(false))
 	if err != nil {
-		t.Fatalf("create repo: %v", err)
+		t.Fatalf("create library: %v", err)
 	}
-	return repoID
+	return libraryID
 }
 
-// makeVirtualRepo records a subfolder of originRepoID as its own repo
+// makeVirtualLibrary records a subfolder of originLibraryID as its own library
 // entity — the mechanism a subfolder share is built on: sharing that entity,
 // not the origin, is what makes the share specific to path.
-func makeVirtualRepo(t *testing.T, write *sql.DB, originRepoID, path string) string {
+func makeVirtualLibrary(t *testing.T, write *sql.DB, originLibraryID, path string) string {
 	t.Helper()
-	vRepoID := uuid.New().String()
-	if _, err := write.Exec("INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, ?, ?)",
-		vRepoID, originRepoID, path, ""); err != nil {
-		t.Fatalf("create virtual repo: %v", err)
+	vLibraryID := uuid.New().String()
+	if _, err := write.Exec("INSERT INTO VirtualLibrary (library_id, origin_library, path, base_commit) VALUES (?, ?, ?, ?)",
+		vLibraryID, originLibraryID, path, ""); err != nil {
+		t.Fatalf("create virtual library: %v", err)
 	}
-	return vRepoID
+	return vLibraryID
 }
 
-func shareRepo(t *testing.T, write *sql.DB, repoID string, from, to account.ID, perm string) {
+func shareLibrary(t *testing.T, write *sql.DB, libraryID string, from, to account.ID, perm string) {
 	t.Helper()
-	if _, err := write.Exec("INSERT INTO SharedRepo (repo_id, from_account_id, to_account_id, permission) VALUES (?, ?, ?, ?)",
-		repoID, from, to, perm); err != nil {
-		t.Fatalf("share repo: %v", err)
+	if _, err := write.Exec("INSERT INTO SharedLibrary (library_id, from_account_id, to_account_id, permission) VALUES (?, ?, ?, ?)",
+		libraryID, from, to, perm); err != nil {
+		t.Fatalf("share library: %v", err)
 	}
 }
 
@@ -101,11 +101,11 @@ func makeGroup(t *testing.T, write *sql.DB, name string, creator, member account
 	return int(id64)
 }
 
-func shareRepoToGroup(t *testing.T, write *sql.DB, repoID string, groupID int, sharer account.ID, perm string) {
+func shareLibraryToGroup(t *testing.T, write *sql.DB, libraryID string, groupID int, sharer account.ID, perm string) {
 	t.Helper()
-	if _, err := write.Exec("INSERT INTO RepoGroup (repo_id, group_id, account_id, permission) VALUES (?, ?, ?, ?)",
-		repoID, groupID, sharer, perm); err != nil {
-		t.Fatalf("share repo to group: %v", err)
+	if _, err := write.Exec("INSERT INTO LibraryGroup (library_id, group_id, account_id, permission) VALUES (?, ?, ?, ?)",
+		libraryID, groupID, sharer, perm); err != nil {
+		t.Fatalf("share library to group: %v", err)
 	}
 }
 
@@ -138,9 +138,9 @@ func TestGetDirPermWalksUpToTheNearestAncestor(t *testing.T) {
 func TestCheckPermOwnerAlwaysHasReadWrite(t *testing.T) {
 	setupShareTest(t, false)
 	owner := makeAccount(t, "owner@example.com")
-	repoID := makeRepo(t, owner)
+	libraryID := makeLibrary(t, owner)
 
-	if got := CheckPerm(repoID, owner.ID); got != "rw" {
+	if got := CheckPerm(libraryID, owner.ID); got != "rw" {
 		t.Errorf("owner permission = %q, want rw", got)
 	}
 }
@@ -149,9 +149,9 @@ func TestCheckPermWithNoRelationIsDenied(t *testing.T) {
 	setupShareTest(t, false)
 	owner := makeAccount(t, "owner2@example.com")
 	stranger := makeAccount(t, "stranger2@example.com")
-	repoID := makeRepo(t, owner)
+	libraryID := makeLibrary(t, owner)
 
-	if got := CheckPerm(repoID, stranger.ID); got != "" {
+	if got := CheckPerm(libraryID, stranger.ID); got != "" {
 		t.Errorf("a user with no relation to the library got %q, want denied", got)
 	}
 }
@@ -162,31 +162,31 @@ func TestCheckPermIndividualShareGrantsTheRecordedPermission(t *testing.T) {
 			write := setupShareTest(t, false)
 			owner := makeAccount(t, "owner-"+perm+"@example.com")
 			friend := makeAccount(t, "friend-"+perm+"@example.com")
-			repoID := makeRepo(t, owner)
-			shareRepo(t, write, repoID, owner.ID, friend.ID, perm)
+			libraryID := makeLibrary(t, owner)
+			shareLibrary(t, write, libraryID, owner.ID, friend.ID, perm)
 
-			if got := CheckPerm(repoID, friend.ID); got != perm {
+			if got := CheckPerm(libraryID, friend.ID); got != perm {
 				t.Errorf("shared permission = %q, want %q", got, perm)
 			}
 		})
 	}
 }
 
-// A surprising enough rule to pin: checkRepoSharePerm returns as soon as an
-// individual share answers, so a wider group grant on the same repo never
+// A surprising enough rule to pin: checkLibrariesharePerm returns as soon as an
+// individual share answers, so a wider group grant on the same library never
 // even gets asked about. A user shared "r" individually reads "r", even if
 // a group they are also in was shared "rw".
 func TestCheckPermIndividualShareTakesPrecedenceOverAGroupShare(t *testing.T) {
 	write := setupShareTest(t, false)
 	owner := makeAccount(t, "owner3@example.com")
 	member := makeAccount(t, "member3@example.com")
-	repoID := makeRepo(t, owner)
+	libraryID := makeLibrary(t, owner)
 
-	shareRepo(t, write, repoID, owner.ID, member.ID, "r")
+	shareLibrary(t, write, libraryID, owner.ID, member.ID, "r")
 	groupID := makeGroup(t, write, "team3", owner.ID, member.ID)
-	shareRepoToGroup(t, write, repoID, groupID, owner.ID, "rw")
+	shareLibraryToGroup(t, write, libraryID, groupID, owner.ID, "rw")
 
-	if got := CheckPerm(repoID, member.ID); got != "r" {
+	if got := CheckPerm(libraryID, member.ID); got != "r" {
 		t.Errorf("permission = %q, want r — the individual share must win", got)
 	}
 }
@@ -195,12 +195,12 @@ func TestCheckPermGroupShareGrantsPermission(t *testing.T) {
 	write := setupShareTest(t, false)
 	owner := makeAccount(t, "owner4@example.com")
 	member := makeAccount(t, "member4@example.com")
-	repoID := makeRepo(t, owner)
+	libraryID := makeLibrary(t, owner)
 
 	groupID := makeGroup(t, write, "team4", owner.ID, member.ID)
-	shareRepoToGroup(t, write, repoID, groupID, owner.ID, "rw")
+	shareLibraryToGroup(t, write, libraryID, groupID, owner.ID, "rw")
 
-	if got := CheckPerm(repoID, member.ID); got != "rw" {
+	if got := CheckPerm(libraryID, member.ID); got != "rw" {
 		t.Errorf("group-shared permission = %q, want rw", got)
 	}
 }
@@ -212,23 +212,23 @@ func TestCheckPermPrefersReadWriteWhenTwoGroupsDisagree(t *testing.T) {
 	write := setupShareTest(t, false)
 	owner := makeAccount(t, "owner5@example.com")
 	member := makeAccount(t, "member5@example.com")
-	repoID := makeRepo(t, owner)
+	libraryID := makeLibrary(t, owner)
 
 	readers := makeGroup(t, write, "readers", owner.ID, member.ID)
-	shareRepoToGroup(t, write, repoID, readers, owner.ID, "r")
+	shareLibraryToGroup(t, write, libraryID, readers, owner.ID, "r")
 	writers := makeGroup(t, write, "writers", owner.ID, member.ID)
-	shareRepoToGroup(t, write, repoID, writers, owner.ID, "rw")
+	shareLibraryToGroup(t, write, libraryID, writers, owner.ID, "rw")
 
-	if got := CheckPerm(repoID, member.ID); got != "rw" {
+	if got := CheckPerm(libraryID, member.ID); got != "rw" {
 		t.Errorf("permission with a read and a read-write group = %q, want rw", got)
 	}
 }
 
-// InnerPubRepo is the self-hosted "anyone signed in may read this" switch,
+// InnerPubLibrary is the self-hosted "anyone signed in may read this" switch,
 // and it must not leak into cloud mode: a multi-tenant deployment has no
 // business granting access on the strength of a row meant for a single
 // self-hosted instance's whole user base.
-func TestCheckPermInnerPubRepoOnlyAppliesOutsideCloudMode(t *testing.T) {
+func TestCheckPermInnerPubLibraryOnlyAppliesOutsideCloudMode(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		cloud bool
@@ -241,85 +241,85 @@ func TestCheckPermInnerPubRepoOnlyAppliesOutsideCloudMode(t *testing.T) {
 			write := setupShareTest(t, tc.cloud)
 			owner := makeAccount(t, "iowner-"+tc.name+"@example.com")
 			stranger := makeAccount(t, "istranger-"+tc.name+"@example.com")
-			repoID := makeRepo(t, owner)
-			if _, err := write.Exec("INSERT INTO InnerPubRepo (repo_id, permission) VALUES (?, ?)", repoID, "r"); err != nil {
-				t.Fatalf("insert inner pub repo: %v", err)
+			libraryID := makeLibrary(t, owner)
+			if _, err := write.Exec("INSERT INTO InnerPubLibrary (library_id, permission) VALUES (?, ?)", libraryID, "r"); err != nil {
+				t.Fatalf("insert inner pub library: %v", err)
 			}
 
-			if got := CheckPerm(repoID, stranger.ID); got != tc.want {
+			if got := CheckPerm(libraryID, stranger.ID); got != tc.want {
 				t.Errorf("permission = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestCheckPermVirtualRepoOwnerOfOriginHasReadWrite(t *testing.T) {
+func TestCheckPermVirtualLibraryOwnerOfOriginHasReadWrite(t *testing.T) {
 	write := setupShareTest(t, false)
 	owner := makeAccount(t, "owner7@example.com")
-	origin := makeRepo(t, owner)
-	vRepoID := makeVirtualRepo(t, write, origin, "/sub")
+	origin := makeLibrary(t, owner)
+	vLibraryID := makeVirtualLibrary(t, write, origin, "/sub")
 
-	if got := CheckPerm(vRepoID, owner.ID); got != "rw" {
-		t.Errorf("origin owner on a virtual repo = %q, want rw", got)
+	if got := CheckPerm(vLibraryID, owner.ID); got != "rw" {
+		t.Errorf("origin owner on a virtual library = %q, want rw", got)
 	}
 }
 
-// A subfolder share is recorded against the virtual repo's own id, not the
-// origin's, and must not be visible through the origin repo itself — sharing
+// A subfolder share is recorded against the virtual library's own id, not the
+// origin's, and must not be visible through the origin library itself — sharing
 // "/sub" is not sharing the whole library.
-func TestCheckPermVirtualRepoGrantsTheSubfolderShare(t *testing.T) {
+func TestCheckPermVirtualLibraryGrantsTheSubfolderShare(t *testing.T) {
 	write := setupShareTest(t, false)
 	owner := makeAccount(t, "owner9@example.com")
 	friend := makeAccount(t, "friend9@example.com")
-	origin := makeRepo(t, owner)
-	vRepoID := makeVirtualRepo(t, write, origin, "/sub")
+	origin := makeLibrary(t, owner)
+	vLibraryID := makeVirtualLibrary(t, write, origin, "/sub")
 
-	shareRepo(t, write, vRepoID, owner.ID, friend.ID, "r")
+	shareLibrary(t, write, vLibraryID, owner.ID, friend.ID, "r")
 
-	if got := CheckPerm(vRepoID, friend.ID); got != "r" {
+	if got := CheckPerm(vLibraryID, friend.ID); got != "r" {
 		t.Errorf("subfolder share permission = %q, want r", got)
 	}
 	if got := CheckPerm(origin, friend.ID); got != "" {
-		t.Errorf("the subfolder share leaked onto the origin repo: %q", got)
+		t.Errorf("the subfolder share leaked onto the origin library: %q", got)
 	}
 }
 
-// With no subfolder-specific share, checkVirtualRepoPerm falls all the way
-// back to a blanket share of the whole origin repo — the last of the three
+// With no subfolder-specific share, checkVirtualLibraryPerm falls all the way
+// back to a blanket share of the whole origin library — the last of the three
 // checks it runs in order.
-func TestCheckPermVirtualRepoFallsBackToABlanketOriginShare(t *testing.T) {
+func TestCheckPermVirtualLibraryFallsBackToABlanketOriginShare(t *testing.T) {
 	write := setupShareTest(t, false)
 	owner := makeAccount(t, "owner10@example.com")
 	friend := makeAccount(t, "friend10@example.com")
-	origin := makeRepo(t, owner)
-	vRepoID := makeVirtualRepo(t, write, origin, "/sub")
+	origin := makeLibrary(t, owner)
+	vLibraryID := makeVirtualLibrary(t, write, origin, "/sub")
 
-	shareRepo(t, write, origin, owner.ID, friend.ID, "rw")
+	shareLibrary(t, write, origin, owner.ID, friend.ID, "rw")
 
-	if got := CheckPerm(vRepoID, friend.ID); got != "rw" {
+	if got := CheckPerm(vLibraryID, friend.ID); got != "rw" {
 		t.Errorf("permission via a blanket origin share = %q, want rw", got)
 	}
 }
 
-// GetReposByOwner is the account's own-library listing, read by every
+// GetLibrariesByOwner is the account's own-library listing, read by every
 // "your libraries" response; empty must mean exactly that, not an error.
-func TestGetReposByOwnerListsOwnedLibrariesOnly(t *testing.T) {
+func TestGetLibrariesByOwnerListsOwnedLibrariesOnly(t *testing.T) {
 	setupShareTest(t, false)
 	owner := makeAccount(t, "lister@example.com")
 	other := makeAccount(t, "other@example.com")
-	repoID := makeRepo(t, owner)
-	_ = makeRepo(t, other)
+	libraryID := makeLibrary(t, owner)
+	_ = makeLibrary(t, other)
 
-	repos, err := GetReposByOwner(owner.ID)
+	libraries, err := GetLibrariesByOwner(owner.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(repos) != 1 || repos[0].ID != repoID {
-		t.Fatalf("GetReposByOwner = %+v, want just %s", repos, repoID)
+	if len(libraries) != 1 || libraries[0].ID != libraryID {
+		t.Fatalf("GetLibrariesByOwner = %+v, want just %s", libraries, libraryID)
 	}
 
 	stranger := makeAccount(t, "nothing-owned@example.com")
-	none, err := GetReposByOwner(stranger.ID)
+	none, err := GetLibrariesByOwner(stranger.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

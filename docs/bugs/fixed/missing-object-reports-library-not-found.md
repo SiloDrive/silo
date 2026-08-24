@@ -1,7 +1,7 @@
-# A missing object reports "Repo not found", and tells clients to delete data
+# A missing object reports "Library not found", and tells clients to delete data
 
-**Fixed** in 0.4.3. `repomgr.GetWithReason` now says which of the four
-conditions it hit, `repomgr.StatusFor` maps them, and every endpoint that
+**Fixed** in 0.4.3. `libmgr.GetWithReason` now says which of the four
+conditions it hit, `libmgr.StatusFor` maps them, and every endpoint that
 answers a client uses both. Faults are logged once per library per five
 minutes. See [What was done](#what-was-done) at the end for the parts that were
 left alone and why.
@@ -18,31 +18,31 @@ complete it locally. Everything else here is cosmetic by comparison.
 
 ## Symptom
 
-A library whose head commit object is missing is reported as **404 "Repo not
-found"** by every endpoint that resolves it, while `GET /api/silo/v1/repos`
+A library whose head commit object is missing is reported as **404 "Library not
+found"** by every endpoint that resolves it, while `GET /api/silo/v1/libraries`
 continues to list it, with a `head_commit_id` naming the object that is not
 there.
 
 ```
-GET /api/silo/v1/repos
+GET /api/silo/v1/libraries
   200  [{"id":"328be500-…","name":"Porter Test",
          "head_commit_id":"ac9b78b5c6f7b1905277627bafef0fe99beb15ff", …}]
 
-GET /api/silo/v1/repos/328be500-…/entries/
-  404  Repo not found
+GET /api/silo/v1/libraries/328be500-…/entries/
+  404  Library not found
 
 [fileserver] [ERROR] failed to load commit 328be500-…/ac9b78b5… :
   open share01/storage/commits/328be500-…/ac/9b78b5c6… : no such file or directory
 ```
 
-The two surfaces disagree because they read different things. `ListReposHandler`
-answers from `RepoOwner`/`RepoInfo`/`Branch` and never touches the object store,
+The two surfaces disagree because they read different things. `ListLibrariesHandler`
+answers from `LibraryOwner`/`LibraryInfo`/`Branch` and never touches the object store,
 so a library with an intact row lists cleanly no matter what state its storage is
-in. Everything else goes through `repomgr.Get`, which reads the head commit.
+in. Everything else goes through `libmgr.Get`, which reads the head commit.
 
 ## Cause
 
-`repomgr.Get` (`fileserver/repomgr/repomgr.go:105`) returns `nil` for four
+`libmgr.Get` (`fileserver/libmgr/libmgr.go:105`) returns `nil` for four
 unrelated reasons:
 
 | condition | line | what it actually means |
@@ -55,14 +55,14 @@ unrelated reasons:
 Every caller then does the same thing with that `nil`:
 
 ```go
-repo := repomgr.Get(repoID)
-if repo == nil {
-    http.Error(w, "Repo not found", http.StatusNotFound)
+library := libmgr.Get(libraryID)
+if library == nil {
+    http.Error(w, "Library not found", http.StatusNotFound)
     return nil
 }
 ```
 
-— `entryRepo` in `fileserver/entries.go:113`, and the same shape at
+— `entryLibrary` in `fileserver/entries.go:113`, and the same shape at
 `fileserver/api/api.go:316` and `:355`, `fileserver/api_handlers.go:31` and
 `:206`, `fileserver/api/changes.go:116`, `fileserver/api/seadrive.go:289`.
 
@@ -83,7 +83,7 @@ that could have restored the object.
 The clients in flight both walk into it:
 
 - **porter-fuse** maps 404 to `ENOENT`. The library would disappear from the
-  mount while `/repos` kept listing it — a directory the mount says is not there
+  mount while `/libraries` kept listing it — a directory the mount says is not there
   and the API says is. Under 5xx it maps to `EIO`, which is the truth: something
   is broken, nothing has been deleted, do not act on it.
 - A **File Provider** extension has the sharper version of the same problem. A
@@ -100,7 +100,7 @@ that believes a 404 can.
 Separate the conditions. `Get` already knows which one it hit — the information
 is thrown away at the `return nil`.
 
-1. Have `repomgr.Get` return `(*Repo, error)` with distinguishable errors, or add
+1. Have `libmgr.Get` return `(*Library, error)` with distinguishable errors, or add
    a `GetWithReason`. Absent row is one thing; a commit that will not load is
    another.
 2. Map them: no row → **404**. Empty `HeadCommitID`, `commitmgr.Load` failure, or
@@ -125,24 +125,24 @@ library would not be disposable.
 
 ## What was done
 
-**The reason survives the lookup.** `repomgr.GetWithReason` returns
-`(*Repo, error)` wrapping one of three sentinels — `ErrRepoNotFound`,
-`ErrRepoCorrupted`, `ErrRepoUnavailable`. The scan-failure and no-row cases were
+**The reason survives the lookup.** `libmgr.GetWithReason` returns
+`(*Library, error)` wrapping one of three sentinels — `ErrLibraryNotFound`,
+`ErrLibraryCorrupted`, `ErrLibraryUnavailable`. The scan-failure and no-row cases were
 also separated: `rows.Next()` returning false with `rows.Err()` set is the
 database failing, not an answer about whether the library exists, and the old
-code read both as "no such repo".
+code read both as "no such library".
 
-`Get` keeps its `*Repo`-or-nil signature and now wraps `GetWithReason`, so the
-twenty-odd internal callers that only need the repo are untouched.
+`Get` keeps its `*Library`-or-nil signature and now wraps `GetWithReason`, so the
+twenty-odd internal callers that only need the library are untouched.
 
-**The mapping lives in one place.** `repomgr.StatusFor(err)` returns the status
+**The mapping lives in one place.** `libmgr.StatusFor(err)` returns the status
 and body: no row → **404**, database → **503**, everything else → **500** with a
 body that says the library exists and its storage is damaged. It sits next to
 the sentinels rather than in either HTTP package, because both `silod` and
-`fileserver/api` serve repos and two copies of this decision would drift.
+`fileserver/api` serve libraries and two copies of this decision would drift.
 
-Converted: `entryRepo` (`entries.go` — the Silo v1 surface porter-fuse and the
-File Provider extension read), `loadRepoAndCommit` and the download handler
+Converted: `entryLibrary` (`entries.go` — the Silo v1 surface porter-fuse and the
+File Provider extension read), `loadLibraryAndCommit` and the download handler
 (`api_handlers.go`), `ListDirHandler` (`api/api.go`), `ChangesHandler`
 (`api/changes.go`), and `SeaDriveDownloadInfoHandler` (`api/seadrive.go`).
 
@@ -155,13 +155,13 @@ the same missing object on every request.
 
 ### Left alone, deliberately
 
-**`ListReposHandler` still lists a library whose head commit is missing.**
+**`ListLibrariesHandler` still lists a library whose head commit is missing.**
 Detecting it means loading every head commit on every listing, which is the cost
 the handler exists to avoid. The disagreement between the two surfaces is now
 harmless — one lists the library, the other says its storage is damaged — where
 before it was one listing it and the other saying it was deleted.
 
-**`fileop.go` still answers 400 "Bad repo id"** on the legacy upload and
+**`fileop.go` still answers 400 "Bad library id"** on the legacy upload and
 download paths. Wrong for the same reason, but 400 carries no instruction to
 delete anything, and those paths are entangled with the 444/445 codes the
 Seafile client already understands. Worth a separate pass.
@@ -171,12 +171,12 @@ the natural companion, and still separate work.
 
 ### Tests
 
-`fileserver/repomgr/get_test.go` covers all four conditions against a SQLite
+`fileserver/libmgr/get_test.go` covers all four conditions against a SQLite
 database and a real object store, including removing the commit store out from
-under a live repo — the accident, reproduced. `fileserver/repo_missing_object_test.go`
-asserts the handler behaviour that matters: `entryRepo` and `loadRepoAndCommit`
+under a live library — the accident, reproduced. `fileserver/library_missing_object_test.go`
+asserts the handler behaviour that matters: `entryLibrary` and `loadLibraryAndCommit`
 answer 500 for a damaged library and still answer 404 for an absent one.
 
 The package's `TestMain` had to go first. It called `os.Exit(0)` when
-`TEST_REPO_ID` was unset, which skipped the whole package — anything added
+`TEST_LIBRARY_ID` was unset, which skipped the whole package — anything added
 beside it would silently never have run.

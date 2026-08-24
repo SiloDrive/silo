@@ -3,7 +3,7 @@
 ## Overview
 
 Silo is a single Go binary that serves file sync over HTTP and talks directly to
-its database and object store. The store is content-addressable, like Git: repos
+its database and object store. The store is content-addressable, like Git: libraries
 point at branches, branches at commits, commits at a tree of directory and file
 objects, and file objects at deduplicated blocks.
 
@@ -36,15 +36,15 @@ Client  → POST /api2/auth-token/          {username, password}
         ← 40-char hex API token (no expiry — clients persist it)
 
 Client  → POST /api2/repos/{id}/repo-tokens/   Authorization: Token <api-token>
-        ← 41-char repo sync token, written to RepoUserToken
+        ← 41-char library sync token, written to LibraryUserToken
 
 Client  → GET /repo/{id}/commit/HEAD
-          Header: Seafile-Repo-Token: <repo-token>
-Silo    → SELECT email FROM RepoUserToken WHERE repo_id=? AND token=?
+          Header: Seafile-Repo-Token: <library-token>
+Silo    → SELECT email FROM LibraryUserToken WHERE library_id=? AND token=?
 Silo    → proceeds with sync
 ```
 
-The sync path is a direct DB lookup via `repomgr.GetEmailByToken()`. API tokens
+The sync path is a direct DB lookup via `libmgr.GetEmailByToken()`. API tokens
 live in `fileserver/apitokenstore/`; the `Authorization: Token` middleware is
 `fileserver/middleware/apitoken.go`.
 
@@ -54,7 +54,7 @@ live in `fileserver/apitokenstore/`; the `Authorization: Token` middleware is
 Client  → POST /api/silo/v1/auth/login    {email, password}
         ← JWT session token (24h)
 
-Client  → GET  /api/silo/v1/repos/{id}/entries/{path}   Authorization: Bearer <jwt>
+Client  → GET  /api/silo/v1/libraries/{id}/entries/{path}   Authorization: Bearer <jwt>
         ← file bytes or a directory listing
 ```
 
@@ -86,16 +86,16 @@ has the upgrade recipe for a data directory that still has the old pair.
 - Groups table (configurable name)
 
 ### Repositories
-- `Repo` — repositories
-- `Branch` — branch heads (repo_id, name, commit_id)
-- `RepoOwner` — repo ownership
-- `SharedRepo` — user-to-user shares
-- `RepoGroup` — group shares
-- `VirtualRepo` — virtual repo mappings (subdirs shared as repos)
-- `RepoInfo` — repo metadata/settings
-- `RepoUserToken` — per-user per-repo sync tokens (41 chars)
+- `Library` — repositories
+- `Branch` — branch heads (library_id, name, commit_id)
+- `LibraryOwner` — library ownership
+- `SharedLibrary` — user-to-user shares
+- `LibraryGroup` — group shares
+- `VirtualLibrary` — virtual library mappings (subdirs shared as libraries)
+- `LibraryInfo` — library metadata/settings
+- `LibraryUserToken` — per-user per-library sync tokens (41 chars)
 - `FileLocks` — file locking
-- `InnerPubRepo` — publicly shared repos
+- `InnerPubLibrary` — publicly shared libraries
 - Various permission tables
 
 Schema lives in `fileserver/dbutil/schema.go` and is applied at startup.
@@ -111,13 +111,13 @@ storage/
   fs/{store-id}/{first-2-chars}/{remaining-38-chars}
 ```
 
-Virtual repos share the storage of their origin repo, via the StoreID mapping —
-which is why the path component is a store ID, not a repo ID.
+Virtual libraries share the storage of their origin library, via the StoreID mapping —
+which is why the path component is a store ID, not a library ID.
 
 ## Data model
 
 ```
-Repo (UUID)
+Library (UUID)
   -> Branch (name, commit_id)
     -> Commit (SHA1, root_id, parent_id, creator, description)
       -> Dir / Seafile objects (content-addressable tree)
@@ -152,10 +152,10 @@ type appHandler func(http.ResponseWriter, *http.Request) *appError
 
 ### Packages
 
-- `repomgr` — repo queries and writes
+- `libmgr` — library queries and writes
 - `fsmgr` / `commitmgr` / `blockmgr` — object read/write with caching
 - `objstore` — storage backend abstraction
-- `share` — permission checking (owner, direct share, group share, virtual repo)
+- `share` — permission checking (owner, direct share, group share, virtual library)
 - `tokenstore` — in-memory access token store
 - `keycache` — in-memory decrypt key cache
 - `apitokenstore` — persistent API tokens for sync clients
@@ -179,7 +179,7 @@ type appHandler func(http.ResponseWriter, *http.Request) *appError
 
 ## Build
 
-`go build ./cmd/silo` from the repo root. One binary, one `go.mod`: server, TUI
+`go build ./cmd/silo` from the project root. One binary, one `go.mod`: server, TUI
 and CLI together.
 
 ## Client repositories

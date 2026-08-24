@@ -36,8 +36,8 @@ func newTreeServer(t *testing.T, features ...string) (*treeServer, *APIClient) {
 		case path == "/api/silo/v1/server-info":
 			_ = json.NewEncoder(w).Encode(ServerInfo{Version: "test", Features: ts.features})
 
-		case path == "/api/silo/v1/repos":
-			_ = json.NewEncoder(w).Encode([]Repo{{ID: "r1", Name: "Library", Chunker: testChunker()}})
+		case path == "/api/silo/v1/libraries":
+			_ = json.NewEncoder(w).Encode([]Library{{ID: "r1", Name: "Library", Chunker: testChunker()}})
 
 		case strings.HasSuffix(path, "/blocks/missing"):
 			var body struct {

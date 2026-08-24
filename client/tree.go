@@ -20,9 +20,9 @@ import (
 // has, then create every directory and file in one ordered, all-or-nothing
 // request:
 //
-//	POST repos/{id}/blocks/missing   which of these do you not have?
-//	PUT  repos/{id}/blocks/{id}      only the ones it asked for
-//	POST repos/{id}/batch            mkdir …, create …  -> one commit
+//	POST libraries/{id}/blocks/missing   which of these do you not have?
+//	PUT  libraries/{id}/blocks/{id}      only the ones it asked for
+//	POST libraries/{id}/batch            mkdir …, create …  -> one commit
 //
 // Dedup is across the tree, not just within a file: a block claimed by one
 // file is not offered again by the next, so a directory holding the same
@@ -71,7 +71,7 @@ type treeFile struct {
 }
 
 // UploadDir uploads localDir, and everything under it, into parentDir. The
-// directory keeps its own name: UploadDir(repo, "/", "./photos") fills
+// directory keeps its own name: UploadDir(library, "/", "./photos") fills
 // /photos, the same way UploadFile keeps a file's name and `cp -r` keeps a
 // directory's.
 //
@@ -79,7 +79,7 @@ type treeFile struct {
 // arrives in bursts on the batched path, because that is when files actually
 // land — one call per file would be a progress bar for a commit that has not
 // happened yet.
-func (c *APIClient) UploadDir(repoID, parentDir, localDir string, onFile func(remotePath string)) (*TreeUpload, error) {
+func (c *APIClient) UploadDir(libraryID, parentDir, localDir string, onFile func(remotePath string)) (*TreeUpload, error) {
 	info, err := os.Stat(localDir)
 	if err != nil {
 		return nil, err
@@ -108,11 +108,11 @@ func (c *APIClient) UploadDir(repoID, parentDir, localDir string, onFile func(re
 
 	server := c.capabilities()
 	if server.Has("batch") && server.Has("blocks") {
-		if p, ok := c.chunkerFor(repoID); ok {
-			return result, c.uploadTreeBatched(repoID, dirs, files, p, onFile, result)
+		if p, ok := c.chunkerFor(libraryID); ok {
+			return result, c.uploadTreeBatched(libraryID, dirs, files, p, onFile, result)
 		}
 	}
-	return result, c.uploadTreeSerially(repoID, dirs, files, onFile, result)
+	return result, c.uploadTreeSerially(libraryID, dirs, files, onFile, result)
 }
 
 // walkTree lists the directories and regular files under localDir, in an order
@@ -149,7 +149,7 @@ func walkTree(localDir, remoteBase string) (dirs []string, files []treeFile, ski
 
 // uploadTreeBatched sends the content nobody has, then writes the whole tree
 // in as few commits as the server's limits allow.
-func (c *APIClient) uploadTreeBatched(repoID string, dirs []string, files []treeFile, p store.Params, onFile func(string), result *TreeUpload) error {
+func (c *APIClient) uploadTreeBatched(libraryID string, dirs []string, files []treeFile, p store.Params, onFile func(string), result *TreeUpload) error {
 	// Name every chunk in the tree first. Nothing is sent yet: the point of
 	// hashing everything up front is to be able to ask one question about all
 	// of it, and to ask about a chunk once however many files contain it.
@@ -170,7 +170,7 @@ func (c *APIClient) uploadTreeBatched(repoID string, dirs []string, files []tree
 		}
 	}
 
-	missing, err := c.missingInBatches(repoID, ids)
+	missing, err := c.missingInBatches(libraryID, ids)
 	if err != nil {
 		return err
 	}
@@ -182,7 +182,7 @@ func (c *APIClient) uploadTreeBatched(repoID string, dirs []string, files []tree
 			// The server answered with an id that was never offered.
 			return fmt.Errorf("server asked for chunk %.8s, which is not part of this upload", id)
 		}
-		sent, err := c.putChunkFrom(repoID, id, src)
+		sent, err := c.putChunkFrom(libraryID, id, src)
 		if err != nil {
 			return err
 		}
@@ -200,7 +200,7 @@ func (c *APIClient) uploadTreeBatched(repoID string, dirs []string, files []tree
 	for _, f := range files {
 		ops = append(ops, BatchOp{Op: "create", Path: f.remote, Blocks: f.chunks})
 	}
-	return c.applyInBatches(repoID, ops, onFile, result)
+	return c.applyInBatches(libraryID, ops, onFile, result)
 }
 
 // missingInBatches asks about a long chunk list in several requests, and keeps
@@ -208,11 +208,11 @@ func (c *APIClient) uploadTreeBatched(repoID string, dirs []string, files []tree
 // rather than for the chunks, which are what is being asked about — the two
 // senses of the word meet on this one line and only one of them is the
 // format's.
-func (c *APIClient) missingInBatches(repoID string, ids []string) ([]string, error) {
+func (c *APIClient) missingInBatches(libraryID string, ids []string) ([]string, error) {
 	var missing []string
 	for start := 0; start < len(ids); start += maxIDsPerQuery {
 		end := min(start+maxIDsPerQuery, len(ids))
-		got, err := c.MissingChunks(repoID, ids[start:end])
+		got, err := c.MissingChunks(libraryID, ids[start:end])
 		if err != nil {
 			return nil, err
 		}
@@ -230,7 +230,7 @@ func (c *APIClient) missingInBatches(repoID string, ids []string) ([]string, err
 // re-running the upload is what fixes it: mkdir on an existing directory
 // succeeds and create replaces, so a second run converges rather than doubling
 // anything up.
-func (c *APIClient) applyInBatches(repoID string, ops []BatchOp, onFile func(string), result *TreeUpload) error {
+func (c *APIClient) applyInBatches(libraryID string, ops []BatchOp, onFile func(string), result *TreeUpload) error {
 	for len(ops) > 0 {
 		n, size := 0, 0
 		for n < len(ops) && n < maxOpsPerBatch {
@@ -244,7 +244,7 @@ func (c *APIClient) applyInBatches(repoID string, ops []BatchOp, onFile func(str
 			n++
 		}
 
-		res, err := c.Batch(repoID, ops[:n])
+		res, err := c.Batch(libraryID, ops[:n])
 		if err != nil {
 			return err
 		}
@@ -279,21 +279,21 @@ func opBytes(op BatchOp) int {
 // directory, a request per file, and a commit for each. It is what a server
 // without the batch or block surfaces gets, and what an encrypted library
 // gets, since that cannot be assembled from blocks server-side at all.
-func (c *APIClient) uploadTreeSerially(repoID string, dirs []string, files []treeFile, onFile func(string), result *TreeUpload) error {
+func (c *APIClient) uploadTreeSerially(libraryID string, dirs []string, files []treeFile, onFile func(string), result *TreeUpload) error {
 	for _, dir := range dirs {
 		if dir == "/" {
 			continue
 		}
 		// Mkdir on a directory that is already there answers 201, so a re-run
 		// over a tree that partly landed needs no existence check.
-		if err := c.Mkdir(repoID, dir); err != nil {
+		if err := c.Mkdir(libraryID, dir); err != nil {
 			return fmt.Errorf("mkdir %s: %v", dir, err)
 		}
 		result.Dirs++
 		result.Commits++
 	}
 	for _, f := range files {
-		if err := c.UploadFile(repoID, path.Dir(f.remote), f.local); err != nil {
+		if err := c.UploadFile(libraryID, path.Dir(f.remote), f.local); err != nil {
 			return fmt.Errorf("upload %s: %v", f.local, err)
 		}
 		result.Files++

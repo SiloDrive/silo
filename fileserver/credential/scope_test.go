@@ -9,21 +9,21 @@ func TestParseScopeRoundTrip(t *testing.T) {
 		canonical string // what String emits, and what storage writes
 	}{
 		{in: "", want: Scope{}, canonical: ""},
-		{in: "abc-123", want: Scope{RepoID: "abc-123"}, canonical: "abc-123"},
-		{in: "abc-123:/photos", want: Scope{RepoID: "abc-123", Path: "/photos"}, canonical: "abc-123:/photos"},
+		{in: "abc-123", want: Scope{LibraryID: "abc-123"}, canonical: "abc-123"},
+		{in: "abc-123:/photos", want: Scope{LibraryID: "abc-123", Path: "/photos"}, canonical: "abc-123:/photos"},
 
 		// Normalisation: an untidy path is stored canonically.
-		{in: "abc-123:photos", want: Scope{RepoID: "abc-123", Path: "/photos"}, canonical: "abc-123:/photos"},
-		{in: "abc-123:/photos/", want: Scope{RepoID: "abc-123", Path: "/photos"}, canonical: "abc-123:/photos"},
-		{in: "abc-123:/photos//2024", want: Scope{RepoID: "abc-123", Path: "/photos/2024"}, canonical: "abc-123:/photos/2024"},
-		{in: "abc-123:/photos/./2024", want: Scope{RepoID: "abc-123", Path: "/photos/2024"}, canonical: "abc-123:/photos/2024"},
+		{in: "abc-123:photos", want: Scope{LibraryID: "abc-123", Path: "/photos"}, canonical: "abc-123:/photos"},
+		{in: "abc-123:/photos/", want: Scope{LibraryID: "abc-123", Path: "/photos"}, canonical: "abc-123:/photos"},
+		{in: "abc-123:/photos//2024", want: Scope{LibraryID: "abc-123", Path: "/photos/2024"}, canonical: "abc-123:/photos/2024"},
+		{in: "abc-123:/photos/./2024", want: Scope{LibraryID: "abc-123", Path: "/photos/2024"}, canonical: "abc-123:/photos/2024"},
 
 		// A path that cleans to the root is the whole library, which already
 		// has an encoding. Keep one.
-		{in: "abc-123:/", want: Scope{RepoID: "abc-123"}, canonical: "abc-123"},
+		{in: "abc-123:/", want: Scope{LibraryID: "abc-123"}, canonical: "abc-123"},
 
 		// Rooted Clean cannot escape the library.
-		{in: "abc-123:/a/../../etc", want: Scope{RepoID: "abc-123", Path: "/etc"}, canonical: "abc-123:/etc"},
+		{in: "abc-123:/a/../../etc", want: Scope{LibraryID: "abc-123", Path: "/etc"}, canonical: "abc-123:/etc"},
 	}
 
 	for _, tt := range tests {
@@ -53,10 +53,10 @@ func TestParseScopeRoundTrip(t *testing.T) {
 
 func TestParseScopeRejects(t *testing.T) {
 	for _, in := range []string{
-		":",          // no repo id
-		":/photos",   // no repo id
+		":",          // no library id
+		":/photos",   // no library id
 		"abc-123:",   // colon with no path: ambiguous truncation
-		"abc/123",    // repo ids do not contain path separators
+		"abc/123",    // library ids do not contain path separators
 		"abc 123:/p", // nor whitespace
 	} {
 		if got, err := ParseScope(in); err == nil {
@@ -67,47 +67,47 @@ func TestParseScopeRejects(t *testing.T) {
 
 func TestScopeCovers(t *testing.T) {
 	const (
-		repo   = "abc-123"
-		other  = "def-456"
-		photos = repo + ":/photos"
+		library = "abc-123"
+		other   = "def-456"
+		photos  = library + ":/photos"
 	)
 
 	tests := []struct {
-		scope  string
-		repo   string
-		path   string
-		want   bool
-		reason string
+		scope   string
+		library string
+		path    string
+		want    bool
+		reason  string
 	}{
-		{"", repo, "/anything", true, "unscoped reaches every library"},
+		{"", library, "/anything", true, "unscoped reaches every library"},
 		{"", other, "/anything", true, "unscoped reaches every library"},
 
-		{repo, repo, "/", true, "library scope reaches the root"},
-		{repo, repo, "/deep/inside", true, "library scope reaches everything"},
-		{repo, other, "/", false, "library scope does not cross libraries"},
+		{library, library, "/", true, "library scope reaches the root"},
+		{library, library, "/deep/inside", true, "library scope reaches everything"},
+		{library, other, "/", false, "library scope does not cross libraries"},
 
-		{photos, repo, "/photos", true, "a scope covers its own path"},
-		{photos, repo, "/photos/2024", true, "and everything beneath it"},
-		{photos, repo, "/photos/2024/jan/x.jpg", true, "at any depth"},
-		{photos, repo, "/", false, "but not the root above it"},
-		{photos, repo, "/documents", false, "nor a sibling"},
+		{photos, library, "/photos", true, "a scope covers its own path"},
+		{photos, library, "/photos/2024", true, "and everything beneath it"},
+		{photos, library, "/photos/2024/jan/x.jpg", true, "at any depth"},
+		{photos, library, "/", false, "but not the root above it"},
+		{photos, library, "/documents", false, "nor a sibling"},
 		{photos, other, "/photos", false, "nor the same path elsewhere"},
 
 		// The prefix bug this exists to prevent.
-		{photos, repo, "/photos-old", false, "a name is not a path prefix"},
-		{photos, repo, "/photosandmore", false, "a name is not a path prefix"},
+		{photos, library, "/photos-old", false, "a name is not a path prefix"},
+		{photos, library, "/photosandmore", false, "a name is not a path prefix"},
 
 		// The request path is normalised the same way the scope was, or a
 		// caller could walk around a scope by spelling the path untidily.
-		{photos, repo, "photos/2024", true, "unrooted request path"},
-		{photos, repo, "/photos/", true, "trailing slash"},
-		{photos, repo, "/photos/2024/..", true, "cleans back inside"},
-		{photos, repo, "/photos/../documents", false, "cleans back outside"},
+		{photos, library, "photos/2024", true, "unrooted request path"},
+		{photos, library, "/photos/", true, "trailing slash"},
+		{photos, library, "/photos/2024/..", true, "cleans back inside"},
+		{photos, library, "/photos/../documents", false, "cleans back outside"},
 
 		// Case is not folded: encryption.md forbids the server deriving
 		// behaviour from the shape of a name, and under E2EE these bytes are
 		// ciphertext anyway.
-		{repo + ":/Photos", repo, "/photos", false, "comparison is bytewise"},
+		{library + ":/Photos", library, "/photos", false, "comparison is bytewise"},
 	}
 
 	for _, tt := range tests {
@@ -115,9 +115,9 @@ func TestScopeCovers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseScope(%q): %v", tt.scope, err)
 		}
-		if got := s.Covers(tt.repo, tt.path); got != tt.want {
+		if got := s.Covers(tt.library, tt.path); got != tt.want {
 			t.Errorf("Scope(%q).Covers(%q, %q) = %v, want %v — %s",
-				tt.scope, tt.repo, tt.path, got, tt.want, tt.reason)
+				tt.scope, tt.library, tt.path, got, tt.want, tt.reason)
 		}
 	}
 }

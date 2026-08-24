@@ -346,10 +346,10 @@ func TestCredentialsAreScrubbedFromReports(t *testing.T) {
 	handler := observability.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")
 	}))
-	req := httptest.NewRequest(http.MethodPost, "/api/silo/v1/repos/abc/blocks/def?token=querysecret",
+	req := httptest.NewRequest(http.MethodPost, "/api/silo/v1/libraries/abc/blocks/def?token=querysecret",
 		strings.NewReader("the contents of somebody's file"))
 	req.Header.Set("Authorization", "Bearer jwtsecret")
-	req.Header.Set("X-Repo-Token", "synctokensecret")
+	req.Header.Set("X-Library-Token", "synctokensecret")
 	req.Header.Set("Cookie", "sessionid=cookiesecret")
 	req.Header.Set("User-Agent", "porter/1.0")
 
@@ -387,7 +387,7 @@ func TestCredentialsAreScrubbedFromReports(t *testing.T) {
 	if request == nil {
 		t.Fatal("event carries no request at all")
 	}
-	if !strings.Contains(request["url"].(string), "/api/silo/v1/repos/abc/blocks/def") {
+	if !strings.Contains(request["url"].(string), "/api/silo/v1/libraries/abc/blocks/def") {
 		t.Errorf("request url = %v, want the path", request["url"])
 	}
 	headers, _ := request["headers"].(map[string]any)
@@ -429,11 +429,11 @@ func TestRequestBecomesNamedTransaction(t *testing.T) {
 	enable(t, stub)
 
 	handler := observability.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		observability.NameTransaction(r, "/repo/{repoid}/block/{id}")
+		observability.NameTransaction(r, "/libraries/{libraryid}/blocks/{id}")
 		w.WriteHeader(http.StatusOK)
 	}))
 	req := httptest.NewRequest(http.MethodGet,
-		"/repo/7c8a1f2e-3b4d-4c5a-9e6f-0a1b2c3d4e5f/block/a94a8fe5ccb19ba61c4c0873d391e987982fbbd3", nil)
+		"/libraries/7c8a1f2e-3b4d-4c5a-9e6f-0a1b2c3d4e5f/blocks/a94a8fe5ccb19ba61c4c0873d391e987982fbbd3", nil)
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 	observability.Flush()
 
@@ -445,7 +445,7 @@ func TestRequestBecomesNamedTransaction(t *testing.T) {
 		t.Fatalf("item type = %v, want %v", got, want)
 	}
 	payload := envs[0].payload[0]
-	if got, want := payload["transaction"], "GET /repo/{repoid}/block/{id}"; got != want {
+	if got, want := payload["transaction"], "GET /libraries/{libraryid}/blocks/{id}"; got != want {
 		t.Errorf("transaction = %v, want %v", got, want)
 	}
 	if payload["start_timestamp"] == nil || payload["timestamp"] == nil {
@@ -475,7 +475,7 @@ func TestTransactionCarriesRealStatus(t *testing.T) {
 	handler := observability.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/repo/abc/block/def", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/libraries/abc/blocks/def", nil))
 	observability.Flush()
 
 	envs := stub.envelopes()
@@ -527,7 +527,7 @@ func TestHandlerPanicIsReportedAndRepanics(t *testing.T) {
 	func() {
 		defer func() { repanicked = recover() != nil }()
 		handler.ServeHTTP(httptest.NewRecorder(),
-			httptest.NewRequest(http.MethodGet, "/repo/abc/block/def", nil))
+			httptest.NewRequest(http.MethodGet, "/libraries/abc/blocks/def", nil))
 	}()
 	if !repanicked {
 		t.Error("Middleware swallowed the panic; net/http never saw it")
@@ -546,7 +546,7 @@ func TestHandlerPanicIsReportedAndRepanics(t *testing.T) {
 		t.Fatal("handler panic produced no event")
 	}
 	request, _ := event["request"].(map[string]any)
-	if request == nil || !strings.Contains(request["url"].(string), "/repo/abc/block/def") {
+	if request == nil || !strings.Contains(request["url"].(string), "/libraries/abc/blocks/def") {
 		t.Errorf("event does not carry the request: %v", event["request"])
 	}
 }

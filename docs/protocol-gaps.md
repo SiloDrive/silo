@@ -45,7 +45,7 @@ thing.
 - **Push carries `commit_id`, and clients are told not to trust it as an
   anchor.** Push is a hint; the pull is the truth. Pairing them that way is
   correct and is written down rather than left to be discovered.
-- **`GET /repos` returns `head_commit_id` per library**, which quietly answers
+- **`GET /libraries` returns `head_commit_id` per library**, which quietly answers
   the account-wide-cursor problem: one call tells a client which of forty
   libraries moved.
 - **Status codes are written as instructions to the client**, with `Retry-After`
@@ -136,7 +136,7 @@ the transfer, not the history.
 
 ### 3. No stable per-file identity
 
-Identifiers never cross the wire. Every request is `(repo_id, path)`; identity
+Identifiers never cross the wire. Every request is `(library_id, path)`; identity
 across a move is reconstructed client-side from an `IdMap` plus the rename ops
 the delta feed emits.
 
@@ -171,10 +171,10 @@ records what came off it.
 | **Capability discovery** | `server-info` now returns a `features` array beside the version. Names are added when a capability ships and never removed or reused, so a client tests for a name instead of a version range. `notifications` is conditional on how the server was started |
 | **`409` is no longer overloaded** | a GC conflict answers `503` with `Retry-After`, which is what it always meant — retry the identical request. `409` is now only a destination collision or an attempt to create the library root, and both want the same handling. The Seafile lane keeps its own `409`, which is upstream's contract |
 | **Copy** | `POST entries/{path}` with `{"op":"copy","to":…}`. The new dirent names the object the source already names, so a copy costs one dirent and one commit at any size and moves no content. `201` with the source's `ETag` |
-| **Library rename on this lane** | `PATCH /repos/{repoid}` with `{"name":…}`. `PATCH` because the body names only what changes, so it keeps meaning the same thing when a second mutable field arrives. No more crossing to `/api2/` with a second credential to rename a library you can already create and delete |
+| **Library rename on this lane** | `PATCH /libraries/{libraryid}` with `{"name":…}`. `PATCH` because the body names only what changes, so it keeps meaning the same thing when a second mutable field arrives. No more crossing to `/api2/` with a second credential to rename a library you can already create and delete |
 | **`Accept-Ranges` tells the truth** | an encrypted library answers `Accept-Ranges: none` rather than advertising `bytes` and then ignoring `Range`. Ignoring a range is allowed; promising to honour one and then ignoring it is what breaks a client that seeks |
 | **Upload integrity is now a contract** | `PUT` always returned the new id, and a client chunking at the same fixed 8 MiB offsets can compute that id itself — so comparing the two is a complete end-to-end check on the transfer. It was true and documented nowhere; `porter-brief.md` now says so |
-| **Batching** | `POST repos/{id}/batch` applies many operations as one commit: mkdir, delete, move, copy, and create from already-uploaded blocks. Ordered, so an operation sees the ones before it, and all-or-nothing, so a failure names the index that stopped it and writes nothing. Five hundred files dragged into a folder is one commit and one round of branch-head contention rather than five hundred of each. The tree operations were already the right shape — each takes a root id and returns a new one — so the change was threading that root through a list instead of committing after every step |
+| **Batching** | `POST libraries/{id}/batch` applies many operations as one commit: mkdir, delete, move, copy, and create from already-uploaded blocks. Ordered, so an operation sees the ones before it, and all-or-nothing, so a failure names the index that stopped it and writes nothing. Five hundred files dragged into a folder is one commit and one round of branch-head contention rather than five hundred of each. The tree operations were already the right shape — each takes a root id and returns a new one — so the change was threading that root through a list instead of committing after every step |
 | **Pagination** | `?limit=N` on `changes` and on directory listings, with the next page in a `Link: …; rel="next"` header so the body shape did not change. Opt-in with no default, because a truncated answer that looks complete is worse than a large one. A cursor pins the commit or directory object the first page came from, so a sequence of pages is a consistent snapshot. On `changes` the anchor is absent until the last page, which makes "record it whenever you see it" the correct client behaviour rather than a rule to remember |
 | **Resumable, dedup-aware upload** | the block surface: `POST blocks/missing`, `PUT blocks/{sha1}`, `PUT entries/{path}?type=blocks`. A client computes block ids itself — fixed offsets, SHA-1 of the bytes — so it can ask what the server holds before sending anything. Nothing exists at the destination until the last call, which is what makes an interrupted upload resumable with no session, offset or upload id to keep: ask again and the answer is shorter. `server-info` reports `block_size` so the chunking is not a guess. No more minting a sync token to reach `check-blocks` on the frozen lane |
 | **`HEAD` is in the contract** | it was implemented, and in `porter-brief.md`, but missing from the endpoint table in [`protocol.md`](protocol.md) |

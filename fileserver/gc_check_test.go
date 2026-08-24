@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/store"
 )
 
@@ -19,22 +19,22 @@ import (
 // What is still worth asserting is that the check rejects. Opting into a check
 // that never fires is decoration.
 func TestCommitThatRacedGCIsRejected(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	repo, err := repomgr.GetWithReason(repoID)
+	libraryID, acct := storeV2Library(t)
+	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	dbExec(t, "INSERT INTO GCID (repo_id, gc_id) VALUES (?, ?)", repoID, "gc-before")
+	dbExec(t, "INSERT INTO GCID (library_id, gc_id) VALUES (?, ?)", libraryID, "gc-before")
 
 	// A collector ran after the request read the gc id: what mutateTree holds
 	// no longer describes the store it is about to commit against. Simulated
 	// by moving the id out from under it between the read and the swap.
 	raced := false
-	_, _, err = mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+	_, _, err = mutateTree(library, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		if !raced {
 			raced = true
-			dbExec(t, "UPDATE GCID SET gc_id = ? WHERE repo_id = ?", "gc-after", repoID)
+			dbExec(t, "UPDATE GCID SET gc_id = ? WHERE library_id = ?", "gc-after", libraryID)
 		}
 		return st.Mkdir(root, "/raced", defaultDirMode, now)
 	})
@@ -45,7 +45,7 @@ func TestCommitThatRacedGCIsRejected(t *testing.T) {
 	// The same mutation with a settled generation goes through, so the
 	// rejection above is the gc check and not the commit path failing for some
 	// unrelated reason.
-	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+	if _, _, err := mutateTree(library, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Mkdir(root, "/settled", defaultDirMode, now)
 	}); err != nil {
 		t.Fatalf("committing with the current gc id failed: %v", err)

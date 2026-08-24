@@ -90,7 +90,7 @@ response context itself — without it every transaction arrives with a blank
 status and a page of 500s is indistinguishable from a page of 200s.
 
 Transactions get the same treatment from the other direction. Named by URL,
-`/repo/{repoid}/block/{id}` would arrive as hundreds of thousands of distinct
+`/libraries/{libraryid}/blocks/{id}` would arrive as hundreds of thousands of distinct
 endpoints of one request each; a middleware renames each transaction after the
 route mux matched, so they aggregate.
 

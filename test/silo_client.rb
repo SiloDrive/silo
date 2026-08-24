@@ -21,78 +21,78 @@ class SiloClient
     resp
   end
 
-  # --- Repos ---
+  # --- Libraries ---
 
-  def list_repos
-    get("/api/silo/v1/repos")
+  def list_libraries
+    get("/api/silo/v1/libraries")
   end
 
-  def create_repo(name)
-    post("/api/silo/v1/repos", { name: name })
+  def create_library(name)
+    post("/api/silo/v1/libraries", { name: name })
   end
 
-  def delete_repo(repo_id)
-    request(:delete, "/api/silo/v1/repos/#{repo_id}")
+  def delete_library(library_id)
+    request(:delete, "/api/silo/v1/libraries/#{library_id}")
   end
 
   # --- Tokens ---
 
-  def create_access_token(repo_id:, op:, obj_id: "", one_time: false)
+  def create_access_token(library_id:, op:, obj_id: "", one_time: false)
     post("/api/silo/v1/access-tokens", {
-      repo_id: repo_id, obj_id: obj_id, op: op, one_time: one_time
+      library_id: library_id, obj_id: obj_id, op: op, one_time: one_time
     })
   end
 
-  def create_sync_token(repo_id)
-    post("/api/silo/v1/repos/#{repo_id}/sync-token")
+  def create_sync_token(library_id)
+    post("/api/silo/v1/libraries/#{library_id}/sync-token")
   end
 
   # --- Entries ---
 
   # The root is /entries/ with nothing after it, not /entries — the route
   # matches the path segment by segment and an absent one is not an empty one.
-  def entries_url(repo_id, path)
+  def entries_url(library_id, path)
     encoded = path.split("/").map { |seg| URI.encode_www_form_component(seg).gsub("+", "%20") }.join("/")
     encoded = "/" if encoded.empty?
-    "/api/silo/v1/repos/#{repo_id}/entries#{encoded}"
+    "/api/silo/v1/libraries/#{library_id}/entries#{encoded}"
   end
 
-  def list_dir(repo_id, path = "/", query = nil)
-    get("#{entries_url(repo_id, path)}#{query ? "?#{query}" : ""}")
+  def list_dir(library_id, path = "/", query = nil)
+    get("#{entries_url(library_id, path)}#{query ? "?#{query}" : ""}")
   end
 
-  def mkdir(repo_id, path)
-    request(:put, "#{entries_url(repo_id, path)}?type=dir")
+  def mkdir(library_id, path)
+    request(:put, "#{entries_url(library_id, path)}?type=dir")
   end
 
-  def put_file(repo_id, path, content)
-    request(:put, entries_url(repo_id, path), raw_body: content)
+  def put_file(library_id, path, content)
+    request(:put, entries_url(library_id, path), raw_body: content)
   end
 
   # --- Blocks ---
 
-  def missing_blocks(repo_id, blocks)
-    post("/api/silo/v1/repos/#{repo_id}/blocks/missing", { blocks: blocks })
+  def missing_blocks(library_id, blocks)
+    post("/api/silo/v1/libraries/#{library_id}/blocks/missing", { blocks: blocks })
   end
 
-  def put_block(repo_id, block_id, content)
-    request(:put, "/api/silo/v1/repos/#{repo_id}/blocks/#{block_id}", raw_body: content)
+  def put_block(library_id, block_id, content)
+    request(:put, "/api/silo/v1/libraries/#{library_id}/blocks/#{block_id}", raw_body: content)
   end
 
-  def create_from_blocks(repo_id, path, blocks)
-    request(:put, "#{entries_url(repo_id, path)}?type=blocks", body: { blocks: blocks })
+  def create_from_blocks(library_id, path, blocks)
+    request(:put, "#{entries_url(library_id, path)}?type=blocks", body: { blocks: blocks })
   end
 
   # --- Batch ---
 
-  def batch(repo_id, ops, if_match: nil)
-    request(:post, "/api/silo/v1/repos/#{repo_id}/batch", body: { ops: ops }, if_match: if_match)
+  def batch(library_id, ops, if_match: nil)
+    request(:post, "/api/silo/v1/libraries/#{library_id}/batch", body: { ops: ops }, if_match: if_match)
   end
 
   # --- Changes ---
 
-  def changes(repo_id, since, query = nil)
-    get("/api/silo/v1/repos/#{repo_id}/changes?since=#{since}#{query ? "&#{query}" : ""}")
+  def changes(library_id, since, query = nil)
+    get("/api/silo/v1/libraries/#{library_id}/changes?since=#{since}#{query ? "&#{query}" : ""}")
   end
 
   # --- Server ---
@@ -103,8 +103,8 @@ class SiloClient
 
   # --- Sync protocol ---
 
-  def get_head_commit(repo_id, sync_token)
-    get("/repo/#{repo_id}/commit/HEAD", sync_token: sync_token)
+  def get_head_commit(library_id, sync_token)
+    get("/repo/#{library_id}/commit/HEAD", sync_token: sync_token)
   end
 
   # --- Low-level HTTP ---

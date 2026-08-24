@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/store"
 	log "github.com/sirupsen/logrus"
 )
@@ -146,18 +146,18 @@ const defaultDirMode = 0o755
 // An error from the mutation abandons the whole attempt: no commit, no retry,
 // and the tree is left exactly as it was. That is what makes it safe for a
 // caller applying several changes at once to stop partway.
-func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store, root store.ID, now int64) (store.ID, error)) (store.ID, store.ID, error) {
-	st, err := repo.Store()
+func mutateTree(library *libmgr.Library, author string, mutate func(st *objmgr.Store, root store.ID, now int64) (store.ID, error)) (store.ID, store.ID, error) {
+	st, err := library.Store()
 	if err != nil {
 		return store.ID{}, store.ID{}, err
 	}
 
-	head := repo
+	head := library
 	for attempt := 0; attempt < commitAttemptsForTest; attempt++ {
 		// Read before the mutation, so a GC that starts mid-write is caught by
 		// the generation check below rather than racing the objects this is
 		// about to publish.
-		gcID, err := repomgr.GetCurrentGCID(head.StoreID)
+		gcID, err := libmgr.GetCurrentGCID(head.StoreID)
 		if err != nil {
 			return store.ID{}, store.ID{}, fmt.Errorf("failed to read gc id: %w", err)
 		}
@@ -195,7 +195,7 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 			return store.ID{}, store.ID{}, err
 		}
 
-		_, err = updateBranch(repo.ID, head.StoreID, headMove{
+		_, err = updateBranch(library.ID, head.StoreID, headMove{
 			CommitID: commitID.String(),
 			RootID:   newRoot.String(),
 			Author:   author,
@@ -212,7 +212,7 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 		// rebuild on whatever won. The objects already written stay written:
 		// they are addressed by content, so the next pass reuses them and the
 		// ones the losing commit orphaned are the collector's business.
-		head, err = repomgr.GetWithReason(repo.ID)
+		head, err = libmgr.GetWithReason(library.ID)
 		if err != nil {
 			return store.ID{}, store.ID{}, err
 		}
@@ -227,7 +227,7 @@ func mutateTree(repo *repomgr.Repo, author string, mutate func(st *objmgr.Store,
 	// usually succeed. Left bare it fell to the default arm — a 500 with no
 	// Retry-After, filed to Sentry — which is exactly the outcome
 	// docs/bugs/fixed/write-contention-returns-500.md exists to prevent.
-	return store.ID{}, store.ID{}, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", commitAttempts, repo.ID, ErrRetriesExhausted)
+	return store.ID{}, store.ID{}, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", commitAttempts, library.ID, ErrRetriesExhausted)
 }
 
 // ErrConflict, ErrGCConflict and ErrRetriesExhausted are the three ways a
@@ -247,7 +247,7 @@ var (
 // writeCommitErr answers a request whose commit failed, and says so in the log
 // exactly once. It lives beside the sentinels because every handler that
 // commits needs it, and two copies of this decision would drift — the same
-// reason repomgr.StatusFor exists.
+// reason libmgr.StatusFor exists.
 //
 // The distinction that matters to a client is contention versus breakage. 500
 // is the one class a client must not retry blind: it means the server hit an
@@ -312,7 +312,7 @@ type headMove struct {
 // same call is where the catalog learns who moved the head and when, which are
 // the server's own observations rather than anything read back out of the
 // commit.
-func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
+func updateBranch(libraryID, originLibraryID string, move headMove, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	trans, err := siloPair.Write.BeginTx(ctx, nil)
@@ -324,11 +324,11 @@ func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secon
 	var row *sql.Row
 	var sqlStr string
 	if checkGC {
-		sqlStr = "SELECT gc_id FROM GCID WHERE repo_id = ?"
-		if originRepoID == "" {
-			row = trans.QueryRowContext(ctx, sqlStr, repoID)
+		sqlStr = "SELECT gc_id FROM GCID WHERE library_id = ?"
+		if originLibraryID == "" {
+			row = trans.QueryRowContext(ctx, sqlStr, libraryID)
 		} else {
-			row = trans.QueryRowContext(ctx, sqlStr, originRepoID)
+			row = trans.QueryRowContext(ctx, sqlStr, originLibraryID)
 		}
 		var gcID sql.NullString
 		if err := row.Scan(&gcID); err != nil {
@@ -339,7 +339,7 @@ func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secon
 		}
 
 		if lastGCID != gcID.String {
-			err = fmt.Errorf("head branch update for repo %s conflicts with GC", repoID)
+			err = fmt.Errorf("head branch update for library %s conflicts with GC", libraryID)
 			_ = trans.Rollback()
 			return true, ErrGCConflict
 		}
@@ -347,9 +347,9 @@ func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secon
 
 	var commitID string
 	name := "master"
-	sqlStr = "SELECT commit_id FROM Branch WHERE name = ? AND repo_id = ?"
+	sqlStr = "SELECT commit_id FROM Branch WHERE name = ? AND library_id = ?"
 
-	row = trans.QueryRowContext(ctx, sqlStr, name, repoID)
+	row = trans.QueryRowContext(ctx, sqlStr, name, libraryID)
 	if err := row.Scan(&commitID); err != nil {
 		if err != sql.ErrNoRows {
 			_ = trans.Rollback()
@@ -362,15 +362,15 @@ func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secon
 		return false, err
 	}
 
-	sqlStr = "UPDATE Branch SET commit_id = ?, root_id = ? WHERE name = ? AND repo_id = ?"
-	_, err = trans.ExecContext(ctx, sqlStr, move.CommitID, move.RootID, name, repoID)
+	sqlStr = "UPDATE Branch SET commit_id = ?, root_id = ? WHERE name = ? AND library_id = ?"
+	_, err = trans.ExecContext(ctx, sqlStr, move.CommitID, move.RootID, name, libraryID)
 	if err != nil {
 		_ = trans.Rollback()
 		return false, err
 	}
 
 	// In the same transaction as the head it describes: see RecordHeadMove.
-	if err := repomgr.RecordHeadMove(ctx, trans, repoID, move.Author, move.Ctime); err != nil {
+	if err := libmgr.RecordHeadMove(ctx, trans, libraryID, move.Author, move.Ctime); err != nil {
 		_ = trans.Rollback()
 		return false, err
 	}
@@ -380,12 +380,12 @@ func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secon
 	}
 
 	if secondParentID != "" {
-		if err := onBranchUpdated(repoID, secondParentID); err != nil {
+		if err := onBranchUpdated(libraryID, secondParentID); err != nil {
 			return false, err
 		}
 	}
 
-	if err := onBranchUpdated(repoID, move.CommitID); err != nil {
+	if err := onBranchUpdated(libraryID, move.CommitID); err != nil {
 		return false, err
 	}
 
@@ -393,10 +393,10 @@ func updateBranch(repoID, originRepoID string, move headMove, oldCommitID, secon
 }
 
 // onBranchUpdated tells whoever is listening that a library moved.
-func onBranchUpdated(repoID string, commitID string) error {
+func onBranchUpdated(libraryID string, commitID string) error {
 	if option.EnableNotification {
-		notif.NotifyRepoUpdate(repoID, commitID)
+		notif.NotifyLibraryUpdate(libraryID, commitID)
 	}
-	publishUpdateEvent(repoID, commitID)
+	publishUpdateEvent(libraryID, commitID)
 	return nil
 }

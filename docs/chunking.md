@@ -190,10 +190,12 @@ storage one.
 
 ## What it does change
 
-**Parameters become protocol.** `server-info` advertises `block_size`
-(`api/api.go:74`) precisely because a client must chunk identically for its ids
-to match. CDC replaces one integer with an algorithm id, the gear table or its
-seed, mask bits, min, max, and the normalisation scheme. Changing any of them is
+**Parameters become protocol.** `server-info` used to advertise `block_size`
+(`api/api.go:31` records why it no longer does) precisely because a client must
+chunk identically for its ids to match. CDC replaces one integer with an
+algorithm id, the gear table or its seed, mask bits, min, max, and the
+normalisation scheme, and moves them off the server and onto the library, where
+the listing reports them per library (`api/api.go:265`). Changing any of them is
 still a new store, so they are still effectively frozen — but the freeze is
 softer than it was. With porter as the only client, and shipped by us, getting
 them wrong costs a migration rather than a break with software we do not
@@ -262,7 +264,7 @@ dead, and when you do the work.
 ### Deadness is not a local fact
 
 This is the constraint everything else follows from. Deleting a file does not
-kill its blocks — an old commit, another file, or another repo sharing a store
+kill its blocks — an old commit, another file, or another library sharing a store
 may still reference them. A block carries no marker saying whether anyone still
 wants it. Liveness is a *global reachability property*, computable only by
 walking every live commit.
@@ -279,7 +281,7 @@ rewrite. It is stale by construction between runs, and that is fine, because it
 only ever decides *scheduling*. Correctness comes from the mark, which the
 compactor re-reads before it touches anything.
 
-`GCID(repo_id, gc_id)` and `LastGCID` already exist in the schema
+`GCID(library_id, gc_id)` and `LastGCID` already exist in the schema
 (`dbutil/schema.go:125`), inherited from upstream and unused. That is the
 generation stamp this needs: any block written after the mark's generation is
 presumed live, which is what stops a sweep reaping the blocks of an upload that
@@ -455,7 +457,7 @@ because the object format stopped being someone else's.
    them together costs one migration instead of four, and none of them has an
    independent justification for going first.
 5. **Packing**, once object counts justify it.
-6. **Compaction**, alongside the per-repo GC in
+6. **Compaction**, alongside the per-library GC in
    [`future-features.md`](future-features.md) — they are the same problem. The
    mark phase that GC needs is the same one the dirty index is derived from;
    build them together or build them twice.

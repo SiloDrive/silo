@@ -13,30 +13,30 @@ import (
 )
 
 // Scope is the narrowing half of a credential. docs/auth.md's table comment
-// describes it as "NULL = all libraries; else a repo id"; a repo id alone
+// describes it as "NULL = all libraries; else a library id"; a library id alone
 // cannot express "this credential may read one folder", which is the case a
 // scoped mount actually wants, so the encoding here is a superset:
 //
 //	""                  every library
-//	"<repo-id>"         one library, entirely
-//	"<repo-id>:<path>"  one library, at <path> and below
+//	"<library-id>"         one library, entirely
+//	"<library-id>:<path>"  one library, at <path> and below
 //
 // Every scope auth.md writes still means exactly what it says there.
 //
-// The separator needs no escaping: the split takes the first colon, so a repo
+// The separator needs no escaping: the split takes the first colon, so a library
 // id cannot contain one by construction, and a path may contain as many as it
-// likes. ParseScope rejects only the shapes a repo id can never have, rather
+// likes. ParseScope rejects only the shapes a library id can never have, rather
 // than requiring a UUID, so a caller may hold a scope for a library this
 // server has never heard of.
 type Scope struct {
-	// RepoID is empty for a credential that reaches every library.
-	RepoID string
+	// LibraryID is empty for a credential that reaches every library.
+	LibraryID string
 
 	// Path is empty for a credential that reaches a whole library. Otherwise
 	// it is cleaned and rooted ("/photos/2024"), naming a directory that the
 	// credential covers along with everything beneath it.
 	//
-	// A path without a RepoID names nothing: the encoding cannot express it
+	// A path without a LibraryID names nothing: the encoding cannot express it
 	// and String drops it. Build a Scope through ParseScope and the case
 	// cannot arise.
 	Path string
@@ -54,22 +54,22 @@ func ParseScope(s string) (Scope, error) {
 		return Scope{}, nil
 	}
 
-	repoID, rest, hasPath := strings.Cut(s, ":")
-	if repoID == "" {
-		return Scope{}, fmt.Errorf("scope %q: empty repo id", s)
+	libraryID, rest, hasPath := strings.Cut(s, ":")
+	if libraryID == "" {
+		return Scope{}, fmt.Errorf("scope %q: empty library id", s)
 	}
-	if strings.ContainsAny(repoID, "/ \t") {
-		return Scope{}, fmt.Errorf("scope %q: repo id contains a separator", s)
+	if strings.ContainsAny(libraryID, "/ \t") {
+		return Scope{}, fmt.Errorf("scope %q: library id contains a separator", s)
 	}
 	if !hasPath {
-		return Scope{RepoID: repoID}, nil
+		return Scope{LibraryID: libraryID}, nil
 	}
 
-	// "repo:" is a typo. It cannot be a deliberate spelling of either form
+	// "library:" is a typo. It cannot be a deliberate spelling of either form
 	// above, both of which are available without the trailing colon, so
 	// refusing it costs a caller nothing and tells them they built the string
 	// wrong. Note this is a rule about the empty string, not about the
-	// library root: "repo:/" is a path that cleans to the root, and is
+	// library root: "library:/" is a path that cleans to the root, and is
 	// normalised below rather than refused.
 	if rest == "" {
 		return Scope{}, fmt.Errorf("scope %q: colon with no path", s)
@@ -80,24 +80,24 @@ func ParseScope(s string) (Scope, error) {
 		// The path cleaned down to the library root, which is the whole
 		// library — the form without a colon. Normalise rather than keep two
 		// encodings of one fact.
-		return Scope{RepoID: repoID}, nil
+		return Scope{LibraryID: libraryID}, nil
 	}
-	return Scope{RepoID: repoID, Path: p}, nil
+	return Scope{LibraryID: libraryID, Path: p}, nil
 }
 
 // String returns the canonical stored form.
 func (s Scope) String() string {
 	switch {
-	case s.RepoID == "":
+	case s.LibraryID == "":
 		return ""
 	case s.Path == "":
-		return s.RepoID
+		return s.LibraryID
 	default:
-		return s.RepoID + ":" + s.Path
+		return s.LibraryID + ":" + s.Path
 	}
 }
 
-// Covers reports whether the scope permits reaching p inside repoID.
+// Covers reports whether the scope permits reaching p inside libraryID.
 //
 // p is the path as the request names it. In an end-to-end encrypted library
 // that is ciphertext, and so is a stored path scope — the server compares
@@ -115,11 +115,11 @@ func (s Scope) String() string {
 // re-encrypts the loser's names, so an unchanged path acquires new ciphertext.
 // Either way the scope goes on matching nothing rather than failing loudly, so
 // a credential can outlive the thing it was cut to reach.
-func (s Scope) Covers(repoID, p string) bool {
-	if s.RepoID == "" {
+func (s Scope) Covers(libraryID, p string) bool {
+	if s.LibraryID == "" {
 		return true
 	}
-	if repoID != s.RepoID {
+	if libraryID != s.LibraryID {
 		return false
 	}
 	if s.Path == "" {

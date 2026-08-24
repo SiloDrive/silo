@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"sort"
 
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
@@ -30,7 +30,7 @@ type changesResponse struct {
 
 // change is one path that differs between two commits.
 //
-// Paths are repo-relative and start with "/". OldPath is set only for renames
+// Paths are library-relative and start with "/". OldPath is set only for renames
 // and moves — the two are the same operation here, since a rename is a move
 // within one directory, and a client that has to tell them apart can compare
 // the parent directories itself.
@@ -43,7 +43,7 @@ type change struct {
 	IsDir   bool   `json:"is_dir"`
 }
 
-// ChangesHandler answers GET /api/silo/v1/repos/{repoid}/changes?since={commit}
+// ChangesHandler answers GET /api/silo/v1/libraries/{libraryid}/changes?since={commit}
 // with everything that differs between that commit and the current head.
 //
 // It exists so a sync client does not have to replicate the object store to
@@ -79,7 +79,7 @@ type change struct {
 // smaller pages.
 func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 	id := middleware.GetAccountID(r)
-	repoID := mux.Vars(r)["repoid"]
+	libraryID := mux.Vars(r)["libraryid"]
 
 	limit, ok := parseLimit(w, r)
 	if !ok {
@@ -107,14 +107,14 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if perm := share.CheckPerm(repoID, id); perm == "" {
+	if perm := share.CheckPerm(libraryID, id); perm == "" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
 
-	repo, err := repomgr.GetWithReason(repoID)
+	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
-		code, msg := repomgr.StatusFor(err)
+		code, msg := libmgr.StatusFor(err)
 		http.Error(w, msg, code)
 		return
 	}
@@ -122,8 +122,8 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 	// Nothing has happened since the caller last looked. Answered before
 	// loading anything, because this is the common case: a client polling a
 	// quiet library asks this question far more often than any other.
-	if pinned == "" && since == repo.HeadCommitID {
-		writeJSON(w, http.StatusOK, changesResponse{Anchor: repo.HeadCommitID, Changes: []change{}})
+	if pinned == "" && since == library.HeadCommitID {
+		writeJSON(w, http.StatusOK, changesResponse{Anchor: library.HeadCommitID, Changes: []change{}})
 		return
 	}
 
@@ -131,11 +131,11 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 	// paged answer consistent: without it, a commit landing between pages
 	// changes the diff the offset indexes into, and items shift across the page
 	// boundary in both directions.
-	target := repo.HeadCommitID
+	target := library.HeadCommitID
 
-	target, changes, err := storeV2Changes(repo, since, pinned)
+	target, changes, err := storeV2Changes(library, since, pinned)
 	if err != nil {
-		writeChangesErr(w, err, since, target, repoID)
+		writeChangesErr(w, err, since, target, libraryID)
 		return
 	}
 
@@ -175,13 +175,13 @@ var errHistoryCut = errors.New("history cut")
 // same way, and the paths come back as base64url of the SIV ciphertext —
 // exactly what entries/{path} routes on. The server answers what changed
 // without learning what any of it is called.
-func storeV2Changes(repo *repomgr.Repo, since, pinned string) (string, []change, error) {
-	st, err := repo.Store()
+func storeV2Changes(library *libmgr.Library, since, pinned string) (string, []change, error) {
+	st, err := library.Store()
 	if err != nil {
 		return "", nil, err
 	}
 
-	target, targetRoot := repo.HeadCommitID, repo.RootID
+	target, targetRoot := library.HeadCommitID, library.RootID
 	if pinned != "" {
 		id, err := store.ParseID(pinned)
 		if err != nil {
@@ -225,16 +225,16 @@ func storeV2Changes(repo *repomgr.Repo, since, pinned string) (string, []change,
 
 // writeChangesErr answers a failed diff. A baseline the library can no longer
 // resolve is 410 with the head to start again from; anything else is damage.
-func writeChangesErr(w http.ResponseWriter, err error, since, target, repoID string) {
+func writeChangesErr(w http.ResponseWriter, err error, since, target, libraryID string) {
 	if errors.Is(err, errHistoryCut) {
 		http.Error(w, "since is no longer reachable; enumerate from scratch", http.StatusGone)
 		return
 	}
-	log.Errorf("Failed to diff %s..%s in repo %s: %v", since, target, repoID, err)
+	log.Errorf("Failed to diff %s..%s in library %s: %v", since, target, libraryID, err)
 	http.Error(w, "Failed to compute changes", http.StatusInternalServerError)
 }
 
-// absPath makes a diff's repo-relative name into the rooted path the rest of
+// absPath makes a diff's library-relative name into the rooted path the rest of
 // the API speaks, so a client can pass it straight back to any other endpoint.
 func absPath(name string) string {
 	if name == "" {

@@ -9,14 +9,14 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/apitokenstore"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 )
 
 // RunToken lists and revokes the credentials a user holds.
 //
-// Both stores could already revoke — repomgr.DeleteRepoToken,
-// repomgr.DeleteRepoTokensByAccount and apitokenstore.DeleteByAccount were
+// Both stores could already revoke — libmgr.DeleteLibraryToken,
+// libmgr.DeleteLibraryTokensByAccount and apitokenstore.DeleteByAccount were
 // written for it and documented as the way to invalidate a token — but
 // nothing outside their own tests ever called them. Sync tokens have no
 // expiry by design, because the clients they were for persist them and treat them as
@@ -70,7 +70,7 @@ func RunToken(args []string) error {
 }
 
 func listTokens(acct *account.Account) error {
-	syncTokens, err := repomgr.ListRepoTokensByAccount(acct.ID)
+	syncTokens, err := libmgr.ListLibraryTokensByAccount(acct.ID)
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func listTokens(acct *account.Account) error {
 	if len(syncTokens) > 0 {
 		fmt.Printf("Sync tokens (%d) — legacy, no expiry, nothing validates them:\n", len(syncTokens))
 		for _, t := range syncTokens {
-			fmt.Printf("  %s  repo %s  created %s\n", t.Token, t.RepoID, formatUnix(t.Ctime))
+			fmt.Printf("  %s  library %s  created %s\n", t.Token, t.LibraryID, formatUnix(t.Ctime))
 		}
 	}
 	if len(apiTokens) > 0 {
@@ -108,7 +108,7 @@ func listTokens(acct *account.Account) error {
 }
 
 func revokeAllTokens(acct *account.Account) error {
-	syncCount, err := repomgr.DeleteRepoTokensByAccount(acct.ID)
+	syncCount, err := libmgr.DeleteLibraryTokensByAccount(acct.ID)
 	if err != nil {
 		return err
 	}
@@ -128,7 +128,7 @@ func revokeAllTokens(acct *account.Account) error {
 // The token is matched against the user's own tokens rather than deleted by
 // value, so a typo cannot revoke someone else's credential.
 func revokeOneToken(acct *account.Account, token string) error {
-	syncTokens, err := repomgr.ListRepoTokensByAccount(acct.ID)
+	syncTokens, err := libmgr.ListLibraryTokensByAccount(acct.ID)
 	if err != nil {
 		return err
 	}
@@ -137,8 +137,8 @@ func revokeOneToken(acct *account.Account, token string) error {
 		if t.Token != token {
 			continue
 		}
-		// One token can appear against several repos.
-		if err := repomgr.DeleteRepoToken(t.RepoID, t.Token, acct.ID); err != nil {
+		// One token can appear against several libraries.
+		if err := libmgr.DeleteLibraryToken(t.LibraryID, t.Token, acct.ID); err != nil {
 			return err
 		}
 		found++

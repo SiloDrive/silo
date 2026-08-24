@@ -11,32 +11,32 @@ import (
 )
 
 func TestInsertOrReplace(t *testing.T) {
-	got := InsertOrReplace("RepoHead", "repo_id, branch_name")
-	want := "INSERT OR REPLACE INTO RepoHead (repo_id, branch_name) VALUES (?, ?)"
+	got := InsertOrReplace("LibraryHead", "library_id, branch_name")
+	want := "INSERT OR REPLACE INTO LibraryHead (library_id, branch_name) VALUES (?, ?)"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestInsertOrIgnore(t *testing.T) {
-	got := InsertOrIgnore("GarbageRepos", "repo_id")
-	want := "INSERT OR IGNORE INTO GarbageRepos (repo_id) VALUES (?)"
+	got := InsertOrIgnore("GarbageLibraries", "library_id")
+	want := "INSERT OR IGNORE INTO GarbageLibraries (library_id) VALUES (?)"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestInsertOrIgnoreMultipleColumns(t *testing.T) {
-	got := InsertOrIgnore("RepoUserToken", "repo_id, email, token")
-	want := "INSERT OR IGNORE INTO RepoUserToken (repo_id, email, token) VALUES (?, ?, ?)"
+	got := InsertOrIgnore("LibraryUserToken", "library_id, email, token")
+	want := "INSERT OR IGNORE INTO LibraryUserToken (library_id, email, token) VALUES (?, ?, ?)"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestInsertOrReplaceMultipleColumns(t *testing.T) {
-	got := InsertOrReplace("RepoOwner", "repo_id, owner_id")
-	want := "INSERT OR REPLACE INTO RepoOwner (repo_id, owner_id) VALUES (?, ?)"
+	got := InsertOrReplace("LibraryOwner", "library_id, owner_id")
+	want := "INSERT OR REPLACE INTO LibraryOwner (library_id, owner_id) VALUES (?, ?)"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -305,7 +305,7 @@ func TestSQLiteWriteTransactionNoHang(t *testing.T) {
 	}
 	defer func() { _ = pair.Close() }()
 
-	if _, err := pair.Write.Exec("CREATE TABLE branch (repo TEXT PRIMARY KEY, commit_id TEXT)"); err != nil {
+	if _, err := pair.Write.Exec("CREATE TABLE branch (library TEXT PRIMARY KEY, commit_id TEXT)"); err != nil {
 		t.Fatalf("create table failed: %v", err)
 	}
 	if _, err := pair.Write.Exec("INSERT INTO branch VALUES ('r1', 'c0')"); err != nil {
@@ -322,7 +322,7 @@ func TestSQLiteWriteTransactionNoHang(t *testing.T) {
 			return
 		}
 		var head string
-		if err := tx.QueryRowContext(ctx, "SELECT commit_id FROM branch WHERE repo = ?", "r1").Scan(&head); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT commit_id FROM branch WHERE library = ?", "r1").Scan(&head); err != nil {
 			_ = tx.Rollback()
 			done <- fmt.Errorf("select in tx: %w", err)
 			return
@@ -332,7 +332,7 @@ func TestSQLiteWriteTransactionNoHang(t *testing.T) {
 			done <- fmt.Errorf("unexpected head %q", head)
 			return
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE branch SET commit_id = ? WHERE repo = ? AND commit_id = ?", "c1", "r1", head); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE branch SET commit_id = ? WHERE library = ? AND commit_id = ?", "c1", "r1", head); err != nil {
 			_ = tx.Rollback()
 			done <- fmt.Errorf("update in tx: %w", err)
 			return
@@ -355,7 +355,7 @@ func TestSQLiteWriteTransactionNoHang(t *testing.T) {
 
 	// And verify the committed state is visible via the read pool.
 	var head string
-	if err := pair.Read.QueryRow("SELECT commit_id FROM branch WHERE repo = ?", "r1").Scan(&head); err != nil {
+	if err := pair.Read.QueryRow("SELECT commit_id FROM branch WHERE library = ?", "r1").Scan(&head); err != nil {
 		t.Fatalf("post-commit read failed: %v", err)
 	}
 	if head != "c1" {

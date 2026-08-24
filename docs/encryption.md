@@ -22,12 +22,12 @@ memory or documentation.
 |---|---|---|---|
 | 1 | AES-128-CBC | `EVP_BytesToKey`/SHA1, 2¹⁹ iters | hardcoded, 8 bytes |
 | 2 | AES-256-CBC | PBKDF2-HMAC-SHA256, **1000** iters | hardcoded, 8 bytes |
-| 3 | AES-128-**ECB** | PBKDF2-HMAC-SHA256, 1000 iters | per-repo, 32 bytes |
-| 4 | AES-256-CBC | PBKDF2-HMAC-SHA256, 1000 iters | per-repo, 32 bytes |
+| 3 | AES-128-**ECB** | PBKDF2-HMAC-SHA256, 1000 iters | per-library, 32 bytes |
+| 4 | AES-256-CBC | PBKDF2-HMAC-SHA256, 1000 iters | per-library, 32 bytes |
 
 The hardcoded salt for v1 and v2 is eight bytes shared by every Seafile
 installation in existence. The comment directly above its declaration reads
-`/* Should generate random salt for each repo. */`.
+`/* Should generate random salt for each library. */`.
 
 Four problems, worst first. Any one is arguable; together they are a scheme
 from a different decade.
@@ -38,7 +38,7 @@ with rehash-on-login, so the same binary would hash a login password 600× harde
 than the password protecting a user's encrypted files.
 
 **`magic` is a published offline-cracking oracle.** It is
-`PBKDF2(repo_id + password, salt, 1000)`, stored in plaintext in the commit JSON
+`PBKDF2(library_id + password, salt, 1000)`, stored in plaintext in the commit JSON
 and served to any authenticated client by `SeaDriveDownloadInfoHandler`. Anyone
 with a database copy — or any account that can call download-info — gets an
 offline verifier at a work factor a single GPU chews through at millions of
@@ -46,7 +46,7 @@ guesses per second.
 
 **One key and one IV for the entire library, forever.** After unwrapping
 `random_key`, both the file key and the IV come from `seafile_derive_key` over
-that same value and the repo salt. They never vary. Every block is AES-256-CBC
+that same value and the library salt. They never vary. Every block is AES-256-CBC
 under an identical (key, IV) pair, which makes the encryption deterministic:
 identical blocks produce identical ciphertext, and two files sharing a prefix
 share a ciphertext prefix up to the byte they diverge. That is most of ECB's
@@ -64,12 +64,12 @@ plaintext. Only content is encrypted.
 Upstream knows. `pwd_hash` / `pwd_hash_algo` / `pwd_hash_params` in the commit
 format are their replacement for `magic`, backed by argon2id in
 `common/password-hash.c`. It is a serious fix to one of the four. Silo carries
-those fields through `CommitToRepo` / `RepoToCommit` but computes and verifies
+those fields through `CommitToLibrary` / `LibraryToCommit` but computes and verifies
 none of them.
 
 ## Why we can walk away
 
-Silo has never been able to create an encrypted library — `repomgr.CreateRepo`
+Silo has never been able to create an encrypted library — `libmgr.CreateLibrary`
 hardcodes `is_encrypted=0` and no endpoint accepts a password. Upstream only
 ever created them through Seahub's browser JavaScript, and we have no Seahub.
 
@@ -220,7 +220,7 @@ clients, which do their own crypto. Any read through `entries/` or the file
 server hits `parseCryptKey` and gets:
 
 ```
-400  Repo is encrypted. Please provide password to view it.
+400  Library is encrypted. Please provide password to view it.
 ```
 
 That message is misleading — no endpoint accepts one, and none will. The honest

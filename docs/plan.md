@@ -15,7 +15,7 @@ replaced what, and the constraints that still bind every change.
 | searpc client, `-p` flag, Unix socket | removed outright |
 | Web-layer login | `POST /api/silo/v1/auth/login` → JWT, `fileserver/authmgr/` |
 | Web-layer API tokens for sync clients | `POST /api2/auth-token/`, `fileserver/apitokenstore/` |
-| 174 C RPC handlers for repo operations | `/api/silo/v1/` handlers in `fileserver/api/` |
+| 174 C RPC handlers for library operations | `/api/silo/v1/` handlers in `fileserver/api/` |
 | Separate notification-server binary | in-process, `/notification` |
 | Separate controller process | none needed — one process |
 
@@ -43,6 +43,6 @@ These hold for anything added from here on.
   to validate: `PBKDF2SHA256$…` at whatever iteration count it records, legacy
   SHA256-with-fixed-salt, and unsalted SHA1. Old formats are flagged for rehash
   on successful login rather than rejected.
-- **Encryption compatibility.** AES-CBC for repo versions 1, 2 and 4, and
+- **Encryption compatibility.** AES-CBC for library versions 1, 2 and 4, and
   AES-128-ECB for version 3, matching what clients already write
   (`fileserver/crypt.go`). See `docs/encryption.md`.

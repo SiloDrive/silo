@@ -29,22 +29,22 @@ const (
 const SigningAlg = "HS256"
 
 type MyClaims struct {
-	RepoID   string `json:"repo_id"`
-	UserName string `json:"username"`
+	LibraryID string `json:"library_id"`
+	UserName  string `json:"username"`
 	jwt.RegisteredClaims
 }
 
-func GenNotifJWTToken(repoID, user string, exp int64) (string, error) {
+func GenNotifJWTToken(libraryID, user string, exp int64) (string, error) {
 	claims := new(MyClaims)
 	claims.ExpiresAt = jwt.NewNumericDate(time.Unix(exp, 0))
 	claims.Audience = jwt.ClaimStrings{AudNotif}
-	claims.RepoID = repoID
+	claims.LibraryID = libraryID
 	claims.UserName = user
 
 	token := jwt.NewWithClaims(jwt.GetSigningMethod(SigningAlg), claims)
 	tokenString, err := token.SignedString([]byte(option.JWTPrivateKey))
 	if err != nil {
-		err := fmt.Errorf("failed to gen jwt token for repo %s: %w", repoID, err)
+		err := fmt.Errorf("failed to gen jwt token for library %s: %w", libraryID, err)
 		return "", err
 	}
 

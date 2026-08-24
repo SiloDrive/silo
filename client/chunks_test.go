@@ -161,25 +161,25 @@ func TestTheChunkLaneIsRefusedRatherThanGuessed(t *testing.T) {
 		Normalization: store.DefaultNormalization,
 	}
 	for _, tc := range []struct {
-		name string
-		repo Repo
-		want bool
+		name    string
+		library Library
+		want    bool
 	}{
-		{"a plain library with parameters", Repo{ID: "r", Chunker: good}, true},
-		{"a library the server did not describe", Repo{ID: "r"}, false},
-		{"an end-to-end encrypted library", Repo{ID: "r", Encrypted: true, Chunker: good}, false},
-		{"parameters no chunker can be built from", Repo{ID: "r", Chunker: &ChunkerParams{
+		{"a plain library with parameters", Library{ID: "r", Chunker: good}, true},
+		{"a library the server did not describe", Library{ID: "r"}, false},
+		{"an end-to-end encrypted library", Library{ID: "r", Encrypted: true, Chunker: good}, false},
+		{"parameters no chunker can be built from", Library{ID: "r", Chunker: &ChunkerParams{
 			Algorithm: store.ChunkerAlgorithm, MinSize: 1 << 20, TargetSize: 1 << 10,
 			MaxSize: 1 << 20, Normalization: store.DefaultNormalization,
 		}}, false},
-		{"an algorithm this client does not implement", Repo{ID: "r", Chunker: &ChunkerParams{
+		{"an algorithm this client does not implement", Library{ID: "r", Chunker: &ChunkerParams{
 			Algorithm: "rollsum/v9", MinSize: store.DefaultMinSize,
 			TargetSize: store.DefaultTargetSize, MaxSize: store.DefaultMaxSize,
 			Normalization: store.DefaultNormalization,
 		}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := clientListing(t, []Repo{tc.repo})
+			c := clientListing(t, []Library{tc.library})
 			_, ok := c.chunkerFor("r")
 			if ok != tc.want {
 				t.Errorf("chunkerFor = %v, want %v", ok, tc.want)
@@ -199,15 +199,15 @@ func testChunker() *ChunkerParams {
 }
 
 // clientListing returns a client talking to a server whose only surface is the
-// repos listing, which is all chunkerFor reads.
-func clientListing(t *testing.T, repos []Repo) *APIClient {
+// libraries listing, which is all chunkerFor reads.
+func clientListing(t *testing.T, libraries []Library) *APIClient {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/silo/v1/repos" {
+		if r.URL.Path != "/api/silo/v1/libraries" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(repos)
+		_ = json.NewEncoder(w).Encode(libraries)
 	}))
 	t.Cleanup(srv.Close)
 	return NewClient(srv.URL)

@@ -3,7 +3,7 @@
 Date: 2026-08-22
 Status: **proposed** — depends on [`store-v2.md`](store-v2.md) (E2EE model,
 convergent chunk keys, manifests) and on [`auth.md`](../auth.md)'s credential
-table, which has landed — including the `repo_id:path` scope extension this
+table, which has landed — including the `library_id:path` scope extension this
 plan needs. Build order at the end sequences against both.
 
 Scope: user accounts and roles, public-read-only libraries, and share links —
@@ -18,7 +18,7 @@ out (deferred, not rejected; see the end).
 | 1 | Three principals — account, anonymous-via-public-grant, anonymous-via-link — resolve through **one permission path**. No ad-hoc checks in read handlers. |
 | 2 | Public-read-only is a **permanent, listed grant to the anonymous principal** — the same grant machinery as a share link scoped to the library root, differing only in discovery. |
 | 3 | `public_read` ⇒ server-readable library. Exclusive with E2EE at creation; converting an E2EE library to public is `silo convert`, the client-side re-encryption operation store-v2 defines — and conversion to public always starts a new history root. |
-| 4 | Anonymous read on public repos covers the **chunk surface** (manifests + chunks), not just `entries/` — porter can mount a public library with no account. |
+| 4 | Anonymous read on public libraries covers the **chunk surface** (manifests + chunks), not just `entries/` — porter can mount a public library with no account. |
 | 5 | A share link is a **Credential row**: `kind=link`, path-extended scope, `perm` ceiling `r`. Revocation, listing, labels, `last_used`, expiry, and the `is_active` account join all come from the existing model. |
 | 6 | Content is encrypted **once**; link flavors differ only in where the share key SK comes from. Three flavors on E2EE libraries: **e2e** (SK in URL fragment — default), **password** (SK wrapped under a password-derived key, `curl -u`), **compatible** (SK wrapped to the server — plain `curl`). |
 | 7 | **No password is ever stored.** The password flavor stores a salt and a sealed blob — the SK wrap; the compatible flavor stores SK wrapped under a server key; the e2e flavor stores no key material at all. |
@@ -34,7 +34,7 @@ The credential model is auth.md's; this plan adds what sits around it.
 the existing `is_staff` semantics folding into `admin`. Guest cannot create
 libraries and sees only what is shared to them — the "consumer deployment"
 shape from [`future-features.md`](../future-features.md). A config key
-`allow_user_create_repo` gates creation for `user` as well, for installs where
+`allow_user_create_library` gates creation for `user` as well, for installs where
 the admin curates everything.
 
 **Invites.** `POST /api/silo/v1/invites` (admin) mints a credential row:
@@ -69,18 +69,18 @@ the `Resolve()` join — including share links the account minted, which is a
 property worth a test, not a hope: a departed user's public links must die
 with the account. The anonymous principal needs the same rule stated:
 `CheckPerm` honours an `anon` grant only while the account that owns the
-repo is active, so a departed user's *public library* goes dark with them
+library is active, so a departed user's *public library* goes dark with them
 exactly as their links do.
 
 ## The grant model
 
-One table answers "may this principal do `op` at `(repo, path)`":
+One table answers "may this principal do `op` at `(library, path)`":
 
 ```sql
 CREATE TABLE Grant (
   id         INTEGER PRIMARY KEY,
   principal  TEXT NOT NULL,   -- 'user:<account>' | 'group:<gid>' | 'anon'
-  repo_id    TEXT NOT NULL,
+  library_id    TEXT NOT NULL,
   path       TEXT NOT NULL DEFAULT '/',   -- subtree scope
   perm       TEXT NOT NULL,   -- 'r' | 'rw'
   created_by TEXT NOT NULL,
@@ -88,16 +88,16 @@ CREATE TABLE Grant (
 );
 ```
 
-The existing Seafile share tables (`SharedRepo`, `RepoGroup`) fold into this
+The existing Seafile share tables (`SharedLibrary`, `LibraryGroup`) fold into this
 or are read through it — decided at implementation, but the invariant is that
 **`CheckPerm` consults one model**, and the credential's `perm` column remains
 a *ceiling* over the grant, never a grant itself (auth.md's rule).
 
 - **User/group shares** are `user:`/`group:` grants, exposed on the endpoints
-  future-features.md already lists (`/repos/{id}/shares`, `shared-with-me`).
-- **Public-read-only** is `('anon', repo, '/', 'r')` plus a `listed` column
+  future-features.md already lists (`/libraries/{id}/shares`, `shared-with-me`).
+- **Public-read-only** is `('anon', library, '/', 'r')` plus a `listed` column
   on the grant row (meaningful only for `anon` principals) for
-  discovery: `GET /api/silo/v1/public-repos` enumerates listed anonymous
+  discovery: `GET /api/silo/v1/public-libraries` enumerates listed anonymous
   grants, no auth required. Unlisted-but-public is a root share link instead —
   same grant, different discovery, which is the whole point of unifying.
 - **Share links** mint a real Grant row — `principal = 'link:<credential-id>'`
@@ -113,8 +113,8 @@ must consult the same model — read-only means the sync surface refuses
 writes, not just `entries/`.
 
 **Anonymous lanes are rate-limited per IP** (token bucket, config caps), and
-anonymous traffic is attributed to the repo owner if quotas ever grow a
-bandwidth dimension. Public repos are unauthenticated bandwidth; say so in
+anonymous traffic is attributed to the library owner if quotas ever grow a
+bandwidth dimension. Public libraries are unauthenticated bandwidth; say so in
 the admin docs.
 
 ### Anonymous mount
@@ -137,7 +137,7 @@ other silo credential.
 
 Additions to the credential model:
 
-- `scope` extends from a repo id to `repo_id:path` — one format change,
+- `scope` extends from a library id to `library_id:path` — one format change,
   useful beyond links (a device credential scoped to a subtree becomes
   expressible for free). For E2EE libraries that path is a **ciphertext
   path** (Option A names) — consistent with `entries/`, and exactly the
@@ -150,8 +150,8 @@ Additions to the credential model:
 Endpoints:
 
 ```
-POST   /api/silo/v1/repos/{id}/links        {path, flavor, password?, expires?}
-GET    /api/silo/v1/repos/{id}/links
+POST   /api/silo/v1/libraries/{id}/links        {path, flavor, password?, expires?}
+GET    /api/silo/v1/libraries/{id}/links
 GET    /api/silo/v1/links                    -- all links the caller minted
 DELETE /api/silo/v1/links/{link-id}
 ```
@@ -359,7 +359,7 @@ purity here was already imperfect.
 - **Server-side decryption stays scoped to link redemption.** The compatible
   and password curl paths are the only places the server ever derives a
   content key, gated on the link row. That code must never generalise into
-  `entries/` for E2EE repos — this is the keycache guardrail restated for the
+  `entries/` for E2EE libraries — this is the keycache guardrail restated for the
   one place we deliberately punch through it.
 - **No short or vanity codes.** Credential format or nothing.
 - **The anonymous principal never writes** until upload links arrive with
@@ -377,7 +377,7 @@ purity here was already imperfect.
 1. **Grant model + roles + invites.** Grant table, `CheckPerm` unification,
    role column, invite kind + redemption flow with E2EE bootstrap. Requires
    auth.md's credential table; sequence with store-v2 phase 3.
-2. **Public libraries.** Anonymous grants, `public-repos` listing, anonymous
+2. **Public libraries.** Anonymous grants, `public-libraries` listing, anonymous
    read across entries + manifests + chunks, per-IP rate limiting, read-only
    enforcement on the write surface. porter learns credential-less `ro`
    mounts.

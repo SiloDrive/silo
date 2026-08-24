@@ -16,9 +16,9 @@ func TestNormalizeMessage(t *testing.T) {
 		want string
 	}{
 		{
-			"repo id",
-			"failed to get repo 7c8a1f2e-3b4d-4c5a-9e6f-0a1b2c3d4e5f: no such library",
-			"failed to get repo <id>: no such library",
+			"library id",
+			"failed to get library 7c8a1f2e-3b4d-4c5a-9e6f-0a1b2c3d4e5f: no such library",
+			"failed to get library <id>: no such library",
 		},
 		{
 			"block id",
@@ -68,8 +68,8 @@ func TestUntraced(t *testing.T) {
 		{"GET /notification", true},
 		{"GET /debug/pprof/heap", true},
 		{"GET /protocol-version", true},
-		{"GET /repo/7c8a1f2e-3b4d-4c5a-9e6f-0a1b2c3d4e5f/commit/HEAD", false},
-		{"POST /api/silo/v1/repos", false},
+		{"GET /libraries/7c8a1f2e-3b4d-4c5a-9e6f-0a1b2c3d4e5f/commit/HEAD", false},
+		{"POST /api/silo/v1/libraries", false},
 		// A prefix match must not swallow an unrelated sibling route.
 		{"GET /notifications-settings", false},
 	}

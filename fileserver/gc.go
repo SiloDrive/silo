@@ -14,24 +14,24 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// garbageRepo is one row of GarbageRepos together with what GC decided to do
+// garbageLibrary is one row of GarbageLibraries together with what GC decided to do
 // about it. A non-empty skip means GC refused to touch it and why.
-type garbageRepo struct {
-	repoID string
-	dirs   []string
-	bytes  int64
-	files  int
-	skip   string
+type garbageLibrary struct {
+	libraryID string
+	dirs      []string
+	bytes     int64
+	files     int
+	skip      string
 }
 
 // RunGC reclaims the object-store directories of deleted libraries.
 //
-// DeleteRepo removes a library's database rows and records its ID in
-// GarbageRepos, but nothing has ever reclaimed the objects, so deleted
-// libraries leak disk indefinitely. This walks GarbageRepos and removes each
+// DeleteLibrary removes a library's database rows and records its ID in
+// GarbageLibraries, but nothing has ever reclaimed the objects, so deleted
+// libraries leak disk indefinitely. This walks GarbageLibraries and removes each
 // dead library's directory from the commit, fs and block stores.
 //
-// It is deliberately not a mark-and-sweep over live repos: it never inspects
+// It is deliberately not a mark-and-sweep over live libraries: it never inspects
 // or deletes anything belonging to a library that still exists, which is what
 // lets it run without reasoning about concurrent writes. Reclaiming
 // unreferenced history *within* a live library is a separate, harder job.
@@ -52,7 +52,7 @@ func RunGC(args []string) error {
 	// The server keeps no lock on the data directory, so GC cannot detect a
 	// running instance. It only ever touches libraries that are already
 	// deleted, which a running server will not write to, but a server midway
-	// through DeleteRepo is a genuine race.
+	// through DeleteLibrary is a genuine race.
 	if *del {
 		log.Warn("Stop the server before running gc -delete.")
 	}
@@ -61,21 +61,21 @@ func RunGC(args []string) error {
 		return err
 	}
 
-	repos, err := collectGarbageRepos()
+	libraries, err := collectGarbageLibraries()
 	if err != nil {
 		return err
 	}
-	if len(repos) == 0 {
-		fmt.Println("Nothing to reclaim: GarbageRepos is empty.")
+	if len(libraries) == 0 {
+		fmt.Println("Nothing to reclaim: GarbageLibraries is empty.")
 		return nil
 	}
 
 	var totalBytes int64
 	var totalFiles, skipped int
-	for _, r := range repos {
+	for _, r := range libraries {
 		if r.skip != "" {
 			skipped++
-			fmt.Printf("skip %s: %s\n", r.repoID, r.skip)
+			fmt.Printf("skip %s: %s\n", r.libraryID, r.skip)
 			continue
 		}
 		totalBytes += r.bytes
@@ -85,13 +85,13 @@ func RunGC(args []string) error {
 			if *del {
 				verb = "reclaiming"
 			}
-			fmt.Printf("%s %s: %d objects, %s\n", verb, r.repoID, r.files, format.Bytes(r.bytes))
+			fmt.Printf("%s %s: %d objects, %s\n", verb, r.libraryID, r.files, format.Bytes(r.bytes))
 		}
 	}
 
 	if !*del {
 		fmt.Printf("\n%d librar%s reclaimable, %d objects, %s. Re-run with -delete to remove.\n",
-			len(repos)-skipped, pluralY(len(repos)-skipped), totalFiles, format.Bytes(totalBytes))
+			len(libraries)-skipped, pluralY(len(libraries)-skipped), totalFiles, format.Bytes(totalBytes))
 		if skipped > 0 {
 			fmt.Printf("%d skipped — see above.\n", skipped)
 		}
@@ -99,14 +99,14 @@ func RunGC(args []string) error {
 	}
 
 	var removed int
-	for _, r := range repos {
+	for _, r := range libraries {
 		if r.skip != "" {
 			continue
 		}
 		if err := reclaim(r); err != nil {
 			// Keep going: one unreadable directory should not strand every
-			// other dead library. The row stays in GarbageRepos for a retry.
-			log.Errorf("Failed to reclaim %s: %v", r.repoID, err)
+			// other dead library. The row stays in GarbageLibraries for a retry.
+			log.Errorf("Failed to reclaim %s: %v", r.libraryID, err)
 			continue
 		}
 		removed++
@@ -120,15 +120,15 @@ func RunGC(args []string) error {
 	return nil
 }
 
-// collectGarbageRepos reads GarbageRepos and decides, per entry, whether its
+// collectGarbageLibraries reads GarbageLibraries and decides, per entry, whether its
 // store directories are safe to remove.
-func collectGarbageRepos() ([]*garbageRepo, error) {
+func collectGarbageLibraries() ([]*garbageLibrary, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout*2)
 	defer cancel()
 
-	rows, err := siloPair.Read.QueryContext(ctx, "SELECT repo_id FROM GarbageRepos")
+	rows, err := siloPair.Read.QueryContext(ctx, "SELECT library_id FROM GarbageLibraries")
 	if err != nil {
-		return nil, fmt.Errorf("failed to read GarbageRepos: %v", err)
+		return nil, fmt.Errorf("failed to read GarbageLibraries: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -136,17 +136,17 @@ func collectGarbageRepos() ([]*garbageRepo, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("failed to scan GarbageRepos row: %v", err)
+			return nil, fmt.Errorf("failed to scan GarbageLibraries row: %v", err)
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to read GarbageRepos: %v", err)
+		return nil, fmt.Errorf("failed to read GarbageLibraries: %v", err)
 	}
 
-	repos := make([]*garbageRepo, 0, len(ids))
+	libraries := make([]*garbageLibrary, 0, len(ids))
 	for _, id := range ids {
-		r := &garbageRepo{repoID: id}
+		r := &garbageLibrary{libraryID: id}
 		skip, err := unsafeToReclaim(ctx, id)
 		if err != nil {
 			return nil, err
@@ -157,22 +157,22 @@ func collectGarbageRepos() ([]*garbageRepo, error) {
 				return nil, err
 			}
 		}
-		repos = append(repos, r)
+		libraries = append(libraries, r)
 	}
-	return repos, nil
+	return libraries, nil
 }
 
-// unsafeToReclaim returns a reason when repoID's store directories must not be
+// unsafeToReclaim returns a reason when libraryID's store directories must not be
 // removed, or "" when they are safe to reclaim.
 //
-// The dangerous case is store sharing. A virtual repo's objects live in its
-// origin's store, because repomgr sets StoreID to origin_repo rather than to
-// the repo's own ID. So a directory named for a dead repo can still hold a
-// live repo's only copy of its data, and a dead virtual repo owns no directory
+// The dangerous case is store sharing. A virtual library's objects live in its
+// origin's store, because libmgr sets StoreID to origin_library rather than to
+// the library's own ID. So a directory named for a dead library can still hold a
+// live library's only copy of its data, and a dead virtual library owns no directory
 // of its own at all.
-func unsafeToReclaim(ctx context.Context, repoID string) (string, error) {
+func unsafeToReclaim(ctx context.Context, libraryID string) (string, error) {
 	for _, b := range reclaimBlockers {
-		found, err := rowExists(ctx, b.query, repoID)
+		found, err := rowExists(ctx, b.query, libraryID)
 		if err != nil {
 			return "", err
 		}
@@ -184,22 +184,22 @@ func unsafeToReclaim(ctx context.Context, repoID string) (string, error) {
 }
 
 // reclaimBlockers is the set of "someone still needs this" checks, in the
-// order they are reported. A repo is safe to reclaim only when none match.
+// order they are reported. A library is safe to reclaim only when none match.
 var reclaimBlockers = []struct{ query, reason string }{
 	// The library came back, or the ID was never really dead.
-	{"SELECT 1 FROM Repo WHERE repo_id = ?",
-		"still present in Repo — not a deleted library"},
+	{"SELECT 1 FROM Library WHERE library_id = ?",
+		"still present in Library — not a deleted library"},
 	// Rows in Branch mean commits are still reachable through a head.
-	{"SELECT 1 FROM Branch WHERE repo_id = ?",
+	{"SELECT 1 FROM Branch WHERE library_id = ?",
 		"still has rows in Branch — a head still references its commits"},
-	// A live virtual repo whose objects are written into this store.
-	{"SELECT 1 FROM VirtualRepo WHERE origin_repo = ?",
-		"still the origin of a virtual repo, which stores its objects here"},
-	// The dead repo is itself virtual: its objects are in the origin's store,
+	// A live virtual library whose objects are written into this store.
+	{"SELECT 1 FROM VirtualLibrary WHERE origin_library = ?",
+		"still the origin of a virtual library, which stores its objects here"},
+	// The dead library is itself virtual: its objects are in the origin's store,
 	// so there is nothing of its own to remove and any directory sharing its
 	// name would belong to something else.
-	{"SELECT 1 FROM VirtualRepo WHERE repo_id = ?",
-		"is a virtual repo — its objects live in the origin's store"},
+	{"SELECT 1 FROM VirtualLibrary WHERE library_id = ?",
+		"is a virtual library — its objects live in the origin's store"},
 }
 
 func rowExists(ctx context.Context, query, arg string) (bool, error) {
@@ -214,15 +214,15 @@ func rowExists(ctx context.Context, query, arg string) (bool, error) {
 	return true, nil
 }
 
-// measure records which store directories exist for a repo and how much they
+// measure records which store directories exist for a library and how much they
 // hold, so a dry run can report the same set the delete pass would remove.
-func measure(r *garbageRepo) error {
+func measure(r *garbageLibrary) error {
 	// The layout and the type names come from objstore rather than being
 	// spelled again here: a directory this does not find is silently nothing
 	// to reclaim, so a disagreement would make gc report success and remove
 	// nothing.
 	for _, objType := range objstore.Types {
-		dir := objstore.RepoDir(absDataDir, objType, r.repoID)
+		dir := objstore.LibraryDir(absDataDir, objType, r.libraryID)
 		info, err := os.Stat(dir)
 		if os.IsNotExist(err) {
 			continue
@@ -258,10 +258,10 @@ func measure(r *garbageRepo) error {
 	return nil
 }
 
-// reclaim removes a dead repo's store directories, then clears its
-// GarbageRepos row. The row is cleared last so a failure part-way leaves the
-// repo queued for the next run rather than forgotten with objects on disk.
-func reclaim(r *garbageRepo) error {
+// reclaim removes a dead library's store directories, then clears its
+// GarbageLibraries row. The row is cleared last so a failure part-way leaves the
+// library queued for the next run rather than forgotten with objects on disk.
+func reclaim(r *garbageLibrary) error {
 	for _, dir := range r.dirs {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("failed to remove %s: %v", dir, err)
@@ -270,8 +270,8 @@ func reclaim(r *garbageRepo) error {
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := siloPair.Write.ExecContext(ctx, "DELETE FROM GarbageRepos WHERE repo_id = ?", r.repoID); err != nil {
-		return fmt.Errorf("removed objects but failed to clear GarbageRepos row: %v", err)
+	if _, err := siloPair.Write.ExecContext(ctx, "DELETE FROM GarbageLibraries WHERE library_id = ?", r.libraryID); err != nil {
+		return fmt.Errorf("removed objects but failed to clear GarbageLibraries row: %v", err)
 	}
 	return nil
 }

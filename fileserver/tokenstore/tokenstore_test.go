@@ -7,7 +7,7 @@ import (
 )
 
 func TestCreateAndQueryToken(t *testing.T) {
-	token := CreateToken("repo-1", "obj-1", "download", "user@test.com", false)
+	token := CreateToken("library-1", "obj-1", "download", "user@test.com", false)
 	if token == "" {
 		t.Fatal("expected non-empty token")
 	}
@@ -16,13 +16,13 @@ func TestCreateAndQueryToken(t *testing.T) {
 	if info == nil {
 		t.Fatal("expected token to be found")
 	}
-	if info.RepoID != "repo-1" || info.ObjID != "obj-1" || info.Op != "download" || info.User != "user@test.com" {
+	if info.LibraryID != "library-1" || info.ObjID != "obj-1" || info.Op != "download" || info.User != "user@test.com" {
 		t.Errorf("unexpected token info: %+v", info)
 	}
 }
 
 func TestQueryTokenReusable(t *testing.T) {
-	token := CreateToken("repo-1", "obj-1", "download", "user@test.com", false)
+	token := CreateToken("library-1", "obj-1", "download", "user@test.com", false)
 
 	// Non-one-time tokens should survive multiple queries
 	for i := 0; i < 3; i++ {
@@ -34,7 +34,7 @@ func TestQueryTokenReusable(t *testing.T) {
 }
 
 func TestQueryTokenOneTime(t *testing.T) {
-	token := CreateToken("repo-1", "obj-1", "download", "user@test.com", true)
+	token := CreateToken("library-1", "obj-1", "download", "user@test.com", true)
 
 	info := QueryToken(token)
 	if info == nil {
@@ -55,7 +55,7 @@ func TestQueryTokenNotFound(t *testing.T) {
 }
 
 func TestQueryTokenExpired(t *testing.T) {
-	token := CreateToken("repo-1", "obj-1", "download", "user@test.com", false)
+	token := CreateToken("library-1", "obj-1", "download", "user@test.com", false)
 
 	// Manually expire the token
 	val, _ := tokens.Load(token)
@@ -73,7 +73,7 @@ func TestQueryTokenExpired(t *testing.T) {
 }
 
 func TestDeleteToken(t *testing.T) {
-	token := CreateToken("repo-1", "obj-1", "download", "user@test.com", false)
+	token := CreateToken("library-1", "obj-1", "download", "user@test.com", false)
 
 	DeleteToken(token)
 
@@ -89,7 +89,7 @@ func TestDeleteToken(t *testing.T) {
 // served. Exactly one caller may win.
 func TestQueryTokenOneTimeIsRedeemedOnce(t *testing.T) {
 	for attempt := 0; attempt < 50; attempt++ {
-		token := CreateToken("repo-1", "obj-1", "download", "user@test.com", true)
+		token := CreateToken("library-1", "obj-1", "download", "user@test.com", true)
 
 		const racers = 64
 		start := make(chan struct{})
@@ -123,8 +123,8 @@ func TestQueryTokenOneTimeIsRedeemedOnce(t *testing.T) {
 
 // Redeeming one token must not disturb another.
 func TestQueryTokenOneTimeIsPerToken(t *testing.T) {
-	first := CreateToken("repo-1", "obj-1", "download", "user@test.com", true)
-	second := CreateToken("repo-1", "obj-2", "download", "user@test.com", true)
+	first := CreateToken("library-1", "obj-1", "download", "user@test.com", true)
+	second := CreateToken("library-1", "obj-2", "download", "user@test.com", true)
 
 	if info := QueryToken(first); info == nil {
 		t.Fatal("the first token was not redeemable")

@@ -17,10 +17,10 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/api"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
@@ -30,12 +30,12 @@ import (
 // The entries API: one addressable noun for everything in a library, with the
 // HTTP methods as the verbs.
 //
-//	GET    /api/silo/v1/repos/{repo}/entries/{path}   dir -> listing, file -> bytes
-//	HEAD   /api/silo/v1/repos/{repo}/entries/{path}   headers only
-//	PUT    /api/silo/v1/repos/{repo}/entries/{path}   body -> file, ?type=dir,
+//	GET    /api/silo/v1/libraries/{library}/entries/{path}   dir -> listing, file -> bytes
+//	HEAD   /api/silo/v1/libraries/{library}/entries/{path}   headers only
+//	PUT    /api/silo/v1/libraries/{library}/entries/{path}   body -> file, ?type=dir,
 //	                                                  or ?type=blocks (blocks.go)
-//	DELETE /api/silo/v1/repos/{repo}/entries/{path}
-//	POST   /api/silo/v1/repos/{repo}/entries/{path}   {"op":"move"|"copy","to":"/x/y"}
+//	DELETE /api/silo/v1/libraries/{library}/entries/{path}
+//	POST   /api/silo/v1/libraries/{library}/entries/{path}   {"op":"move"|"copy","to":"/x/y"}
 //
 // It exists beside the older dir/download/file/mkdir/rename/move endpoints
 // rather than replacing them: those have in-tree callers, and keeping both
@@ -100,7 +100,7 @@ func entryPath(raw string) string {
 	return raw
 }
 
-// entryRepo checks permission and loads the repository, answering itself and
+// entryLibrary checks permission and loads the repository, answering itself and
 // returning nil when it has. write asks for "rw"; otherwise any permission
 // will do, since reading is allowed to anyone who can see the library at all.
 //
@@ -110,22 +110,22 @@ func entryPath(raw string) string {
 // it. A library whose objects the server has lost answers 500, which a client
 // reads as "something is broken", not as "act on this".
 //
-// Both lookups are uncached — CheckPerm is two or more queries and the repo
+// Both lookups are uncached — CheckPerm is two or more queries and the library
 // lookup is a query plus a commit read — so the result is passed down rather
 // than re-derived by each function that needs it.
-func entryRepo(w http.ResponseWriter, repoID string, user account.ID, write bool) *repomgr.Repo {
-	perm := share.CheckPerm(repoID, user)
+func entryLibrary(w http.ResponseWriter, libraryID string, user account.ID, write bool) *libmgr.Library {
+	perm := share.CheckPerm(libraryID, user)
 	if perm == "" || (write && perm != "rw") {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return nil
 	}
-	repo, err := repomgr.GetWithReason(repoID)
+	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
-		code, msg := repomgr.StatusFor(err)
+		code, msg := libmgr.StatusFor(err)
 		http.Error(w, msg, code)
 		return nil
 	}
-	return repo
+	return library
 }
 
 // resolved is what a path points at right now: enough to answer a conditional
@@ -146,15 +146,15 @@ type resolved struct {
 // surface is how such a library is read. Saying so here keeps the refusal next
 // to the reason instead of surfacing as "not found", which would be a lie
 // about whether the file exists.
-func resolve(repo *repomgr.Repo, path string) (*resolved, error) {
+func resolve(library *libmgr.Library, path string) (*resolved, error) {
 	if path == "/" {
-		return &resolved{id: repo.RootID, isDir: true}, nil
+		return &resolved{id: library.RootID, isDir: true}, nil
 	}
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
 		return nil, err
 	}
-	root, err := store.ParseID(repo.RootID)
+	root, err := store.ParseID(library.RootID)
 	if err != nil {
 		return nil, err
 	}
@@ -178,15 +178,15 @@ func resolve(repo *repomgr.Repo, path string) (*resolved, error) {
 func getEntry(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
 	vars := mux.Vars(r)
-	repoID := vars["repoid"]
+	libraryID := vars["libraryid"]
 	path := entryPath(vars["path"])
 
-	repo := entryRepo(w, repoID, acct.ID, false)
-	if repo == nil {
+	library := entryLibrary(w, libraryID, acct.ID, false)
+	if library == nil {
 		return
 	}
 
-	entry, err := resolve(repo, path)
+	entry, err := resolve(library, path)
 	if err != nil {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
@@ -209,10 +209,10 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 	// re-walks the tree from the root — the listing and the file body are read
 	// straight from the object the ETag was just computed from.
 	if entry.isDir {
-		api.ListDirByID(w, r, repo, entry.id)
+		api.ListDirByID(w, r, library, entry.id)
 		return
 	}
-	serveFile(w, r, repo, entry.id, upath.Base(path))
+	serveFile(w, r, library, entry.id, upath.Base(path))
 }
 
 // isPaged reports whether a request is asking for a window of a listing rather
@@ -245,10 +245,10 @@ func isPaged(r *http.Request) bool {
 // and a client that asked for a file and received sealed bytes has no way to
 // tell that apart from the file. Such a library is read through the
 // id-addressed surface, where the client opens the chunks itself.
-func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileID, fileName string) {
-	st, err := repo.Store()
+func serveFile(w http.ResponseWriter, r *http.Request, library *libmgr.Library, fileID, fileName string) {
+	st, err := library.Store()
 	if err != nil {
-		log.Errorf("failed to open store for repo %s: %v", repo.ID, err)
+		log.Errorf("failed to open store for library %s: %v", library.ID, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -259,7 +259,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileI
 	}
 	m, err := st.GetManifest(id)
 	if err != nil {
-		log.Errorf("failed to read manifest %s in repo %s: %v", fileID, repo.ID, err)
+		log.Errorf("failed to read manifest %s in library %s: %v", fileID, library.ID, err)
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
@@ -281,7 +281,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileI
 			// The status is already written, so this cannot become a 500. Log
 			// it and let the body end short of Content-Length, which is what
 			// tells the client it is incomplete.
-			log.Errorf("failed to stream %s in repo %s: %v", fileID, repo.ID, err)
+			log.Errorf("failed to stream %s in library %s: %v", fileID, library.ID, err)
 		}
 		return
 	}
@@ -299,7 +299,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, fileI
 		return
 	}
 	if err := st.ReadFileRange(m, int64(start), int64(end-start+1), w); err != nil {
-		log.Errorf("failed to stream range of %s in repo %s: %v", fileID, repo.ID, err)
+		log.Errorf("failed to stream range of %s in library %s: %v", fileID, library.ID, err)
 	}
 }
 
@@ -316,16 +316,16 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 	// ?type=blocks is a file too, but one whose content is already on the
 	// server: the body names blocks rather than carrying bytes.
 	if strings.EqualFold(r.URL.Query().Get("type"), "blocks") {
-		putEntryBlocks(w, r, vars["repoid"], path)
+		putEntryBlocks(w, r, vars["libraryid"], path)
 		return
 	}
 
 	if !wantsDirectory(r) {
-		putEntryFile(w, r, vars["repoid"], path)
+		putEntryFile(w, r, vars["libraryid"], path)
 		return
 	}
 
-	if !checkPreconditions(w, r, vars["repoid"], middleware.GetAccountID(r), path) {
+	if !checkPreconditions(w, r, vars["libraryid"], middleware.GetAccountID(r), path) {
 		return
 	}
 	setQuery(r, url.Values{"path": {path}})
@@ -356,18 +356,18 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 // repository. It loads one only when a precondition header is actually present,
 // so an unconditional write costs nothing extra — the delegate it is about to
 // call does its own permission check and load anyway.
-func checkPreconditions(w http.ResponseWriter, r *http.Request, repoID string, user account.ID, path string) bool {
+func checkPreconditions(w http.ResponseWriter, r *http.Request, libraryID string, user account.ID, path string) bool {
 	if r.Header.Get("If-Match") == "" && r.Header.Get("If-None-Match") == "" {
 		return true
 	}
-	repo := entryRepo(w, repoID, user, true)
-	if repo == nil {
+	library := entryLibrary(w, libraryID, user, true)
+	if library == nil {
 		return false
 	}
-	return preconditionsHold(w, r, repo, path)
+	return preconditionsHold(w, r, library, path)
 }
 
-func preconditionsHold(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path string) bool {
+func preconditionsHold(w http.ResponseWriter, r *http.Request, library *libmgr.Library, path string) bool {
 	ifMatch := r.Header.Get("If-Match")
 	ifNoneMatch := r.Header.Get("If-None-Match")
 	if ifMatch == "" && ifNoneMatch == "" {
@@ -377,7 +377,7 @@ func preconditionsHold(w http.ResponseWriter, r *http.Request, repo *repomgr.Rep
 	// An empty tag means the path holds nothing right now. That is a state a
 	// precondition can legitimately be asserted about, so it is not an error.
 	var etag string
-	if entry, err := resolve(repo, path); err == nil {
+	if entry, err := resolve(library, path); err == nil {
 		etag = `"` + etagPrefix + entry.id + `"`
 	}
 
@@ -426,17 +426,17 @@ func preconditionResult(etag, ifMatch, ifNoneMatch string) bool {
 // server cannot chunk what it cannot read, and chunking under the wrong seed
 // would be worse than refusing. Writing such a library is the id-addressed
 // surface's job, where the client chunks, seals and names every object.
-func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
+func putEntryFile(w http.ResponseWriter, r *http.Request, libraryID, path string) {
 	acct := middleware.GetAccount(r)
 
-	repo := entryRepo(w, repoID, acct.ID, true)
-	if repo == nil {
+	library := entryLibrary(w, libraryID, acct.ID, true)
+	if library == nil {
 		return
 	}
 
 	// Checked before the body is spooled: a doomed upload should be refused
 	// before it is transferred, not after.
-	if !preconditionsHold(w, r, repo, path) {
+	if !preconditionsHold(w, r, library, path) {
 		return
 	}
 
@@ -450,16 +450,16 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 	// path silently produce a directory tree rather than an error, and a client
 	// that wants mkdir -p can ask for it a directory at a time.
 	if parentDir != "/" {
-		parent, err := resolve(repo, parentDir)
+		parent, err := resolve(library, parentDir)
 		if err != nil || !parent.isDir {
 			http.Error(w, "Parent directory does not exist", http.StatusNotFound)
 			return
 		}
 	}
 
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -468,7 +468,7 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 	// Receiving forty gigabytes and then declining them wastes the transfer on
 	// both ends, and the client learns nothing it could not have been told
 	// first.
-	if refuseOverQuota(w, repo, declaredLength(r)) {
+	if refuseOverQuota(w, library, declaredLength(r)) {
 		return
 	}
 
@@ -489,7 +489,7 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 			http.Error(w, errE2EEWriteByID, http.StatusForbidden)
 			return
 		}
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to store %s in repo %s", path, repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to store %s in library %s", path, library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -505,29 +505,29 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 	}
 	// And asked again with the size the bytes actually were, because a chunked
 	// request declared nothing and a lying one declared whatever it liked.
-	if refuseOverQuota(w, repo, m.FileSize) {
+	if refuseOverQuota(w, library, m.FileSize) {
 		return
 	}
 
 	manifestID, err := st.PutManifest(m)
 	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to store manifest for %s in repo %s", path, repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to store manifest for %s in library %s", path, library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+	if _, _, err := mutateTree(library, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.PutNode(root, path, objmgr.Node{
 			ID: manifestID, Type: store.NodeFile, Name: fileName,
 			Mtime: now, Mode: defaultFileMode,
 		}, now)
 	}); err != nil {
 		writeTreeErr(w, r, err, "Parent directory does not exist",
-			fmt.Sprintf("commit of %s in repo %s", path, repo.ID))
+			fmt.Sprintf("commit of %s in library %s", path, library.ID))
 		return
 	}
 
-	sendStatisticMsg(repo.ID, acct.Email, "web-file-upload", uint64(m.FileSize))
+	sendStatisticMsg(library.ID, acct.Email, "web-file-upload", uint64(m.FileSize))
 
 	// The ETag is the new content, so a client can record it without a
 	// follow-up GET — which is the whole point of returning it here.
@@ -547,12 +547,12 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, repoID, path string) {
 // disagreed with the chunks would produce a file whose recorded size is a lie,
 // and nothing downstream would notice — reads take their length from the
 // manifest, not from the chunks.
-func putEntryChunks(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, path, fileName string, ids []string) {
+func putEntryChunks(w http.ResponseWriter, r *http.Request, library *libmgr.Library, path, fileName string, ids []string) {
 	acct := middleware.GetAccount(r)
 
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -575,18 +575,18 @@ func putEntryChunks(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, 
 	// The chunks are already here, so this refusal costs no transfer — but it
 	// still has to happen before the head moves, because until it does the file
 	// does not exist and the bytes are the collector's to reclaim.
-	if refuseOverQuota(w, repo, size) {
+	if refuseOverQuota(w, library, size) {
 		return
 	}
 
-	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+	if _, _, err := mutateTree(library, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.PutNode(root, path, objmgr.Node{
 			ID: manifestID, Type: store.NodeFile, Name: fileName,
 			Mtime: now, Mode: defaultFileMode,
 		}, now)
 	}); err != nil {
 		writeTreeErr(w, r, err, "Parent directory does not exist",
-			fmt.Sprintf("commit of %s in repo %s", path, repo.ID))
+			fmt.Sprintf("commit of %s in library %s", path, library.ID))
 		return
 	}
 
@@ -662,15 +662,15 @@ func idStrings(ids []store.ID) []string {
 // produce exactly one commit at the end.
 //
 // See blocks.go for the surface as a whole.
-func putEntryBlocks(w http.ResponseWriter, r *http.Request, repoID, path string) {
+func putEntryBlocks(w http.ResponseWriter, r *http.Request, libraryID, path string) {
 	acct := middleware.GetAccount(r)
 
-	repo := entryRepo(w, repoID, acct.ID, true)
-	if repo == nil {
+	library := entryLibrary(w, libraryID, acct.ID, true)
+	if library == nil {
 		return
 	}
 
-	if !preconditionsHold(w, r, repo, path) {
+	if !preconditionsHold(w, r, library, path) {
 		return
 	}
 
@@ -680,7 +680,7 @@ func putEntryBlocks(w http.ResponseWriter, r *http.Request, repoID, path string)
 		return
 	}
 	if parentDir != "/" {
-		parent, err := resolve(repo, parentDir)
+		parent, err := resolve(library, parentDir)
 		if err != nil || !parent.isDir {
 			http.Error(w, "Parent directory does not exist", http.StatusNotFound)
 			return
@@ -694,7 +694,7 @@ func putEntryBlocks(w http.ResponseWriter, r *http.Request, repoID, path string)
 		return
 	}
 
-	putEntryChunks(w, r, repo, path, fileName, body.Blocks)
+	putEntryChunks(w, r, library, path, fileName, body.Blocks)
 }
 
 // boundedBody applies the upload size limit to a request body, answering the
@@ -792,7 +792,7 @@ func deleteEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	// If-Match on a delete means "only if this is still what I think it is",
 	// which is how a client avoids deleting an edit it never saw.
-	if !checkPreconditions(w, r, vars["repoid"], middleware.GetAccountID(r), path) {
+	if !checkPreconditions(w, r, vars["libraryid"], middleware.GetAccountID(r), path) {
 		return
 	}
 	setQuery(r, url.Values{"path": {path}})
@@ -829,7 +829,7 @@ func postEntry(w http.ResponseWriter, r *http.Request) {
 	// The precondition is about the source — what is being moved or copied —
 	// because that is the thing the caller looked at before deciding to act on
 	// it. On a copy it means "copy this version, not whatever it became".
-	if !checkPreconditions(w, r, vars["repoid"], middleware.GetAccountID(r), path) {
+	if !checkPreconditions(w, r, vars["libraryid"], middleware.GetAccountID(r), path) {
 		return
 	}
 

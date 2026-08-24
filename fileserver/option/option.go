@@ -132,7 +132,7 @@ var (
 	// Configurable because the failure mode on the client side is not fully
 	// known: a client that does not re-authenticate on 401 would stop working
 	// at the TTL, and an operator who hits that needs a way to raise it
-	// without a rebuild. Sync tokens (RepoUserToken) deliberately have no
+	// without a rebuild. Sync tokens (LibraryUserToken) deliberately have no
 	// equivalent — sync clients persist those and treat them as durable.
 	APITokenTTL time.Duration
 

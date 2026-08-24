@@ -8,46 +8,46 @@ import (
 
 // Event type strings exchanged over the wire.
 const (
-	EventTypeRepoUpdate = "repo-update"
-	EventTypeJWTExpired = "jwt-expired"
+	EventTypeLibraryUpdate = "library-update"
+	EventTypeJWTExpired    = "jwt-expired"
 )
 
 // Message is the wire format exchanged with clients. Both inbound
-// (subscribe/unsubscribe) and outbound (repo-update, jwt-expired) frames use
+// (subscribe/unsubscribe) and outbound (library-update, jwt-expired) frames use
 // it.
 type Message struct {
 	Type    string          `json:"type"`
 	Content json.RawMessage `json:"content"`
 }
 
-// RepoUpdateEvent is the payload for a repo-update message.
-type RepoUpdateEvent struct {
-	RepoID   string `json:"repo_id"`
-	CommitID string `json:"commit_id"`
+// LibraryUpdateEvent is the payload for a library-update message.
+type LibraryUpdateEvent struct {
+	LibraryID string `json:"library_id"`
+	CommitID  string `json:"commit_id"`
 }
 
-// NotifyRepoUpdate fans a repo-update event out to every client currently
-// subscribed to repoID. Delivery is best-effort and non-blocking: if a
+// NotifyLibraryUpdate fans a library-update event out to every client currently
+// subscribed to libraryID. Delivery is best-effort and non-blocking: if a
 // client's write channel is full, the message is dropped for that client
 // rather than back-pressuring the caller (which is the commit-write hot path).
-func NotifyRepoUpdate(repoID, commitID string) {
-	targets := snapshotSubscribers(repoID)
+func NotifyLibraryUpdate(libraryID, commitID string) {
+	targets := snapshotSubscribers(libraryID)
 	if len(targets) == 0 {
 		return
 	}
 
-	content, err := json.Marshal(&RepoUpdateEvent{RepoID: repoID, CommitID: commitID})
+	content, err := json.Marshal(&LibraryUpdateEvent{LibraryID: libraryID, CommitID: commitID})
 	if err != nil {
-		log.Warnf("notif: failed to encode repo-update event: %v", err)
+		log.Warnf("notif: failed to encode library-update event: %v", err)
 		return
 	}
-	msg := &Message{Type: EventTypeRepoUpdate, Content: content}
+	msg := &Message{Type: EventTypeLibraryUpdate, Content: content}
 
 	for _, c := range targets {
 		select {
 		case c.wch <- msg:
 		default:
-			log.Debugf("notif: dropping repo-update for slow client %d", c.ID)
+			log.Debugf("notif: dropping library-update for slow client %d", c.ID)
 		}
 	}
 }

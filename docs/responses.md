@@ -29,12 +29,12 @@ Paths below are written relative to the prefix **`/api/silo/v1`**, and the
 entries surface is:
 
 ```
-/api/silo/v1/repos/{repoid}/entries/{path}
+/api/silo/v1/libraries/{libraryid}/entries/{path}
                    ^^^^^^^^         ^^^^^^
                    library UUID     path within that library
 ```
 
-`{repoid}` is the library's UUID from `GET /repos`, never its name — names are
+`{libraryid}` is the library's UUID from `GET /libraries`, never its name — names are
 neither unique nor stable. `{path}` is relative to the library root and does
 not repeat the library; `entries/` with nothing after it is the root. The route
 is greedy (`{path:.*}`), so the whole remainder including slashes is one
@@ -45,10 +45,10 @@ variable.
 | code | means | notes |
 |---|---|---|
 | `200 OK` | done | |
-| `201 Created` | the entry, library or block now exists | `PUT repos/{repoid}/entries/{path}` (content or `?type=blocks`), `PUT repos/{repoid}/blocks/{sha1}`, `POST /repos`, and `POST entries/{path}` with `{"op":"copy"}`. Carries the new `ETag` on a write, so a client can record the version without a follow-up `GET`. A copy carries the *source's* `ETag`, because a copy shares its id — so a client that already holds the content knows it does |
-| `204 No Content` | the block is already here | `PUT repos/{repoid}/blocks/{sha1}` only. Answered before the body is read, so a client sending `Expect: 100-continue` never transfers it |
-| `206 Partial Content` | range request satisfied | `GET repos/{repoid}/entries/{path}` advertises `Accept-Ranges: bytes` and honours `Range`. An encrypted library cannot be ranged and says so up front with `Accept-Ranges: none` — see the note below |
-| `302 Found` | **not emitted on this lane.** `GET repos/{repoid}/entries/{path}` streams on the same response — one request, no redirect. The `/files/{token}/…` capability URL still exists; mint its token with `POST /access-tokens` and build the URL yourself |
+| `201 Created` | the entry, library or block now exists | `PUT libraries/{libraryid}/entries/{path}` (content or `?type=blocks`), `PUT libraries/{libraryid}/blocks/{sha1}`, `POST /libraries`, and `POST entries/{path}` with `{"op":"copy"}`. Carries the new `ETag` on a write, so a client can record the version without a follow-up `GET`. A copy carries the *source's* `ETag`, because a copy shares its id — so a client that already holds the content knows it does |
+| `204 No Content` | the block is already here | `PUT libraries/{libraryid}/blocks/{sha1}` only. Answered before the body is read, so a client sending `Expect: 100-continue` never transfers it |
+| `206 Partial Content` | range request satisfied | `GET libraries/{libraryid}/entries/{path}` advertises `Accept-Ranges: bytes` and honours `Range`. An encrypted library cannot be ranged and says so up front with `Accept-Ranges: none` — see the note below |
+| `302 Found` | **not emitted on this lane.** `GET libraries/{libraryid}/entries/{path}` streams on the same response — one request, no redirect. The `/files/{token}/…` capability URL still exists; mint its token with `POST /access-tokens` and build the URL yourself |
 | `304 Not Modified` | your `If-None-Match` matched | the entry is unchanged; use your copy |
 
 ### The client asked for something wrong
@@ -61,7 +61,7 @@ variable.
 | `404 Not Found` | the named thing does not exist — see the overload note below | depends on *what* was not found |
 | `405 Method Not Allowed` | wrong verb on a real path; carries `Allow` | the path was fine, the verb was not |
 | `409 Conflict` | a destination collision, or an attempt to create `/` — see the overload note below | rename and retry, or fix the client |
-| `410 Gone` | your `since` anchor, or the commit your page cursor was issued against, is no longer reachable | stop incremental sync and enumerate from scratch. `GET repos/{repoid}/changes` only |
+| `410 Gone` | your `since` anchor, or the commit your page cursor was issued against, is no longer reachable | stop incremental sync and enumerate from scratch. `GET libraries/{libraryid}/changes` only |
 | `412 Precondition Failed` | your `If-Match` did not match; someone else wrote first | re-read, reapply your change, write again. Not an error — it is the mechanism working |
 | `413 Payload Too Large` | body over the limit, or a batch over 1000 operations | do not retry; split it |
 | `416 Range Not Satisfiable` | the range is outside the entry | |
@@ -122,17 +122,17 @@ upstream's contract, not ours, and is not to be changed. See
 
 | what is missing | example body | correct handling |
 |---|---|---|
-| the **library** | `Repo not found` | it is genuinely gone; remove your local copy. This is how a deletion propagates |
+| the **library** | `Library not found` | it is genuinely gone; remove your local copy. This is how a deletion propagates |
 | the **parent directory** of a write | `Parent directory does not exist` | create the parents yourself. `PUT` is not `mkdir -p`, deliberately — a typo should not build a tree |
 | the **entry** | `Not found`, `File not found` | ordinary absence |
 
 Only the first is an instruction to delete anything. Since 0.4.3 the server
-says `Repo not found` **only** when the library genuinely has no row — a
+says `Library not found` **only** when the library genuinely has no row — a
 library whose storage is damaged answers `500` and an unreachable database
 answers `503`, both meaning *nothing was deleted, do not act on it*. Before
 0.4.3 all three arrived as `404`, so a server that lost an object told every
 client its libraries had been deleted. See
-`docs/bugs/fixed/missing-object-reports-repo-not-found.md`.
+`docs/bugs/fixed/missing-object-reports-library-not-found.md`.
 
 ### `500` — broken, or damaged
 
@@ -144,7 +144,7 @@ not delete — so this one is safe, but read the body before reporting it.
 
 ## A batch reports the operation, not just the failure
 
-`POST repos/{repoid}/batch` answers a failure with the status code the failing
+`POST libraries/{libraryid}/batch` answers a failure with the status code the failing
 operation would have answered on its own — `404` for a missing source, `409` for
 a destructive collision, `424` for blocks that are not up — and a body naming
 where it happened:
@@ -203,12 +203,12 @@ return them**.
 | `441` | `seafHTTPResExists` / `seafHTTPResNotExists` | already exists / does not exist (yes, the same number for both) |
 | `442` | `seafHTTPResTooLarge` | file too large |
 | `443` | `seafHTTPResNoQuota` | over quota |
-| `444` | `seafHTTPResRepoDeleted` | library deleted |
-| `445` | `seafHTTPResRepoCorrupted` | library corrupted |
+| `444` | `seafHTTPResLibraryDeleted` | library deleted |
+| `445` | `seafHTTPResLibraryCorrupted` | library corrupted |
 | `446` | `seafHTTPResBlockMissing` | block missing |
 
 The legacy upload and download paths in `fileop.go` also still answer `400`
-"Bad repo id" where the Silo lane would answer `404`/`500`, and `500` for write
+"Bad library id" where the Silo lane would answer `404`/`500`, and `500` for write
 contention where the Silo lane answers `503`. Both are known and deliberate:
 those paths are entangled with the `44x` codes above, and changing them needs a
 Seafile client to test against.

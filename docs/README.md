@@ -11,6 +11,29 @@ never written, and a description read as a plan gets reimplemented.
 - **record** — done, superseded, or decided. Kept because the reasoning is why
   the code looks the way it does.
 
+## One word for the thing an account owns
+
+It is a **library**. Not a repo, not a repository, not a mount — a library, in
+the code, in the schema, on the wire, in the CLI and in every document here.
+
+It was both for a long time. The prose in `fileserver/api/api.go` said library
+in every sentence while the struct beside the sentence was called `Repo` and
+the route under it was `/repos`, which is the Seafile inheritance showing
+through. That is settled: `/api/silo/v1/libraries/{libraryid}`, `library_id` in
+every payload, `Library*` tables, and `silo library create` on the CLI.
+
+Two consequences worth knowing before you name something:
+
+- **The manager package is `libmgr`**, not `librarymgr`, matching `objmgr` and
+  `authmgr`. The abbreviation is house style for a manager package and is
+  deliberate rather than an oversight.
+- **`internal/lexicon` enforces this with a test.** Nothing breaks when a
+  variable is called `repoID`, which is exactly why nothing else catches it. If
+  the guard fails, the fix is the name, not the guard — except for another
+  product's names, which are exempt by token: Seafile shipped
+  `Seafile-Repo-Token` and an `/api2/repos` lane, and rewriting those would
+  document a header that never existed.
+
 ## Start here
 
 | if you are | read |

@@ -19,8 +19,8 @@ import (
 // Views
 const (
 	viewLogin            = "login"
-	viewRepos            = "repos"
-	viewNewRepo          = "new_repo"
+	viewLibraries        = "libraries"
+	viewNewLibrary       = "new_library"
 	viewConfirm          = "confirm_delete"
 	viewBrowse           = "browse"
 	viewUpload           = "upload"
@@ -43,12 +43,12 @@ var (
 
 // Messages
 type loginDoneMsg struct{ err error }
-type reposLoadedMsg struct {
-	repos []client.Repo
-	err   error
+type librariesLoadedMsg struct {
+	libraries []client.Library
+	err       error
 }
-type repoCreatedMsg struct{ err error }
-type repoDeletedMsg struct{ err error }
+type libraryCreatedMsg struct{ err error }
+type libraryDeletedMsg struct{ err error }
 type dirLoadedMsg struct {
 	entries []client.DirEntry
 	err     error
@@ -81,26 +81,26 @@ type model struct {
 	passwordInput textinput.Model
 	loginFocus    int // 0=email, 1=password
 
-	// Repos
-	repos       []client.Repo
-	cursor      int
-	reposOffset int    // index of the first library drawn
-	message     string // status message
+	// Libraries
+	libraries       []client.Library
+	cursor          int
+	librariesOffset int    // index of the first library drawn
+	message         string // status message
 	// result is what to say once the reload a write kicks off has finished.
 	// Put in message directly it would be gone before it was read: the reload
 	// lands a moment later and clears the row it was written to.
 	result string
 
-	// New repo
-	newRepoInput textinput.Model
+	// New library
+	newLibraryInput textinput.Model
 
 	// Browse
-	browseRepoID   string
-	browseRepoName string
-	browsePath     string
-	dirEntries     []client.DirEntry
-	browseCursor   int
-	browseOffset   int // index of the first entry drawn
+	browseLibraryID   string
+	browseLibraryName string
+	browsePath        string
+	dirEntries        []client.DirEntry
+	browseCursor      int
+	browseOffset      int // index of the first entry drawn
 
 	// Upload
 	uploadInput textinput.Model
@@ -119,8 +119,8 @@ type model struct {
 	movePickerOffset int // index of the first directory drawn
 
 	// Pending download (for overwrite confirmation)
-	pendingDownloadRepoPath  string
-	pendingDownloadLocalPath string
+	pendingDownloadLibraryPath string
+	pendingDownloadLocalPath   string
 
 	// Auto-login from env
 	autoEmail    string
@@ -139,7 +139,7 @@ func (m model) fetchServerInfo() tea.Msg {
 	return serverInfoMsg{version: info.Version}
 }
 
-// entryPath builds a full repo path from the current browse path and an entry name.
+// entryPath builds a full library path from the current browse path and an entry name.
 func (m model) entryPath(name string) string {
 	return path.Join(m.browsePath, name)
 }
@@ -155,9 +155,9 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 	password.EchoMode = textinput.EchoPassword
 	password.CharLimit = 255
 
-	newRepo := textinput.New()
-	newRepo.Placeholder = "Library name"
-	newRepo.CharLimit = 255
+	newLibrary := textinput.New()
+	newLibrary.Placeholder = "Library name"
+	newLibrary.CharLimit = 255
 
 	upload := textinput.New()
 	upload.Placeholder = "/path/to/local/file-or-directory"
@@ -172,17 +172,17 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 	renameIn.CharLimit = 255
 
 	m := model{
-		api:           client.NewClient(serverURL),
-		view:          viewLogin,
-		emailInput:    email,
-		passwordInput: password,
-		newRepoInput:  newRepo,
-		uploadInput:   upload,
-		mkdirInput:    mkdirIn,
-		renameInput:   renameIn,
-		autoEmail:     autoEmail,
-		autoPassword:  autoPassword,
-		serverURL:     serverURL,
+		api:             client.NewClient(serverURL),
+		view:            viewLogin,
+		emailInput:      email,
+		passwordInput:   password,
+		newLibraryInput: newLibrary,
+		uploadInput:     upload,
+		mkdirInput:      mkdirIn,
+		renameInput:     renameIn,
+		autoEmail:       autoEmail,
+		autoPassword:    autoPassword,
+		serverURL:       serverURL,
 		// A usable size until the first WindowSizeMsg lands, so the opening
 		// frame is not laid out against a zero-sized terminal.
 		width:  80,
@@ -216,7 +216,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q":
 			// Not on the login view: "q" is a legal character in an email
 			// address, and the form has no other way to type one.
-			if m.view == viewRepos || m.view == viewBrowse {
+			if m.view == viewLibraries || m.view == viewBrowse {
 				return m, tea.Quit
 			}
 		}
@@ -238,10 +238,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.view {
 	case viewLogin:
 		next, cmd = m.updateLogin(msg)
-	case viewRepos:
-		next, cmd = m.updateRepos(msg)
-	case viewNewRepo:
-		next, cmd = m.updateNewRepo(msg)
+	case viewLibraries:
+		next, cmd = m.updateLibraries(msg)
+	case viewNewLibrary:
+		next, cmd = m.updateNewLibrary(msg)
 	case viewConfirm:
 		next, cmd = m.updateConfirm(msg)
 	case viewBrowse:
@@ -306,9 +306,9 @@ func (m model) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = errorStyle.Render(msg.err.Error())
 			return m, nil
 		}
-		m.view = viewRepos
+		m.view = viewLibraries
 		m.message = ""
-		return m, tea.Batch(m.loadRepos, m.fetchServerInfo)
+		return m, tea.Batch(m.loadLibraries, m.fetchServerInfo)
 	}
 
 	var cmds []tea.Cmd
@@ -332,40 +332,40 @@ func (m model) renderLogin() string {
 	return m.frame(header, body, m.footer(headerRows, loginHelp))
 }
 
-// --- Repos View ---
+// --- Libraries View ---
 
-func (m model) loadRepos() tea.Msg {
-	repos, err := m.api.ListRepos()
-	return reposLoadedMsg{repos: repos, err: err}
+func (m model) loadLibraries() tea.Msg {
+	libraries, err := m.api.ListLibraries()
+	return librariesLoadedMsg{libraries: libraries, err: err}
 }
 
-func (m model) updateRepos(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m model) updateLibraries(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if c, o, ok := moveCursor(msg.String(), m.cursor, m.reposOffset, len(m.repos), m.reposRows()); ok {
-			m.cursor, m.reposOffset = c, o
+		if c, o, ok := moveCursor(msg.String(), m.cursor, m.librariesOffset, len(m.libraries), m.librariesRows()); ok {
+			m.cursor, m.librariesOffset = c, o
 			return m, nil
 		}
 		switch msg.String() {
 		case "n":
-			m.view = viewNewRepo
-			m.newRepoInput.SetValue("")
-			m.newRepoInput.Focus()
+			m.view = viewNewLibrary
+			m.newLibraryInput.SetValue("")
+			m.newLibraryInput.Focus()
 			m.message = ""
 			return m, textinput.Blink
 		case "d":
-			if len(m.repos) > 0 {
+			if len(m.libraries) > 0 {
 				m.view = viewConfirm
 				m.message = ""
 			}
 		case "r":
 			m.message = "Refreshing..."
-			return m, m.loadRepos
+			return m, m.loadLibraries
 		case "enter":
-			if len(m.repos) > 0 {
-				repo := m.repos[m.cursor]
-				m.browseRepoID = repo.ID
-				m.browseRepoName = repo.Name
+			if len(m.libraries) > 0 {
+				library := m.libraries[m.cursor]
+				m.browseLibraryID = library.ID
+				m.browseLibraryName = library.Name
 				m.browsePath = "/"
 				m.browseCursor = 0
 				m.view = viewBrowse
@@ -374,34 +374,34 @@ func (m model) updateRepos(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case reposLoadedMsg:
+	case librariesLoadedMsg:
 		if msg.err != nil {
 			m.message = errorStyle.Render(msg.err.Error())
 			return m, nil
 		}
-		m.repos = msg.repos
+		m.libraries = msg.libraries
 		m.message, m.result = m.result, ""
-		if m.cursor >= len(m.repos) {
-			m.cursor = max(0, len(m.repos)-1)
+		if m.cursor >= len(m.libraries) {
+			m.cursor = max(0, len(m.libraries)-1)
 		}
 	}
 
 	return m, nil
 }
 
-func (m model) renderRepos() string {
-	from, to, counter := window(m.reposOffset, len(m.repos), m.reposRows())
+func (m model) renderLibraries() string {
+	from, to, counter := window(m.librariesOffset, len(m.libraries), m.librariesRows())
 	header := []string{titleStyle.Render("Libraries") + counter, ""}
 
 	var body []string
-	if len(m.repos) == 0 {
+	if len(m.libraries) == 0 {
 		body = append(body, dimStyle.Render("  No libraries yet. Press 'n' to create one."))
 	}
 	for i := from; i < to; i++ {
-		repo := m.repos[i]
+		library := m.libraries[i]
 		cursor := "  "
-		name := repo.Name
-		if repo.Name == "" {
+		name := library.Name
+		if library.Name == "" {
 			name = "(unnamed)"
 		}
 		if i == m.cursor {
@@ -409,59 +409,59 @@ func (m model) renderRepos() string {
 			name = selectedStyle.Render(name)
 		}
 		ts := ""
-		if repo.UpdateTime > 0 {
-			ts = dimStyle.Render(" " + time.Unix(repo.UpdateTime, 0).Format("2006-01-02 15:04"))
+		if library.UpdateTime > 0 {
+			ts = dimStyle.Render(" " + time.Unix(library.UpdateTime, 0).Format("2006-01-02 15:04"))
 		}
 		encrypted := ""
-		if repo.Encrypted {
+		if library.Encrypted {
 			encrypted = dimStyle.Render(" [encrypted]")
 		}
-		body = append(body, cursor+name+ts+encrypted, dimStyle.Render("    "+repo.ID))
+		body = append(body, cursor+name+ts+encrypted, dimStyle.Render("    "+library.ID))
 	}
 
-	return m.frame(header, body, m.footer(headerRows, reposHelp))
+	return m.frame(header, body, m.footer(headerRows, librariesHelp))
 }
 
-// --- New Repo View ---
+// --- New Library View ---
 
-func (m model) updateNewRepo(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m model) updateNewLibrary(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc":
-			m.view = viewRepos
+			m.view = viewLibraries
 			return m, nil
 		case "enter":
-			name := m.newRepoInput.Value()
+			name := m.newLibraryInput.Value()
 			if name == "" {
 				m.message = "Name is required"
 				return m, nil
 			}
 			m.message = "Creating..."
 			return m, func() tea.Msg {
-				_, err := m.api.CreateRepo(name)
-				return repoCreatedMsg{err: err}
+				_, err := m.api.CreateLibrary(name)
+				return libraryCreatedMsg{err: err}
 			}
 		}
 
-	case repoCreatedMsg:
+	case libraryCreatedMsg:
 		if msg.err != nil {
 			m.message = errorStyle.Render(msg.err.Error())
 			return m, nil
 		}
-		m.view = viewRepos
+		m.view = viewLibraries
 		m.result = successStyle.Render("Library created")
-		return m, m.loadRepos
+		return m, m.loadLibraries
 	}
 
 	var cmd tea.Cmd
-	m.newRepoInput, cmd = m.newRepoInput.Update(msg)
+	m.newLibraryInput, cmd = m.newLibraryInput.Update(msg)
 	return m, cmd
 }
 
-func (m model) renderNewRepo() string {
+func (m model) renderNewLibrary() string {
 	header := []string{titleStyle.Render("Create Library"), ""}
-	body := []string{"Name:", m.newRepoInput.View()}
+	body := []string{"Name:", m.newLibraryInput.View()}
 	return m.frame(header, body, m.footer(headerRows, createHelp))
 }
 
@@ -472,26 +472,26 @@ func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "y", "Y":
-			repo := m.repos[m.cursor]
+			library := m.libraries[m.cursor]
 			m.message = "Deleting..."
 			return m, func() tea.Msg {
-				err := m.api.DeleteRepo(repo.ID)
-				return repoDeletedMsg{err: err}
+				err := m.api.DeleteLibrary(library.ID)
+				return libraryDeletedMsg{err: err}
 			}
 		case "n", "N", "esc":
-			m.view = viewRepos
+			m.view = viewLibraries
 			return m, nil
 		}
 
-	case repoDeletedMsg:
+	case libraryDeletedMsg:
 		if msg.err != nil {
-			m.view = viewRepos
+			m.view = viewLibraries
 			m.message = errorStyle.Render(msg.err.Error())
 			return m, nil
 		}
-		m.view = viewRepos
+		m.view = viewLibraries
 		m.result = successStyle.Render("Library deleted")
-		return m, m.loadRepos
+		return m, m.loadLibraries
 	}
 
 	return m, nil
@@ -499,8 +499,8 @@ func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) renderConfirm() string {
 	name := "(unnamed)"
-	if m.cursor < len(m.repos) && m.repos[m.cursor].Name != "" {
-		name = m.repos[m.cursor].Name
+	if m.cursor < len(m.libraries) && m.libraries[m.cursor].Name != "" {
+		name = m.libraries[m.cursor].Name
 	}
 	header := []string{titleStyle.Render("Delete Library"), ""}
 	body := []string{fmt.Sprintf("Are you sure you want to delete %q?", name)}
@@ -510,7 +510,7 @@ func (m model) renderConfirm() string {
 // --- Browse View ---
 
 func (m model) loadDir() tea.Msg {
-	entries, err := m.api.ListDir(m.browseRepoID, m.browsePath)
+	entries, err := m.api.ListDir(m.browseLibraryID, m.browsePath)
 	return dirLoadedMsg{entries: entries, err: err}
 }
 
@@ -533,12 +533,12 @@ func (m model) updateBrowse(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.loadDir
 				}
 				// File — download
-				repoPath := m.entryPath(entry.Name)
+				libraryPath := m.entryPath(entry.Name)
 				localPath := entry.Name
 
 				// Check if local file exists
 				if _, err := os.Stat(localPath); err == nil {
-					m.pendingDownloadRepoPath = repoPath
+					m.pendingDownloadLibraryPath = libraryPath
 					m.pendingDownloadLocalPath = localPath
 					m.view = viewConfirmOverwrite
 					m.message = ""
@@ -546,9 +546,9 @@ func (m model) updateBrowse(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				m.message = "Downloading..."
-				repoID := m.browseRepoID
+				libraryID := m.browseLibraryID
 				return m, func() tea.Msg {
-					err := m.api.DownloadFile(repoID, repoPath, localPath)
+					err := m.api.DownloadFile(libraryID, libraryPath, localPath)
 					return downloadDoneMsg{err: err}
 				}
 			}
@@ -574,9 +574,9 @@ func (m model) updateBrowse(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.movePickerCursor = 0
 				m.view = viewMove
 				m.message = ""
-				repoID := m.browseRepoID
+				libraryID := m.browseLibraryID
 				return m, func() tea.Msg {
-					entries, err := m.api.ListDir(repoID, "/")
+					entries, err := m.api.ListDir(libraryID, "/")
 					return movePickerLoadedMsg{dirs: entries, err: err}
 				}
 			}
@@ -600,7 +600,7 @@ func (m model) updateBrowse(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.loadDir
 			}
 		case "esc":
-			m.view = viewRepos
+			m.view = viewLibraries
 			m.message = ""
 			return m, nil
 		case "u":
@@ -636,7 +636,7 @@ func (m model) updateBrowse(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) renderBrowse() string {
 	from, to, counter := window(m.browseOffset, len(m.dirEntries), m.browseRows())
-	header := []string{titleStyle.Render(m.browseRepoName+" "+m.browsePath) + counter, ""}
+	header := []string{titleStyle.Render(m.browseLibraryName+" "+m.browsePath) + counter, ""}
 
 	var body []string
 	if len(m.dirEntries) == 0 {
@@ -694,18 +694,18 @@ func (m model) updateUpload(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			repoID := m.browseRepoID
+			libraryID := m.browseLibraryID
 			parentDir := m.browsePath
 			if info.IsDir() {
 				m.message = "Uploading directory..."
 				return m, func() tea.Msg {
-					up, err := m.api.UploadDir(repoID, parentDir, localPath, nil)
+					up, err := m.api.UploadDir(libraryID, parentDir, localPath, nil)
 					return uploadDoneMsg{err: err, summary: uploadSummary(up)}
 				}
 			}
 			m.message = "Uploading..."
 			return m, func() tea.Msg {
-				err := m.api.UploadFile(repoID, parentDir, localPath)
+				err := m.api.UploadFile(libraryID, parentDir, localPath)
 				return uploadDoneMsg{err: err, summary: "File uploaded"}
 			}
 		}
@@ -726,7 +726,7 @@ func (m model) updateUpload(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderUpload() string {
-	header := []string{titleStyle.Render("Upload to " + m.browseRepoName + " " + m.browsePath), ""}
+	header := []string{titleStyle.Render("Upload to " + m.browseLibraryName + " " + m.browsePath), ""}
 	body := []string{
 		"Local file or directory:",
 		m.uploadInput.View(),
@@ -779,10 +779,10 @@ func (m model) updateMkdir(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			fullPath := m.entryPath(name)
-			repoID := m.browseRepoID
+			libraryID := m.browseLibraryID
 			m.message = "Creating directory..."
 			return m, func() tea.Msg {
-				err := m.api.Mkdir(repoID, fullPath)
+				err := m.api.Mkdir(libraryID, fullPath)
 				return mkdirDoneMsg{err: err}
 			}
 		}
@@ -803,7 +803,7 @@ func (m model) updateMkdir(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderMkdir() string {
-	header := []string{titleStyle.Render("Create directory in " + m.browseRepoName + " " + m.browsePath), ""}
+	header := []string{titleStyle.Render("Create directory in " + m.browseLibraryName + " " + m.browsePath), ""}
 	body := []string{"Directory name:", m.mkdirInput.View()}
 	return m.frame(header, body, m.footer(headerRows, createHelp))
 }
@@ -817,10 +817,10 @@ func (m model) updateConfirmDeleteFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "y", "Y":
 			entry := m.dirEntries[m.browseCursor]
 			filePath := m.entryPath(entry.Name)
-			repoID := m.browseRepoID
+			libraryID := m.browseLibraryID
 			m.message = "Deleting..."
 			return m, func() tea.Msg {
-				err := m.api.DeleteFile(repoID, filePath)
+				err := m.api.DeleteFile(libraryID, filePath)
 				return deleteFileDoneMsg{err: err}
 			}
 		case "n", "N", "esc":
@@ -869,10 +869,10 @@ func (m model) updateRename(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			entry := m.dirEntries[m.browseCursor]
 			filePath := m.entryPath(entry.Name)
-			repoID := m.browseRepoID
+			libraryID := m.browseLibraryID
 			m.message = "Renaming..."
 			return m, func() tea.Msg {
-				err := m.api.RenameFile(repoID, filePath, newName)
+				err := m.api.RenameFile(libraryID, filePath, newName)
 				return renameDoneMsg{err: err}
 			}
 		}
@@ -905,10 +905,10 @@ func (m model) renderRename() string {
 // --- Move View (remote directory picker) ---
 
 func (m model) loadMoveDirs() tea.Cmd {
-	repoID := m.browseRepoID
+	libraryID := m.browseLibraryID
 	pickerPath := m.movePickerPath
 	return func() tea.Msg {
-		entries, err := m.api.ListDir(repoID, pickerPath)
+		entries, err := m.api.ListDir(libraryID, pickerPath)
 		return movePickerLoadedMsg{dirs: entries, err: err}
 	}
 }
@@ -944,12 +944,12 @@ func (m model) updateMove(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.message = errorStyle.Render("Cannot move to same location")
 				return m, nil
 			}
-			repoID := m.browseRepoID
+			libraryID := m.browseLibraryID
 			src := m.moveSrcPath
 			m.view = viewBrowse
 			m.message = "Moving..."
 			return m, func() tea.Msg {
-				err := m.api.MoveFile(repoID, src, dst)
+				err := m.api.MoveFile(libraryID, src, dst)
 				return moveDoneMsg{err: err}
 			}
 		case "esc":
@@ -1016,13 +1016,13 @@ func (m model) updateConfirmOverwrite(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "y", "Y":
-			repoID := m.browseRepoID
-			repoPath := m.pendingDownloadRepoPath
+			libraryID := m.browseLibraryID
+			libraryPath := m.pendingDownloadLibraryPath
 			localPath := m.pendingDownloadLocalPath
 			m.view = viewBrowse
 			m.message = "Downloading..."
 			return m, func() tea.Msg {
-				err := m.api.DownloadFile(repoID, repoPath, localPath)
+				err := m.api.DownloadFile(libraryID, libraryPath, localPath)
 				return downloadDoneMsg{err: err}
 			}
 		case "n", "N", "esc":
@@ -1046,14 +1046,14 @@ func (m model) renderConfirmOverwrite() string {
 // the terminal width, and how many rows that takes decides how many rows are
 // left for the list above it.
 var (
-	loginHelp   = []string{"tab: switch field", "enter: login", "ctrl+c: quit"}
-	reposHelp   = []string{"j/k: navigate", "g/G: top/bottom", "n: new", "d: delete", "r: refresh", "q: quit"}
-	browseHelp  = []string{"j/k: navigate", "g/G: top/bottom", "enter: open/download", "u: upload", "m: mkdir", "r: rename", "v: move", "x: delete", "esc: back", "q: quit"}
-	moveHelp    = []string{"j/k: navigate", "enter: open dir", "space: move here", "backspace: up", "esc: cancel"}
-	confirmHelp = []string{"y: yes", "n: no"}
-	createHelp  = []string{"enter: create", "esc: cancel"}
-	uploadHelp  = []string{"enter: upload", "esc: cancel"}
-	renameHelp  = []string{"enter: rename", "esc: cancel"}
+	loginHelp     = []string{"tab: switch field", "enter: login", "ctrl+c: quit"}
+	librariesHelp = []string{"j/k: navigate", "g/G: top/bottom", "n: new", "d: delete", "r: refresh", "q: quit"}
+	browseHelp    = []string{"j/k: navigate", "g/G: top/bottom", "enter: open/download", "u: upload", "m: mkdir", "r: rename", "v: move", "x: delete", "esc: back", "q: quit"}
+	moveHelp      = []string{"j/k: navigate", "enter: open dir", "space: move here", "backspace: up", "esc: cancel"}
+	confirmHelp   = []string{"y: yes", "n: no"}
+	createHelp    = []string{"enter: create", "esc: cancel"}
+	uploadHelp    = []string{"enter: upload", "esc: cancel"}
+	renameHelp    = []string{"enter: rename", "esc: cancel"}
 )
 
 // wrapHelp packs bindings into lines no wider than width, breaking only
@@ -1079,9 +1079,9 @@ func wrapHelp(items []string, width int) []string {
 // How many rows each screen spends on chrome above its body. The renderers
 // and the scroll bookkeeping both read these, so both compute the same window.
 const (
-	headerRows     = 2 // title, blank
-	moveHeaderRows = 3 // title, destination, blank
-	repoItemRows   = 2 // name line, id line
+	headerRows      = 2 // title, blank
+	moveHeaderRows  = 3 // title, destination, blank
+	libraryItemRows = 2 // name line, id line
 )
 
 // bodyRows is what is left of the terminal once a screen's header and footer
@@ -1096,8 +1096,8 @@ func (m model) bodyRows(header, footer int) int {
 }
 
 // How many list items fit on each of the scrolling screens.
-func (m model) reposRows() int {
-	return max(1, m.bodyRows(headerRows, len(m.footer(headerRows, reposHelp)))/repoItemRows)
+func (m model) librariesRows() int {
+	return max(1, m.bodyRows(headerRows, len(m.footer(headerRows, librariesHelp)))/libraryItemRows)
 }
 
 func (m model) browseRows() int {
@@ -1133,7 +1133,7 @@ func scrollTo(offset, cursor, n, rows int) int {
 // the current terminal size. Update runs it after each message, so growing
 // the window, reloading a directory and moving the cursor all agree.
 func (m model) syncScroll() model {
-	m.reposOffset = scrollTo(m.reposOffset, m.cursor, len(m.repos), m.reposRows())
+	m.librariesOffset = scrollTo(m.librariesOffset, m.cursor, len(m.libraries), m.librariesRows())
 	m.browseOffset = scrollTo(m.browseOffset, m.browseCursor, len(m.dirEntries), m.browseRows())
 	m.movePickerOffset = scrollTo(m.movePickerOffset, m.movePickerCursor, len(m.movePickerDirs), m.moveRows())
 	return m
@@ -1261,10 +1261,10 @@ func (m model) View() string {
 	switch m.view {
 	case viewLogin:
 		return m.renderLogin()
-	case viewRepos:
-		return m.renderRepos()
-	case viewNewRepo:
-		return m.renderNewRepo()
+	case viewLibraries:
+		return m.renderLibraries()
+	case viewNewLibrary:
+		return m.renderNewLibrary()
 	case viewConfirm:
 		return m.renderConfirm()
 	case viewBrowse:

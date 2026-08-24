@@ -30,7 +30,7 @@ of what follows.
 
 ## SHA-1 is the address, not a checksum
 
-A block's name *is* the SHA-1 of its bytes — `/repo/{repoid}/block/{id}` where
+A block's name *is* the SHA-1 of its bytes — `/repo/{id}/block/{id}` where
 `{id}` is 40 hex characters, which is also its path on disk. Three properties
 fall out of that and are not separable from it:
 
@@ -135,7 +135,7 @@ protocol and negotiate `pack-blocks` later.
 
 ## Delta endpoint
 
-`GET /api/silo/v1/repos/{repoid}/changes?since={commit}` returns everything that
+`GET /api/silo/v1/libraries/{libraryid}/changes?since={commit}` returns everything that
 differs between a commit and the current head, plus the new anchor.
 
 It exists so a sync client doesn't have to replicate the object store to learn
@@ -158,7 +158,7 @@ content.
 
 Two details are not obvious from the response shape:
 
-- **The first anchor comes from the library listing.** `GET /api/silo/v1/repos`
+- **The first anchor comes from the library listing.** `GET /api/silo/v1/libraries`
   returns `head_commit_id` per library. Without it a client's opening move is to
   enumerate a library with no way to name the state it just enumerated, so its
   first delta call has nothing to pass as `since`.
@@ -171,7 +171,7 @@ Two details are not obvious from the response shape:
 
 `/api/silo/v1` grew endpoint by endpoint and was not internally consistent:
 verbs in paths (`mkdir`, `rename`, `move`, `download`) mixed with nouns
-(`repos`, `dir`, `file`); the same resource under two names (`file` for DELETE,
+(`libraries`, `dir`, `file`); the same resource under two names (`file` for DELETE,
 `download` for GET); the path passed as `?path=`, in a JSON body, or not at all;
 a trailing slash on `dir/` and nowhere else.
 
@@ -179,11 +179,11 @@ The consistent shape is one addressable noun with HTTP methods as the verbs,
 and that is what `entries` now is:
 
 ```
-GET    /api/silo/v1/repos/{repo}/entries/{path}   dir → listing, file → bytes
-HEAD   /api/silo/v1/repos/{repo}/entries/{path}   metadata only
-PUT    /api/silo/v1/repos/{repo}/entries/{path}   create dir (?type=dir)
-DELETE /api/silo/v1/repos/{repo}/entries/{path}
-POST   /api/silo/v1/repos/{repo}/entries/{path}   {"op":"move","to":"/x/y"}
+GET    /api/silo/v1/libraries/{library}/entries/{path}   dir → listing, file → bytes
+HEAD   /api/silo/v1/libraries/{library}/entries/{path}   metadata only
+PUT    /api/silo/v1/libraries/{library}/entries/{path}   create dir (?type=dir)
+DELETE /api/silo/v1/libraries/{library}/entries/{path}
+POST   /api/silo/v1/libraries/{library}/entries/{path}   {"op":"move","to":"/x/y"}
 ```
 
 Rename disappears — renaming is moving. Files and directories share a noun

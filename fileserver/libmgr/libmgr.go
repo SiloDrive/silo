@@ -1,5 +1,5 @@
-// Package repomgr manages repo objects and file operations in repos.
-package repomgr
+// Package libmgr manages library objects and file operations in libraries.
+package libmgr
 
 import (
 	"context"
@@ -22,18 +22,18 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Repo status
+// Library status
 const (
-	RepoStatusNormal = iota
-	RepoStatusReadOnly
-	NRepoStatus
+	LibrariestatusNormal = iota
+	LibrariestatusReadOnly
+	NLibrariestatus
 )
 
-// Repo contains information about a repo.
-type Repo struct {
+// Library contains information about a library.
+type Library struct {
 	ID string
 	// Name, LastModifier and LastModificationTime come from the catalog, not
-	// from the head commit. See the RepoInfo comment in dbutil/schema.go for
+	// from the head commit. See the LibraryInfo comment in dbutil/schema.go for
 	// why that inversion is forced rather than tidier: they are facts the
 	// server observed, and on an E2EE library it could not read them out of a
 	// commit even if it wanted to.
@@ -46,8 +46,8 @@ type Repo struct {
 	RootID       string
 	IsCorrupted  bool
 
-	// Set when repo is virtual
-	VirtualInfo *VRepoInfo
+	// Set when library is virtual
+	VirtualInfo *VLibraryInfo
 
 	// ID for fs and block store
 	StoreID string
@@ -61,19 +61,19 @@ type Repo struct {
 	Format Format
 }
 
-// VRepoInfo contains virtual repo information.
-type VRepoInfo struct {
-	RepoID       string
-	OriginRepoID string
-	Path         string
-	BaseCommitID string
+// VLibraryInfo contains virtual library information.
+type VLibraryInfo struct {
+	LibraryID       string
+	OriginLibraryID string
+	Path            string
+	BaseCommitID    string
 }
 
 var readDB *sql.DB  // read handle
 var writeDB *sql.DB // write handle
 var dataDir string  // where object stores live
 
-// Init initialize status of repomgr package.
+// Init initialize status of libmgr package.
 //
 // dataDir is here because creating a library now writes objects as well as
 // rows: a store-v2 library's first commit and its empty root are real objects
@@ -107,166 +107,166 @@ func OpenStore(storeID string, f Format) (*objmgr.Store, error) {
 	})
 }
 
-// Store is this library's objects, opened once per loaded Repo.
+// Store is this library's objects, opened once per loaded Library.
 //
 // Every caller wanted the same two fields — StoreID and Format — and opening
 // from those by hand at each site made the "storeID rather than the library
 // id" rule above something six call sites had to remember, where writing
-// repo.ID instead would have looked entirely reasonable. Now it is remembered
+// library.ID instead would have looked entirely reasonable. Now it is remembered
 // in one place.
 //
 // Opened once because a Store is not free: it builds an object store per
 // object type and each of those mkdirs its directories, so a request that
 // resolved a path, read the file and wrote a commit paid for four or five
-// identical handles. A Repo is a per-request value — nothing caches one, and
+// identical handles. A Library is a per-request value — nothing caches one, and
 // GetWithReason mints a fresh one per call — so the handle lives exactly as
 // long as the request that asked for it, and is used by the one goroutine
 // serving it.
-func (repo *Repo) Store() (*objmgr.Store, error) {
-	if repo.store != nil {
-		return repo.store, nil
+func (library *Library) Store() (*objmgr.Store, error) {
+	if library.store != nil {
+		return library.store, nil
 	}
-	st, err := OpenStore(repo.StoreID, repo.Format)
+	st, err := OpenStore(library.StoreID, library.Format)
 	if err != nil {
 		return nil, err
 	}
-	repo.store = st
+	library.store = st
 	return st, nil
 }
 
-// A repo can fail to load for four unrelated reasons, and only one of them is
+// A library can fail to load for four unrelated reasons, and only one of them is
 // a statement about the request. Collapsing them — which returning a bare nil
 // does — is how a server that has lost an object comes to answer 404, and a
 // 404 tells a sync client the library was deleted and its local copy should
 // go with it. The copy it would delete is the one that could have restored
 // the object.
 var (
-	// ErrRepoNotFound means there is no such library. This is the only one of
+	// ErrLibraryNotFound means there is no such library. This is the only one of
 	// the four that a client may act on by forgetting the library.
-	ErrRepoNotFound = errors.New("no such library")
+	ErrLibraryNotFound = errors.New("no such library")
 
-	// ErrRepoCorrupted means the library exists but the server cannot read its
+	// ErrLibraryCorrupted means the library exists but the server cannot read its
 	// head: an empty commit id in Branch, or a commit object the store has
 	// lost. Nothing has been deleted, and the client's copy may be the only
 	// intact one left.
-	ErrRepoCorrupted = errors.New("library storage is damaged")
+	ErrLibraryCorrupted = errors.New("library storage is damaged")
 
-	// ErrRepoUnavailable means the database could not be read, so nothing is
+	// ErrLibraryUnavailable means the database could not be read, so nothing is
 	// known about the library either way. Expected to clear on its own.
-	ErrRepoUnavailable = errors.New("library metadata is unavailable")
+	ErrLibraryUnavailable = errors.New("library metadata is unavailable")
 )
 
-// Get returns Repo object by repo ID, or nil if it could not be read for any
+// Get returns Library object by library ID, or nil if it could not be read for any
 // of the four reasons above.
 //
 // Anything answering a client should call GetWithReason instead: which failure
 // happened decides what the client is told, and this signature throws that
 // away.
-func Get(id string) *Repo {
-	repo, _ := GetWithReason(id)
-	return repo
+func Get(id string) *Library {
+	library, _ := GetWithReason(id)
+	return library
 }
 
-// repoSelect is the one row shape both loaders read.
+// librarieselect is the one row shape both loaders read.
 //
 // It lives in a constant because the column list and the Scan that consumes it
 // have to agree, and two copies of a pair that has to agree is one copy too
 // many — the format columns were added to one of them first, and the second
 // loader silently returned libraries with a zeroed chunker until it wasn't.
-const repoSelect = `SELECT r.repo_id, b.commit_id, b.root_id, v.origin_repo, v.path, v.base_commit, ` +
+const librarieselect = `SELECT r.library_id, b.commit_id, b.root_id, v.origin_library, v.path, v.base_commit, ` +
 	`r.chunker, r.chunk_min, r.chunk_target, r.chunk_max, r.chunk_norm, r.e2ee, ` +
 	`i.name, i.update_time, i.last_modifier FROM ` +
-	`Repo r LEFT JOIN Branch b ON r.repo_id = b.repo_id ` +
-	`LEFT JOIN VirtualRepo v ON r.repo_id = v.repo_id ` +
-	`LEFT JOIN RepoInfo i ON r.repo_id = i.repo_id ` +
-	`WHERE r.repo_id = ? AND b.name = 'master'`
+	`Library r LEFT JOIN Branch b ON r.library_id = b.library_id ` +
+	`LEFT JOIN VirtualLibrary v ON r.library_id = v.library_id ` +
+	`LEFT JOIN LibraryInfo i ON r.library_id = i.library_id ` +
+	`WHERE r.library_id = ? AND b.name = 'master'`
 
-// scanRepoRow reads one repoSelect row, including the virtual-repo columns and
+// scanLibraryRow reads one librarieselect row, including the virtual-library columns and
 // the store id they decide.
-func scanRepoRow(rows *sql.Rows, id string, repo *Repo) error {
-	var originRepoID, path, baseCommitID sql.NullString
+func scanLibraryRow(rows *sql.Rows, id string, library *Library) error {
+	var originLibraryID, path, baseCommitID sql.NullString
 	// Nullable because the joins are outer ones and because these columns
-	// arrived after the tables did. A library with no RepoInfo row is not an
+	// arrived after the tables did. A library with no LibraryInfo row is not an
 	// error to this loader: it has no display name yet, which is a different
 	// thing from having no head.
 	var rootID, name, lastModifier sql.NullString
 	var updateTime sql.NullInt64
-	if err := rows.Scan(&repo.ID, &repo.HeadCommitID, &rootID, &originRepoID, &path, &baseCommitID,
-		&repo.Format.Chunker, &repo.Format.MinSize, &repo.Format.TargetSize,
-		&repo.Format.MaxSize, &repo.Format.Normalization, &repo.Format.E2EE,
+	if err := rows.Scan(&library.ID, &library.HeadCommitID, &rootID, &originLibraryID, &path, &baseCommitID,
+		&library.Format.Chunker, &library.Format.MinSize, &library.Format.TargetSize,
+		&library.Format.MaxSize, &library.Format.Normalization, &library.Format.E2EE,
 		&name, &updateTime, &lastModifier); err != nil {
 		return err
 	}
-	repo.RootID = rootID.String
-	repo.Name = name.String
-	repo.LastModifier = lastModifier.String
-	repo.LastModificationTime = updateTime.Int64
+	library.RootID = rootID.String
+	library.Name = name.String
+	library.LastModifier = lastModifier.String
+	library.LastModificationTime = updateTime.Int64
 
-	if !originRepoID.Valid {
-		repo.StoreID = repo.ID
+	if !originLibraryID.Valid {
+		library.StoreID = library.ID
 		return nil
 	}
-	repo.VirtualInfo = &VRepoInfo{RepoID: id, OriginRepoID: originRepoID.String}
-	repo.StoreID = originRepoID.String
+	library.VirtualInfo = &VLibraryInfo{LibraryID: id, OriginLibraryID: originLibraryID.String}
+	library.StoreID = originLibraryID.String
 	if path.Valid {
-		repo.VirtualInfo.Path = path.String
+		library.VirtualInfo.Path = path.String
 	}
 	if baseCommitID.Valid {
-		repo.VirtualInfo.BaseCommitID = baseCommitID.String
+		library.VirtualInfo.BaseCommitID = baseCommitID.String
 	}
 	return nil
 }
 
-// GetWithReason returns the repo, or the reason it could not be returned —
-// one of ErrRepoNotFound, ErrRepoCorrupted or ErrRepoUnavailable, wrapped with
-// the detail. Faults are logged here, once per repo per repoFaultInterval, so
+// GetWithReason returns the library, or the reason it could not be returned —
+// one of ErrLibraryNotFound, ErrLibraryCorrupted or ErrLibraryUnavailable, wrapped with
+// the detail. Faults are logged here, once per library per libraryFaultInterval, so
 // callers should not log again.
-func GetWithReason(id string) (*Repo, error) {
+func GetWithReason(id string) (*Library, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	stmt, err := readDB.PrepareContext(ctx, repoSelect)
+	stmt, err := readDB.PrepareContext(ctx, librarieselect)
 	if err != nil {
-		return nil, fault(id, ErrRepoUnavailable, "failed to prepare sql %s: %v", repoSelect, err)
+		return nil, fault(id, ErrLibraryUnavailable, "failed to prepare sql %s: %v", librarieselect, err)
 	}
 	defer func() { _ = stmt.Close() }()
 
 	rows, err := stmt.QueryContext(ctx, id)
 	if err != nil {
-		return nil, fault(id, ErrRepoUnavailable, "failed to query sql: %v", err)
+		return nil, fault(id, ErrLibraryUnavailable, "failed to query sql: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	repo := new(Repo)
+	library := new(Library)
 
 	if rows.Next() {
-		if err := scanRepoRow(rows, id, repo); err != nil {
-			return nil, fault(id, ErrRepoUnavailable, "failed to scan sql rows: %v", err)
+		if err := scanLibraryRow(rows, id, library); err != nil {
+			return nil, fault(id, ErrLibraryUnavailable, "failed to scan sql rows: %v", err)
 		}
 	} else if err := rows.Err(); err != nil {
 		// No row, but the iteration itself failed — that is the database
 		// speaking, not an answer about whether the library exists.
-		return nil, fault(id, ErrRepoUnavailable, "failed to read sql rows: %v", err)
+		return nil, fault(id, ErrLibraryUnavailable, "failed to read sql rows: %v", err)
 	} else {
 		clearFaults(id)
-		return nil, ErrRepoNotFound
+		return nil, ErrLibraryNotFound
 	}
 
-	if repo.HeadCommitID == "" {
-		return nil, fault(id, ErrRepoCorrupted, "Branch holds no head commit")
+	if library.HeadCommitID == "" {
+		return nil, fault(id, ErrLibraryCorrupted, "Branch holds no head commit")
 	}
 
 	// A library whose stored parameters do not describe a chunker cannot be
 	// read by anybody, so it is corrupted rather than merely unusual.
-	if err := repo.Format.Validate(); err != nil {
-		return nil, fault(id, ErrRepoCorrupted, "%v", err)
+	if err := library.Format.Validate(); err != nil {
+		return nil, fault(id, ErrLibraryCorrupted, "%v", err)
 	}
 
-	if err := checkHeadPresent(repo); err != nil {
-		return nil, fault(id, ErrRepoCorrupted, "%v", err)
+	if err := checkHeadPresent(library); err != nil {
+		return nil, fault(id, ErrLibraryCorrupted, "%v", err)
 	}
 	clearFaults(id)
 
-	return repo, nil
+	return library, nil
 }
 
 // checkHeadPresent verifies a store-v2 library's head commit object is
@@ -282,31 +282,31 @@ func GetWithReason(id string) (*Repo, error) {
 // library that answers "not found" tells a sync client to delete its local
 // copy, which is the copy that could have restored the object.
 //
-// A stat, not a read — and the Store it stats through is repo.Store, so the
+// A stat, not a read — and the Store it stats through is library.Store, so the
 // handle this check needs is the one the rest of the request was going to open
 // anyway. What the check itself adds to a load is one lookup.
-func checkHeadPresent(repo *Repo) error {
-	id, err := storefmt.ParseID(repo.HeadCommitID)
+func checkHeadPresent(library *Library) error {
+	id, err := storefmt.ParseID(library.HeadCommitID)
 	if err != nil {
-		return fmt.Errorf("head commit id %q is unreadable: %w", repo.HeadCommitID, err)
+		return fmt.Errorf("head commit id %q is unreadable: %w", library.HeadCommitID, err)
 	}
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
 		return fmt.Errorf("failed to open store: %w", err)
 	}
 	ok, err := st.HasObject(id)
 	if err != nil {
-		return fmt.Errorf("failed to look for head commit %s: %w", repo.HeadCommitID, err)
+		return fmt.Errorf("failed to look for head commit %s: %w", library.HeadCommitID, err)
 	}
 	if !ok {
-		return fmt.Errorf("head commit %s is missing from the object store", repo.HeadCommitID)
+		return fmt.Errorf("head commit %s is missing from the object store", library.HeadCommitID)
 	}
 	return nil
 }
 
 // StatusFor maps a GetWithReason failure onto the status and body a client
 // should see. It lives beside the errors it maps because both packages that
-// serve repos over HTTP need it, and the one decision that matters — that only
+// serve libraries over HTTP need it, and the one decision that matters — that only
 // a missing row is a 404 — must not exist in two copies that can drift.
 //
 // The 500 body says the library still exists on purpose: it is the only thing
@@ -315,9 +315,9 @@ func StatusFor(err error) (int, string) {
 	switch {
 	case err == nil:
 		return http.StatusOK, ""
-	case errors.Is(err, ErrRepoNotFound):
-		return http.StatusNotFound, "Repo not found"
-	case errors.Is(err, ErrRepoUnavailable):
+	case errors.Is(err, ErrLibraryNotFound):
+		return http.StatusNotFound, "Library not found"
+	case errors.Is(err, ErrLibraryUnavailable):
 		return http.StatusServiceUnavailable, "Library metadata is temporarily unavailable; retry"
 	default:
 		return http.StatusInternalServerError,
@@ -330,170 +330,170 @@ func StatusFor(err error) (int, string) {
 // identical lines in thirty-four seconds, which is enough to bury the first
 // occurrence in the log and to turn one server fault into twelve reports in
 // whatever the error hook forwards to. Each (library, kind) is reported once,
-// then held for repoFaultInterval.
-const repoFaultInterval = 5 * time.Minute
+// then held for libraryFaultInterval.
+const libraryFaultInterval = 5 * time.Minute
 
 type faultKey struct {
-	repoID string
-	kind   error
+	libraryID string
+	kind      error
 }
 
-var repoFaults = struct {
+var libraryFaults = struct {
 	sync.Mutex
 	lastLogged map[faultKey]time.Time
 }{lastLogged: make(map[faultKey]time.Time)}
 
 // faultKinds is every kind clearFaults has to forget. Keep it in step with the
 // sentinels above.
-var faultKinds = []error{ErrRepoNotFound, ErrRepoCorrupted, ErrRepoUnavailable}
+var faultKinds = []error{ErrLibraryNotFound, ErrLibraryCorrupted, ErrLibraryUnavailable}
 
 // fault wraps the detail as kind, logs it if it has not been logged recently,
 // and returns the wrapped error.
-func fault(repoID string, kind error, format string, args ...interface{}) error {
-	err := fmt.Errorf("%w: repo %s: %s", kind, repoID, fmt.Sprintf(format, args...))
-	if firstReport(repoID, kind) {
+func fault(libraryID string, kind error, format string, args ...interface{}) error {
+	err := fmt.Errorf("%w: library %s: %s", kind, libraryID, fmt.Sprintf(format, args...))
+	if firstReport(libraryID, kind) {
 		log.Error(err)
 	}
 	return err
 }
 
-func firstReport(repoID string, kind error) bool {
+func firstReport(libraryID string, kind error) bool {
 	now := time.Now()
 
-	repoFaults.Lock()
-	defer repoFaults.Unlock()
+	libraryFaults.Lock()
+	defer libraryFaults.Unlock()
 
-	key := faultKey{repoID, kind}
-	if last, ok := repoFaults.lastLogged[key]; ok && now.Sub(last) < repoFaultInterval {
+	key := faultKey{libraryID, kind}
+	if last, ok := libraryFaults.lastLogged[key]; ok && now.Sub(last) < libraryFaultInterval {
 		return false
 	}
 	// Entries are only ever added by a fault and dropped by a repair, so the
-	// map tracks broken libraries. Sweeping the stale ones here keeps a repo
+	// map tracks broken libraries. Sweeping the stale ones here keeps a library
 	// that was deleted rather than repaired from being remembered forever.
-	for k, last := range repoFaults.lastLogged {
-		if now.Sub(last) >= repoFaultInterval {
-			delete(repoFaults.lastLogged, k)
+	for k, last := range libraryFaults.lastLogged {
+		if now.Sub(last) >= libraryFaultInterval {
+			delete(libraryFaults.lastLogged, k)
 		}
 	}
-	repoFaults.lastLogged[key] = now
+	libraryFaults.lastLogged[key] = now
 	return true
 }
 
 // clearFaults forgets a library's faults, so that a recurrence after a repair
 // is reported again instead of being suppressed as a repeat.
-func clearFaults(repoID string) {
-	repoFaults.Lock()
-	defer repoFaults.Unlock()
+func clearFaults(libraryID string) {
+	libraryFaults.Lock()
+	defer libraryFaults.Unlock()
 	for _, kind := range faultKinds {
-		delete(repoFaults.lastLogged, faultKey{repoID, kind})
+		delete(libraryFaults.lastLogged, faultKey{libraryID, kind})
 	}
 }
 
-// GetEx return repo object even if it's corrupted.
-func GetEx(id string) *Repo {
-	repo := new(Repo)
+// GetEx return library object even if it's corrupted.
+func GetEx(id string) *Library {
+	library := new(Library)
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	stmt, err := readDB.PrepareContext(ctx, repoSelect)
+	stmt, err := readDB.PrepareContext(ctx, librarieselect)
 	if err != nil {
-		repo.IsCorrupted = true
-		return repo
+		library.IsCorrupted = true
+		return library
 	}
 	defer func() { _ = stmt.Close() }()
 
 	rows, err := stmt.QueryContext(ctx, id)
 	if err != nil {
-		repo.IsCorrupted = true
-		return repo
+		library.IsCorrupted = true
+		return library
 	}
 	defer func() { _ = rows.Close() }()
 
 	if rows.Next() {
-		if err := scanRepoRow(rows, id, repo); err != nil {
-			repo.IsCorrupted = true
-			return repo
+		if err := scanLibraryRow(rows, id, library); err != nil {
+			library.IsCorrupted = true
+			return library
 		}
 	} else if rows.Err() != nil {
-		repo.IsCorrupted = true
-		return repo
+		library.IsCorrupted = true
+		return library
 	} else {
 		return nil
 	}
 
-	if repo.HeadCommitID == "" {
-		repo.IsCorrupted = true
-		return repo
+	if library.HeadCommitID == "" {
+		library.IsCorrupted = true
+		return library
 	}
 
-	if err := repo.Format.Validate(); err != nil {
-		_ = fault(id, ErrRepoCorrupted, "%v", err)
-		repo.IsCorrupted = true
-		return repo
+	if err := library.Format.Validate(); err != nil {
+		_ = fault(id, ErrLibraryCorrupted, "%v", err)
+		library.IsCorrupted = true
+		return library
 	}
 
-	if err := checkHeadPresent(repo); err != nil {
+	if err := checkHeadPresent(library); err != nil {
 		// Same fault as in GetWithReason, and reached on every request, so it
 		// shares the same suppression.
-		_ = fault(id, ErrRepoCorrupted, "%v", err)
-		repo.IsCorrupted = true
-		return repo
+		_ = fault(id, ErrLibraryCorrupted, "%v", err)
+		library.IsCorrupted = true
+		return library
 	}
 	clearFaults(id)
 
-	return repo
+	return library
 }
 
-// GetVirtualRepoInfo return virtual repo info by repo id.
-func GetVirtualRepoInfo(repoID string) (*VRepoInfo, error) {
-	sqlStr := "SELECT repo_id, origin_repo, path, base_commit FROM VirtualRepo WHERE repo_id = ?"
-	vRepoInfo := new(VRepoInfo)
+// GetVirtualLibraryInfo return virtual library info by library id.
+func GetVirtualLibraryInfo(libraryID string) (*VLibraryInfo, error) {
+	sqlStr := "SELECT library_id, origin_library, path, base_commit FROM VirtualLibrary WHERE library_id = ?"
+	vLibraryInfo := new(VLibraryInfo)
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := readDB.QueryRowContext(ctx, sqlStr, repoID)
-	if err := row.Scan(&vRepoInfo.RepoID, &vRepoInfo.OriginRepoID, &vRepoInfo.Path, &vRepoInfo.BaseCommitID); err != nil {
+	row := readDB.QueryRowContext(ctx, sqlStr, libraryID)
+	if err := row.Scan(&vLibraryInfo.LibraryID, &vLibraryInfo.OriginLibraryID, &vLibraryInfo.Path, &vLibraryInfo.BaseCommitID); err != nil {
 		if err != sql.ErrNoRows {
 			return nil, err
 		}
 		return nil, nil
 	}
-	return vRepoInfo, nil
+	return vLibraryInfo, nil
 }
 
-// GetVirtualRepoInfoByOrigin return virtual repo info by origin repo id.
-func GetVirtualRepoInfoByOrigin(originRepo string) ([]*VRepoInfo, error) {
-	sqlStr := "SELECT repo_id, origin_repo, path, base_commit " +
-		"FROM VirtualRepo WHERE origin_repo=?"
-	var vRepos []*VRepoInfo
+// GetVirtualLibraryInfoByOrigin return virtual library info by origin library id.
+func GetVirtualLibraryInfoByOrigin(originLibrary string) ([]*VLibraryInfo, error) {
+	sqlStr := "SELECT library_id, origin_library, path, base_commit " +
+		"FROM VirtualLibrary WHERE origin_library=?"
+	var vLibraries []*VLibraryInfo
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row, err := readDB.QueryContext(ctx, sqlStr, originRepo)
+	row, err := readDB.QueryContext(ctx, sqlStr, originLibrary)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = row.Close() }()
 	for row.Next() {
-		vRepoInfo := new(VRepoInfo)
-		if err := row.Scan(&vRepoInfo.RepoID, &vRepoInfo.OriginRepoID, &vRepoInfo.Path, &vRepoInfo.BaseCommitID); err != nil {
+		vLibraryInfo := new(VLibraryInfo)
+		if err := row.Scan(&vLibraryInfo.LibraryID, &vLibraryInfo.OriginLibraryID, &vLibraryInfo.Path, &vLibraryInfo.BaseCommitID); err != nil {
 			if err != sql.ErrNoRows {
 				return nil, err
 			}
 		}
-		vRepos = append(vRepos, vRepoInfo)
+		vLibraries = append(vLibraries, vLibraryInfo)
 	}
 
-	return vRepos, nil
+	return vLibraries, nil
 }
 
 // GetAccountByToken returns the account a sync token belongs to, or the zero
-// id if the token is not one of that repo's.
-func GetAccountByToken(repoID string, token string) (account.ID, error) {
+// id if the token is not one of that library's.
+func GetAccountByToken(libraryID string, token string) (account.ID, error) {
 	var id account.ID
-	sqlStr := "SELECT account_id FROM RepoUserToken WHERE repo_id = ? AND token = ?"
+	sqlStr := "SELECT account_id FROM LibraryUserToken WHERE library_id = ? AND token = ?"
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := readDB.QueryRowContext(ctx, sqlStr, repoID, token)
+	row := readDB.QueryRowContext(ctx, sqlStr, libraryID, token)
 	if err := row.Scan(&id); err != nil {
 		if err != sql.ErrNoRows {
 			return account.Zero, err
@@ -502,20 +502,20 @@ func GetAccountByToken(repoID string, token string) (account.ID, error) {
 	return id, nil
 }
 
-// GetAccountForToken resolves a sync token to its owner without naming a repo.
+// GetAccountForToken resolves a sync token to its owner without naming a library.
 //
-// GetAccountByToken is the one to use wherever the repo is known — it is the
-// stronger check, since it also proves the token was issued for that repo.
-// This exists for the batched endpoints, which are handed a list of repos and
+// GetAccountByToken is the one to use wherever the library is known — it is the
+// stronger check, since it also proves the token was issued for that library.
+// This exists for the batched endpoints, which are handed a list of libraries and
 // one token and have to establish who is asking before they can decide which
-// of those repos to answer for.
+// of those libraries to answer for.
 func GetAccountForToken(token string) (account.ID, error) {
 	var id account.ID
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	row := readDB.QueryRowContext(ctx,
-		"SELECT account_id FROM RepoUserToken WHERE token = ?", token)
+		"SELECT account_id FROM LibraryUserToken WHERE token = ?", token)
 	if err := row.Scan(&id); err != nil {
 		if err == sql.ErrNoRows {
 			return account.Zero, nil
@@ -525,18 +525,18 @@ func GetAccountForToken(token string) (account.ID, error) {
 	return id, nil
 }
 
-// GetRepoStatus return repo status by repo id.
-func GetRepoStatus(repoID string) (int, error) {
+// GetLibrariestatus return library status by library id.
+func GetLibrariestatus(libraryID string) (int, error) {
 	var status = -1
 
-	// First, check origin repo's status.
-	sqlStr := "SELECT i.status FROM VirtualRepo v LEFT JOIN RepoInfo i " +
-		"ON i.repo_id=v.origin_repo WHERE v.repo_id=? " +
-		"AND i.repo_id IS NOT NULL"
+	// First, check origin library's status.
+	sqlStr := "SELECT i.status FROM VirtualLibrary v LEFT JOIN LibraryInfo i " +
+		"ON i.library_id=v.origin_library WHERE v.library_id=? " +
+		"AND i.library_id IS NOT NULL"
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := readDB.QueryRowContext(ctx, sqlStr, repoID)
+	row := readDB.QueryRowContext(ctx, sqlStr, libraryID)
 	if err := row.Scan(&status); err != nil {
 		if err != sql.ErrNoRows {
 			return status, err
@@ -548,9 +548,9 @@ func GetRepoStatus(repoID string) (int, error) {
 		return status, nil
 	}
 
-	// Then, check repo's own status.
-	sqlStr = "SELECT status FROM RepoInfo WHERE repo_id=?"
-	row = readDB.QueryRowContext(ctx, sqlStr, repoID)
+	// Then, check library's own status.
+	sqlStr = "SELECT status FROM LibraryInfo WHERE library_id=?"
+	row = readDB.QueryRowContext(ctx, sqlStr, libraryID)
 	if err := row.Scan(&status); err != nil {
 		if err != sql.ErrNoRows {
 			return status, err
@@ -562,7 +562,7 @@ func GetRepoStatus(repoID string) (int, error) {
 // TokenPeerInfoExists check if the token exists.
 func TokenPeerInfoExists(token string) (bool, error) {
 	var exists string
-	sqlStr := "SELECT token FROM RepoTokenPeerInfo WHERE token=?"
+	sqlStr := "SELECT token FROM LibraryTokenPeerInfo WHERE token=?"
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
@@ -576,9 +576,9 @@ func TokenPeerInfoExists(token string) (bool, error) {
 	return true, nil
 }
 
-// AddTokenPeerInfo add token peer info to RepoTokenPeerInfo table.
+// AddTokenPeerInfo add token peer info to LibraryTokenPeerInfo table.
 func AddTokenPeerInfo(token, peerID, peerIP, peerName, clientVer string, syncTime int64) error {
-	sqlStr := "INSERT INTO RepoTokenPeerInfo (token, peer_id, peer_ip, peer_name, sync_time, client_ver)" +
+	sqlStr := "INSERT INTO LibraryTokenPeerInfo (token, peer_id, peer_ip, peer_name, sync_time, client_ver)" +
 		"VALUES (?, ?, ?, ?, ?, ?)"
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
@@ -589,9 +589,9 @@ func AddTokenPeerInfo(token, peerID, peerIP, peerName, clientVer string, syncTim
 	return nil
 }
 
-// UpdateTokenPeerInfo update token peer info to RepoTokenPeerInfo table.
+// UpdateTokenPeerInfo update token peer info to LibraryTokenPeerInfo table.
 func UpdateTokenPeerInfo(token, peerID, clientVer string, syncTime int64) error {
-	sqlStr := "UPDATE RepoTokenPeerInfo SET " +
+	sqlStr := "UPDATE LibraryTokenPeerInfo SET " +
 		"peer_ip=?, sync_time=?, client_ver=? WHERE token=?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
@@ -605,9 +605,9 @@ func UpdateTokenPeerInfo(token, peerID, clientVer string, syncTime int64) error 
 // moved: who was authenticated, and when.
 //
 // It replaces a function that copied a name, a timestamp, a format version and
-// an encryption flag out of the new head commit into RepoInfo, keeping the
+// an encryption flag out of the new head commit into LibraryInfo, keeping the
 // commit as the source of truth and this table as a mirror. That is inverted
-// now — see the RepoInfo comment in dbutil/schema.go — and the two fields left
+// now — see the LibraryInfo comment in dbutil/schema.go — and the two fields left
 // are the two the server establishes itself rather than reads.
 //
 // modifier is the authenticated account, not a name a request supplied, and
@@ -628,58 +628,58 @@ func UpdateTokenPeerInfo(token, peerID, clientVer string, syncTime int64) error 
 // one. A library with no row yet gets one with an empty name rather than an
 // error: this is display metadata, and refusing a write because of it would
 // be the same misjudgement as reporting it late.
-func RecordHeadMove(ctx context.Context, tx *sql.Tx, repoID, modifier string, when int64) error {
+func RecordHeadMove(ctx context.Context, tx *sql.Tx, libraryID, modifier string, when int64) error {
 	if when == 0 {
 		when = time.Now().Unix()
 	}
 	_, err := tx.ExecContext(ctx,
-		"INSERT INTO RepoInfo (repo_id, name, update_time, last_modifier) VALUES (?, '', ?, ?) "+
-			"ON CONFLICT(repo_id) DO UPDATE SET update_time=excluded.update_time, "+
+		"INSERT INTO LibraryInfo (library_id, name, update_time, last_modifier) VALUES (?, '', ?, ?) "+
+			"ON CONFLICT(library_id) DO UPDATE SET update_time=excluded.update_time, "+
 			"last_modifier=excluded.last_modifier",
-		repoID, when, modifier)
+		libraryID, when, modifier)
 	return err
 }
 
-// SetRepoName renames a library.
+// SetLibraryName renames a library.
 //
 // It is a single UPDATE and mints no commit. The old spelling wrote a commit
 // whose only change was the name it carried, which moved the head for a change
 // that was not in the tree — every client saw a new head and diffed two
 // identical roots. Under E2EE the server could not write that commit at all.
-func SetRepoName(repoID, name string) error {
+func SetLibraryName(libraryID, name string) error {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	res, err := writeDB.ExecContext(ctx,
-		"UPDATE RepoInfo SET name=? WHERE repo_id=?", name, repoID)
+		"UPDATE LibraryInfo SET name=? WHERE library_id=?", name, libraryID)
 	if err != nil {
 		return err
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return fmt.Errorf("library %s has no RepoInfo row", repoID)
+		return fmt.Errorf("library %s has no LibraryInfo row", libraryID)
 	}
 	return nil
 }
 
-// SetVirtualRepoBaseCommitPath updates the table of VirtualRepo.
-func SetVirtualRepoBaseCommitPath(repoID, baseCommitID, newPath string) error {
-	sqlStr := "UPDATE VirtualRepo SET base_commit=?, path=? WHERE repo_id=?"
+// SetVirtualLibraryBaseCommitPath updates the table of VirtualLibrary.
+func SetVirtualLibraryBaseCommitPath(libraryID, baseCommitID, newPath string) error {
+	sqlStr := "UPDATE VirtualLibrary SET base_commit=?, path=? WHERE library_id=?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := writeDB.ExecContext(ctx, sqlStr, baseCommitID, newPath, repoID); err != nil {
+	if _, err := writeDB.ExecContext(ctx, sqlStr, baseCommitID, newPath, libraryID); err != nil {
 		return err
 	}
 	return nil
 }
 
-// GetVirtualRepoIDsByOrigin return the virtual repo ids by origin repo id.
-func GetVirtualRepoIDsByOrigin(repoID string) ([]string, error) {
-	sqlStr := "SELECT repo_id FROM VirtualRepo WHERE origin_repo=?"
+// GetVirtualLibraryIDsByOrigin return the virtual library ids by origin library id.
+func GetVirtualLibraryIDsByOrigin(libraryID string) ([]string, error) {
+	sqlStr := "SELECT library_id FROM VirtualLibrary WHERE origin_library=?"
 
 	var id string
 	var ids []string
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row, err := readDB.QueryContext(ctx, sqlStr, repoID)
+	row, err := readDB.QueryContext(ctx, sqlStr, libraryID)
 	if err != nil {
 		return nil, err
 	}
@@ -696,17 +696,17 @@ func GetVirtualRepoIDsByOrigin(repoID string) ([]string, error) {
 	return ids, nil
 }
 
-// DelVirtualRepo deletes virtual repo from database.
-func DelVirtualRepo(repoID string, cloudMode bool) error {
-	err := removeVirtualRepoOndisk(repoID, cloudMode)
+// DelVirtualLibrary deletes virtual library from database.
+func DelVirtualLibrary(libraryID string, cloudMode bool) error {
+	err := removeVirtualLibraryOndisk(libraryID, cloudMode)
 	if err != nil {
-		err := fmt.Errorf("failed to remove virtual repo on disk: %v", err)
+		err := fmt.Errorf("failed to remove virtual library on disk: %v", err)
 		return err
 	}
-	sqlStr := "DELETE FROM VirtualRepo WHERE repo_id = ?"
+	sqlStr := "DELETE FROM VirtualLibrary WHERE library_id = ?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
+	_, err = writeDB.ExecContext(ctx, sqlStr, libraryID)
 	if err != nil {
 		return err
 	}
@@ -714,16 +714,16 @@ func DelVirtualRepo(repoID string, cloudMode bool) error {
 	return nil
 }
 
-func removeVirtualRepoOndisk(repoID string, cloudMode bool) error {
-	sqlStr := "DELETE FROM Repo WHERE repo_id = ?"
+func removeVirtualLibraryOndisk(libraryID string, cloudMode bool) error {
+	sqlStr := "DELETE FROM Library WHERE library_id = ?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	_, err := writeDB.ExecContext(ctx, sqlStr, repoID)
+	_, err := writeDB.ExecContext(ctx, sqlStr, libraryID)
 	if err != nil {
 		return err
 	}
-	sqlStr = "SELECT name, repo_id, commit_id FROM Branch WHERE repo_id=?"
-	rows, err := readDB.QueryContext(ctx, sqlStr, repoID)
+	sqlStr = "SELECT name, library_id, commit_id FROM Branch WHERE library_id=?"
+	rows, err := readDB.QueryContext(ctx, sqlStr, libraryID)
 	if err != nil {
 		return err
 	}
@@ -735,62 +735,62 @@ func removeVirtualRepoOndisk(repoID string, cloudMode bool) error {
 				return err
 			}
 		}
-		sqlStr := "DELETE FROM RepoHead WHERE branch_name = ? AND repo_id = ?"
+		sqlStr := "DELETE FROM LibraryHead WHERE branch_name = ? AND library_id = ?"
 		_, err := writeDB.ExecContext(ctx, sqlStr, name, id)
 		if err != nil {
 			return err
 		}
-		sqlStr = "DELETE FROM Branch WHERE name=? AND repo_id=?"
+		sqlStr = "DELETE FROM Branch WHERE name=? AND library_id=?"
 		_, err = writeDB.ExecContext(ctx, sqlStr, name, id)
 		if err != nil {
 			return err
 		}
 	}
 
-	sqlStr = "DELETE FROM RepoOwner WHERE repo_id = ?"
-	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
+	sqlStr = "DELETE FROM LibraryOwner WHERE library_id = ?"
+	_, err = writeDB.ExecContext(ctx, sqlStr, libraryID)
 	if err != nil {
 		return err
 	}
 
-	sqlStr = "DELETE FROM SharedRepo WHERE repo_id = ?"
-	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
+	sqlStr = "DELETE FROM SharedLibrary WHERE library_id = ?"
+	_, err = writeDB.ExecContext(ctx, sqlStr, libraryID)
 	if err != nil {
 		return err
 	}
 
-	sqlStr = "DELETE FROM RepoGroup WHERE repo_id = ?"
-	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
+	sqlStr = "DELETE FROM LibraryGroup WHERE library_id = ?"
+	_, err = writeDB.ExecContext(ctx, sqlStr, libraryID)
 	if err != nil {
 		return err
 	}
 	if !cloudMode {
-		sqlStr = "DELETE FROM InnerPubRepo WHERE repo_id = ?"
-		_, err := writeDB.ExecContext(ctx, sqlStr, repoID)
+		sqlStr = "DELETE FROM InnerPubLibrary WHERE library_id = ?"
+		_, err := writeDB.ExecContext(ctx, sqlStr, libraryID)
 		if err != nil {
 			return err
 		}
 	}
 
-	sqlStr = "DELETE FROM RepoUserToken WHERE repo_id = ?"
-	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
+	sqlStr = "DELETE FROM LibraryUserToken WHERE library_id = ?"
+	_, err = writeDB.ExecContext(ctx, sqlStr, libraryID)
 	if err != nil {
 		return err
 	}
 
-	sqlStr = "DELETE FROM RepoValidSince WHERE repo_id = ?"
-	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
+	sqlStr = "DELETE FROM LibraryValidSince WHERE library_id = ?"
+	_, err = writeDB.ExecContext(ctx, sqlStr, libraryID)
 	if err != nil {
 		return err
 	}
 
-	sqlStr = "DELETE FROM RepoUsage WHERE repo_id = ?"
-	_, err = writeDB.ExecContext(ctx, sqlStr, repoID)
+	sqlStr = "DELETE FROM LibraryUsage WHERE library_id = ?"
+	_, err = writeDB.ExecContext(ctx, sqlStr, libraryID)
 	if err != nil {
 		return err
 	}
 
-	_, err = writeDB.ExecContext(ctx, dbutil.InsertOrIgnore("GarbageRepos", "repo_id"), repoID)
+	_, err = writeDB.ExecContext(ctx, dbutil.InsertOrIgnore("GarbageLibraries", "library_id"), libraryID)
 	if err != nil {
 		return err
 	}
@@ -798,14 +798,14 @@ func removeVirtualRepoOndisk(repoID string, cloudMode bool) error {
 	return nil
 }
 
-// IsVirtualRepo check if the repo is a virtual reop.
-func IsVirtualRepo(repoID string) (bool, error) {
+// IsVirtualLibrary check if the library is a virtual reop.
+func IsVirtualLibrary(libraryID string) (bool, error) {
 	var exists int
-	sqlStr := "SELECT 1 FROM VirtualRepo WHERE repo_id = ?"
+	sqlStr := "SELECT 1 FROM VirtualLibrary WHERE library_id = ?"
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := readDB.QueryRowContext(ctx, sqlStr, repoID)
+	row := readDB.QueryRowContext(ctx, sqlStr, libraryID)
 	if err := row.Scan(&exists); err != nil {
 		if err != sql.ErrNoRows {
 			return false, err
@@ -816,14 +816,14 @@ func IsVirtualRepo(repoID string) (bool, error) {
 
 }
 
-// GetRepoOwner get the owner of repo.
-func GetRepoOwner(repoID string) (account.ID, error) {
+// GetLibraryOwner get the owner of library.
+func GetLibraryOwner(libraryID string) (account.ID, error) {
 	var owner account.ID
-	sqlStr := "SELECT account_id FROM RepoOwner WHERE repo_id=?"
+	sqlStr := "SELECT account_id FROM LibraryOwner WHERE library_id=?"
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := readDB.QueryRowContext(ctx, sqlStr, repoID)
+	row := readDB.QueryRowContext(ctx, sqlStr, libraryID)
 	if err := row.Scan(&owner); err != nil {
 		if err != sql.ErrNoRows {
 			return account.Zero, err
@@ -833,13 +833,13 @@ func GetRepoOwner(repoID string) (account.ID, error) {
 	return owner, nil
 }
 
-func HasLastGCID(repoID, clientID string) (bool, error) {
-	sqlStr := "SELECT 1 FROM LastGCID WHERE repo_id = ? AND client_id = ?"
+func HasLastGCID(libraryID, clientID string) (bool, error) {
+	sqlStr := "SELECT 1 FROM LastGCID WHERE library_id = ? AND client_id = ?"
 
 	var exist int
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := readDB.QueryRowContext(ctx, sqlStr, repoID, clientID)
+	row := readDB.QueryRowContext(ctx, sqlStr, libraryID, clientID)
 	if err := row.Scan(&exist); err != nil {
 		if err != sql.ErrNoRows {
 			return false, err
@@ -851,13 +851,13 @@ func HasLastGCID(repoID, clientID string) (bool, error) {
 	return true, nil
 }
 
-func GetLastGCID(repoID, clientID string) (string, error) {
-	sqlStr := "SELECT gc_id FROM LastGCID WHERE repo_id = ? AND client_id = ?"
+func GetLastGCID(libraryID, clientID string) (string, error) {
+	sqlStr := "SELECT gc_id FROM LastGCID WHERE library_id = ? AND client_id = ?"
 
 	var gcID sql.NullString
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := readDB.QueryRowContext(ctx, sqlStr, repoID, clientID)
+	row := readDB.QueryRowContext(ctx, sqlStr, libraryID, clientID)
 	if err := row.Scan(&gcID); err != nil {
 		if err != sql.ErrNoRows {
 			return "", err
@@ -867,13 +867,13 @@ func GetLastGCID(repoID, clientID string) (string, error) {
 	return gcID.String, nil
 }
 
-func GetCurrentGCID(repoID string) (string, error) {
-	sqlStr := "SELECT gc_id FROM GCID WHERE repo_id = ?"
+func GetCurrentGCID(libraryID string) (string, error) {
+	sqlStr := "SELECT gc_id FROM GCID WHERE library_id = ?"
 
 	var gcID sql.NullString
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := readDB.QueryRowContext(ctx, sqlStr, repoID)
+	row := readDB.QueryRowContext(ctx, sqlStr, libraryID)
 	if err := row.Scan(&gcID); err != nil {
 		if err != sql.ErrNoRows {
 			return "", err
@@ -883,133 +883,133 @@ func GetCurrentGCID(repoID string) (string, error) {
 	return gcID.String, nil
 }
 
-func RemoveLastGCID(repoID, clientID string) error {
-	sqlStr := "DELETE FROM LastGCID WHERE repo_id = ? AND client_id = ?"
+func RemoveLastGCID(libraryID, clientID string) error {
+	sqlStr := "DELETE FROM LastGCID WHERE library_id = ? AND client_id = ?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := writeDB.ExecContext(ctx, sqlStr, repoID, clientID); err != nil {
+	if _, err := writeDB.ExecContext(ctx, sqlStr, libraryID, clientID); err != nil {
 		return err
 	}
 	return nil
 }
 
-func SetLastGCID(repoID, clientID, gcID string) error {
-	exist, err := HasLastGCID(repoID, clientID)
+func SetLastGCID(libraryID, clientID, gcID string) error {
+	exist, err := HasLastGCID(libraryID, clientID)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	if exist {
-		sqlStr := "UPDATE LastGCID SET gc_id = ? WHERE repo_id = ? AND client_id = ?"
-		if _, err = writeDB.ExecContext(ctx, sqlStr, gcID, repoID, clientID); err != nil {
+		sqlStr := "UPDATE LastGCID SET gc_id = ? WHERE library_id = ? AND client_id = ?"
+		if _, err = writeDB.ExecContext(ctx, sqlStr, gcID, libraryID, clientID); err != nil {
 			return err
 		}
 	} else {
-		sqlStr := "INSERT INTO LastGCID (repo_id, client_id, gc_id) VALUES (?, ?, ?)"
-		if _, err = writeDB.ExecContext(ctx, sqlStr, repoID, clientID, gcID); err != nil {
+		sqlStr := "INSERT INTO LastGCID (library_id, client_id, gc_id) VALUES (?, ?, ?)"
+		if _, err = writeDB.ExecContext(ctx, sqlStr, libraryID, clientID, gcID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// GenerateRepoToken creates a new per-repo sync token for the given user.
+// GenerateLibraryToken creates a new per-library sync token for the given user.
 // Token format matches the C implementation: SHA1(UUID) → 40-char hex string.
 //
 // A new token is minted on every call rather than reusing an existing one for
-// the same (repo, user). That is intentional: each client install gets its own
+// the same (library, user). That is intentional: each client install gets its own
 // token, so revoking one device does not stop the others syncing. Upstream
 // The scheme this inherited collapses these to one token per user per
-// repo; Silo does not, because the device identity that makes per-device
+// library; Silo does not, because the device identity that makes per-device
 // revocation useful (client_id, bound to the token at first permission-check)
 // is not available here at mint time.
 //
 // Sync tokens deliberately have no expiry. The clients they were for persist them
 // in local config and treat them as durable, so ageing them out would stop
 // sync silently at the TTL. Revocation is the intended way to invalidate one.
-func GenerateRepoToken(repoID string, id account.ID) (string, error) {
+func GenerateLibraryToken(libraryID string, id account.ID) (string, error) {
 	u := uuid.New().String()
 	h := sha1.New()
 	h.Write([]byte(u))
 	token := hex.EncodeToString(h.Sum(nil))
 
-	sqlStr := "INSERT INTO RepoUserToken (repo_id, account_id, token, ctime) VALUES (?, ?, ?, ?)"
+	sqlStr := "INSERT INTO LibraryUserToken (library_id, account_id, token, ctime) VALUES (?, ?, ?, ?)"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := writeDB.ExecContext(ctx, sqlStr, repoID, id, token, time.Now().Unix()); err != nil {
-		return "", fmt.Errorf("failed to insert repo token: %v", err)
+	if _, err := writeDB.ExecContext(ctx, sqlStr, libraryID, id, token, time.Now().Unix()); err != nil {
+		return "", fmt.Errorf("failed to insert library token: %v", err)
 	}
 
 	return token, nil
 }
 
-// DeleteRepoTokensByAccount revokes every sync token an account holds, across
-// all repos, stopping all of their devices from syncing. Returns the count.
-func DeleteRepoTokensByAccount(id account.ID) (int64, error) {
+// DeleteLibraryTokensByAccount revokes every sync token an account holds, across
+// all libraries, stopping all of their devices from syncing. Returns the count.
+func DeleteLibraryTokensByAccount(id account.ID) (int64, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	res, err := writeDB.ExecContext(ctx,
-		"DELETE FROM RepoUserToken WHERE account_id = ?", id)
+		"DELETE FROM LibraryUserToken WHERE account_id = ?", id)
 	if err != nil {
-		return 0, fmt.Errorf("failed to delete repo tokens: %v", err)
+		return 0, fmt.Errorf("failed to delete library tokens: %v", err)
 	}
 	notify(OnTokensRevoked, id)
 
 	return dbutil.RowsAffected(res), nil
 }
 
-// DeleteRepoToken removes a specific sync token.
-func DeleteRepoToken(repoID, token string, id account.ID) error {
-	sqlStr := "DELETE FROM RepoUserToken WHERE repo_id = ? AND token = ? AND account_id = ?"
+// DeleteLibraryToken removes a specific sync token.
+func DeleteLibraryToken(libraryID, token string, id account.ID) error {
+	sqlStr := "DELETE FROM LibraryUserToken WHERE library_id = ? AND token = ? AND account_id = ?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, err := writeDB.ExecContext(ctx, sqlStr, repoID, token, id); err != nil {
-		return fmt.Errorf("failed to delete repo token: %v", err)
+	if _, err := writeDB.ExecContext(ctx, sqlStr, libraryID, token, id); err != nil {
+		return fmt.Errorf("failed to delete library token: %v", err)
 	}
 	notify(OnTokensRevoked, id)
 	return nil
 }
 
-type RepoToken struct {
-	RepoID string
-	Token  string
-	Ctime  sql.NullInt64
+type LibraryToken struct {
+	LibraryID string
+	Token     string
+	Ctime     sql.NullInt64
 }
 
-// ListRepoTokensByAccount returns all sync tokens for an account.
-func ListRepoTokensByAccount(id account.ID) ([]RepoToken, error) {
-	sqlStr := "SELECT repo_id, token, ctime FROM RepoUserToken WHERE account_id = ? ORDER BY ctime"
+// ListLibraryTokensByAccount returns all sync tokens for an account.
+func ListLibraryTokensByAccount(id account.ID) ([]LibraryToken, error) {
+	sqlStr := "SELECT library_id, token, ctime FROM LibraryUserToken WHERE account_id = ? ORDER BY ctime"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	rows, err := readDB.QueryContext(ctx, sqlStr, id)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list repo tokens: %v", err)
+		return nil, fmt.Errorf("failed to list library tokens: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var tokens []RepoToken
+	var tokens []LibraryToken
 	for rows.Next() {
-		var t RepoToken
+		var t LibraryToken
 		// A scan failure is returned rather than skipped: this list is what an
 		// operator revokes from, and silently omitting a row would show a
 		// token as already gone while it still authenticates.
-		if err := rows.Scan(&t.RepoID, &t.Token, &t.Ctime); err != nil {
-			return nil, fmt.Errorf("failed to read repo token row: %v", err)
+		if err := rows.Scan(&t.LibraryID, &t.Token, &t.Ctime); err != nil {
+			return nil, fmt.Errorf("failed to read library token row: %v", err)
 		}
 		tokens = append(tokens, t)
 	}
 	return tokens, rows.Err()
 }
 
-// CreateRepo makes a library owned by owner, in the given format. It mints the
+// CreateLibrary makes a library owned by owner, in the given format. It mints the
 // library's id, its initial objects and every row the library needs.
 //
 // It takes the whole account rather than an id because the owner is used for
-// two different things here. RepoOwner records who may administer the
+// two different things here. LibraryOwner records who may administer the
 // library, and that is a key, so it stores the id. The commit's author and
-// RepoInfo.last_modifier record what the creator was called at the time, and
+// LibraryInfo.last_modifier record what the creator was called at the time, and
 // those are display data — the commit's is baked into its content hash and
 // could not be rewritten later even if it should be.
 //
@@ -1031,16 +1031,16 @@ func ListRepoTokensByAccount(id account.ID) ([]RepoToken, error) {
 // column that does not exist yet, and the wrap blob has no table. Creating an
 // E2EE library before then would produce one whose key dies with the device
 // that made it, which is data loss wearing a feature's clothes.
-func CreateRepo(name string, owner *account.Account, format Format) (string, error) {
+func CreateLibrary(name string, owner *account.Account, format Format) (string, error) {
 	if err := format.Validate(); err != nil {
 		return "", err
 	}
 	if format.E2EE {
 		return "", fmt.Errorf("cannot yet create an end-to-end encrypted library: its content key has nowhere durable to live: %w", ErrNoContentKey)
 	}
-	repoID := uuid.New().String()
+	libraryID := uuid.New().String()
 
-	store, err := OpenStore(repoID, format)
+	store, err := OpenStore(libraryID, format)
 	if err != nil {
 		return "", fmt.Errorf("failed to open store for new library: %w", err)
 	}
@@ -1069,53 +1069,53 @@ func CreateRepo(name string, owner *account.Account, format Format) (string, err
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx,
-		"INSERT INTO Repo (repo_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		repoID, format.Chunker, format.MinSize, format.TargetSize, format.MaxSize,
+		"INSERT INTO Library (library_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		libraryID, format.Chunker, format.MinSize, format.TargetSize, format.MaxSize,
 		format.Normalization, format.E2EE); err != nil {
-		return "", fmt.Errorf("failed to insert repo: %v", err)
+		return "", fmt.Errorf("failed to insert library: %v", err)
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO Branch (name, repo_id, commit_id, root_id) VALUES ('master', ?, ?, ?)",
-		repoID, commitID.String(), root.String()); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO Branch (name, library_id, commit_id, root_id) VALUES ('master', ?, ?, ?)",
+		libraryID, commitID.String(), root.String()); err != nil {
 		return "", fmt.Errorf("failed to insert branch: %v", err)
 	}
-	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("RepoHead", "repo_id, branch_name"), repoID, "master"); err != nil {
-		return "", fmt.Errorf("failed to insert repo head: %v", err)
+	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("LibraryHead", "library_id, branch_name"), libraryID, "master"); err != nil {
+		return "", fmt.Errorf("failed to insert library head: %v", err)
 	}
-	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("RepoOwner", "repo_id, account_id"), repoID, owner.ID); err != nil {
-		return "", fmt.Errorf("failed to insert repo owner: %v", err)
+	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("LibraryOwner", "library_id, account_id"), libraryID, owner.ID); err != nil {
+		return "", fmt.Errorf("failed to insert library owner: %v", err)
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO RepoInfo (repo_id, name, update_time, version, is_encrypted, last_modifier) VALUES (?, ?, ?, 1, 0, ?)",
-		repoID, name, now, owner.Email); err != nil {
-		return "", fmt.Errorf("failed to insert repo info: %v", err)
+	if _, err := tx.ExecContext(ctx, "INSERT INTO LibraryInfo (library_id, name, update_time, version, is_encrypted, last_modifier) VALUES (?, ?, ?, 1, 0, ?)",
+		libraryID, name, now, owner.Email); err != nil {
+		return "", fmt.Errorf("failed to insert library info: %v", err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("failed to commit transaction: %v", err)
 	}
 
-	return repoID, nil
+	return libraryID, nil
 }
 
-// DeleteRepo removes a repository and all associated DB records.
+// DeleteLibrary removes a repository and all associated DB records.
 // Filesystem objects (commits, blocks, fs) are NOT deleted — GC handles that.
-func DeleteRepo(repoID string) error {
-	// Virtual repos derived from this one go first. Deleting only the origin
-	// removed their VirtualRepo rows but left their Repo, Branch and
-	// RepoUserToken rows in place, so each child survived as an apparently
+func DeleteLibrary(libraryID string) error {
+	// Virtual libraries derived from this one go first. Deleting only the origin
+	// removed their VirtualLibrary rows but left their Library, Branch and
+	// LibraryUserToken rows in place, so each child survived as an apparently
 	// ordinary library — while its StoreID still pointed at the origin's
 	// object store, which GC had just reclaimed. A client kept syncing
 	// against an empty store, and nothing ever cleaned the rows up.
-	children, err := listVirtualRepoIDs(repoID)
+	children, err := listVirtualLibraryIDs(libraryID)
 	if err != nil {
 		return err
 	}
 	for _, child := range children {
-		// A repo listed as its own origin would otherwise recurse forever.
-		if child == repoID {
+		// A library listed as its own origin would otherwise recurse forever.
+		if child == libraryID {
 			continue
 		}
-		if err := DeleteRepo(child); err != nil {
-			return fmt.Errorf("failed to delete virtual repo %s of %s: %v", child, repoID, err)
+		if err := DeleteLibrary(child); err != nil {
+			return fmt.Errorf("failed to delete virtual library %s of %s: %v", child, libraryID, err)
 		}
 	}
 
@@ -1129,52 +1129,52 @@ func DeleteRepo(repoID string) error {
 	defer func() { _ = tx.Rollback() }()
 
 	deletes := []string{
-		"DELETE FROM Repo WHERE repo_id = ?",
-		"DELETE FROM Branch WHERE repo_id = ?",
-		"DELETE FROM RepoHead WHERE repo_id = ?",
-		"DELETE FROM RepoOwner WHERE repo_id = ?",
-		"DELETE FROM RepoInfo WHERE repo_id = ?",
-		"DELETE FROM SharedRepo WHERE repo_id = ?",
-		"DELETE FROM RepoGroup WHERE repo_id = ?",
-		"DELETE FROM InnerPubRepo WHERE repo_id = ?",
-		"DELETE FROM RepoUserToken WHERE repo_id = ?",
-		"DELETE FROM RepoUsage WHERE repo_id = ?",
-		"DELETE FROM RepoHistoryLimit WHERE repo_id = ?",
-		"DELETE FROM RepoValidSince WHERE repo_id = ?",
+		"DELETE FROM Library WHERE library_id = ?",
+		"DELETE FROM Branch WHERE library_id = ?",
+		"DELETE FROM LibraryHead WHERE library_id = ?",
+		"DELETE FROM LibraryOwner WHERE library_id = ?",
+		"DELETE FROM LibraryInfo WHERE library_id = ?",
+		"DELETE FROM SharedLibrary WHERE library_id = ?",
+		"DELETE FROM LibraryGroup WHERE library_id = ?",
+		"DELETE FROM InnerPubLibrary WHERE library_id = ?",
+		"DELETE FROM LibraryUserToken WHERE library_id = ?",
+		"DELETE FROM LibraryUsage WHERE library_id = ?",
+		"DELETE FROM LibraryHistoryLimit WHERE library_id = ?",
+		"DELETE FROM LibraryValidSince WHERE library_id = ?",
 	}
 
 	for _, sqlStr := range deletes {
-		if _, err := tx.ExecContext(ctx, sqlStr, repoID); err != nil {
-			return fmt.Errorf("failed to delete repo records: %v", err)
+		if _, err := tx.ExecContext(ctx, sqlStr, libraryID); err != nil {
+			return fmt.Errorf("failed to delete library records: %v", err)
 		}
 	}
 
-	// Clean up virtual repos referencing this repo
-	if _, err := tx.ExecContext(ctx, "DELETE FROM VirtualRepo WHERE repo_id = ? OR origin_repo = ?", repoID, repoID); err != nil {
-		return fmt.Errorf("failed to delete virtual repo records: %v", err)
+	// Clean up virtual libraries referencing this library
+	if _, err := tx.ExecContext(ctx, "DELETE FROM VirtualLibrary WHERE library_id = ? OR origin_library = ?", libraryID, libraryID); err != nil {
+		return fmt.Errorf("failed to delete virtual library records: %v", err)
 	}
 
 	// Mark for garbage collection
 	// Non-fatal — GC will still find orphaned objects
-	_, _ = tx.ExecContext(ctx, dbutil.InsertOrIgnore("GarbageRepos", "repo_id"), repoID)
+	_, _ = tx.ExecContext(ctx, dbutil.InsertOrIgnore("GarbageLibraries", "library_id"), libraryID)
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %v", err)
 	}
 
-	notify(OnRepoDeleted, repoID)
+	notify(OnLibraryDeleted, libraryID)
 	return nil
 }
 
-// listVirtualRepoIDs returns the repos whose origin is repoID.
-func listVirtualRepoIDs(repoID string) ([]string, error) {
+// listVirtualLibraryIDs returns the libraries whose origin is libraryID.
+func listVirtualLibraryIDs(libraryID string) ([]string, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
 	rows, err := readDB.QueryContext(ctx,
-		"SELECT repo_id FROM VirtualRepo WHERE origin_repo = ?", repoID)
+		"SELECT library_id FROM VirtualLibrary WHERE origin_library = ?", libraryID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list virtual repos of %s: %v", repoID, err)
+		return nil, fmt.Errorf("failed to list virtual libraries of %s: %v", libraryID, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -1182,29 +1182,29 @@ func listVirtualRepoIDs(repoID string) ([]string, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("failed to read virtual repo row: %v", err)
+			return nil, fmt.Errorf("failed to read virtual library row: %v", err)
 		}
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
 }
 
-// OnRepoDeleted and OnTokensRevoked let the fileserver drop cached
+// OnLibraryDeleted and OnTokensRevoked let the fileserver drop cached
 // authorisations the moment the rows they were derived from go away. Without
 // them a cached token or permission stays authoritative for its full TTL,
 // which for a deletion means the server keeps accepting uploads to a library
 // that no longer exists.
 //
-// They are package variables rather than a direct call because repomgr sits
+// They are package variables rather than a direct call because libmgr sits
 // below the fileserver package and cannot import it. Nil until the server
 // registers them, so the CLI paths — which have no caches — need no wiring.
 var (
-	OnRepoDeleted   func(repoID string)
-	OnTokensRevoked func(id account.ID)
+	OnLibraryDeleted func(libraryID string)
+	OnTokensRevoked  func(id account.ID)
 )
 
 // notify fires a registered hook, if one is registered. It is generic because
-// the hooks differ only in what they carry — a repo id, an account id — and a
+// the hooks differ only in what they carry — a library id, an account id — and a
 // copy per argument type is a copy per future hook.
 func notify[T any](hook func(T), arg T) {
 	if hook != nil {

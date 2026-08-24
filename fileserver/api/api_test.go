@@ -11,9 +11,9 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/tokenstore"
 )
@@ -24,13 +24,13 @@ const (
 	roShareUser  = "ro@example.com"
 	strangerUser = "stranger@example.com"
 
-	testRepoID    = "11111111-2222-3333-4444-555555555555"
-	missingRepoID = "99999999-8888-7777-6666-555555555555"
+	testLibraryID    = "11111111-2222-3333-4444-555555555555"
+	missingLibraryID = "99999999-8888-7777-6666-555555555555"
 )
 
-// setupPerms wires up an in-package SQLite database and seeds one repo owned by
+// setupPerms wires up an in-package SQLite database and seeds one library owned by
 // ownerUser, shared "rw" with rwShareUser and "r" with roShareUser.
-// strangerUser is left with no relationship to the repo at all.
+// strangerUser is left with no relationship to the library at all.
 func setupPerms(t *testing.T) {
 	t.Helper()
 
@@ -57,22 +57,22 @@ func setupPerms(t *testing.T) {
 	}
 
 	if _, err := siloPair.Write.Exec(
-		"INSERT INTO RepoOwner (repo_id, account_id) VALUES (?, ?)",
-		testRepoID, accountOf(t, ownerUser).ID); err != nil {
-		t.Fatalf("seed RepoOwner: %v", err)
+		"INSERT INTO LibraryOwner (library_id, account_id) VALUES (?, ?)",
+		testLibraryID, accountOf(t, ownerUser).ID); err != nil {
+		t.Fatalf("seed LibraryOwner: %v", err)
 	}
 	for _, s := range []struct{ user, perm string }{
 		{rwShareUser, "rw"},
 		{roShareUser, "r"},
 	} {
 		if _, err := siloPair.Write.Exec(
-			"INSERT INTO SharedRepo (repo_id, from_account_id, to_account_id, permission) VALUES (?, ?, ?, ?)",
-			testRepoID, accountOf(t, ownerUser).ID, accountOf(t, s.user).ID, s.perm); err != nil {
-			t.Fatalf("seed SharedRepo for %s: %v", s.user, err)
+			"INSERT INTO SharedLibrary (library_id, from_account_id, to_account_id, permission) VALUES (?, ?, ?, ?)",
+			testLibraryID, accountOf(t, ownerUser).ID, accountOf(t, s.user).ID, s.perm); err != nil {
+			t.Fatalf("seed SharedLibrary for %s: %v", s.user, err)
 		}
 	}
 
-	repomgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
+	libmgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
 	share.Init(siloPair.Read, "Group", false)
 	Init(siloPair.Read, siloPair.Write)
 }
@@ -93,10 +93,10 @@ func accountOf(t *testing.T, email string) *account.Account {
 
 // postAccessToken invokes CreateAccessTokenHandler as `user` would, bypassing
 // the auth middleware by seeding the context the same way RequireAuth does.
-func postAccessToken(t *testing.T, user, repoID, op string) *httptest.ResponseRecorder {
+func postAccessToken(t *testing.T, user, libraryID, op string) *httptest.ResponseRecorder {
 	t.Helper()
 
-	body, err := json.Marshal(accessTokenRequest{RepoID: repoID, ObjID: "{\"parent_dir\":\"/\"}", Op: op})
+	body, err := json.Marshal(accessTokenRequest{LibraryID: libraryID, ObjID: "{\"parent_dir\":\"/\"}", Op: op})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
@@ -129,44 +129,44 @@ func TestCreateAccessTokenPermissions(t *testing.T) {
 	setupPerms(t)
 
 	tests := []struct {
-		name     string
-		user     string
-		repoID   string
-		op       string
-		wantCode int
+		name      string
+		user      string
+		libraryID string
+		op        string
+		wantCode  int
 	}{
-		// The headline escalation: a user with no relationship to the repo
+		// The headline escalation: a user with no relationship to the library
 		// could mint an upload token and write into it, because the
 		// /upload-api/ handler authorizes from the token alone.
-		{"stranger cannot mint upload", strangerUser, testRepoID, "upload", http.StatusForbidden},
-		{"stranger cannot mint download", strangerUser, testRepoID, "download", http.StatusForbidden},
-		{"stranger cannot mint downloadblks", strangerUser, testRepoID, "downloadblks", http.StatusForbidden},
-		{"stranger cannot mint download-dir", strangerUser, testRepoID, "download-dir", http.StatusForbidden},
+		{"stranger cannot mint upload", strangerUser, testLibraryID, "upload", http.StatusForbidden},
+		{"stranger cannot mint download", strangerUser, testLibraryID, "download", http.StatusForbidden},
+		{"stranger cannot mint downloadblks", strangerUser, testLibraryID, "downloadblks", http.StatusForbidden},
+		{"stranger cannot mint download-dir", strangerUser, testLibraryID, "download-dir", http.StatusForbidden},
 
 		// A read-only share must not be upgradeable to write.
-		{"read-only share cannot mint upload", roShareUser, testRepoID, "upload", http.StatusForbidden},
-		{"read-only share cannot mint update", roShareUser, testRepoID, "update", http.StatusForbidden},
-		{"read-only share cannot mint upload-link", roShareUser, testRepoID, "upload-link", http.StatusForbidden},
+		{"read-only share cannot mint upload", roShareUser, testLibraryID, "upload", http.StatusForbidden},
+		{"read-only share cannot mint update", roShareUser, testLibraryID, "update", http.StatusForbidden},
+		{"read-only share cannot mint upload-link", roShareUser, testLibraryID, "upload-link", http.StatusForbidden},
 
 		// Legitimate access still works.
-		{"owner can mint upload", ownerUser, testRepoID, "upload", http.StatusOK},
-		{"owner can mint download", ownerUser, testRepoID, "download", http.StatusOK},
-		{"rw share can mint upload", rwShareUser, testRepoID, "upload", http.StatusOK},
-		{"read-only share can mint download", roShareUser, testRepoID, "download", http.StatusOK},
-		{"read-only share can mint view", roShareUser, testRepoID, "view", http.StatusOK},
+		{"owner can mint upload", ownerUser, testLibraryID, "upload", http.StatusOK},
+		{"owner can mint download", ownerUser, testLibraryID, "download", http.StatusOK},
+		{"rw share can mint upload", rwShareUser, testLibraryID, "upload", http.StatusOK},
+		{"read-only share can mint download", roShareUser, testLibraryID, "download", http.StatusOK},
+		{"read-only share can mint view", roShareUser, testLibraryID, "view", http.StatusOK},
 
-		// A repo that doesn't exist looks the same as one you can't see, so
-		// the endpoint can't be used to probe for valid repo IDs.
-		{"missing repo is forbidden not 404", ownerUser, missingRepoID, "download", http.StatusForbidden},
+		// A library that doesn't exist looks the same as one you can't see, so
+		// the endpoint can't be used to probe for valid library IDs.
+		{"missing library is forbidden not 404", ownerUser, missingLibraryID, "download", http.StatusForbidden},
 
 		// Unknown ops never yield a credential.
-		{"unknown op rejected", ownerUser, testRepoID, "delete-everything", http.StatusBadRequest},
-		{"empty-ish op rejected", ownerUser, testRepoID, "UPLOAD", http.StatusBadRequest},
+		{"unknown op rejected", ownerUser, testLibraryID, "delete-everything", http.StatusBadRequest},
+		{"empty-ish op rejected", ownerUser, testLibraryID, "UPLOAD", http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rr := postAccessToken(t, tt.user, tt.repoID, tt.op)
+			rr := postAccessToken(t, tt.user, tt.libraryID, tt.op)
 			if rr.Code != tt.wantCode {
 				t.Errorf("expected %d, got %d (%s)", tt.wantCode, rr.Code, strings.TrimSpace(rr.Body.String()))
 			}
@@ -183,14 +183,14 @@ func TestCreateAccessTokenPermissions(t *testing.T) {
 func TestCreateAccessTokenGrantsMatchRequest(t *testing.T) {
 	setupPerms(t)
 
-	token := tokenFrom(t, postAccessToken(t, ownerUser, testRepoID, "upload"))
+	token := tokenFrom(t, postAccessToken(t, ownerUser, testLibraryID, "upload"))
 
 	info := tokenstore.QueryToken(token)
 	if info == nil {
 		t.Fatal("minted token is not in the token store")
 	}
-	if info.RepoID != testRepoID {
-		t.Errorf("expected repo %s, got %s", testRepoID, info.RepoID)
+	if info.LibraryID != testLibraryID {
+		t.Errorf("expected library %s, got %s", testLibraryID, info.LibraryID)
 	}
 	if info.Op != "upload" {
 		t.Errorf("expected op upload, got %s", info.Op)
@@ -200,15 +200,15 @@ func TestCreateAccessTokenGrantsMatchRequest(t *testing.T) {
 	}
 }
 
-func TestCreateAccessTokenRequiresRepoAndOp(t *testing.T) {
+func TestCreateAccessTokenRequiresLibraryAndOp(t *testing.T) {
 	setupPerms(t)
 
-	for _, tt := range []struct{ name, repoID, op string }{
-		{"no repo", "", "download"},
-		{"no op", testRepoID, ""},
+	for _, tt := range []struct{ name, libraryID, op string }{
+		{"no library", "", "download"},
+		{"no op", testLibraryID, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			rr := postAccessToken(t, ownerUser, tt.repoID, tt.op)
+			rr := postAccessToken(t, ownerUser, tt.libraryID, tt.op)
 			if rr.Code != http.StatusBadRequest {
 				t.Errorf("expected 400, got %d", rr.Code)
 			}
@@ -222,14 +222,14 @@ func TestCreateAccessTokenRequiresRepoAndOp(t *testing.T) {
 // lane spelling "nothing" differently is something a client can only learn by
 // emptying an account and looking. Go hides it — a nil slice ranges zero times
 // — which is why this asserts on the bytes rather than on the decoded value.
-func TestListReposAnswersEmptyArrayNotNull(t *testing.T) {
+func TestListLibrariesAnswersEmptyArrayNotNull(t *testing.T) {
 	setupPerms(t)
 
-	req := httptest.NewRequest("GET", "/api/silo/v1/repos", nil)
+	req := httptest.NewRequest("GET", "/api/silo/v1/libraries", nil)
 	req = middleware.WithAccount(req, accountOf(t, strangerUser))
 
 	rr := httptest.NewRecorder()
-	ListReposHandler(rr, req)
+	ListLibrariesHandler(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", rr.Code, rr.Body.String())
@@ -239,16 +239,16 @@ func TestListReposAnswersEmptyArrayNotNull(t *testing.T) {
 	}
 
 	// And the populated case still lists, so the fix did not empty the endpoint.
-	req = httptest.NewRequest("GET", "/api/silo/v1/repos", nil)
+	req = httptest.NewRequest("GET", "/api/silo/v1/libraries", nil)
 	req = middleware.WithAccount(req, accountOf(t, ownerUser))
 	rr = httptest.NewRecorder()
-	ListReposHandler(rr, req)
+	ListLibrariesHandler(rr, req)
 
-	var repos []map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &repos); err != nil {
+	var libraries []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &libraries); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(repos) != 1 || repos[0]["id"] != testRepoID {
-		t.Errorf("owner's listing = %v, want the one seeded repo", repos)
+	if len(libraries) != 1 || libraries[0]["id"] != testLibraryID {
+		t.Errorf("owner's listing = %v, want the one seeded library", libraries)
 	}
 }

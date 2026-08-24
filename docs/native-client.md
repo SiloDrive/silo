@@ -9,7 +9,7 @@ independently and in order. Nothing here is committed.
 
 ## What the CLI does today, and why it is not sync
 
-`silo put` maps to `client.UploadFile`: one `PUT repos/{id}/entries/{path}`
+`silo put` maps to `client.UploadFile`: one `PUT libraries/{id}/entries/{path}`
 with the whole file as the request body for a small file, or the block surface
 for anything over one block. (It used to mint an upload access token and POST a
 multipart body; that was the pre-0.4.0 shape and this document described it for
@@ -44,7 +44,7 @@ same album twice costs disk once either way. It costs bandwidth twice.
 
 ## Tier 1 — recursive put
 
-`silo put -r <repo-id> <local-dir> [remote-dir]`. **Landed**, and not in the
+`silo put -r <library-id> <local-dir> [remote-dir]`. **Landed**, and not in the
 shape this section proposed.
 
 The plan here was a `filepath.WalkDir` over `client.Mkdir` and
@@ -88,7 +88,7 @@ can compute the same ids the server would with stdlib SHA-1 and a loop.
 That makes this flow available:
 
 1. Chunk locally at the server's `block_size`, SHA-1 each block.
-2. `POST /api/silo/v1/repos/{id}/blocks/missing` — the server replies with the
+2. `POST /api/silo/v1/libraries/{id}/blocks/missing` — the server replies with the
    ids it needs.
 3. Upload only those, then name the whole list in one call.
 
@@ -108,10 +108,10 @@ mostly-unchanged tree sends almost nothing.
   that response is already where a client asks what this server will accept,
   and a block size a client has to guess is the one input that silently
   degrades a dedup-aware upload to "upload everything".
-- **Encrypted repos need the repo key.** `writeChunk` encrypts and then hashes
+- **Encrypted libraries need the library key.** `writeChunk` encrypts and then hashes
   (`fileop.go:2731`), so the block id is the SHA-1 of the ciphertext. Without
   the key a client cannot compute matching ids. Moot in practice: Silo cannot
-  create encrypted repos and will not support Seafile's format — see
+  create encrypted libraries and will not support Seafile's format — see
   `docs/encryption.md`. Worth noting that hashing *after* encrypting is the
   right order and a constraint any future scheme keeps.
 - **Fixed chunking is weak against insertions.** Insert one byte at the front
@@ -126,7 +126,7 @@ mostly-unchanged tree sends almost nothing.
 
 ## Tier 3 — a headless sync agent
 
-`silo sync <repo-id> <local-dir>`.
+`silo sync <library-id> <local-dir>`.
 
 The full write path: build `Seafile` and `SeafDir` objects, `recv-fs` them,
 mint a commit, advance HEAD, and handle the read direction and conflicts.

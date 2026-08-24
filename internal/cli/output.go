@@ -16,8 +16,8 @@ func printJSON(w io.Writer, v any) error {
 	return enc.Encode(v)
 }
 
-func printReposText(w io.Writer, repos []client.Repo) {
-	for _, r := range repos {
+func printLibrariesText(w io.Writer, libraries []client.Library) {
+	for _, r := range libraries {
 		name := r.Name
 		if name == "" {
 			name = "(unnamed)"

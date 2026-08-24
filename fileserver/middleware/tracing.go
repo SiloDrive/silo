@@ -14,7 +14,7 @@ import (
 // It has to run here rather than in the outer handler because the template is
 // only known once matching has happened, and it matters because every sync
 // route embeds a library id and most embed an object id too: named by URL,
-// "GET /repo/{repoid}/block/{id}" would arrive as a few hundred thousand
+// "GET /libraries/{libraryid}/blocks/{id}" would arrive as a few hundred thousand
 // distinct endpoints of one request each, which is a lot of rows and no
 // percentiles.
 //
@@ -40,7 +40,7 @@ func NameTransaction(next http.Handler) http.Handler {
 //
 // Silo's sync routes pin their variables with regexes, so GetPathTemplate
 // hands back the pattern as written — the permission check arrives as
-// "/repo/{repoid:[\da-z]{8}-[\da-z]{4}-…}/permission-check{slash:\/?}". As a
+// "/libraries/{libraryid:[\da-z]{8}-[\da-z]{4}-…}/permission-check{slash:\/?}". As a
 // transaction name that is unreadable in a list and different again for every
 // route that spells the same constraint slightly differently, so the
 // constraints come off and the optional-trailing-slash variable, which is

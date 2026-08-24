@@ -80,17 +80,17 @@ func TestMovesIntoOwnSubtree(t *testing.T) {
 // commit — silent data loss reported as 200. Refused before anything is
 // written. See docs/bugs/fixed/move-onto-directory-destroys-it.md.
 func TestMoveOntoDirectoryIsRefused(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
-	mkdir(t, repoID, acct, "/dst")
-	put(t, repoID, acct, "/dst/keep.txt", []byte("precious"))
-	put(t, repoID, acct, "/src.txt", []byte("mover"))
+	mkdir(t, libraryID, acct, "/dst")
+	put(t, libraryID, acct, "/dst/keep.txt", []byte("precious"))
+	put(t, libraryID, acct, "/src.txt", []byte("mover"))
 
-	w := postOp(t, repoID, acct, "/src.txt", "move", "/dst")
+	w := postOp(t, libraryID, acct, "/src.txt", "move", "/dst")
 	if w.Code != http.StatusConflict {
 		t.Fatalf("move onto a directory = %d (%s), want 409", w.Code, w.Body.String())
 	}
-	if !exists(t, repoID, acct, "/dst/keep.txt") {
+	if !exists(t, libraryID, acct, "/dst/keep.txt") {
 		t.Error("the refused move destroyed the destination subtree anyway")
 	}
 }
@@ -98,16 +98,16 @@ func TestMoveOntoDirectoryIsRefused(t *testing.T) {
 // A move of a directory into its own subtree cannot be done at all: the
 // destination would be inside the thing being removed.
 func TestMoveIntoOwnSubtreeIsRefused(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
-	mkdir(t, repoID, acct, "/docs")
-	put(t, repoID, acct, "/docs/keep.txt", []byte("precious"))
+	mkdir(t, libraryID, acct, "/docs")
+	put(t, libraryID, acct, "/docs/keep.txt", []byte("precious"))
 
-	w := postOp(t, repoID, acct, "/docs", "move", "/docs/nested")
+	w := postOp(t, libraryID, acct, "/docs", "move", "/docs/nested")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("move into own subtree = %d (%s), want 400", w.Code, w.Body.String())
 	}
-	if !exists(t, repoID, acct, "/docs/keep.txt") {
+	if !exists(t, libraryID, acct, "/docs/keep.txt") {
 		t.Error("the refused move destroyed the subtree anyway")
 	}
 }
@@ -115,17 +115,17 @@ func TestMoveIntoOwnSubtreeIsRefused(t *testing.T) {
 // A copy leaves the source where it was, and transfers no content: the new
 // entry names the object the source already names.
 func TestCopyLeavesTheSourceInPlace(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	put(t, repoID, acct, "/original.txt", []byte("content"))
+	libraryID, acct := storeV2Library(t)
+	put(t, libraryID, acct, "/original.txt", []byte("content"))
 
-	w := postOp(t, repoID, acct, "/original.txt", "copy", "/duplicate.txt")
+	w := postOp(t, libraryID, acct, "/original.txt", "copy", "/duplicate.txt")
 	if w.Code != http.StatusCreated {
 		t.Fatalf("copy = %d (%s), want 201", w.Code, w.Body.String())
 	}
-	if !exists(t, repoID, acct, "/original.txt") {
+	if !exists(t, libraryID, acct, "/original.txt") {
 		t.Error("the copy removed its source")
 	}
-	if !exists(t, repoID, acct, "/duplicate.txt") {
+	if !exists(t, libraryID, acct, "/duplicate.txt") {
 		t.Error("the copy did not appear")
 	}
 
@@ -146,20 +146,20 @@ func TestCopyLeavesTheSourceInPlace(t *testing.T) {
 // source as it stands at this commit, so it is a snapshot of a finite thing.
 // This is the one case a move must refuse and a copy need not.
 func TestCopyIntoOwnSubtreeTerminates(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	mkdir(t, repoID, acct, "/docs")
-	put(t, repoID, acct, "/docs/keep.txt", []byte("precious"))
+	libraryID, acct := storeV2Library(t)
+	mkdir(t, libraryID, acct, "/docs")
+	put(t, libraryID, acct, "/docs/keep.txt", []byte("precious"))
 
-	w := postOp(t, repoID, acct, "/docs", "copy", "/docs/nested")
+	w := postOp(t, libraryID, acct, "/docs", "copy", "/docs/nested")
 	if w.Code != http.StatusCreated {
 		t.Fatalf("copy into own subtree = %d (%s), want 201", w.Code, w.Body.String())
 	}
-	if !exists(t, repoID, acct, "/docs/nested/keep.txt") {
+	if !exists(t, libraryID, acct, "/docs/nested/keep.txt") {
 		t.Error("the copy did not bring the subtree with it")
 	}
 	// One level only, and no deeper: the snapshot was taken before the copy
 	// landed, so it cannot contain itself.
-	if exists(t, repoID, acct, "/docs/nested/nested") {
+	if exists(t, libraryID, acct, "/docs/nested/nested") {
 		t.Error("the copy contains itself; it was not a snapshot")
 	}
 }
@@ -169,40 +169,40 @@ func TestCopyIntoOwnSubtreeTerminates(t *testing.T) {
 // component that is not a directory read as a plain 404 through this
 // endpoint and as 409 everywhere else the same error is produced.
 func TestMoveSourceThroughAFileAnswersConflictNotNotFound(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	put(t, repoID, acct, "/f.txt", []byte("not a directory"))
+	libraryID, acct := storeV2Library(t)
+	put(t, libraryID, acct, "/f.txt", []byte("not a directory"))
 
-	w := postOp(t, repoID, acct, "/f.txt/nested", "move", "/elsewhere")
+	w := postOp(t, libraryID, acct, "/f.txt/nested", "move", "/elsewhere")
 	if w.Code != http.StatusConflict {
 		t.Fatalf("move through a file = %d (%s), want 409", w.Code, w.Body.String())
 	}
 }
 
-func mkdir(t *testing.T, repoID string, acct *account.Account, path string) {
+func mkdir(t *testing.T, libraryID string, acct *account.Account, path string) {
 	t.Helper()
-	vars := map[string]string{"repoid": repoID, "path": strings.TrimPrefix(path, "/")}
+	vars := map[string]string{"libraryid": libraryID, "path": strings.TrimPrefix(path, "/")}
 	if w := do(t, entriesHandler, acct, "PUT", "/x?type=dir", vars, nil); w.Code != http.StatusCreated {
 		t.Fatalf("mkdir %s = %d (%s)", path, w.Code, w.Body.String())
 	}
 }
 
-func put(t *testing.T, repoID string, acct *account.Account, path string, content []byte) {
+func put(t *testing.T, libraryID string, acct *account.Account, path string, content []byte) {
 	t.Helper()
-	vars := map[string]string{"repoid": repoID, "path": strings.TrimPrefix(path, "/")}
+	vars := map[string]string{"libraryid": libraryID, "path": strings.TrimPrefix(path, "/")}
 	if w := do(t, entriesHandler, acct, "PUT", "/x", vars, content); w.Code != http.StatusCreated {
 		t.Fatalf("put %s = %d (%s)", path, w.Code, w.Body.String())
 	}
 }
 
-func postOp(t *testing.T, repoID string, acct *account.Account, path, op, to string) *httptest.ResponseRecorder {
+func postOp(t *testing.T, libraryID string, acct *account.Account, path, op, to string) *httptest.ResponseRecorder {
 	t.Helper()
-	vars := map[string]string{"repoid": repoID, "path": strings.TrimPrefix(path, "/")}
+	vars := map[string]string{"libraryid": libraryID, "path": strings.TrimPrefix(path, "/")}
 	body, _ := json.Marshal(map[string]string{"op": op, "to": to})
 	return do(t, entriesHandler, acct, "POST", "/x", vars, body)
 }
 
-func exists(t *testing.T, repoID string, acct *account.Account, path string) bool {
+func exists(t *testing.T, libraryID string, acct *account.Account, path string) bool {
 	t.Helper()
-	vars := map[string]string{"repoid": repoID, "path": strings.TrimPrefix(path, "/")}
+	vars := map[string]string{"libraryid": libraryID, "path": strings.TrimPrefix(path, "/")}
 	return do(t, entriesHandler, acct, "HEAD", "/x", vars, nil).Code == http.StatusOK
 }

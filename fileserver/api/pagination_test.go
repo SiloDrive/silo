@@ -120,7 +120,7 @@ func TestParseLimit(t *testing.T) {
 }
 
 func TestNextLinkSupersedesTheOpeningParameters(t *testing.T) {
-	r := httptest.NewRequest("GET", "/api/silo/v1/repos/x/changes?since=aaa&limit=10", nil)
+	r := httptest.NewRequest("GET", "/api/silo/v1/libraries/x/changes?since=aaa&limit=10", nil)
 	w := httptest.NewRecorder()
 	setNextLink(w, r, "CURSOR")
 
@@ -151,7 +151,7 @@ func TestNextLinkSupersedesTheOpeningParameters(t *testing.T) {
 	if q.Get("limit") != "10" {
 		t.Errorf("limit = %q, want 10 — without it the next page is the whole rest", q.Get("limit"))
 	}
-	if u.Path != "/api/silo/v1/repos/x/changes" {
+	if u.Path != "/api/silo/v1/libraries/x/changes" {
 		t.Errorf("path = %q", u.Path)
 	}
 }

@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS GroupStructure (group_id INTEGER PRIMARY KEY, path VA
 -- It is also the only way it can work at all on an end-to-end encrypted
 -- library, where the server can open a commit's public section but is doing so
 -- on every load to learn something it wrote itself.
-CREATE TABLE IF NOT EXISTS Branch (name VARCHAR(10), repo_id CHAR(40), commit_id CHAR(64), root_id CHAR(64), PRIMARY KEY (repo_id, name));
+CREATE TABLE IF NOT EXISTS Branch (name VARCHAR(10), library_id CHAR(40), commit_id CHAR(64), root_id CHAR(64), PRIMARY KEY (library_id, name));
 -- A library, and how its bytes are made.
 --
 -- The chunker parameters are stored per library rather than compiled in,
@@ -130,8 +130,8 @@ CREATE TABLE IF NOT EXISTS Branch (name VARCHAR(10), repo_id CHAR(40), commit_id
 -- e2ee is the library's own answer to "can the server read this", and it is
 -- not the old is_encrypted: that was a password over a server-side key, and
 -- it is being deleted along with the columns that fed it.
-CREATE TABLE IF NOT EXISTS Repo (
-  repo_id      CHAR(37) PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS Library (
+  library_id      CHAR(37) PRIMARY KEY,
   chunker      TEXT     NOT NULL,
   chunk_min    INTEGER  NOT NULL,
   chunk_target INTEGER  NOT NULL,
@@ -160,21 +160,21 @@ CREATE TABLE IF NOT EXISTS ObjectSize (
   object_id CHAR(64) PRIMARY KEY,
   file_size BIGINT   NOT NULL
 );
-CREATE TABLE IF NOT EXISTS RepoOwner (repo_id CHAR(37) PRIMARY KEY, account_id BLOB NOT NULL REFERENCES Account(id));
-CREATE INDEX IF NOT EXISTS OwnerIndex ON RepoOwner (account_id);
+CREATE TABLE IF NOT EXISTS LibraryOwner (library_id CHAR(37) PRIMARY KEY, account_id BLOB NOT NULL REFERENCES Account(id));
+CREATE INDEX IF NOT EXISTS OwnerIndex ON LibraryOwner (account_id);
 
-CREATE TABLE IF NOT EXISTS RepoGroup (repo_id CHAR(37), group_id INTEGER, account_id BLOB NOT NULL REFERENCES Account(id), permission CHAR(15));
-CREATE UNIQUE INDEX IF NOT EXISTS groupid_repoid_indx on RepoGroup (group_id, repo_id);
-CREATE INDEX IF NOT EXISTS repogroup_repoid_index on RepoGroup (repo_id);
-CREATE INDEX IF NOT EXISTS repogroup_account_indx on RepoGroup (account_id);
-CREATE TABLE IF NOT EXISTS InnerPubRepo (repo_id CHAR(37) PRIMARY KEY, permission CHAR(15));
+CREATE TABLE IF NOT EXISTS LibraryGroup (library_id CHAR(37), group_id INTEGER, account_id BLOB NOT NULL REFERENCES Account(id), permission CHAR(15));
+CREATE UNIQUE INDEX IF NOT EXISTS groupid_libraryid_indx on LibraryGroup (group_id, library_id);
+CREATE INDEX IF NOT EXISTS librarygroup_libraryid_index on LibraryGroup (library_id);
+CREATE INDEX IF NOT EXISTS librarygroup_account_indx on LibraryGroup (account_id);
+CREATE TABLE IF NOT EXISTS InnerPubLibrary (library_id CHAR(37) PRIMARY KEY, permission CHAR(15));
 
-CREATE TABLE IF NOT EXISTS RepoUserToken (repo_id CHAR(37), account_id BLOB NOT NULL REFERENCES Account(id), token CHAR(41), ctime BIGINT);
-CREATE UNIQUE INDEX IF NOT EXISTS repo_token_indx on RepoUserToken (repo_id, token);
-CREATE INDEX IF NOT EXISTS repo_token_account_indx on RepoUserToken (account_id);
-CREATE TABLE IF NOT EXISTS RepoTokenPeerInfo (token CHAR(41) PRIMARY KEY, peer_id CHAR(41), peer_ip VARCHAR(50), peer_name VARCHAR(255), sync_time BIGINT, client_ver VARCHAR(20));
+CREATE TABLE IF NOT EXISTS LibraryUserToken (library_id CHAR(37), account_id BLOB NOT NULL REFERENCES Account(id), token CHAR(41), ctime BIGINT);
+CREATE UNIQUE INDEX IF NOT EXISTS library_token_indx on LibraryUserToken (library_id, token);
+CREATE INDEX IF NOT EXISTS library_token_account_indx on LibraryUserToken (account_id);
+CREATE TABLE IF NOT EXISTS LibraryTokenPeerInfo (token CHAR(41) PRIMARY KEY, peer_id CHAR(41), peer_ip VARCHAR(50), peer_name VARCHAR(255), sync_time BIGINT, client_ver VARCHAR(20));
 
-CREATE TABLE IF NOT EXISTS RepoHead (repo_id CHAR(37) PRIMARY KEY, branch_name VARCHAR(10));
+CREATE TABLE IF NOT EXISTS LibraryHead (library_id CHAR(37) PRIMARY KEY, branch_name VARCHAR(10));
 -- What a library holds, as the number quota is charged on.
 --
 -- size is logical size at head: the sum of file_size over the files the head
@@ -193,22 +193,22 @@ CREATE TABLE IF NOT EXISTS RepoHead (repo_id CHAR(37) PRIMARY KEY, branch_name V
 -- delta is computed between, and because a commit that publishes an identical
 -- root changes no total.
 --
--- Separate from RepoSize, which the dying scheduler owns, because the two
+-- Separate from Librariesize, which the dying scheduler owns, because the two
 -- cover disjoint sets of libraries -- 40-hex heads there, 64-hex heads here --
 -- and sharing a row would have made the deletion a rewrite instead of a
 -- subtraction.
-CREATE TABLE IF NOT EXISTS RepoUsage (
-  repo_id    CHAR(37) PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS LibraryUsage (
+  library_id    CHAR(37) PRIMARY KEY,
   size       BIGINT   NOT NULL,
   file_count BIGINT   NOT NULL,
   root_id    CHAR(64) NOT NULL
 );
-CREATE TABLE IF NOT EXISTS RepoHistoryLimit (repo_id CHAR(37) PRIMARY KEY, days INTEGER);
-CREATE TABLE IF NOT EXISTS RepoValidSince (repo_id CHAR(37) PRIMARY KEY, timestamp BIGINT);
+CREATE TABLE IF NOT EXISTS LibraryHistoryLimit (library_id CHAR(37) PRIMARY KEY, days INTEGER);
+CREATE TABLE IF NOT EXISTS LibraryValidSince (library_id CHAR(37) PRIMARY KEY, timestamp BIGINT);
 
-CREATE TABLE IF NOT EXISTS VirtualRepo (repo_id CHAR(36) PRIMARY KEY, origin_repo CHAR(36), path TEXT, base_commit CHAR(40));
-CREATE INDEX IF NOT EXISTS virtualrepo_origin_repo_idx ON VirtualRepo (origin_repo);
-CREATE TABLE IF NOT EXISTS GarbageRepos (repo_id CHAR(36) PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS VirtualLibrary (library_id CHAR(36) PRIMARY KEY, origin_library CHAR(36), path TEXT, base_commit CHAR(40));
+CREATE INDEX IF NOT EXISTS virtuallibrary_origin_library_idx ON VirtualLibrary (origin_library);
+CREATE TABLE IF NOT EXISTS GarbageLibraries (library_id CHAR(36) PRIMARY KEY);
 
 
 -- A library's display metadata, and the authority for it.
@@ -242,26 +242,26 @@ CREATE TABLE IF NOT EXISTS GarbageRepos (repo_id CHAR(36) PRIMARY KEY);
 -- last_modifier holds an address rather than an account id, and stays that
 -- way. It is display data of the same kind as a commit author: a record of
 -- what someone was called at the time, not a key anything is resolved from.
-CREATE TABLE IF NOT EXISTS RepoInfo (repo_id CHAR(36) PRIMARY KEY, name VARCHAR(255) NOT NULL, update_time INTEGER, version INTEGER, is_encrypted INTEGER, last_modifier VARCHAR(255), status INTEGER DEFAULT 0, type VARCHAR(10));
-CREATE INDEX IF NOT EXISTS RepoInfoTypeIndex on RepoInfo (type);
+CREATE TABLE IF NOT EXISTS LibraryInfo (library_id CHAR(36) PRIMARY KEY, name VARCHAR(255) NOT NULL, update_time INTEGER, version INTEGER, is_encrypted INTEGER, last_modifier VARCHAR(255), status INTEGER DEFAULT 0, type VARCHAR(10));
+CREATE INDEX IF NOT EXISTS LibraryInfoTypeIndex on LibraryInfo (type);
 
 CREATE TABLE IF NOT EXISTS UserQuota (account_id BLOB PRIMARY KEY REFERENCES Account(id), quota BIGINT);
 
-CREATE TABLE IF NOT EXISTS SharedRepo (repo_id CHAR(37), from_account_id BLOB NOT NULL REFERENCES Account(id), to_account_id BLOB NOT NULL REFERENCES Account(id), permission CHAR(15));
-CREATE INDEX IF NOT EXISTS RepoIdIndex on SharedRepo (repo_id);
-CREATE INDEX IF NOT EXISTS FromAccountIndex on SharedRepo (from_account_id);
-CREATE INDEX IF NOT EXISTS ToAccountIndex on SharedRepo (to_account_id);
+CREATE TABLE IF NOT EXISTS SharedLibrary (library_id CHAR(37), from_account_id BLOB NOT NULL REFERENCES Account(id), to_account_id BLOB NOT NULL REFERENCES Account(id), permission CHAR(15));
+CREATE INDEX IF NOT EXISTS LibraryIdIndex on SharedLibrary (library_id);
+CREATE INDEX IF NOT EXISTS FromAccountIndex on SharedLibrary (from_account_id);
+CREATE INDEX IF NOT EXISTS ToAccountIndex on SharedLibrary (to_account_id);
 
-CREATE TABLE IF NOT EXISTS GCID (repo_id CHAR(36) PRIMARY KEY, gc_id VARCHAR(10));
-CREATE TABLE IF NOT EXISTS LastGCID (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id CHAR(36) NOT NULL, client_id VARCHAR(128) NOT NULL, gc_id VARCHAR(10) NOT NULL);
-CREATE UNIQUE INDEX IF NOT EXISTS lastgcid_repoid_clientid_idx ON LastGCID (repo_id, client_id);
+CREATE TABLE IF NOT EXISTS GCID (library_id CHAR(36) PRIMARY KEY, gc_id VARCHAR(10));
+CREATE TABLE IF NOT EXISTS LastGCID (id INTEGER PRIMARY KEY AUTOINCREMENT, library_id CHAR(36) NOT NULL, client_id VARCHAR(128) NOT NULL, gc_id VARCHAR(10) NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS lastgcid_libraryid_clientid_idx ON LastGCID (library_id, client_id);
 
 CREATE TABLE IF NOT EXISTS ApiToken (token CHAR(40) PRIMARY KEY, account_id BLOB NOT NULL REFERENCES Account(id), ctime BIGINT, expires_at BIGINT NOT NULL);
 CREATE INDEX IF NOT EXISTS apitoken_account_idx ON ApiToken (account_id);
 CREATE INDEX IF NOT EXISTS apitoken_expires_idx ON ApiToken (expires_at);
 
 -- One credential row for every secret a client presents to Silo, replacing the
--- three separate stores (ApiToken, RepoUserToken, session JWTs) that could not
+-- three separate stores (ApiToken, LibraryUserToken, session JWTs) that could not
 -- be revoked together. Both lanes still write their own tables. Nothing reads
 -- this one yet.
 --

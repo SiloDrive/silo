@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/store"
 )
 
@@ -26,7 +26,7 @@ import (
 // Eight writers start from the same head. One wins; the rest either win a
 // later attempt or come back saying "contention", never "broken".
 func TestConcurrentWritesReportContentionNotFailure(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
 	const writers = 8
 	codes := make([]int, writers)
@@ -35,7 +35,7 @@ func TestConcurrentWritesReportContentionNotFailure(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			vars := map[string]string{"repoid": repoID, "path": fmt.Sprintf("f%d.txt", i)}
+			vars := map[string]string{"libraryid": libraryID, "path": fmt.Sprintf("f%d.txt", i)}
 			w := do(t, entriesHandler, acct, "PUT", "/x", vars, bytes.Repeat([]byte("x"), 64))
 			codes[i] = w.Code
 		}()
@@ -52,19 +52,19 @@ func TestConcurrentWritesReportContentionNotFailure(t *testing.T) {
 }
 
 // The same exhaustion without depending on a schedule: move the head, then
-// hand mutateTree a repo still carrying the commit it read before that. Its
+// hand mutateTree a library still carrying the commit it read before that. Its
 // compare-and-swap cannot match on the first attempt, so with no retries left
 // the budget is guaranteed to run out.
 func TestLostRaceIsReportedAsContention(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
-	stale, err := repomgr.GetWithReason(repoID)
+	stale, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// A real write, so the branch moves out from under the stale handle.
-	vars := map[string]string{"repoid": repoID, "path": "winner.txt"}
+	vars := map[string]string{"libraryid": libraryID, "path": "winner.txt"}
 	if w := do(t, entriesHandler, acct, "PUT", "/x", vars, []byte("first")); w.Code != http.StatusCreated {
 		t.Fatalf("uncontended write = %d (%s)", w.Code, w.Body.String())
 	}
@@ -100,7 +100,7 @@ func TestWriteCommitErr(t *testing.T) {
 		wantCode       int
 		wantRetryAfter bool
 	}{
-		{"retries exhausted", fmt.Errorf("stop updating repo x: %w", ErrRetriesExhausted),
+		{"retries exhausted", fmt.Errorf("stop updating library x: %w", ErrRetriesExhausted),
 			http.StatusServiceUnavailable, true},
 		{"conflict", ErrConflict, http.StatusServiceUnavailable, true},
 		// A GC conflict is retried identically, so it is told apart from a lost

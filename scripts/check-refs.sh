@@ -29,7 +29,7 @@ while IFS= read -r hit; do
 	path="${ref%:*}"
 	num="${ref##*:}"
 
-	# A citation may be repo-relative or a bare basename. Resolve it to exactly
+	# A citation may be library-relative or a bare basename. Resolve it to exactly
 	# one file, and skip it when it is ambiguous — guessing would report a
 	# failure against a file the doc never meant.
 	mapfile -t matches < <(find . -path ./.git -prune -o -name "$(basename "$path")" -print 2>/dev/null | sed 's|^\./||' | grep -E "(^|/)${path}$")

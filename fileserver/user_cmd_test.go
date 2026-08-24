@@ -281,7 +281,7 @@ func TestDisableAndEnableFlipTheAccount(t *testing.T) {
 func TestDisableLeavesTheTokensInPlace(t *testing.T) {
 	userTestStore(t)
 
-	before := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE account_id = ?", acctFor(t, victim).ID)
+	before := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, victim).ID)
 	if before == 0 {
 		t.Fatal("the fixture seeded no sync tokens, so this proves nothing")
 	}
@@ -290,7 +290,7 @@ func TestDisableLeavesTheTokensInPlace(t *testing.T) {
 		t.Fatalf("disable returned %v", err)
 	}
 
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != before {
+	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != before {
 		t.Errorf("disabling deleted sync tokens: %d then %d", before, n)
 	}
 	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, victim).ID); n == 0 {

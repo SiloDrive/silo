@@ -22,7 +22,7 @@ const (
 	pingPeriod = 30 * time.Second
 	pongWait   = 90 * time.Second
 
-	// checkTokenPeriod is how often each client sweeps its subscribed repos
+	// checkTokenPeriod is how often each client sweeps its subscribed libraries
 	// for expired JWTs. Subscribe JWTs are minted with a 72h lifetime in
 	// sync_api.go, so hourly is frequent enough.
 	checkTokenPeriod = 1 * time.Hour
@@ -38,8 +38,8 @@ type Client struct {
 
 	// User is the authenticated username, set on the first
 	// successful subscribe from the JWT claims. It is unused today (only
-	// repo-update events flow, and those fan out to every subscriber of a
-	// repo), but will be needed when per-user events like
+	// library-update events flow, and those fan out to every subscriber of a
+	// library), but will be needed when per-user events like
 	// folder-perm-changed are added — the upstream notification server
 	// filters fanout by this field. See notification-server/event.go for
 	// the upstream pattern.
@@ -52,8 +52,8 @@ type Client struct {
 	// lastPongUnix is read and written atomically.
 	lastPongUnix atomic.Int64
 
-	reposMu sync.Mutex
-	repos   map[string]int64 // repoID -> JWT exp (unix). nil after close.
+	librariesMu sync.Mutex
+	libraries   map[string]int64 // libraryID -> JWT exp (unix). nil after close.
 
 	closeOnce sync.Once
 	closeCh   chan struct{}
@@ -61,12 +61,12 @@ type Client struct {
 }
 
 type subscribeFrame struct {
-	Repos []subscribeRepo `json:"repos"`
+	Libraries []subscribeLibrary `json:"libraries"`
 }
 
-type subscribeRepo struct {
-	RepoID string `json:"id"`
-	Token  string `json:"jwt_token"`
+type subscribeLibrary struct {
+	LibraryID string `json:"id"`
+	Token     string `json:"jwt_token"`
 }
 
 // NewClient wires a freshly-upgraded WebSocket connection into the notif
@@ -74,11 +74,11 @@ type subscribeRepo struct {
 // connection is closed and all bookkeeping has been cleaned up.
 func NewClient(conn *websocket.Conn) {
 	c := &Client{
-		ID:      nextID(),
-		conn:    conn,
-		wch:     make(chan *Message, wchBuffer),
-		repos:   make(map[string]int64),
-		closeCh: make(chan struct{}),
+		ID:        nextID(),
+		conn:      conn,
+		wch:       make(chan *Message, wchBuffer),
+		libraries: make(map[string]int64),
+		closeCh:   make(chan struct{}),
 	}
 	c.lastPongUnix.Store(time.Now().Unix())
 
@@ -94,15 +94,15 @@ func NewClient(conn *websocket.Conn) {
 	go c.recover(c.tokenExpiryLoop)
 	c.wg.Wait()
 
-	// Drain subscriptions. Setting repos=nil blocks any late subscribe()
+	// Drain subscriptions. Setting libraries=nil blocks any late subscribe()
 	// from a still-in-flight message to re-add state after close.
-	c.reposMu.Lock()
-	ids := make([]string, 0, len(c.repos))
-	for id := range c.repos {
+	c.librariesMu.Lock()
+	ids := make([]string, 0, len(c.libraries))
+	for id := range c.libraries {
 		ids = append(ids, id)
 	}
-	c.repos = nil
-	c.reposMu.Unlock()
+	c.libraries = nil
+	c.librariesMu.Unlock()
 	for _, id := range ids {
 		removeSubscription(id, c)
 	}
@@ -192,13 +192,13 @@ func (c *Client) tokenExpiryLoop() {
 		case <-ticker.C:
 			now := time.Now().Unix()
 			var expired []string
-			c.reposMu.Lock()
-			for id, exp := range c.repos {
+			c.librariesMu.Lock()
+			for id, exp := range c.libraries {
 				if exp < now {
 					expired = append(expired, id)
 				}
 			}
-			c.reposMu.Unlock()
+			c.librariesMu.Unlock()
 			for _, id := range expired {
 				c.unsubscribe(id)
 				c.sendJWTExpired(id)
@@ -216,13 +216,13 @@ func (c *Client) handleMessage(msg *Message) error {
 		if err := json.Unmarshal(msg.Content, &frame); err != nil {
 			return fmt.Errorf("bad subscribe frame: %w", err)
 		}
-		for _, r := range frame.Repos {
-			user, exp, ok := parseNotifToken(r.Token, r.RepoID)
+		for _, r := range frame.Libraries {
+			user, exp, ok := parseNotifToken(r.Token, r.LibraryID)
 			if !ok {
-				c.sendJWTExpired(r.RepoID)
+				c.sendJWTExpired(r.LibraryID)
 				continue
 			}
-			c.subscribe(r.RepoID, user, exp)
+			c.subscribe(r.LibraryID, user, exp)
 		}
 		return nil
 	case "unsubscribe":
@@ -230,8 +230,8 @@ func (c *Client) handleMessage(msg *Message) error {
 		if err := json.Unmarshal(msg.Content, &frame); err != nil {
 			return fmt.Errorf("bad unsubscribe frame: %w", err)
 		}
-		for _, r := range frame.Repos {
-			c.unsubscribe(r.RepoID)
+		for _, r := range frame.Libraries {
+			c.unsubscribe(r.LibraryID)
 		}
 		return nil
 	default:
@@ -240,29 +240,29 @@ func (c *Client) handleMessage(msg *Message) error {
 	}
 }
 
-func (c *Client) subscribe(repoID, user string, exp int64) {
-	c.reposMu.Lock()
-	if c.repos == nil {
-		c.reposMu.Unlock()
+func (c *Client) subscribe(libraryID, user string, exp int64) {
+	c.librariesMu.Lock()
+	if c.libraries == nil {
+		c.librariesMu.Unlock()
 		return
 	}
-	c.repos[repoID] = exp
+	c.libraries[libraryID] = exp
 	if c.User == "" {
 		c.User = user
 	}
-	c.reposMu.Unlock()
-	addSubscription(repoID, c)
+	c.librariesMu.Unlock()
+	addSubscription(libraryID, c)
 }
 
-func (c *Client) unsubscribe(repoID string) {
-	c.reposMu.Lock()
-	delete(c.repos, repoID)
-	c.reposMu.Unlock()
-	removeSubscription(repoID, c)
+func (c *Client) unsubscribe(libraryID string) {
+	c.librariesMu.Lock()
+	delete(c.libraries, libraryID)
+	c.librariesMu.Unlock()
+	removeSubscription(libraryID, c)
 }
 
-func (c *Client) sendJWTExpired(repoID string) {
-	content, err := json.Marshal(map[string]string{"repo_id": repoID})
+func (c *Client) sendJWTExpired(libraryID string) {
+	content, err := json.Marshal(map[string]string{"library_id": libraryID})
 	if err != nil {
 		return
 	}
@@ -273,12 +273,12 @@ func (c *Client) sendJWTExpired(repoID string) {
 	}
 }
 
-// parseNotifToken validates a repo-scoped notification JWT. On success it
+// parseNotifToken validates a library-scoped notification JWT. On success it
 // returns the claimed username, expiry (unix seconds), and true.
-func parseNotifToken(tokenString, repoID string) (string, int64, bool) {
-	// An empty repoID would otherwise match the empty RepoID claim of a
+func parseNotifToken(tokenString, libraryID string) (string, int64, bool) {
+	// An empty libraryID would otherwise match the empty LibraryID claim of a
 	// session token, which is signed with the same key.
-	if tokenString == "" || repoID == "" {
+	if tokenString == "" || libraryID == "" {
 		return "", 0, false
 	}
 	claims := &utils.MyClaims{}
@@ -295,7 +295,7 @@ func parseNotifToken(tokenString, repoID string) (string, int64, bool) {
 	if err != nil || !tok.Valid {
 		return "", 0, false
 	}
-	if claims.RepoID != repoID {
+	if claims.LibraryID != libraryID {
 		return "", 0, false
 	}
 	exp, err := claims.GetExpirationTime()

@@ -13,7 +13,7 @@ const (
 )
 
 type AccessInfo struct {
-	RepoID     string
+	LibraryID  string
 	ObjID      string
 	Op         string
 	User       string
@@ -23,10 +23,10 @@ type AccessInfo struct {
 
 var tokens sync.Map
 
-func CreateToken(repoID, objID, op, user string, oneTime bool) string {
+func CreateToken(libraryID, objID, op, user string, oneTime bool) string {
 	token := uuid.New().String()
 	info := &AccessInfo{
-		RepoID:     repoID,
+		LibraryID:  libraryID,
 		ObjID:      objID,
 		Op:         op,
 		User:       user,

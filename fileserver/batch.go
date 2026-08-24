@@ -10,7 +10,7 @@ import (
 
 // Batch: many operations, one commit.
 //
-//	POST /api/silo/v1/repos/{repo}/batch   {"ops":[…]}
+//	POST /api/silo/v1/libraries/{library}/batch   {"ops":[…]}
 //
 // Five hundred files dragged into a folder was five hundred requests, five
 // hundred GenNewCommit calls, five hundred rounds of branch-head contention,
@@ -64,10 +64,10 @@ const errUnsupportedOp = `Unsupported op; the operations are "mkdir", "delete", 
 func batchHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
 	user := acct.Email
-	repoID := mux.Vars(r)["repoid"]
+	libraryID := mux.Vars(r)["libraryid"]
 
-	repo := entryRepo(w, repoID, acct.ID, true)
-	if repo == nil {
+	library := entryLibrary(w, libraryID, acct.ID, true)
+	if library == nil {
 		return
 	}
 
@@ -90,9 +90,9 @@ func batchHandler(w http.ResponseWriter, r *http.Request) {
 	// writes to. The root's id is its ETag on the entries surface already —
 	// GET entries/ returns it — so "apply only if the library is still what I
 	// read" is spelled the same way here as anywhere else.
-	if !preconditionsHold(w, r, repo, "/") {
+	if !preconditionsHold(w, r, library, "/") {
 		return
 	}
 
-	batchV2(w, r, repo, user, body.Ops)
+	batchV2(w, r, library, user, body.Ops)
 }

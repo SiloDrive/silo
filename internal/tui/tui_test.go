@@ -89,14 +89,14 @@ func browseModel(n, width, height int) model {
 		entries[i] = client.DirEntry{Name: fmt.Sprintf("file%03d", i), Type: "file", Size: &size}
 	}
 	return model{
-		view:           viewBrowse,
-		browseRepoID:   "repo",
-		browseRepoName: "Library",
-		browsePath:     "/",
-		dirEntries:     entries,
-		serverURL:      "http://localhost:8082",
-		width:          width,
-		height:         height,
+		view:              viewBrowse,
+		browseLibraryID:   "library",
+		browseLibraryName: "Library",
+		browsePath:        "/",
+		dirEntries:        entries,
+		serverURL:         "http://localhost:8082",
+		width:             width,
+		height:            height,
 	}
 }
 
@@ -218,14 +218,14 @@ func TestResizeRelaidsTheList(t *testing.T) {
 	}
 }
 
-// The library list draws two rows per repo, so its window is measured in
-// repos rather than rows.
-func TestReposListWindowsByRepo(t *testing.T) {
-	repos := make([]client.Repo, 40)
-	for i := range repos {
-		repos[i] = client.Repo{ID: fmt.Sprintf("id-%03d", i), Name: fmt.Sprintf("lib%03d", i)}
+// The library list draws two rows per library, so its window is measured in
+// libraries rather than rows.
+func TestLibrariesListWindowsByLibrary(t *testing.T) {
+	libraries := make([]client.Library, 40)
+	for i := range libraries {
+		libraries[i] = client.Library{ID: fmt.Sprintf("id-%03d", i), Name: fmt.Sprintf("lib%03d", i)}
 	}
-	m := model{view: viewRepos, repos: repos, serverURL: "http://localhost:8082", width: 80, height: 24}
+	m := model{view: viewLibraries, libraries: libraries, serverURL: "http://localhost:8082", width: 80, height: 24}
 
 	m = press(t, m, "G")
 	view := m.View()

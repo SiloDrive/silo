@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/repomgr"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/store"
 )
 
@@ -16,15 +16,15 @@ import (
 // that tree would half-apply the batch — the one outcome a client cannot
 // recover from, because it has no way to find out which half.
 func TestAFailedBatchCommitsNothing(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
-	before, err := repomgr.GetWithReason(repoID)
+	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
-		map[string]string{"repoid": repoID},
+		map[string]string{"libraryid": libraryID},
 		[]byte(`{"ops":[{"op":"mkdir","path":"/made"},{"op":"delete","path":"/absent"}]}`))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("batch = %d (%s), want 404 on the second op", w.Code, w.Body.String())
@@ -37,7 +37,7 @@ func TestAFailedBatchCommitsNothing(t *testing.T) {
 		t.Errorf("index = %v, want 1 — a client needs to know which op failed", out["index"])
 	}
 
-	after, err := repomgr.GetWithReason(repoID)
+	after, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestAFailedBatchCommitsNothing(t *testing.T) {
 
 	// The directory the first op made must not be reachable.
 	rr := do(t, getEntry, acct, http.MethodGet, "/entries/made",
-		map[string]string{"repoid": repoID, "path": "made"}, nil)
+		map[string]string{"libraryid": libraryID, "path": "made"}, nil)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("the first op's directory survived a failed batch: %d", rr.Code)
 	}
@@ -59,20 +59,20 @@ func TestAFailedBatchCommitsNothing(t *testing.T) {
 // The ordinary case, and the two properties that make a batch worth having:
 // operations see each other's effects, and they land in one commit.
 func TestABatchAppliesInOrderAndCommitsOnce(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	before, err := repomgr.GetWithReason(repoID)
+	libraryID, acct := storeV2Library(t)
+	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
-		map[string]string{"repoid": repoID},
+		map[string]string{"libraryid": libraryID},
 		[]byte(`{"ops":[{"op":"mkdir","path":"/a"},{"op":"mkdir","path":"/a/b"},{"op":"mkdir","path":"/a/b/c"}]}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("batch = %d (%s), want 200", w.Code, w.Body.String())
 	}
 
-	after, err := repomgr.GetWithReason(repoID)
+	after, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestABatchAppliesInOrderAndCommitsOnce(t *testing.T) {
 
 	// The third mkdir could only succeed if it saw the first two.
 	rr := do(t, getEntry, acct, http.MethodGet, "/entries/a/b/c",
-		map[string]string{"repoid": repoID, "path": "a/b/c"}, nil)
+		map[string]string{"libraryid": libraryID, "path": "a/b/c"}, nil)
 	if rr.Code != http.StatusOK {
 		t.Errorf("the nested directory is not there: %d (%s)", rr.Code, rr.Body.String())
 	}
@@ -116,25 +116,25 @@ func TestABatchAppliesInOrderAndCommitsOnce(t *testing.T) {
 // what the mutation layer means, and porter is a second implementation of the
 // same rules. So it is recorded here rather than changed in passing.
 func TestBatchMkdirOfAnExistingDirectoryIsRefusedOnStoreV2(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
-		map[string]string{"repoid": repoID}, []byte(`{"ops":[{"op":"mkdir","path":"/x"}]}`))
+		map[string]string{"libraryid": libraryID}, []byte(`{"ops":[{"op":"mkdir","path":"/x"}]}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("first mkdir = %d (%s)", w.Code, w.Body.String())
 	}
-	before, err := repomgr.GetWithReason(repoID)
+	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	w = do(t, batchHandler, acct, http.MethodPost, "/batch",
-		map[string]string{"repoid": repoID}, []byte(`{"ops":[{"op":"mkdir","path":"/x"}]}`))
+		map[string]string{"libraryid": libraryID}, []byte(`{"ops":[{"op":"mkdir","path":"/x"}]}`))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("second mkdir = %d (%s), want 409", w.Code, w.Body.String())
 	}
 
-	after, err := repomgr.GetWithReason(repoID)
+	after, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,20 +148,20 @@ func TestBatchMkdirOfAnExistingDirectoryIsRefusedOnStoreV2(t *testing.T) {
 // PutNode has no self-reference check of its own — the guard Rename gets for
 // free from splitLeaf refusing the root, copy does not.
 func TestBatchCopyOfTheLibraryRootIsRefused(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	before, err := repomgr.GetWithReason(repoID)
+	libraryID, acct := storeV2Library(t)
+	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
-		map[string]string{"repoid": repoID},
+		map[string]string{"libraryid": libraryID},
 		[]byte(`{"ops":[{"op":"copy","path":"/","to":"/backup"}]}`))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("copy of the library root = %d (%s), want 400", w.Code, w.Body.String())
 	}
 
-	after, err := repomgr.GetWithReason(repoID)
+	after, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestBatchCopyOfTheLibraryRootIsRefused(t *testing.T) {
 // Resumable upload: chunks go up separately, then one call names them in
 // order. The file that comes back has to be the file that went up.
 func TestChunksNamedInOrderBecomeTheFile(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
 	parts := [][]byte{
 		bytes.Repeat([]byte("alpha-"), 40000),
@@ -187,7 +187,7 @@ func TestChunksNamedInOrderBecomeTheFile(t *testing.T) {
 		ids = append(ids, id.String())
 		whole = append(whole, p...)
 		w := idReq(t, putChunkHandler, acct, http.MethodPut, "/blocks/"+id.String(),
-			map[string]string{"repoid": repoID, "id": id.String()}, p, nil)
+			map[string]string{"libraryid": libraryID, "id": id.String()}, p, nil)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("PUT chunk = %d (%s)", w.Code, w.Body.String())
 		}
@@ -195,13 +195,13 @@ func TestChunksNamedInOrderBecomeTheFile(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]any{"blocks": ids})
 	w := do(t, putEntry, acct, http.MethodPut, "/entries/joined.dat?type=blocks",
-		map[string]string{"repoid": repoID, "path": "joined.dat"}, body)
+		map[string]string{"libraryid": libraryID, "path": "joined.dat"}, body)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("PUT ?type=blocks = %d (%s), want 201", w.Code, w.Body.String())
 	}
 
 	rr := do(t, getEntry, acct, http.MethodGet, "/entries/joined.dat",
-		map[string]string{"repoid": repoID, "path": "joined.dat"}, nil)
+		map[string]string{"libraryid": libraryID, "path": "joined.dat"}, nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET = %d (%s)", rr.Code, rr.Body.String())
 	}
@@ -213,12 +213,12 @@ func TestChunksNamedInOrderBecomeTheFile(t *testing.T) {
 // Naming a chunk the server does not hold is 424 with the list, not a file
 // with a hole in it.
 func TestNamingAnAbsentChunkIsRefused(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 	absent := store.ChunkID([]byte("never uploaded")).String()
 	body, _ := json.Marshal(map[string]any{"blocks": []string{absent}})
 
 	w := do(t, putEntry, acct, http.MethodPut, "/entries/holey.dat?type=blocks",
-		map[string]string{"repoid": repoID, "path": "holey.dat"}, body)
+		map[string]string{"libraryid": libraryID, "path": "holey.dat"}, body)
 	if w.Code != http.StatusFailedDependency {
 		t.Fatalf("naming an absent chunk = %d (%s), want 424", w.Code, w.Body.String())
 	}
@@ -229,21 +229,21 @@ func TestNamingAnAbsentChunkIsRefused(t *testing.T) {
 // the ignore list are this package's rule — and the batch was the one write
 // path that did not apply it.
 func TestABatchRefusesANameTheSingleOpPathWouldRefuse(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	before, err := repomgr.GetWithReason(repoID)
+	libraryID, acct := storeV2Library(t)
+	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	long := strings.Repeat("n", 300)
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
-		map[string]string{"repoid": repoID},
+		map[string]string{"libraryid": libraryID},
 		[]byte(`{"ops":[{"op":"mkdir","path":"/fine"},{"op":"mkdir","path":"/`+long+`"}]}`))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("batch with a 300-character name = %d (%s), want 400", w.Code, w.Body.String())
 	}
 
-	after, err := repomgr.GetWithReason(repoID)
+	after, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,14 +256,14 @@ func TestABatchRefusesANameTheSingleOpPathWouldRefuse(t *testing.T) {
 // the last operation of a long batch costs nothing — no manifests built, no
 // tree rewritten, nothing to throw away.
 func TestABatchRefusesAnUnknownOpBeforeApplyingAnything(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	before, err := repomgr.GetWithReason(repoID)
+	libraryID, acct := storeV2Library(t)
+	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
-		map[string]string{"repoid": repoID},
+		map[string]string{"libraryid": libraryID},
 		[]byte(`{"ops":[{"op":"mkdir","path":"/a"},{"op":"frobnicate","path":"/b"}]}`))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("batch with an unknown op = %d (%s), want 400", w.Code, w.Body.String())
@@ -276,7 +276,7 @@ func TestABatchRefusesAnUnknownOpBeforeApplyingAnything(t *testing.T) {
 		t.Errorf("index = %v, want 1", out["index"])
 	}
 
-	after, err := repomgr.GetWithReason(repoID)
+	after, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,10 +291,10 @@ func TestABatchRefusesAnUnknownOpBeforeApplyingAnything(t *testing.T) {
 // query for a value the server had just written — and one that returns a
 // different writer's commit if theirs lands in between.
 func TestABatchReportsTheCommitItMinted(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
-		map[string]string{"repoid": repoID}, []byte(`{"ops":[{"op":"mkdir","path":"/d"}]}`))
+		map[string]string{"libraryid": libraryID}, []byte(`{"ops":[{"op":"mkdir","path":"/d"}]}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("batch = %d (%s)", w.Code, w.Body.String())
 	}
@@ -306,7 +306,7 @@ func TestABatchReportsTheCommitItMinted(t *testing.T) {
 		t.Error("changed = false for a batch that made a directory")
 	}
 
-	after, err := repomgr.GetWithReason(repoID)
+	after, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}

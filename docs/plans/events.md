@@ -4,8 +4,8 @@
 
 The database records what is true and destroys every record of how it got
 there. The pattern repeats across the schema: `FolderPermTimestamp`,
-`FileLockTimestamp`, `RepoInfo.update_time`, `RepoTokenPeerInfo.sync_time`
-are all last-write-wins stamps, and `RepoSyncError` kept exactly one error
+`FileLockTimestamp`, `LibraryInfo.update_time`, `LibraryTokenPeerInfo.sync_time`
+are all last-write-wins stamps, and `LibrariesyncError` kept exactly one error
 per token — the latest — with a PRIMARY KEY that guaranteed the one before
 it was gone. (It has since been dropped, along with the other tables no code
 read; the pattern is what matters, not that particular table.) The new
@@ -62,15 +62,15 @@ release — an unknown name in the table is a bug, not an extension point.
 
 | Event | Class | Payload (JSON) |
 |---|---|---|
-| `library.created` / `library.deleted` / `library.converted` | audit | repo_id, name¹, e2ee flag |
-| `member.granted` / `member.changed` / `member.revoked` | audit | repo_id, grantee, permission, grantee public key³ |
+| `library.created` / `library.deleted` / `library.converted` | audit | library_id, name¹, e2ee flag |
+| `member.granted` / `member.changed` / `member.revoked` | audit | library_id, grantee, permission, grantee public key³ |
 | `credential.created` / `credential.revoked` / `credential.expired` | audit | credential id, kind, label, scope² |
-| `share.created` / `share.revoked` | audit | share id, flavor, repo_id |
+| `share.created` / `share.revoked` | audit | share id, flavor, library_id |
 | `quota.changed`, `user.deactivated`, `user.reactivated` | audit | before/after, target |
 | `credential.used` | trace | credential id, remote addr — rate-limited, see below |
 | `share.opened` | trace | share id, remote addr, user agent |
-| `gc.completed` | trace | repo_id, gc_id, bytes reclaimed, duration |
-| `sync.error` | trace | token, error — what `RepoSyncError` kept one of |
+| `gc.completed` | trace | library_id, gc_id, bytes reclaimed, duration |
+| `sync.error` | trace | token, error — what `LibrariesyncError` kept one of |
 
 ¹ Library names are server-visible metadata in both library types today.
 ² A scope in an E2EE library is ciphertext here exactly as it is in the
@@ -110,11 +110,11 @@ CREATE TABLE IF NOT EXISTS EventLog (
   class      TEXT    NOT NULL,          -- 'audit' | 'trace'
   event      TEXT    NOT NULL,          -- the closed taxonomy above
   actor      TEXT,                      -- credential id; NULL for the server itself (gc, expiry)
-  repo_id    CHAR(37),                  -- NULL for account-level events
+  library_id    CHAR(37),                  -- NULL for account-level events
   payload    TEXT    NOT NULL,          -- JSON; stored bytes are the canonical bytes
   chain_hash BLOB                       -- audit rows only; see The chain
 );
-CREATE INDEX IF NOT EXISTS eventlog_repo_idx  ON EventLog (repo_id, seq);
+CREATE INDEX IF NOT EXISTS eventlog_library_idx  ON EventLog (library_id, seq);
 CREATE INDEX IF NOT EXISTS eventlog_actor_idx ON EventLog (actor, seq);
 ```
 
@@ -147,7 +147,7 @@ CREATE INDEX IF NOT EXISTS eventlog_actor_idx ON EventLog (actor, seq);
 ## The chain
 
 Every `audit` row carries
-`chain_hash = SHA-256(prev_chain_hash ‖ seq ‖ ts ‖ event ‖ actor ‖ repo_id ‖ payload)`
+`chain_hash = SHA-256(prev_chain_hash ‖ seq ‖ ts ‖ event ‖ actor ‖ library_id ‖ payload)`
 over the **stored bytes, verbatim** — canonicalisation-by-storage, no
 re-serialization to disagree about. The hash must exist before the row
 does, and `seq` is what the insert produces — the manifest circularity
@@ -159,7 +159,7 @@ advances it), the append-only rule survives (no UPDATE patches a hash in
 afterwards), and the chain still binds position explicitly rather than
 leaning on `prev` alone. Fields are joined by `0x00`; NULL is encoded as
 the single byte `0xFF` — impossible in UTF-8, hence unambiguous — never
-as empty. Repo ids and credential ids are non-empty in practice, but
+as empty. Library ids and credential ids are non-empty in practice, but
 "NULL and empty hash alike" is the canonicalisation class the format work
 spent nine rounds exterminating, and the marker byte costs nothing.
 Genesis is `prev = SHA-256("silo/events/v1")`, domain-separated
@@ -194,7 +194,7 @@ waits for evidence anyone needs it.
   is rows, newest last, bounded page size.
 - `GET /events/head` — the audit chain head, for pinning.
 - **Later, explicitly not phase 1**: a long-poll/SSE tail as porter's
-  wake-up channel — "head moved on a repo you can see" instead of
+  wake-up channel — "head moved on a library you can see" instead of
   per-library polling. The tail is a *notification*, not truth: the client
   wakes and syncs from the DAG exactly as it would have. Deferred until
   porter's polling cost is measured and hurts.
@@ -212,7 +212,7 @@ waits for evidence anyone needs it.
 2. **Trace events + the retention sweeper.** `share.opened` lands with
    sharing's phase 1 — the share surface should not ship without its
    trail. `sync.error` starts writing — there is nothing to retire, since
-   `RepoSyncError` has already been dropped.
+   `LibrariesyncError` has already been dropped.
 3. **The chain + `/events/head` + client pinning.** Porter pins
    `(seq, head)` in its local index and verifies on reconnect. The
    threat-model paragraph in store-v2.md gains its clause.

@@ -21,11 +21,11 @@ import (
 	"github.com/dkam/silo/fileserver/apitokenstore"
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/metrics"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/tokenstore"
 	"github.com/dkam/silo/fileserver/utils"
@@ -190,7 +190,7 @@ func openStores() error {
 	}
 	option.LoadFileServerOptions(configFile)
 	loadDatabase()
-	repomgr.Init(siloPair.Read, siloPair.Write, dataDir)
+	libmgr.Init(siloPair.Read, siloPair.Write, dataDir)
 	return nil
 }
 
@@ -318,7 +318,7 @@ func Run(args []string) error {
 		log.SetLevel(level)
 	}
 
-	repomgr.Init(siloPair.Read, siloPair.Write, dataDir)
+	libmgr.Init(siloPair.Read, siloPair.Write, dataDir)
 
 	share.Init(siloPair.Read, option.GroupTableName, option.CloudMode)
 
@@ -536,30 +536,30 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.Use(middleware.RequireAuth)
 	apiRouter.HandleFunc("/access-tokens", api.CreateAccessTokenHandler).Methods("POST")
 	apiRouter.HandleFunc("/account/usage", api.AccountUsageHandler).Methods("GET")
-	apiRouter.HandleFunc("/repos", api.ListReposHandler).Methods("GET")
-	apiRouter.HandleFunc("/repos", api.CreateRepoHandler).Methods("POST")
-	apiRouter.HandleFunc("/repos/{repoid}", api.DeleteRepoHandler).Methods("DELETE")
-	apiRouter.HandleFunc("/repos/{repoid}", patchRepoHandler).Methods("PATCH")
-	apiRouter.HandleFunc("/repos/{repoid}/changes", api.ChangesHandler).Methods("GET")
+	apiRouter.HandleFunc("/libraries", api.ListLibrariesHandler).Methods("GET")
+	apiRouter.HandleFunc("/libraries", api.CreateLibraryHandler).Methods("POST")
+	apiRouter.HandleFunc("/libraries/{libraryid}", api.DeleteLibraryHandler).Methods("DELETE")
+	apiRouter.HandleFunc("/libraries/{libraryid}", patchLibraryHandler).Methods("PATCH")
+	apiRouter.HandleFunc("/libraries/{libraryid}/changes", api.ChangesHandler).Methods("GET")
 	// The chunk surface. "missing" cannot collide with a chunk id — the id
 	// route only matches 64 hex characters — but it is listed first anyway,
 	// because relying on a regex to keep two routes apart is the kind of thing
 	// that stops being true when someone loosens the regex.
-	apiRouter.HandleFunc("/repos/{repoid}/batch", batchHandler).Methods("POST")
-	apiRouter.HandleFunc("/repos/{repoid}/blocks/missing", blocksMissingHandler).Methods("POST")
+	apiRouter.HandleFunc("/libraries/{libraryid}/batch", batchHandler).Methods("POST")
+	apiRouter.HandleFunc("/libraries/{libraryid}/blocks/missing", blocksMissingHandler).Methods("POST")
 	// The id-addressed surface. A chunk id is sixty-four hex characters, so
 	// the id and the route regex cannot collide — the width is the format, not
 	// a convention. See objects.go.
-	apiRouter.HandleFunc("/repos/{repoid}/blocks/{id:[0-9a-f]{64}}", getChunkHandler).Methods("GET", "HEAD")
-	apiRouter.HandleFunc("/repos/{repoid}/blocks/{id:[0-9a-f]{64}}", putChunkHandler).Methods("PUT")
-	apiRouter.HandleFunc("/repos/{repoid}/objects/{id:[0-9a-f]{64}}", getObjectHandler).Methods("GET", "HEAD")
-	apiRouter.HandleFunc("/repos/{repoid}/objects/{id:[0-9a-f]{64}}", putObjectHandler).Methods("PUT")
-	apiRouter.HandleFunc("/repos/{repoid}/head", putHeadHandler).Methods("PUT")
+	apiRouter.HandleFunc("/libraries/{libraryid}/blocks/{id:[0-9a-f]{64}}", getChunkHandler).Methods("GET", "HEAD")
+	apiRouter.HandleFunc("/libraries/{libraryid}/blocks/{id:[0-9a-f]{64}}", putChunkHandler).Methods("PUT")
+	apiRouter.HandleFunc("/libraries/{libraryid}/objects/{id:[0-9a-f]{64}}", getObjectHandler).Methods("GET", "HEAD")
+	apiRouter.HandleFunc("/libraries/{libraryid}/objects/{id:[0-9a-f]{64}}", putObjectHandler).Methods("PUT")
+	apiRouter.HandleFunc("/libraries/{libraryid}/head", putHeadHandler).Methods("PUT")
 	// The entries surface. One route, all methods: entriesHandler answers a
 	// bad method with 405 and an Allow header, which mux would otherwise turn
 	// into a 404 that reads as "wrong path".
-	apiRouter.HandleFunc("/repos/{repoid}/entries/{path:.*}", entriesHandler)
-	apiRouter.HandleFunc("/repos/{repoid}/notify-token", api.CreateNotifyTokenHandler).Methods("POST")
+	apiRouter.HandleFunc("/libraries/{libraryid}/entries/{path:.*}", entriesHandler)
+	apiRouter.HandleFunc("/libraries/{libraryid}/notify-token", api.CreateNotifyTokenHandler).Methods("POST")
 
 	if option.HasRedisOptions {
 		r.Use(metrics.MetricMiddleware)

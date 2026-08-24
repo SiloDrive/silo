@@ -16,9 +16,9 @@ import (
 // The block surface: the Silo lane's answer to "don't send what the server
 // already has, and don't start over when a transfer dies".
 //
-//	POST /api/silo/v1/repos/{repo}/blocks/missing              {"blocks":[…]} -> {"missing":[…]}
-//	PUT  /api/silo/v1/repos/{repo}/blocks/{id}                 the chunk's bytes
-//	PUT  /api/silo/v1/repos/{repo}/entries/{path}?type=blocks  {"blocks":[…]}
+//	POST /api/silo/v1/libraries/{library}/blocks/missing              {"blocks":[…]} -> {"missing":[…]}
+//	PUT  /api/silo/v1/libraries/{library}/blocks/{id}                 the chunk's bytes
+//	PUT  /api/silo/v1/libraries/{library}/entries/{path}?type=blocks  {"blocks":[…]}
 //
 // Whole-file PUT still exists and is still the right call for one small file:
 // it is one request, and it needs no hashing on the client. What it cannot do
@@ -51,8 +51,8 @@ const maxBlockListBody = 16 << 20
 // "yes, I have that one" to anyone with read access to any library turns this
 // into an oracle for whether a given file exists somewhere on the server.
 func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
-	repo := entryRepo(w, mux.Vars(r)["repoid"], middleware.GetAccountID(r), true)
-	if repo == nil {
+	library := entryLibrary(w, mux.Vars(r)["libraryid"], middleware.GetAccountID(r), true)
+	if library == nil {
 		return
 	}
 
@@ -72,15 +72,15 @@ func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		ids = append(ids, id)
 	}
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	missing, _, err := chunkInventory(st, ids)
 	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory chunks in repo %s", repo.ID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to inventory chunks in library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

@@ -34,7 +34,7 @@ careful about a directory you keep things in.
 | file | surface |
 |---|---|
 | `auth_test.rb` | login, tokens, expiry |
-| `repos_test.rb` | create, list, delete |
+| `libraries_test.rb` | create, list, delete |
 | `tokens_test.rb` | sync and access tokens, and that a library you cannot see is indistinguishable from one that does not exist |
 | `blocks_test.rb` | `blocks/missing`, `PUT blocks/{sha1}`, `?type=blocks`, hash refusal, resume |
 | `batch_test.rb` | many operations as one commit, all-or-nothing, `If-Match` on the root |

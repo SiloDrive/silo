@@ -197,7 +197,7 @@ func ValidateSessionToken(tokenString string) (account.ID, error) {
 
 	// A token of another kind that somehow satisfied the checks above would
 	// carry no subject, and an empty identity must never reach a handler:
-	// share.CheckPerm on no account denies, but repo creation would happily
+	// share.CheckPerm on no account denies, but library creation would happily
 	// accept it.
 	u, err := uuid.Parse(claims.Sub)
 	if err != nil {

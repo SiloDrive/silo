@@ -73,10 +73,10 @@ func TypeDir(dataDir, objType string) string {
 	return filepath.Join(Root(dataDir), objType)
 }
 
-// RepoDir returns the directory holding one repository's objects of one type.
-// The store id is not always the repo's own id — a virtual repo's objects live
+// LibraryDir returns the directory holding one repository's objects of one type.
+// The store id is not always the library's own id — a virtual library's objects live
 // in its origin's store — so callers pass whichever they mean.
-func RepoDir(dataDir, objType, storeID string) string {
+func LibraryDir(dataDir, objType, storeID string) string {
 	return filepath.Join(TypeDir(dataDir, objType), storeID)
 }
 
@@ -130,23 +130,23 @@ type storageBackend interface {
 	// write stores r under packID and publishes it atomically. A reader
 	// never sees a partial pack, and with opts.sync the pack is durable
 	// before write returns.
-	write(repoID, packID string, r io.Reader, opts writeOpts) error
+	write(libraryID, packID string, r io.Reader, opts writeOpts) error
 	// readAt reads len(p) bytes from packID starting at off, with io.ReaderAt
 	// semantics: a short read returns io.EOF.
-	readAt(repoID, packID string, p []byte, off int64) (int, error)
+	readAt(libraryID, packID string, p []byte, off int64) (int, error)
 	// read streams a whole pack into w.
-	read(repoID, packID string, w io.Writer) error
+	read(libraryID, packID string, w io.Writer) error
 	// stat returns a pack's size, or ErrNotFound.
-	stat(repoID, packID string) (int64, error)
-	// list calls fn for every pack the repo holds. fn's error stops the walk
+	stat(libraryID, packID string) (int64, error)
+	// list calls fn for every pack the library holds. fn's error stops the walk
 	// and is returned.
-	list(repoID string, fn func(packID string, size int64) error) error
+	list(libraryID string, fn func(packID string, size int64) error) error
 	// remove deletes one pack. Removing a pack that is not there is not an
 	// error: deletion is idempotent because compaction has to be
 	// interruptible at every step.
-	remove(repoID, packID string) error
-	// removeRepo deletes every pack a repo holds.
-	removeRepo(repoID string) error
+	remove(libraryID, packID string) error
+	// removeLibrary deletes every pack a library holds.
+	removeLibrary(libraryID string) error
 }
 
 // New returns a new object store for a given type of objects.
@@ -172,11 +172,11 @@ func New(confPath string, dataDir string, objType string) *ObjectStore {
 func (s *ObjectStore) ready() error { return s.initErr }
 
 // Read data from storage backends.
-func (s *ObjectStore) Read(repoID string, objID string, w io.Writer) error {
+func (s *ObjectStore) Read(libraryID string, objID string, w io.Writer) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.read(repoID, objID, w)
+	return s.backend.read(libraryID, objID, w)
 }
 
 // ReadAt reads len(p) bytes of an object starting at off, with io.ReaderAt
@@ -185,19 +185,19 @@ func (s *ObjectStore) Read(repoID string, objID string, w io.Writer) error {
 // The whole point of the reshape: a chunk read becomes a ranged read of the
 // pack holding it, which is one ranged GET against object storage rather than
 // a fetch of the pack. Here, where an object is its own pack, it is a seek.
-func (s *ObjectStore) ReadAt(repoID string, objID string, p []byte, off int64) (int, error) {
+func (s *ObjectStore) ReadAt(libraryID string, objID string, p []byte, off int64) (int, error) {
 	if err := s.ready(); err != nil {
 		return 0, err
 	}
-	return s.backend.readAt(repoID, objID, p, off)
+	return s.backend.readAt(libraryID, objID, p, off)
 }
 
 // Write data to storage backends.
-func (s *ObjectStore) Write(repoID string, objID string, r io.Reader, sync bool) error {
+func (s *ObjectStore) Write(libraryID string, objID string, r io.Reader, sync bool) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.write(repoID, objID, r, writeOpts{sync: sync})
+	return s.backend.write(libraryID, objID, r, writeOpts{sync: sync})
 }
 
 // WriteVerified writes an object and publishes it only if its content hashes
@@ -215,11 +215,11 @@ func (s *ObjectStore) Write(repoID string, objID string, r io.Reader, sync bool)
 // The check runs before the publish, not after the write, which matters: the
 // object may already exist with the correct content, and a verify-then-delete
 // would let one bad upload destroy a good block.
-func (s *ObjectStore) WriteVerified(repoID string, objID string, r io.Reader, sync bool) error {
+func (s *ObjectStore) WriteVerified(libraryID string, objID string, r io.Reader, sync bool) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.write(repoID, objID, r, writeOpts{sync: sync, verify: verifierFor(objID)})
+	return s.backend.write(libraryID, objID, r, writeOpts{sync: sync, verify: verifierFor(objID)})
 }
 
 // Exists reports whether an object is present and usable.
@@ -229,8 +229,8 @@ func (s *ObjectStore) WriteVerified(repoID string, objID string, r io.Reader, sy
 // published but never made durable — the pre-fsync failure mode. Calling it
 // present is what made that damage permanent: /check-blocks would answer that
 // the client already uploaded the block, so it would never be sent again.
-func (s *ObjectStore) Exists(repoID string, objID string) (bool, error) {
-	size, err := s.Stat(repoID, objID)
+func (s *ObjectStore) Exists(libraryID string, objID string) (bool, error) {
+	size, err := s.Stat(libraryID, objID)
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
@@ -241,35 +241,35 @@ func (s *ObjectStore) Exists(repoID string, objID string) (bool, error) {
 }
 
 // Stat returns an object's size, or ErrNotFound.
-func (s *ObjectStore) Stat(repoID string, objID string) (int64, error) {
+func (s *ObjectStore) Stat(libraryID string, objID string) (int64, error) {
 	if err := s.ready(); err != nil {
 		return -1, err
 	}
-	return s.backend.stat(repoID, objID)
+	return s.backend.stat(libraryID, objID)
 }
 
-// List calls fn for every object a repo holds, with its size. fn's error stops
+// List calls fn for every object a library holds, with its size. fn's error stops
 // the walk and is returned.
-func (s *ObjectStore) List(repoID string, fn func(objID string, size int64) error) error {
+func (s *ObjectStore) List(libraryID string, fn func(objID string, size int64) error) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.list(repoID, fn)
+	return s.backend.list(libraryID, fn)
 }
 
 // Remove deletes one object. Removing an object that is not there is not an
 // error.
-func (s *ObjectStore) Remove(repoID string, objID string) error {
+func (s *ObjectStore) Remove(libraryID string, objID string) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.remove(repoID, objID)
+	return s.backend.remove(libraryID, objID)
 }
 
-// RemoveRepo deletes every object a repo holds.
-func (s *ObjectStore) RemoveRepo(repoID string) error {
+// RemoveLibrary deletes every object a library holds.
+func (s *ObjectStore) RemoveLibrary(libraryID string) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.removeRepo(repoID)
+	return s.backend.removeLibrary(libraryID)
 }

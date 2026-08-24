@@ -13,7 +13,7 @@ fetch a file.
 
 Downloading a file through `/api/silo/v1` used to take two requests:
 
-1. `GET /api/silo/v1/repos/{id}/entries/{path}` — bearer auth → **302**
+1. `GET /api/silo/v1/libraries/{id}/entries/{path}` — bearer auth → **302**
 2. `GET /files/{token}/{name}` — **no auth header**; the token *is* the credential
 
 The token is a UUID in a `sync.Map` (`fileserver/tokenstore`), created with
@@ -59,7 +59,7 @@ outlived every caller that justified it.
 
 `/api/silo/v1` has no browser-shaped consumer. There is no web UI in this
 binary — no templates, no `http.FileServer`, no embedded assets — and the share
-link and web file-access routes (`/f/`, `/u/`, `/d/`, `/repos/{id}/files/{path}`)
+link and web file-access routes (`/f/`, `/u/`, `/d/`, `/libraries/{id}/files/{path}`)
 were already removed for exactly this reason: each authorized by POSTing to
 Seahub, so with Seahub gone they could only ever fail.
 
@@ -80,11 +80,11 @@ issue as many ranged reads against one URL as it likes. It reuses the existing
 machinery, which never needed a token in the first place:
 
 ```go
-doFileRange(rsp, r, repo, fileID, fileName, op, byteRanges, user, textCharset)
-doFile(rsp, r, repo, fileID, fileName, op, cryptKey, user, textCharset)
+doFileRange(rsp, r, library, fileID, fileName, op, byteRanges, user, textCharset)
+doFile(rsp, r, library, fileID, fileName, op, cryptKey, user, textCharset)
 ```
 
-`accessCB` was the dispatch to copy: range when `!repo.IsEncrypted &&
+`accessCB` was the dispatch to copy: range when `!library.IsEncrypted &&
 len(byteRanges) != 0`, otherwise whole-file with the crypt key.
 
 **Writes — `PUT entries/{path}` takes the body.** It replaces, which is what
@@ -123,16 +123,16 @@ integrations and public share links would do the same.
 | Survives restart | no | yes |
 | Works across replicas | no — the map is per-process | yes |
 | Expiry | a field checked on redemption | encoded in the payload, covered by the signature |
-| Scope | whatever was stored | encoded — repo, path, op, expiry |
+| Scope | whatever was stored | encoded — library, path, op, expiry |
 | Revocation | delete the entry | rotate the key, or a short TTL |
 
-Concretely: HMAC or JWT over `(repo_id, file_id, op, expiry)` with a server key,
+Concretely: HMAC or JWT over `(library_id, file_id, op, expiry)` with a server key,
 in the query string. Nothing to store, nothing to redeem, no reason to be
 one-time — a short expiry does that job — and it works unchanged behind a load
 balancer, which the current one does not.
 
 It should also be **an explicit, additive endpoint** — something like
-`POST /api/silo/v1/repos/{id}/entries/{path}/signed-url` returning a URL — and
+`POST /api/silo/v1/libraries/{id}/entries/{path}/signed-url` returning a URL — and
 never a redirect the normal read path forces every client through. That is the
 actual mistake to avoid repeating: not the capability URL itself, which is a
 sound tool, but making every programmatic client walk through one to reach its

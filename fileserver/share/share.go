@@ -11,8 +11,8 @@ import (
 	"strings"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -38,38 +38,38 @@ func Init(readDB *sql.DB, grpTableName string, clMode bool) {
 	cloudMode = clMode
 }
 
-// CheckPerm get user's repo permission
-func CheckPerm(repoID string, user account.ID) string {
+// CheckPerm get user's library permission
+func CheckPerm(libraryID string, user account.ID) string {
 	var perm string
-	vInfo, err := repomgr.GetVirtualRepoInfo(repoID)
+	vInfo, err := libmgr.GetVirtualLibraryInfo(libraryID)
 	if err != nil {
-		log.Errorf("Failed to get virtual repo info by repo id %s: %v", repoID, err)
+		log.Errorf("Failed to get virtual library info by library id %s: %v", libraryID, err)
 	}
 	if vInfo != nil {
-		perm = checkVirtualRepoPerm(repoID, vInfo.OriginRepoID, user, vInfo.Path)
+		perm = checkVirtualLibraryPerm(libraryID, vInfo.OriginLibraryID, user, vInfo.Path)
 		return perm
 	}
 
-	perm = checkRepoSharePerm(repoID, user)
+	perm = checkLibrariesharePerm(libraryID, user)
 
 	return perm
 }
 
-func checkVirtualRepoPerm(repoID, originRepoID string, user account.ID, vPath string) string {
-	owner, err := repomgr.GetRepoOwner(originRepoID)
+func checkVirtualLibraryPerm(libraryID, originLibraryID string, user account.ID, vPath string) string {
+	owner, err := libmgr.GetLibraryOwner(originLibraryID)
 	if err != nil {
-		log.Errorf("Failed to get repo owner: %v", err)
+		log.Errorf("Failed to get library owner: %v", err)
 	}
 	var perm string
 	if !owner.IsZero() && owner == user {
 		perm = "rw"
 		return perm
 	}
-	perm = checkPermOnParentRepo(originRepoID, user, vPath)
+	perm = checkPermOnParentLibrary(originLibraryID, user, vPath)
 	if perm != "" {
 		return perm
 	}
-	perm = checkRepoSharePerm(originRepoID, user)
+	perm = checkLibrariesharePerm(originLibraryID, user)
 	return perm
 }
 
@@ -181,7 +181,7 @@ func getGroupPaths(sqlStr string) (string, error) {
 	return paths, nil
 }
 
-func checkGroupPermByUser(repoID string, user account.ID) (string, error) {
+func checkGroupPermByUser(libraryID string, user account.ID) (string, error) {
 	groups, err := getGroupsByUser(user, false)
 	if err != nil {
 		return "", err
@@ -191,7 +191,7 @@ func checkGroupPermByUser(repoID string, user account.ID) (string, error) {
 	}
 
 	var sqlBuilder strings.Builder
-	sqlBuilder.WriteString("SELECT permission FROM RepoGroup WHERE repo_id = ? AND group_id IN (")
+	sqlBuilder.WriteString("SELECT permission FROM LibraryGroup WHERE library_id = ? AND group_id IN (")
 	for i := 0; i < len(groups); i++ {
 		sqlBuilder.WriteString(strconv.Itoa(groups[i].id))
 		if i+1 < len(groups) {
@@ -202,7 +202,7 @@ func checkGroupPermByUser(repoID string, user account.ID) (string, error) {
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	rows, err := db.QueryContext(ctx, sqlBuilder.String(), repoID)
+	rows, err := db.QueryContext(ctx, sqlBuilder.String(), libraryID)
 	if err != nil {
 		err := fmt.Errorf("failed to get group permission by user %s: %v", user, err)
 		return "", err
@@ -230,32 +230,32 @@ func checkGroupPermByUser(repoID string, user account.ID) (string, error) {
 	return origPerm, nil
 }
 
-func checkSharedRepoPerm(repoID string, to account.ID) (string, error) {
-	sqlStr := "SELECT permission FROM SharedRepo WHERE repo_id=? AND to_account_id=?"
+func checkSharedLibraryPerm(libraryID string, to account.ID) (string, error) {
+	sqlStr := "SELECT permission FROM SharedLibrary WHERE library_id=? AND to_account_id=?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := db.QueryRowContext(ctx, sqlStr, repoID, to)
+	row := db.QueryRowContext(ctx, sqlStr, libraryID, to)
 
 	var perm string
 	if err := row.Scan(&perm); err != nil {
 		if err != sql.ErrNoRows {
-			err := fmt.Errorf("failed to check shared repo permission: %v", err)
+			err := fmt.Errorf("failed to check shared library permission: %v", err)
 			return "", err
 		}
 	}
 	return perm, nil
 }
 
-func checkInnerPubRepoPerm(repoID string) (string, error) {
-	sqlStr := "SELECT permission FROM InnerPubRepo WHERE repo_id=?"
+func checkInnerPubLibraryPerm(libraryID string) (string, error) {
+	sqlStr := "SELECT permission FROM InnerPubLibrary WHERE library_id=?"
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	row := db.QueryRowContext(ctx, sqlStr, repoID)
+	row := db.QueryRowContext(ctx, sqlStr, libraryID)
 
 	var perm string
 	if err := row.Scan(&perm); err != nil {
 		if err != sql.ErrNoRows {
-			err := fmt.Errorf("failed to check inner public repo permission: %v", err)
+			err := fmt.Errorf("failed to check inner public library permission: %v", err)
 			return "", err
 		}
 	}
@@ -263,23 +263,23 @@ func checkInnerPubRepoPerm(repoID string) (string, error) {
 	return perm, nil
 }
 
-func checkRepoSharePerm(repoID string, user account.ID) string {
-	owner, err := repomgr.GetRepoOwner(repoID)
+func checkLibrariesharePerm(libraryID string, user account.ID) string {
+	owner, err := libmgr.GetLibraryOwner(libraryID)
 	if err != nil {
-		log.Errorf("Failed to get repo owner: %v", err)
+		log.Errorf("Failed to get library owner: %v", err)
 	}
 	if !owner.IsZero() && owner == user {
 		perm := "rw"
 		return perm
 	}
-	perm, err := checkSharedRepoPerm(repoID, user)
+	perm, err := checkSharedLibraryPerm(libraryID, user)
 	if err != nil {
-		log.Errorf("Failed to get shared repo permission: %v", err)
+		log.Errorf("Failed to get shared library permission: %v", err)
 	}
 	if perm != "" {
 		return perm
 	}
-	perm, err = checkGroupPermByUser(repoID, user)
+	perm, err = checkGroupPermByUser(libraryID, user)
 	if err != nil {
 		log.Errorf("Failed to get group permission by user %s: %v", user, err)
 	}
@@ -287,9 +287,9 @@ func checkRepoSharePerm(repoID string, user account.ID) string {
 		return perm
 	}
 	if !cloudMode {
-		perm, err = checkInnerPubRepoPerm(repoID)
+		perm, err = checkInnerPubLibraryPerm(libraryID)
 		if err != nil {
-			log.Errorf("Failed to get inner pulic repo permission by repo id %s: %v", repoID, err)
+			log.Errorf("Failed to get inner pulic library permission by library id %s: %v", libraryID, err)
 			return ""
 		}
 		return perm
@@ -297,14 +297,14 @@ func checkRepoSharePerm(repoID string, user account.ID) string {
 	return ""
 }
 
-func getSharedDirsToUser(originRepoID string, to account.ID) (map[string]string, error) {
+func getSharedDirsToUser(originLibraryID string, to account.ID) (map[string]string, error) {
 	dirs := make(map[string]string)
-	sqlStr := "SELECT v.path, s.permission FROM SharedRepo s, VirtualRepo v WHERE " +
-		"s.repo_id = v.repo_id AND s.to_account_id = ? AND v.origin_repo = ?"
+	sqlStr := "SELECT v.path, s.permission FROM SharedLibrary s, VirtualLibrary v WHERE " +
+		"s.library_id = v.library_id AND s.to_account_id = ? AND v.origin_library = ?"
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	rows, err := db.QueryContext(ctx, sqlStr, to, originRepoID)
+	rows, err := db.QueryContext(ctx, sqlStr, to, originLibraryID)
 	if err != nil {
 		err := fmt.Errorf("failed to get shared directories by user %s: %v", to, err)
 		return nil, err
@@ -353,18 +353,18 @@ func convertGroupListToStr(groups []group) string {
 	return groupIDs.String()
 }
 
-func getSharedDirsToGroup(originRepoID string, groups []group) (map[string]string, error) {
+func getSharedDirsToGroup(originLibraryID string, groups []group) (map[string]string, error) {
 	dirs := make(map[string]string)
 	groupIDs := convertGroupListToStr(groups)
 
 	sqlStr := fmt.Sprintf("SELECT v.path, s.permission "+
-		"FROM RepoGroup s, VirtualRepo v WHERE "+
-		"s.repo_id = v.repo_id AND v.origin_repo = ? "+
+		"FROM LibraryGroup s, VirtualLibrary v WHERE "+
+		"s.library_id = v.library_id AND v.origin_library = ? "+
 		"AND s.group_id in (%s)", groupIDs)
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	rows, err := db.QueryContext(ctx, sqlStr, originRepoID)
+	rows, err := db.QueryContext(ctx, sqlStr, originLibraryID)
 	if err != nil {
 		err := fmt.Errorf("failed to get shared directories: %v", err)
 		return nil, err
@@ -388,11 +388,11 @@ func getSharedDirsToGroup(originRepoID string, groups []group) (map[string]strin
 	return dirs, nil
 }
 
-func checkPermOnParentRepo(originRepoID string, user account.ID, vPath string) string {
+func checkPermOnParentLibrary(originLibraryID string, user account.ID, vPath string) string {
 	var perm string
-	userPerms, err := getSharedDirsToUser(originRepoID, user)
+	userPerms, err := getSharedDirsToUser(originLibraryID, user)
 	if err != nil {
-		log.Errorf("Failed to get all shared folder perms in parent repo %.8s for user %s", originRepoID, user)
+		log.Errorf("Failed to get all shared folder perms in parent library %.8s for user %s", originLibraryID, user)
 		return ""
 	}
 	if len(userPerms) > 0 {
@@ -410,9 +410,9 @@ func checkPermOnParentRepo(originRepoID string, user account.ID, vPath string) s
 		return perm
 	}
 
-	groupPerms, err := getSharedDirsToGroup(originRepoID, groups)
+	groupPerms, err := getSharedDirsToGroup(originLibraryID, groups)
 	if err != nil {
-		log.Errorf("Failed to get all shared folder perm from parent repo %.8s to all user groups", originRepoID)
+		log.Errorf("Failed to get all shared folder perm from parent library %.8s to all user groups", originLibraryID)
 		return ""
 	}
 	if len(groupPerms) == 0 {
@@ -424,8 +424,8 @@ func checkPermOnParentRepo(originRepoID string, user account.ID, vPath string) s
 	return perm
 }
 
-// SharedRepo is a shared repo object
-type SharedRepo struct {
+// SharedLibrary is a shared library object
+type SharedLibrary struct {
 	Version      int    `json:"version"`
 	ID           string `json:"id"`
 	HeadCommitID string `json:"head_commit_id"`
@@ -434,21 +434,21 @@ type SharedRepo struct {
 	Permission   string `json:"permission"`
 	Type         string `json:"type"`
 	Owner        string `json:"owner"`
-	RepoType     string `json:"-"`
+	LibraryType  string `json:"-"`
 }
 
-// GetReposByOwner get repos by owner
-func GetReposByOwner(owner account.ID) ([]*SharedRepo, error) {
-	var repos []*SharedRepo
+// GetLibrariesByOwner get libraries by owner
+func GetLibrariesByOwner(owner account.ID) ([]*SharedLibrary, error) {
+	var libraries []*SharedLibrary
 
-	query := "SELECT o.repo_id, b.commit_id, i.name, " +
+	query := "SELECT o.library_id, b.commit_id, i.name, " +
 		"i.version, i.update_time, i.last_modifier, i.type FROM " +
-		"RepoOwner o LEFT JOIN Branch b ON o.repo_id = b.repo_id " +
-		"LEFT JOIN RepoInfo i ON o.repo_id = i.repo_id " +
-		"LEFT JOIN VirtualRepo v ON o.repo_id = v.repo_id " +
+		"LibraryOwner o LEFT JOIN Branch b ON o.library_id = b.library_id " +
+		"LEFT JOIN LibraryInfo i ON o.library_id = i.library_id " +
+		"LEFT JOIN VirtualLibrary v ON o.library_id = v.library_id " +
 		"WHERE o.account_id=? AND " +
-		"v.repo_id IS NULL " +
-		"ORDER BY i.update_time DESC, o.repo_id"
+		"v.library_id IS NULL " +
+		"ORDER BY i.update_time DESC, o.library_id"
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
@@ -467,26 +467,26 @@ func GetReposByOwner(owner account.ID) ([]*SharedRepo, error) {
 	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
-		repo := new(SharedRepo)
-		var repoName, lastModifier, repoType sql.NullString
-		if err := rows.Scan(&repo.ID, &repo.HeadCommitID,
-			&repoName, &repo.Version, &repo.MTime,
-			&lastModifier, &repoType); err == nil {
+		library := new(SharedLibrary)
+		var libraryName, lastModifier, libraryType sql.NullString
+		if err := rows.Scan(&library.ID, &library.HeadCommitID,
+			&libraryName, &library.Version, &library.MTime,
+			&lastModifier, &libraryType); err == nil {
 
-			if repo.HeadCommitID == "" {
+			if library.HeadCommitID == "" {
 				continue
 			}
-			if !repoName.Valid || !lastModifier.Valid {
+			if !libraryName.Valid || !lastModifier.Valid {
 				continue
 			}
-			if repoName.String == "" || lastModifier.String == "" {
+			if libraryName.String == "" || lastModifier.String == "" {
 				continue
 			}
-			repo.Name = repoName.String
-			if repoType.Valid {
-				repo.RepoType = repoType.String
+			library.Name = libraryName.String
+			if libraryType.Valid {
+				library.LibraryType = libraryType.String
 			}
-			repos = append(repos, repo)
+			libraries = append(libraries, library)
 		}
 	}
 
@@ -494,23 +494,23 @@ func GetReposByOwner(owner account.ID) ([]*SharedRepo, error) {
 		return nil, err
 	}
 
-	return repos, nil
+	return libraries, nil
 }
 
-// ListInnerPubRepos get inner public repos
-func ListInnerPubRepos() ([]*SharedRepo, error) {
+// ListInnerPubLibraries get inner public libraries
+func ListInnerPubLibraries() ([]*SharedLibrary, error) {
 	// Owner comes back as an address rather than an id: it is a field in a
 	// JSON response, read by a client that has never heard of an account.
 	// That is the whole shape of the identity split at the edge — the key is
 	// an id everywhere inside, and the address is joined back on the way out.
-	query := "SELECT InnerPubRepo.repo_id, " +
+	query := "SELECT InnerPubLibrary.library_id, " +
 		"ae.email, permission, commit_id, i.name, " +
 		"i.update_time, i.version, i.type " +
-		"FROM InnerPubRepo " +
-		"LEFT JOIN RepoInfo i ON InnerPubRepo.repo_id = i.repo_id, RepoOwner, Branch " +
-		"LEFT JOIN AccountEmail ae ON ae.account_id = RepoOwner.account_id AND ae.is_primary = 1 " +
-		"WHERE InnerPubRepo.repo_id=RepoOwner.repo_id AND " +
-		"InnerPubRepo.repo_id = Branch.repo_id AND Branch.name = 'master'"
+		"FROM InnerPubLibrary " +
+		"LEFT JOIN LibraryInfo i ON InnerPubLibrary.library_id = i.library_id, LibraryOwner, Branch " +
+		"LEFT JOIN AccountEmail ae ON ae.account_id = LibraryOwner.account_id AND ae.is_primary = 1 " +
+		"WHERE InnerPubLibrary.library_id=LibraryOwner.library_id AND " +
+		"InnerPubLibrary.library_id = Branch.library_id AND Branch.name = 'master'"
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
@@ -527,26 +527,26 @@ func ListInnerPubRepos() ([]*SharedRepo, error) {
 
 	defer func() { _ = rows.Close() }()
 
-	var repos []*SharedRepo
+	var libraries []*SharedLibrary
 	for rows.Next() {
-		repo := new(SharedRepo)
-		var repoName, repoType, owner sql.NullString
-		if err := rows.Scan(&repo.ID, &owner,
-			&repo.Permission, &repo.HeadCommitID, &repoName,
-			&repo.MTime, &repo.Version, &repoType); err == nil {
+		library := new(SharedLibrary)
+		var libraryName, libraryType, owner sql.NullString
+		if err := rows.Scan(&library.ID, &owner,
+			&library.Permission, &library.HeadCommitID, &libraryName,
+			&library.MTime, &library.Version, &libraryType); err == nil {
 
-			if !repoName.Valid {
+			if !libraryName.Valid {
 				continue
 			}
-			if repoName.String == "" {
+			if libraryName.String == "" {
 				continue
 			}
-			repo.Name = repoName.String
-			repo.Owner = owner.String
-			if repoType.Valid {
-				repo.RepoType = repoType.String
+			library.Name = libraryName.String
+			library.Owner = owner.String
+			if libraryType.Valid {
+				library.LibraryType = libraryType.String
 			}
-			repos = append(repos, repo)
+			libraries = append(libraries, library)
 		}
 	}
 
@@ -554,7 +554,7 @@ func ListInnerPubRepos() ([]*SharedRepo, error) {
 		return nil, err
 	}
 
-	return repos, nil
+	return libraries, nil
 }
 
 // ListSharedWithMe lists the libraries shared with an account, with the
@@ -566,17 +566,17 @@ func ListInnerPubRepos() ([]*SharedRepo, error) {
 // direction is `sh.from_account_id = ?` with the join moved to
 // `sh.to_account_id`, and is worth writing against the schema of the day
 // something actually asks for it.
-func ListSharedWithMe(id account.ID) ([]*SharedRepo, error) {
-	var repos []*SharedRepo
-	const query = "SELECT sh.repo_id, ae.email, " +
+func ListSharedWithMe(id account.ID) ([]*SharedLibrary, error) {
+	var libraries []*SharedLibrary
+	const query = "SELECT sh.library_id, ae.email, " +
 		"permission, commit_id, " +
 		"i.name, i.update_time, i.version, i.type FROM " +
-		"SharedRepo sh LEFT JOIN RepoInfo i ON sh.repo_id = i.repo_id " +
+		"SharedLibrary sh LEFT JOIN LibraryInfo i ON sh.library_id = i.library_id " +
 		"LEFT JOIN AccountEmail ae ON ae.account_id = sh.from_account_id AND ae.is_primary = 1, Branch b " +
 		"WHERE sh.to_account_id=? AND " +
-		"sh.repo_id = b.repo_id AND " +
+		"sh.library_id = b.library_id AND " +
 		"b.name = 'master' " +
-		"ORDER BY i.update_time DESC, sh.repo_id"
+		"ORDER BY i.update_time DESC, sh.library_id"
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
@@ -595,25 +595,25 @@ func ListSharedWithMe(id account.ID) ([]*SharedRepo, error) {
 	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
-		repo := new(SharedRepo)
-		var repoName, repoType, other sql.NullString
-		if err := rows.Scan(&repo.ID, &other,
-			&repo.Permission, &repo.HeadCommitID,
-			&repoName, &repo.MTime, &repo.Version, &repoType); err == nil {
+		library := new(SharedLibrary)
+		var libraryName, libraryType, other sql.NullString
+		if err := rows.Scan(&library.ID, &other,
+			&library.Permission, &library.HeadCommitID,
+			&libraryName, &library.MTime, &library.Version, &libraryType); err == nil {
 
-			if !repoName.Valid {
+			if !libraryName.Valid {
 				continue
 			}
-			if repoName.String == "" {
+			if libraryName.String == "" {
 				continue
 			}
-			repo.Name = repoName.String
-			repo.Owner = other.String
-			if repoType.Valid {
-				repo.RepoType = repoType.String
+			library.Name = libraryName.String
+			library.Owner = other.String
+			if libraryType.Valid {
+				library.LibraryType = libraryType.String
 			}
 
-			repos = append(repos, repo)
+			libraries = append(libraries, library)
 		}
 	}
 
@@ -621,11 +621,11 @@ func ListSharedWithMe(id account.ID) ([]*SharedRepo, error) {
 		return nil, err
 	}
 
-	return repos, nil
+	return libraries, nil
 }
 
-// GetGroupReposByUser get group repos by user
-func GetGroupReposByUser(user account.ID) ([]*SharedRepo, error) {
+// GetGroupLibrariesByUser get group libraries by user
+func GetGroupLibrariesByUser(user account.ID) ([]*SharedLibrary, error) {
 	groups, err := getGroupsByUser(user, true)
 	if err != nil {
 		return nil, err
@@ -635,13 +635,13 @@ func GetGroupReposByUser(user account.ID) ([]*SharedRepo, error) {
 	}
 
 	var sqlBuilder strings.Builder
-	sqlBuilder.WriteString("SELECT g.repo_id, " +
+	sqlBuilder.WriteString("SELECT g.library_id, " +
 		"ae.email, permission, commit_id, " +
 		"i.name, i.update_time, i.version, i.type " +
-		"FROM RepoGroup g " +
-		"LEFT JOIN RepoInfo i ON g.repo_id = i.repo_id " +
+		"FROM LibraryGroup g " +
+		"LEFT JOIN LibraryInfo i ON g.library_id = i.library_id " +
 		"LEFT JOIN AccountEmail ae ON ae.account_id = g.account_id AND ae.is_primary = 1, " +
-		"Branch b WHERE g.repo_id = b.repo_id AND " +
+		"Branch b WHERE g.library_id = b.library_id AND " +
 		"b.name = 'master' AND group_id IN (")
 
 	for i := 0; i < len(groups); i++ {
@@ -660,18 +660,18 @@ func GetGroupReposByUser(user account.ID) ([]*SharedRepo, error) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	var repos []*SharedRepo
+	var libraries []*SharedLibrary
 	for rows.Next() {
-		gRepo := new(SharedRepo)
-		var repoType, sharer sql.NullString
-		if err := rows.Scan(&gRepo.ID, &sharer,
-			&gRepo.Permission, &gRepo.HeadCommitID,
-			&gRepo.Name, &gRepo.MTime, &gRepo.Version, &repoType); err == nil {
-			gRepo.Owner = sharer.String
-			if repoType.Valid {
-				gRepo.RepoType = repoType.String
+		gLibrary := new(SharedLibrary)
+		var libraryType, sharer sql.NullString
+		if err := rows.Scan(&gLibrary.ID, &sharer,
+			&gLibrary.Permission, &gLibrary.HeadCommitID,
+			&gLibrary.Name, &gLibrary.MTime, &gLibrary.Version, &libraryType); err == nil {
+			gLibrary.Owner = sharer.String
+			if libraryType.Valid {
+				gLibrary.LibraryType = libraryType.String
 			}
-			repos = append(repos, gRepo)
+			libraries = append(libraries, gLibrary)
 		}
 	}
 
@@ -679,5 +679,5 @@ func GetGroupReposByUser(user account.ID) ([]*SharedRepo, error) {
 		return nil, err
 	}
 
-	return repos, nil
+	return libraries, nil
 }

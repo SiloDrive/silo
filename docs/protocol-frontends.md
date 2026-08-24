@@ -44,13 +44,13 @@ Any second frontend means extracting a protocol-neutral core first:
 ```go
 package core
 
-func Stat(repoID, path, user string) (*Entry, error)
-func List(repoID, path, user string) ([]Entry, error)
-func Open(repoID, path, user string, off, n int64) (io.ReadCloser, error)
-func Create(repoID, path, user string, r io.Reader) error
-func Mkdir(repoID, path, user string) error
-func Move(repoID, from, to, user string) error
-func Remove(repoID, path, user string) error
+func Stat(libraryID, path, user string) (*Entry, error)
+func List(libraryID, path, user string) ([]Entry, error)
+func Open(libraryID, path, user string, off, n int64) (io.ReadCloser, error)
+func Create(libraryID, path, user string, r io.Reader) error
+func Mkdir(libraryID, path, user string) error
+func Move(libraryID, from, to, user string) error
+func Remove(libraryID, path, user string) error
 ```
 
 Taking IDs and paths, returning typed errors rather than status codes. That
@@ -137,7 +137,7 @@ write sequentially from zero. `SETSTAT`/`chmod`/times are safely ignorable.
 
 ## Tier 3 — interesting, and hard
 
-**Read-only git smart-HTTP.** `git clone http://silo/git/{repo-id}` is
+**Read-only git smart-HTTP.** `git clone http://silo/git/{library-id}` is
 philosophically almost free: the commits, trees and blobs already exist. The
 catch is that Seafile object IDs and git object IDs hash different bytes, so
 none of the existing IDs can be reused. It means computing git SHA-1s, building
@@ -179,7 +179,7 @@ contention unless writes are batched per session or per time window. This has
 to be decided before the first frontend ships, not retrofitted after a user's
 history is already 500 commits deep for one drag-and-drop.
 
-Half of it now exists: `POST repos/{id}/batch` applies a list of operations as
+Half of it now exists: `POST libraries/{id}/batch` applies a list of operations as
 one commit, so a frontend has somewhere to put a coalesced window rather than
 having to invent the mechanism. What it does not supply is the *policy* — when
 to close a window, and what to do about a client that goes away mid-drag — and
@@ -187,13 +187,13 @@ that is still a decision per frontend. A handle-based protocol commits on
 `CLOSE`, which is already one commit per file; WebDAV and S3 have no session to
 hang a window on, which is where this bites.
 
-### Encrypted repos are opaque
+### Encrypted libraries are opaque
 
 The server cannot read an encrypted library without the password cached in
-`keycache`. Every server-side gateway either excludes encrypted repos with a
+`keycache`. Every server-side gateway either excludes encrypted libraries with a
 clear error, or requires the password to be primed first. Decide which,
 explicitly — the alternative is the failure mode the TUI already has, where
-browsing an encrypted repo silently renders garbage.
+browsing an encrypted library silently renders garbage.
 
 ### Permissions
 

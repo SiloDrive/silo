@@ -8,9 +8,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -75,34 +75,34 @@ func movesIntoOwnSubtree(srcPath, dstDir string) bool {
 	return strings.HasPrefix(dst, src+"/")
 }
 
-func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
+func renameLibraryHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
-	repoID := mux.Vars(r)["repoid"]
+	libraryID := mux.Vars(r)["libraryid"]
 
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form data", http.StatusBadRequest)
 		return
 	}
-	newName := r.FormValue("repo_name")
+	newName := r.FormValue("library_name")
 	if newName == "" {
-		http.Error(w, "repo_name is required", http.StatusBadRequest)
+		http.Error(w, "library_name is required", http.StatusBadRequest)
 		return
 	}
 
 	// A rename touches no object, so the head commit is not needed and is not
 	// loaded: the permission check and the catalog row are the whole of it.
-	repo := entryRepo(w, repoID, acct.ID, true)
-	if repo == nil {
+	library := entryLibrary(w, libraryID, acct.ID, true)
+	if library == nil {
 		return
 	}
-	if !renameRepo(w, r, repo, newName) {
+	if !renameLibrary(w, r, library, newName) {
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 }
 
-// patchRepoHandler handles PATCH /api/silo/v1/repos/{repoid}. Renaming is the
+// patchLibraryHandler handles PATCH /api/silo/v1/libraries/{libraryid}. Renaming is the
 // only field so far, which is why this is a PATCH and not a PUT: the body names
 // what changes, and everything unmentioned is left alone, so adding a second
 // mutable field later does not change what an existing client's request means.
@@ -111,9 +111,9 @@ func renameRepoHandler(w http.ResponseWriter, r *http.Request) {
 // it meant a Silo-lane client holding a second credential on a frozen lane to
 // rename a library it can already create and delete. That is the crossing this
 // lane exists to remove.
-func patchRepoHandler(w http.ResponseWriter, r *http.Request) {
+func patchLibraryHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
-	repoID := mux.Vars(r)["repoid"]
+	libraryID := mux.Vars(r)["libraryid"]
 
 	var body struct {
 		Name string `json:"name"`
@@ -133,28 +133,28 @@ func patchRepoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo := entryRepo(w, repoID, acct.ID, true)
-	if repo == nil {
+	library := entryLibrary(w, libraryID, acct.ID, true)
+	if library == nil {
 		return
 	}
-	if !renameRepo(w, r, repo, name) {
+	if !renameLibrary(w, r, library, name) {
 		return
 	}
 
-	writeEntryJSON(w, http.StatusOK, map[string]any{"id": repo.ID, "name": name})
+	writeEntryJSON(w, http.StatusOK, map[string]any{"id": library.ID, "name": name})
 }
 
-// renameRepo gives a library a new name, answering the request
+// renameLibrary gives a library a new name, answering the request
 // itself on failure. It reports whether the caller should carry on.
-// renameRepo changes a library's display name.
+// renameLibrary changes a library's display name.
 //
 // It is one UPDATE and mints no commit. The old spelling wrote a commit whose
 // only change was the name it carried, which moved the head for a change that
 // was not in the tree: every client saw a new head, fetched it, diffed two
 // identical roots and found nothing. The name is catalog data now, and under
 // E2EE the server could not write that commit at all.
-func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, newName string) bool {
-	if err := repomgr.SetRepoName(repo.ID, newName); err != nil {
+func renameLibrary(w http.ResponseWriter, r *http.Request, library *libmgr.Library, newName string) bool {
+	if err := libmgr.SetLibraryName(library.ID, newName); err != nil {
 		log.WithContext(r.Context()).WithError(err).Errorf("library rename failed")
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return false
@@ -171,7 +171,7 @@ func renameRepo(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, newN
 func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
 	vars := mux.Vars(r)
-	repoID := vars["repoid"]
+	libraryID := vars["libraryid"]
 
 	path, _ := url.QueryUnescape(r.URL.Query().Get("path"))
 	if path == "" {
@@ -184,15 +184,15 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo := entryRepo(w, repoID, acct.ID, true)
-	if repo == nil {
+	library := entryLibrary(w, libraryID, acct.ID, true)
+	if library == nil {
 		return
 	}
-	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+	if _, _, err := mutateTree(library, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Mkdir(root, path, defaultDirMode, now)
 	}); err != nil {
 		writeTreeErr(w, r, err, "Parent directory does not exist",
-			fmt.Sprintf("mkdir %s in repo %s", path, repo.ID))
+			fmt.Sprintf("mkdir %s in library %s", path, library.ID))
 		return
 	}
 
@@ -202,7 +202,7 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
 	vars := mux.Vars(r)
-	repoID := vars["repoid"]
+	libraryID := vars["libraryid"]
 
 	path, _ := url.QueryUnescape(r.URL.Query().Get("path"))
 	if path == "" {
@@ -210,18 +210,18 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo := entryRepo(w, repoID, acct.ID, true)
-	if repo == nil {
+	library := entryLibrary(w, libraryID, acct.ID, true)
+	if library == nil {
 		return
 	}
 	// A directory goes with everything under it — the tree is content-addressed,
 	// so dropping the edge drops the subtree, and what that leaves unreferenced
 	// is the collector's business rather than this request's.
-	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+	if _, _, err := mutateTree(library, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Remove(root, path, now)
 	}); err != nil {
 		writeTreeErr(w, r, err, "Not found",
-			fmt.Sprintf("delete %s in repo %s", path, repo.ID))
+			fmt.Sprintf("delete %s in library %s", path, library.ID))
 		return
 	}
 
@@ -242,7 +242,7 @@ func copyHandler(w http.ResponseWriter, r *http.Request) { moveOrCopy(w, r, true
 func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 	acct := middleware.GetAccount(r)
 	vars := mux.Vars(r)
-	repoID := vars["repoid"]
+	libraryID := vars["libraryid"]
 
 	srcPath, _ := url.QueryUnescape(r.URL.Query().Get("src"))
 	dstPath, _ := url.QueryUnescape(r.URL.Query().Get("dst"))
@@ -265,17 +265,17 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 		return
 	}
 
-	repo := entryRepo(w, repoID, acct.ID, true)
-	if repo == nil {
+	library := entryLibrary(w, libraryID, acct.ID, true)
+	if library == nil {
 		return
 	}
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for repo %s", repoID)
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for library %s", libraryID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	root, err := store.ParseID(repo.RootID)
+	root, err := store.ParseID(library.RootID)
 	if err != nil {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
@@ -284,7 +284,7 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 	src, err := st.Resolve(root, srcPath)
 	if err != nil {
 		writeTreeErr(w, r, err, "Source not found",
-			fmt.Sprintf("resolve %s in repo %s", srcPath, repoID))
+			fmt.Sprintf("resolve %s in library %s", srcPath, libraryID))
 		return
 	}
 
@@ -313,7 +313,7 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 		}
 	}
 
-	if _, _, err := mutateTree(repo, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+	if _, _, err := mutateTree(library, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		if !isCopy {
 			return st.Rename(root, srcPath, dstPath, now)
 		}
@@ -330,7 +330,7 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 		}, now)
 	}); err != nil {
 		writeTreeErr(w, r, err, "Parent directory does not exist",
-			fmt.Sprintf("%s %s in repo %s", verb, srcPath, repoID))
+			fmt.Sprintf("%s %s in library %s", verb, srcPath, libraryID))
 		return
 	}
 

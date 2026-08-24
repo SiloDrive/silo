@@ -25,7 +25,7 @@ has no answer yet — see the soft-delete question under Prerequisites.
 - `GET    /api/silo/v1/users`              — list users (paginated)
 - `GET    /api/silo/v1/users/{email}`      — show a single user
 - `PUT    /api/silo/v1/users/{email}`      — update password, active flag, is_staff
-- `DELETE /api/silo/v1/users/{email}`      — delete user (and their owned repos? or
+- `DELETE /api/silo/v1/users/{email}`      — delete user (and their owned libraries? or
                                          refuse if non-empty?)
 - `POST   /api/silo/v1/users/{email}/password` — admin password reset
 - `POST   /api/silo/v1/auth/change-password`   — self-service password change
@@ -37,49 +37,49 @@ has no answer yet — see the soft-delete question under Prerequisites.
   [`plans/admin-check.md`](plans/admin-check.md), which settles one thing worth
   not re-arguing: the flag is read per request rather than cached on the token,
   so revoking admin takes effect immediately instead of at the next expiry.
-- Decide: should `is_staff` also grant all-repo visibility in `CheckPerm` and
-  `ListReposHandler`? Upstream conflates "admin" with "can see everything";
+- Decide: should `is_staff` also grant all-library visibility in `CheckPerm` and
+  `ListLibrariesHandler`? Upstream conflates "admin" with "can see everything";
   we may want a cleaner split.
-- Decide: soft-delete vs hard-delete. Upstream keeps orphaned repos around
+- Decide: soft-delete vs hard-delete. Upstream keeps orphaned libraries around
   after a user is removed; we should pick a deterministic policy.
 
-### Prevent Repo Creation For Non-Admin Users
+### Prevent Library Creation For Non-Admin Users
 
 Seafile has no built-in way to stop a regular user from creating libraries.
 For "consumer" deployments where only the admin curates libraries and other
 users sync shared ones, we need a flag (per-user or global) that makes
-`CreateRepoHandler` return 403 for non-staff.
+`CreateLibraryHandler` return 403 for non-staff.
 
 Likely shape: a `role` column on `Account` (`admin` / `user` / `guest`) and
-a config key `allow_user_create_repo = true|false`. Guest == can't create, can
-only access shared repos. (This said `EmailUser`, which the identity split
+a config key `allow_user_create_library = true|false`. Guest == can't create, can
+only access shared libraries. (This said `EmailUser`, which the identity split
 deleted; `Account` is where per-user flags live now, beside `is_staff`.)
 
-## Repo Sharing
+## Library Sharing
 
-The share tables — `SharedRepo` for user-to-user, `RepoGroup` for groups,
-`InnerPubRepo` for server-wide — already exist and are already read: a row in
+The share tables — `SharedLibrary` for user-to-user, `LibraryGroup` for groups,
+`InnerPubLibrary` for server-wide — already exist and are already read: a row in
 any of them grants what it says, through `share.CheckPerm`. What is missing is
-every way to *write* one. (There is no `SharedRepoV2`; an earlier draft of this
+every way to *write* one. (There is no `SharedLibraryV2`; an earlier draft of this
 section named one that has never been in Silo's schema.) Once user management
 lands, sharing should be straightforward.
 
 ### Endpoints
 
-- `POST   /api/silo/v1/repos/{id}/shares`              — share to a user
-- `GET    /api/silo/v1/repos/{id}/shares`              — list shares on a repo
-- `DELETE /api/silo/v1/repos/{id}/shares/{email}`      — revoke a user share
-- `POST   /api/silo/v1/repos/{id}/group-shares`        — share to a group
-- `GET    /api/silo/v1/repos/{id}/group-shares`
-- `DELETE /api/silo/v1/repos/{id}/group-shares/{gid}`
-- `GET    /api/silo/v1/shared-with-me`                 — repos shared *to* the caller
+- `POST   /api/silo/v1/libraries/{id}/shares`              — share to a user
+- `GET    /api/silo/v1/libraries/{id}/shares`              — list shares on a library
+- `DELETE /api/silo/v1/libraries/{id}/shares/{email}`      — revoke a user share
+- `POST   /api/silo/v1/libraries/{id}/group-shares`        — share to a group
+- `GET    /api/silo/v1/libraries/{id}/group-shares`
+- `DELETE /api/silo/v1/libraries/{id}/group-shares/{gid}`
+- `GET    /api/silo/v1/shared-with-me`                 — libraries shared *to* the caller
 
 ### Permissions
 
 Seafile supports three permission levels: `r` (read), `rw` (read-write), and
 `admin`. `CheckPerm` already knows how to resolve these from the share tables
 — the missing piece is the write path plus exposing the result in
-`ListReposHandler` (so a shared repo shows up alongside owned ones).
+`ListLibrariesHandler` (so a shared library shows up alongside owned ones).
 
 ### Public / link shares
 
@@ -101,7 +101,7 @@ To make group sharing useful we need:
 - `PUT    /api/silo/v1/groups/{id}/members/{email}`     — promote/demote
 
 Group membership should participate in `CheckPerm` via the existing
-`RepoGroup` table.
+`LibraryGroup` table.
 
 ## File Locking
 
@@ -134,7 +134,7 @@ Locks are the clearest case for pushing events over the notification
 WebSocket instead of relying on poll-then-list. When a lock is taken or
 released, publish a `file-lock-changed` event (same frame shape upstream
 uses, so SeaDrive handles it without changes) to every subscriber of the
-repo. Clients repaint the padlock icon immediately rather than waiting for
+library. Clients repaint the padlock icon immediately rather than waiting for
 the next directory refresh.
 
 This means file locking should land *after* the notification server is
@@ -146,7 +146,7 @@ same time so we don't ship a half-real-time feature.
 Commits are already content-addressable and immutable, so "history" is mostly
 a matter of exposing what's already on disk. Upstream endpoints to port:
 
-- `GET  /api2/repos/{id}/history/`                  — commit log for the repo
+- `GET  /api2/repos/{id}/history/`                  — commit log for the library
 - `GET  /api2/repos/{id}/file/revision/?p=/path`    — revisions of a single file
 - `POST /api2/repos/{id}/file/revert/`              — revert a file to a commit
 - `GET  /api2/repos/{id}/trash/`                    — deleted-but-reachable entries
@@ -161,8 +161,8 @@ that prunes commits older than the window; see Garbage Collection below.
 ## Garbage Collection
 
 Half of this landed. `silo gc` reclaims the object-store directories of
-libraries that have already been *deleted* — `DeleteRepo` records the id in
-`GarbageRepos` and the command removes that library's tree from the commit, fs
+libraries that have already been *deleted* — `DeleteLibrary` records the id in
+`GarbageLibraries` and the command removes that library's tree from the commit, fs
 and block stores. It reports by default and needs `-delete` to remove anything,
 and it deliberately never inspects a library that still exists, which is what
 lets it run without reasoning about concurrent writes. Stop the server first;
@@ -173,7 +173,7 @@ from a library you keep, its blocks stay on disk indefinitely under
 `{data-dir}/storage/blocks/`, because an old commit still references them. That
 needs a pass that:
 
-1. Walks reachable commits per repo (`commitmgr.Load` from each repo's head,
+1. Walks reachable commits per library (`commitmgr.Load` from each library's head,
    following parents), collecting the live fs-object and block set via
    `fsmgr`.
 2. Scans `storage/blocks/{store_id}/` and removes anything not in the live
@@ -182,15 +182,15 @@ needs a pass that:
 3. Respects a retention window so trash/history still works — a block
    referenced by any commit within the window is live.
 
-Should run per repo (one repo can be GC'd without locking the whole server)
+Should run per library (one library can be GC'd without locking the whole server)
 and must coordinate with in-flight uploads so a block that's written but not
 yet committed isn't reaped. Upstream does this via a "fs-mgr freeze" flag;
 we'd do something similar.
 
 ## Quota
 
-Quota is **per user**, not per repo — a user's cap applies to the total size
-of every repo they own. The logic is in `fileserver/quota.go` but isn't
+Quota is **per user**, not per library — a user's cap applies to the total size
+of every library they own. The logic is in `fileserver/quota.go` but isn't
 enforced on the upload path today, and there's no API to set a user's cap.
 
 ### How it works
@@ -198,15 +198,15 @@ enforced on the upload path today, and there's no API to set a user's cap.
 - `UserQuota(user, quota)` table holds the cap in bytes. No row → use
   `option.DefaultQuota` (settable via `seafile.conf`, `fileserver/option/`).
 - `-2` (`InfiniteQuota`, `quota.go:14`) means unlimited.
-- `getUserUsage` (`quota.go:83-105`) sums `RepoSize.size` across every repo
-  the user owns via a join on `RepoOwner`, **excluding virtual repos**
-  (`AND v.repo_id IS NULL`) so subdirectory-shares don't double-count.
-- `checkQuota(repoID, delta)` (`quota.go:17-62`) is called with the
-  projected upload size. For a virtual repo, it first resolves to the
-  origin repo and charges the origin's owner — so uploading to a shared
+- `getUserUsage` (`quota.go:83-105`) sums `Librariesize.size` across every library
+  the user owns via a join on `LibraryOwner`, **excluding virtual libraries**
+  (`AND v.library_id IS NULL`) so subdirectory-shares don't double-count.
+- `checkQuota(libraryID, delta)` (`quota.go:17-62`) is called with the
+  projected upload size. For a virtual library, it first resolves to the
+  origin library and charges the origin's owner — so uploading to a shared
   subdirectory counts against whoever created the parent library, not the
   uploader.
-- `RepoSize` is maintained asynchronously by `size_sched.go` → the
+- `Librariesize` is maintained asynchronously by `size_sched.go` → the
   `updateSizePool` worker, which recomputes after each commit. Quota
   decisions are therefore eventually consistent; a fast series of uploads
   can momentarily overshoot.
@@ -225,8 +225,8 @@ enforced on the upload path today, and there's no API to set a user's cap.
 - **Default quota config**: surface `option.DefaultQuota` as an env var
   (`SILO_DEFAULT_QUOTA`, following every other variable Silo added) so it's
   settable without editing `seafile.conf`.
-- **Per-repo quota** (extension, not upstream-compatible): there's no
-  `RepoQuota` table in the schema. For "this shared team library can grow
+- **Per-library quota** (extension, not upstream-compatible): there's no
+  `LibraryQuota` table in the schema. For "this shared team library can grow
   to 500 GB regardless of who owns it" we'd need to add one and have
   `checkQuota` consult it alongside the user cap, taking the smaller of
   the two.
@@ -237,7 +237,7 @@ enforced on the upload path today, and there's no API to set a user's cap.
 ## Encrypted Libraries
 
 Dropped as written. This section used to propose teaching the TUI Seafile's
-key derivation so it could browse encrypted repos. We are not adopting that
+key derivation so it could browse encrypted libraries. We are not adopting that
 format: 1000 PBKDF2 iterations, a published offline-crackable password
 verifier, one key and IV for the whole library forever, and no authentication
 on the ciphertext.
@@ -337,7 +337,7 @@ Motivated by macOS's File Provider search pushdown (`NSFileProviderSearching`,
 macOS 26+ — see [`porter-brief.md`](porter-brief.md) /
 [`macos-fileprovider-plan.md`](macos-fileprovider-plan.md)), but useful on its
 own independent of any one client. Today Silo has **no search of any kind**:
-files live as content-addressed `SeafDirent`/`SeafDir` objects inside per-repo
+files live as content-addressed `SeafDirent`/`SeafDir` objects inside per-library
 commit trees (`fileserver/fsmgr/fsmgr.go`), not rows in a table, so there is
 nothing to `WHERE filename LIKE` against — finding a file means the *client*
 walking the current tree itself. Seafile Pro's answer is an external
@@ -346,9 +346,9 @@ dependency we want to force on a single self-hosted binary.
 
 ### Endpoints
 
-- `GET /api/silo/v1/search?q=...` — account-wide, filtered to repos the
+- `GET /api/silo/v1/search?q=...` — account-wide, filtered to libraries the
   caller can see (owned + shared).
-- Maybe `GET /api/silo/v1/repos/{id}/search?q=...` for a scoped variant,
+- Maybe `GET /api/silo/v1/libraries/{id}/search?q=...` for a scoped variant,
   lower priority.
 
 ### Design
@@ -359,26 +359,26 @@ dependency we want to force on a single self-hosted binary.
   indexing blob text, a much bigger lift, and not needed to match what
   Spotlight/Finder actually ask for.
 - **Populating the index is the hard part, not querying it.** There's no
-  existing "list every filename in a repo" call to seed from — needs a full
+  existing "list every filename in a library" call to seed from — needs a full
   tree walk once, then incremental maintenance per new commit. Reuse the
   commit-diffing machinery already backing the enumerator's change feed
   (`fileserver/api/changes.go`, `fileserver/diff/diff.go`) instead of
   re-walking whole trees on every write.
 - **Permission-filtered at query time**, not via separate per-grantee
   indexes — join against the same visibility check `CheckPerm` /
-  `ListReposHandler` already do, so a share revoked mid-session can't leak
+  `ListLibrariesHandler` already do, so a share revoked mid-session can't leak
   stale results.
 - Ranking: prefix/substring plus maybe recency. No need for real relevance
   scoring at this scale.
 
 ### Open questions
 
-- One FTS table across all repos (join-filtered per query) vs one per repo.
-  All-repo is simpler to query; per-repo is simpler to rebuild in isolation
+- One FTS table across all libraries (join-filtered per query) vs one per library.
+  All-library is simpler to query; per-library is simpler to rebuild in isolation
   and to scope alongside quota/GC.
-- Whether virtual repos (subdirectory shares) need special-casing the way
+- Whether virtual libraries (subdirectory shares) need special-casing the way
   quota's `checkQuota` does for them.
-- Backfill cost on existing large repos — first build is a full tree walk,
+- Backfill cost on existing large libraries — first build is a full tree walk,
   should run as a background job (cf. `size_sched.go`'s worker) rather than
   inline on first query.
 
@@ -414,7 +414,7 @@ compactor.
 the pack and compaction design. It supersedes the opposite verdict in
 [`protocol-gaps.md`](protocol-gaps.md).
 
-Note that the compactor and the per-repo garbage collector above are the same
+Note that the compactor and the per-library garbage collector above are the same
 project: both need a mark phase that walks live commits, and block liveness is
 a global reachability property that cannot be maintained as a running counter.
 Build them together or build the mark twice.

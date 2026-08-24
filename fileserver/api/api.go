@@ -6,10 +6,10 @@ import (
 	"net/http"
 
 	"github.com/dkam/silo/fileserver/authmgr"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/tokenstore"
 	"github.com/dkam/silo/store"
@@ -34,8 +34,8 @@ type siloServerInfo struct {
 // number, server-wide, that every library shared. Content-defined chunking
 // killed both halves of that: boundaries fall where the content puts them, not
 // at multiples of anything, and the parameters belong to the library rather
-// than to the server that happens to be serving it. A client asks the repos
-// listing, which answers per library. See repoInfo.Chunker.
+// than to the server that happens to be serving it. A client asks the libraries
+// listing, which answers per library. See libraryInfo.Chunker.
 
 // features names the capabilities a client may branch on, so a new client can
 // ask this server what it does instead of comparing version strings against a
@@ -53,19 +53,27 @@ type siloServerInfo struct {
 // instead of learning from a 404 that this server was built without it.
 func features() []string {
 	f := []string{
+		// The vocabulary, so a mismatch is legible. Every other rename in this
+		// API fails loudly — a client built for one spelling gets 404 from a
+		// server speaking the other. The listing is the exception: 404 on the
+		// listing reaches a person as an account with nothing in it, which
+		// looks like working software rather than like two builds that
+		// disagree. A client that checks for this name can say which of the
+		// two is out of date instead of showing an empty tree.
+		"libraries",          // /libraries/…, and library_id in every payload
 		"entries",            // one addressable noun, HTTP methods as its verbs
 		"entries-copy",       // POST {"op":"copy","to":…}
 		"conditional-writes", // If-Match / If-None-Match on every mutating method
 		"ranged-reads",       // Range on GET entries, unencrypted libraries
-		"changes",            // GET repos/{id}/changes?since=
-		"repo-rename",        // PATCH repos/{id}
+		"changes",            // GET libraries/{id}/changes?since=
+		"library-rename",     // PATCH libraries/{id}
 		"blocks",             // blocks/missing, PUT blocks/{id}, PUT entries?type=blocks
 		"pagination",         // ?limit on changes and directory listings, Link: rel="next"
-		"batch",              // POST repos/{id}/batch — many operations, one commit
-		"usage",              // GET account/usage, and size/file_count on the repos listing
+		"batch",              // POST libraries/{id}/batch — many operations, one commit
+		"usage",              // GET account/usage, and size/file_count on the libraries listing
 	}
 	if option.EnableNotification {
-		f = append(f, "notifications") // WS /notification, POST repos/{id}/notify-token
+		f = append(f, "notifications") // WS /notification, POST libraries/{id}/notify-token
 	}
 	return f
 }
@@ -141,17 +149,17 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type accessTokenRequest struct {
-	RepoID  string `json:"repo_id"`
-	ObjID   string `json:"obj_id"`
-	Op      string `json:"op"`
-	OneTime bool   `json:"one_time"`
+	LibraryID string `json:"library_id"`
+	ObjID     string `json:"obj_id"`
+	Op        string `json:"op"`
+	OneTime   bool   `json:"one_time"`
 }
 
 type accessTokenResponse struct {
 	Token string `json:"token"`
 }
 
-// tokenOps maps each access-token operation to the repo permission needed to
+// tokenOps maps each access-token operation to the library permission needed to
 // mint a token for it. The handlers that consume these tokens (/files/,
 // /blks/, /zip/, /upload-api/, ...) authorize from the token alone and never
 // re-check the caller's permission, so this map is the only gate on them.
@@ -159,7 +167,7 @@ type accessTokenResponse struct {
 // Ops absent from the map are rejected rather than passed through: an
 // unrecognized op must not be able to produce a bearer credential.
 var tokenOps = map[string]string{
-	// Read: any permission on the repo is enough.
+	// Read: any permission on the library is enough.
 	"view":                "r",
 	"download":            "r",
 	"download-link":       "r",
@@ -184,8 +192,8 @@ func CreateAccessTokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.RepoID == "" || req.Op == "" {
-		http.Error(w, "repo_id and op are required", http.StatusBadRequest)
+	if req.LibraryID == "" || req.Op == "" {
+		http.Error(w, "library_id and op are required", http.StatusBadRequest)
 		return
 	}
 
@@ -195,10 +203,10 @@ func CreateAccessTokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CheckPerm returns "" for a repo the user can't see and for one that
-	// doesn't exist, so a 403 here also avoids confirming which repo IDs are
+	// CheckPerm returns "" for a library the user can't see and for one that
+	// doesn't exist, so a 403 here also avoids confirming which library IDs are
 	// real.
-	perm := share.CheckPerm(req.RepoID, acct.ID)
+	perm := share.CheckPerm(req.LibraryID, acct.ID)
 	if perm == "" || (needed == "rw" && perm != "rw") {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
@@ -208,11 +216,11 @@ func CreateAccessTokenHandler(w http.ResponseWriter, r *http.Request) {
 	// permission-checked here, and what the upload path does with the string
 	// is write it into a commit as the author — display data, and baked into
 	// a content hash that could never be rewritten anyway.
-	token := tokenstore.CreateToken(req.RepoID, req.ObjID, req.Op, acct.Email, req.OneTime)
+	token := tokenstore.CreateToken(req.LibraryID, req.ObjID, req.Op, acct.Email, req.OneTime)
 	writeJSON(w, http.StatusOK, accessTokenResponse{Token: token})
 }
 
-type repoInfo struct {
+type libraryInfo struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	UpdateTime int64  `json:"update_time"`
@@ -273,12 +281,12 @@ type chunkerInfo struct {
 	Normalization int    `json:"normalization"`
 }
 
-// repoSelect is shared by the owned and shared queries so the two cannot drift
+// librarieselect is shared by the owned and shared queries so the two cannot drift
 // into scanning different columns than they select. The join is LEFT because a
 // library with no branch row is broken but should still be listable — a client
 // that can see it can delete it.
-func repoSelect(alias string) string {
-	return "SELECT " + alias + ".repo_id, i.name, i.update_time, i.is_encrypted, b.commit_id, " +
+func librarieselect(alias string) string {
+	return "SELECT " + alias + ".library_id, i.name, i.update_time, i.is_encrypted, b.commit_id, " +
 		"b.root_id, u.size, u.file_count, u.root_id, " +
 		"f.chunker, f.chunk_min, f.chunk_target, f.chunk_max, f.chunk_norm "
 }
@@ -286,13 +294,13 @@ func repoSelect(alias string) string {
 // formatJoin brings in the library's chunker. LEFT for the same reason as the
 // others: a row missing here is a broken library, and a client that can see it
 // must still be able to list it and delete it.
-const formatJoin = "LEFT JOIN Repo f ON f.repo_id = "
+const formatJoin = "LEFT JOIN Library f ON f.library_id = "
 
 // usageJoin brings in the recorded totals. LEFT, like the branch join, because
 // a library nobody has asked the size of yet has no row and must still list.
-const usageJoin = "LEFT JOIN RepoUsage u ON u.repo_id = "
+const usageJoin = "LEFT JOIN LibraryUsage u ON u.library_id = "
 
-func scanRepos(rows *sql.Rows) []repoInfo {
+func scanLibraries(rows *sql.Rows) []libraryInfo {
 	// Allocated rather than declared, so an empty result set marshals as [] and
 	// not null. /changes already promises "always an array, never null", and a
 	// client has no way to learn that the two list endpoints on the same lane
@@ -300,24 +308,24 @@ func scanRepos(rows *sql.Rows) []repoInfo {
 	// slice ranges zero times — but an account with no libraries is the state
 	// every new account is in, so null is the first response a fresh client
 	// sees, and in TypeScript, Python or Swift it is not iterable.
-	repos := make([]repoInfo, 0)
+	libraries := make([]libraryInfo, 0)
 	for rows.Next() {
-		var repo repoInfo
+		var library libraryInfo
 		var name, isEncrypted, commitID, headRoot, measuredAt, chunker sql.NullString
 		var updateTime, size, fileCount sql.NullInt64
 		var chunkMin, chunkTarget, chunkMax, chunkNorm sql.NullInt64
-		if err := rows.Scan(&repo.ID, &name, &updateTime, &isEncrypted, &commitID,
+		if err := rows.Scan(&library.ID, &name, &updateTime, &isEncrypted, &commitID,
 			&headRoot, &size, &fileCount, &measuredAt,
 			&chunker, &chunkMin, &chunkTarget, &chunkMax, &chunkNorm); err != nil {
-			log.Warnf("Failed to scan repo row: %v", err)
+			log.Warnf("Failed to scan library row: %v", err)
 			continue
 		}
-		repo.Name = name.String
-		repo.UpdateTime = updateTime.Int64
-		repo.Encrypted = isEncrypted.String == "1"
-		repo.HeadCommitID = commitID.String
+		library.Name = name.String
+		library.UpdateTime = updateTime.Int64
+		library.Encrypted = isEncrypted.String == "1"
+		library.HeadCommitID = commitID.String
 		if chunker.Valid {
-			repo.Chunker = &chunkerInfo{
+			library.Chunker = &chunkerInfo{
 				Algorithm:     chunker.String,
 				MinSize:       int(chunkMin.Int64),
 				TargetSize:    int(chunkTarget.Int64),
@@ -330,11 +338,11 @@ func scanRepos(rows *sql.Rows) []repoInfo {
 		// brought forward one at a time below, so a poll pays only for the
 		// libraries that have been written to since the last one.
 		if measuredAt.Valid && headRoot.Valid && measuredAt.String == headRoot.String {
-			repo.Size, repo.FileCount = &size.Int64, &fileCount.Int64
+			library.Size, library.FileCount = &size.Int64, &fileCount.Int64
 		}
-		repos = append(repos, repo)
+		libraries = append(libraries, library)
 	}
-	return repos
+	return libraries
 }
 
 // withUsage fills in the sizes the query could not answer from the catalog
@@ -343,71 +351,71 @@ func scanRepos(rows *sql.Rows) []repoInfo {
 // A library that will not answer is left without the fields rather than
 // failing the listing. Being unable to size one library is not a reason to
 // tell a client it has none.
-func withUsage(repos []repoInfo) []repoInfo {
-	for i := range repos {
-		if repos[i].Size != nil {
+func withUsage(libraries []libraryInfo) []libraryInfo {
+	for i := range libraries {
+		if libraries[i].Size != nil {
 			continue
 		}
-		repo := repomgr.Get(repos[i].ID)
-		if repo == nil {
+		library := libmgr.Get(libraries[i].ID)
+		if library == nil {
 			continue
 		}
-		u, err := repomgr.Usage(repo)
+		u, err := libmgr.Usage(library)
 		if err != nil {
-			log.Warnf("Failed to size library %s for a listing: %v", repos[i].ID, err)
+			log.Warnf("Failed to size library %s for a listing: %v", libraries[i].ID, err)
 			continue
 		}
 		size, count := u.Size, u.FileCount
-		repos[i].Size, repos[i].FileCount = &size, &count
+		libraries[i].Size, libraries[i].FileCount = &size, &count
 	}
-	return repos
+	return libraries
 }
 
-func ListReposHandler(w http.ResponseWriter, r *http.Request) {
+func ListLibrariesHandler(w http.ResponseWriter, r *http.Request) {
 	id := middleware.GetAccountID(r)
 	ctx, cancel := option.WithDBTimeout(r.Context())
 	defer cancel()
 
 	rows, err := readDB.QueryContext(ctx,
-		repoSelect("o")+
-			"FROM RepoOwner o LEFT JOIN RepoInfo i ON o.repo_id = i.repo_id "+
-			"LEFT JOIN Branch b ON b.repo_id = o.repo_id AND b.name = 'master' "+
-			usageJoin+"o.repo_id "+
-			formatJoin+"o.repo_id "+
+		librarieselect("o")+
+			"FROM LibraryOwner o LEFT JOIN LibraryInfo i ON o.library_id = i.library_id "+
+			"LEFT JOIN Branch b ON b.library_id = o.library_id AND b.name = 'master' "+
+			usageJoin+"o.library_id "+
+			formatJoin+"o.library_id "+
 			"WHERE o.account_id = ?", id)
 	if err != nil {
-		log.Errorf("Failed to query repos: %v", err)
+		log.Errorf("Failed to query libraries: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer func() { _ = rows.Close() }()
 
-	repos := scanRepos(rows)
-	seen := make(map[string]bool, len(repos))
-	for _, r := range repos {
+	libraries := scanLibraries(rows)
+	seen := make(map[string]bool, len(libraries))
+	for _, r := range libraries {
 		seen[r.ID] = true
 	}
 
 	sharedRows, err := readDB.QueryContext(ctx,
-		repoSelect("s")+
-			"FROM SharedRepo s LEFT JOIN RepoInfo i ON s.repo_id = i.repo_id "+
-			"LEFT JOIN Branch b ON b.repo_id = s.repo_id AND b.name = 'master' "+
-			usageJoin+"s.repo_id "+
-			formatJoin+"s.repo_id "+
+		librarieselect("s")+
+			"FROM SharedLibrary s LEFT JOIN LibraryInfo i ON s.library_id = i.library_id "+
+			"LEFT JOIN Branch b ON b.library_id = s.library_id AND b.name = 'master' "+
+			usageJoin+"s.library_id "+
+			formatJoin+"s.library_id "+
 			"WHERE s.to_account_id = ?", id)
 	if err != nil {
-		log.Errorf("Failed to query shared repos: %v", err)
+		log.Errorf("Failed to query shared libraries: %v", err)
 	} else {
 		defer func() { _ = sharedRows.Close() }()
-		for _, r := range scanRepos(sharedRows) {
+		for _, r := range scanLibraries(sharedRows) {
 			if !seen[r.ID] {
 				seen[r.ID] = true
-				repos = append(repos, r)
+				libraries = append(libraries, r)
 			}
 		}
 	}
 
-	writeJSON(w, http.StatusOK, withUsage(repos))
+	writeJSON(w, http.StatusOK, withUsage(libraries))
 }
 
 // usageKind labels every figure this server reports as a size.
@@ -431,8 +439,8 @@ type accountUsageResponse struct {
 // AccountUsageHandler handles GET /api/silo/v1/account/usage.
 //
 // The account's quota and its logical usage, and nothing else. Per-library
-// figures are on the repos listing, for the sharing reason recorded on
-// repoInfo.
+// figures are on the libraries listing, for the sharing reason recorded on
+// libraryInfo.
 //
 // Usage here is what the account owns, not what it can see. A library shared
 // with you is charged to whoever owns it, so it appears in your listing with
@@ -440,13 +448,13 @@ type accountUsageResponse struct {
 func AccountUsageHandler(w http.ResponseWriter, r *http.Request) {
 	id := middleware.GetAccountID(r)
 
-	usage, err := repomgr.AccountUsage(id)
+	usage, err := libmgr.AccountUsage(id)
 	if err != nil {
 		log.Errorf("Failed to total account usage: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	quota, err := repomgr.AccountQuota(id)
+	quota, err := libmgr.AccountQuota(id)
 	if err != nil {
 		log.Errorf("Failed to read account quota: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -460,19 +468,19 @@ func AccountUsageHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-type createRepoRequest struct {
+type createLibraryRequest struct {
 	Name string `json:"name"`
 }
 
-type createRepoResponse struct {
+type createLibraryResponse struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
-func CreateRepoHandler(w http.ResponseWriter, r *http.Request) {
+func CreateLibraryHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
 
-	var req createRepoRequest
+	var req createLibraryRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
@@ -484,39 +492,39 @@ func CreateRepoHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Server-readable for now: an E2EE library's initial commit is sealed
 	// under a key the server never holds, so creating one is a client
-	// operation. See repomgr.CreateRepo.
-	repoID, err := repomgr.CreateRepo(req.Name, acct, repomgr.DefaultFormat(false))
+	// operation. See libmgr.CreateLibrary.
+	libraryID, err := libmgr.CreateLibrary(req.Name, acct, libmgr.DefaultFormat(false))
 	if err != nil {
-		log.Errorf("Failed to create repo: %v", err)
+		log.Errorf("Failed to create library: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, createRepoResponse{ID: repoID, Name: req.Name})
+	writeJSON(w, http.StatusCreated, createLibraryResponse{ID: libraryID, Name: req.Name})
 }
 
-func DeleteRepoHandler(w http.ResponseWriter, r *http.Request) {
+func DeleteLibraryHandler(w http.ResponseWriter, r *http.Request) {
 	id := middleware.GetAccountID(r)
 	vars := mux.Vars(r)
-	repoID := vars["repoid"]
+	libraryID := vars["libraryid"]
 
-	owner, err := repomgr.GetRepoOwner(repoID)
+	owner, err := libmgr.GetLibraryOwner(libraryID)
 	if err != nil {
-		log.Errorf("Failed to get repo owner: %v", err)
+		log.Errorf("Failed to get library owner: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	if owner.IsZero() {
-		http.Error(w, "Repo not found", http.StatusNotFound)
+		http.Error(w, "Library not found", http.StatusNotFound)
 		return
 	}
 	if owner != id {
-		http.Error(w, "Only the repo owner can delete it", http.StatusForbidden)
+		http.Error(w, "Only the library owner can delete it", http.StatusForbidden)
 		return
 	}
 
-	if err := repomgr.DeleteRepo(repoID); err != nil {
-		log.Errorf("Failed to delete repo: %v", err)
+	if err := libmgr.DeleteLibrary(libraryID); err != nil {
+		log.Errorf("Failed to delete library: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -528,7 +536,7 @@ type dirEntry struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
 	ID   string `json:"id"`
-	// Size is a pointer for the reason repoInfo.Size is: absent and zero are
+	// Size is a pointer for the reason libraryInfo.Size is: absent and zero are
 	// different answers, and rendering "not measured" as 0 B states a fact the
 	// server never gave. A directory never carries one — a directory object
 	// has no file_size, and the sum of what is under it is a different
@@ -545,11 +553,11 @@ type dirEntry struct {
 // Taking the id rather than the path is the point. A path-taking entry point
 // has to re-check the permission, re-load the repository and walk from the root
 // a second time, and none of that is cached — CheckPerm is two or more queries,
-// repomgr.Get is a query plus a commit read, and every directory object on the
-// way down is a fresh read and inflate. The old GET /repos/{id}/dir/?path=
+// libmgr.Get is a query plus a commit read, and every directory object on the
+// way down is a fresh read and inflate. The old GET /libraries/{id}/dir/?path=
 // handler did exactly that second walk and was deleted with the rest of the
 // pre-entries surface; do not reintroduce a path-taking variant.
-func ListDirByID(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, dirID string) {
+func ListDirByID(w http.ResponseWriter, r *http.Request, library *libmgr.Library, dirID string) {
 	limit, ok := parseLimit(w, r)
 	if !ok {
 		return
@@ -579,9 +587,9 @@ func ListDirByID(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, dir
 		w.Header().Del("Last-Modified")
 	}
 
-	entries, err := listEntries(repo, dirID)
+	entries, err := listEntries(library, dirID)
 	if err != nil {
-		log.Errorf("Failed to get directory object %s in store %s: %v", dirID, repo.StoreID, err)
+		log.Errorf("Failed to get directory object %s in store %s: %v", dirID, library.StoreID, err)
 		http.Error(w, "Directory not found", http.StatusNotFound)
 		return
 	}
@@ -596,7 +604,7 @@ func ListDirByID(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, dir
 	// twenty, and listEntries reads the directory object entire because that
 	// is what a directory object is.
 	page := entries[from:to]
-	withFileSizes(repo, page)
+	withFileSizes(library, page)
 
 	// The body stays an array whether or not it is paged. Pagination lives in
 	// a header precisely so that adding it did not change the shape of a
@@ -609,8 +617,8 @@ func ListDirByID(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, dir
 // It reports no size: a dirent does not carry one — the size lives in the
 // file's manifest — so sizes are a second lookup, and withFileSizes does it
 // for the page that is actually served.
-func listEntries(repo *repomgr.Repo, dirID string) ([]dirEntry, error) {
-	st, err := repo.Store()
+func listEntries(library *libmgr.Library, dirID string) ([]dirEntry, error) {
+	st, err := library.Store()
 	if err != nil {
 		return nil, err
 	}
@@ -654,7 +662,7 @@ func listEntries(repo *repomgr.Repo, dirID string) ([]dirEntry, error) {
 // Nothing here can fail the listing. A store that cannot be opened, a manifest
 // that cannot be read, a database that will not take the write — each costs
 // one entry its size, which the wire already has a way to say.
-func withFileSizes(repo *repomgr.Repo, page []dirEntry) {
+func withFileSizes(library *libmgr.Library, page []dirEntry) {
 	ids := make([]string, 0, len(page))
 	for _, e := range page {
 		if e.Type == "file" {
@@ -665,7 +673,7 @@ func withFileSizes(repo *repomgr.Repo, page []dirEntry) {
 		return
 	}
 
-	sizes, err := repomgr.FileSizes(ids)
+	sizes, err := libmgr.FileSizes(ids)
 	if err != nil {
 		log.Warnf("could not read recorded file sizes: %v", err)
 		sizes = map[string]int64{}
@@ -678,12 +686,12 @@ func withFileSizes(repo *repomgr.Repo, page []dirEntry) {
 		if _, ok := sizes[id]; ok {
 			continue
 		}
-		if len(found) >= repomgr.MaxSizeRepairs {
+		if len(found) >= libmgr.MaxSizeRepairs {
 			break
 		}
 		if st == nil {
-			if st, err = repo.Store(); err != nil {
-				log.Warnf("could not open store %s to size a listing: %v", repo.StoreID, err)
+			if st, err = library.Store(); err != nil {
+				log.Warnf("could not open store %s to size a listing: %v", library.StoreID, err)
 				break
 			}
 		}
@@ -701,7 +709,7 @@ func withFileSizes(repo *repomgr.Repo, page []dirEntry) {
 		found[id] = m.FileSize
 		sizes[id] = m.FileSize
 	}
-	repomgr.RecordFileSizes(found)
+	libmgr.RecordFileSizes(found)
 
 	for i := range page {
 		if page[i].Type != "file" {

@@ -85,7 +85,7 @@ files behave, and it is half of what "good at both ends" means.
 is a global reachability property, so a mark phase walks live history and the
 sweep rewrites packs whose dead fraction crosses a threshold. It is rate-limited
 and continuous rather than scheduled for a quiet hour that never comes. Marking
-and the per-repo garbage collector are one mechanism, not two.
+and the per-library garbage collector are one mechanism, not two.
 
 ## The namespace
 

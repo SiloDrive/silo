@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 )
@@ -36,13 +36,13 @@ func idReq(t *testing.T, h http.HandlerFunc, acct *account.Account, method, targ
 // plain library precisely so the server can read the result back and prove the
 // change actually landed, which on an encrypted one it could not.
 func TestALibraryCanBeWrittenEntirelyByID(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	vars := map[string]string{"repoid": repoID}
-	repo, err := repomgr.GetWithReason(repoID)
+	libraryID, acct := storeV2Library(t)
+	vars := map[string]string{"libraryid": libraryID}
+	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldHead := repo.HeadCommitID
+	oldHead := library.HeadCommitID
 
 	// One chunk, small enough that the manifest would inline it — so this
 	// deliberately builds a chunked manifest by hand, the shape a real file
@@ -98,7 +98,7 @@ func TestALibraryCanBeWrittenEntirelyByID(t *testing.T) {
 	}
 
 	// Nothing has changed yet: objects are inert until the head names them.
-	mid, err := repomgr.GetWithReason(repoID)
+	mid, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestALibraryCanBeWrittenEntirelyByID(t *testing.T) {
 
 	// The change is visible through the ordinary path surface, which is the
 	// proof that the id lane and the entries lane are one library.
-	after, err := repomgr.GetWithReason(repoID)
+	after, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestALibraryCanBeWrittenEntirelyByID(t *testing.T) {
 		t.Fatalf("head = %s, want %s", after.HeadCommitID, commitID)
 	}
 	rr := do(t, getEntry, acct, http.MethodGet, "/entries/byid.txt",
-		map[string]string{"repoid": repoID, "path": "byid.txt"}, nil)
+		map[string]string{"libraryid": libraryID, "path": "byid.txt"}, nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET the written file = %d (%s), want 200", rr.Code, rr.Body.String())
 	}
@@ -135,17 +135,17 @@ func TestALibraryCanBeWrittenEntirelyByID(t *testing.T) {
 // This is the case server-side merge used to absorb, and refusing it is the
 // whole reason the surface exists in this shape.
 func TestAStaleHeadSwapIsRefused(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	vars := map[string]string{"repoid": repoID}
-	repo, err := repomgr.GetWithReason(repoID)
+	libraryID, acct := storeV2Library(t)
+	vars := map[string]string{"libraryid": libraryID}
+	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := store.ParseID(repo.RootID)
+	root, err := store.ParseID(library.RootID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent, err := store.ParseID(repo.HeadCommitID)
+	parent, err := store.ParseID(library.HeadCommitID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,13 +170,13 @@ func TestAStaleHeadSwapIsRefused(t *testing.T) {
 // A commit with no parent would replace a library's whole history in one call.
 // It has to be refused however well formed it is.
 func TestAHeadSwapToACommitThatDoesNotDescendIsRefused(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	vars := map[string]string{"repoid": repoID}
-	repo, err := repomgr.GetWithReason(repoID)
+	libraryID, acct := storeV2Library(t)
+	vars := map[string]string{"libraryid": libraryID}
+	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := store.ParseID(repo.RootID)
+	root, err := store.ParseID(library.RootID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestAHeadSwapToACommitThatDoesNotDescendIsRefused(t *testing.T) {
 		t.Fatalf("PUT commit = %d, want 201", w.Code)
 	}
 	w = idReq(t, putHeadHandler, acct, http.MethodPut, "/head", vars,
-		[]byte(commitID.String()), map[string]string{"If-Match": `"` + repo.HeadCommitID + `"`})
+		[]byte(commitID.String()), map[string]string{"If-Match": `"` + library.HeadCommitID + `"`})
 	if w.Code != http.StatusConflict {
 		t.Fatalf("swap to a parentless commit = %d (%s), want 409", w.Code, w.Body.String())
 	}
@@ -198,14 +198,14 @@ func TestAHeadSwapToACommitThatDoesNotDescendIsRefused(t *testing.T) {
 // library can be pointed at a root that does not exist, and every reader after
 // that gets damage rather than an answer.
 func TestAHeadSwapToAnUnknownCommitIsRefused(t *testing.T) {
-	repoID, acct := storeV2Library(t)
-	repo, err := repomgr.GetWithReason(repoID)
+	libraryID, acct := storeV2Library(t)
+	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	absent := store.ObjectID([]byte("never uploaded")).String()
-	w := idReq(t, putHeadHandler, acct, http.MethodPut, "/head", map[string]string{"repoid": repoID},
-		[]byte(absent), map[string]string{"If-Match": `"` + repo.HeadCommitID + `"`})
+	w := idReq(t, putHeadHandler, acct, http.MethodPut, "/head", map[string]string{"libraryid": libraryID},
+		[]byte(absent), map[string]string{"If-Match": `"` + library.HeadCommitID + `"`})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("swap to an absent commit = %d (%s), want 400", w.Code, w.Body.String())
 	}
@@ -216,14 +216,14 @@ func TestAHeadSwapToAnUnknownCommitIsRefused(t *testing.T) {
 // the library's current head — and returns the swap the caller still has to
 // make: the head it descends from, and the commit id PUT head would move to.
 // Nothing is published; the tree exists but the head does not name it yet.
-func buildInlineFileCommit(t *testing.T, acct *account.Account, repoID, name string, content []byte) (oldHead string, commitID store.ID) {
+func buildInlineFileCommit(t *testing.T, acct *account.Account, libraryID, name string, content []byte) (oldHead string, commitID store.ID) {
 	t.Helper()
-	vars := map[string]string{"repoid": repoID}
-	repo, err := repomgr.GetWithReason(repoID)
+	vars := map[string]string{"libraryid": libraryID}
+	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldHead = repo.HeadCommitID
+	oldHead = library.HeadCommitID
 
 	m := &store.Manifest{FileSize: int64(len(content)), Inline: content}
 	manifestBytes, err := m.Encode()
@@ -269,19 +269,19 @@ func buildInlineFileCommit(t *testing.T, acct *account.Account, repoID, name str
 // up are only an estimate, and nothing charged the exact number at the
 // moment that estimate is supposed to be replaced. This is that charge.
 func TestPutHeadRefusesAHeadMoveThatWouldExceedQuota(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 	setQuota(t, acct, 1000)
 
-	oldHead, commitID := buildInlineFileCommit(t, acct, repoID, "big.bin", bytes.Repeat([]byte("a"), 1500))
+	oldHead, commitID := buildInlineFileCommit(t, acct, libraryID, "big.bin", bytes.Repeat([]byte("a"), 1500))
 
-	vars := map[string]string{"repoid": repoID}
+	vars := map[string]string{"libraryid": libraryID}
 	w := idReq(t, putHeadHandler, acct, http.MethodPut, "/head", vars,
 		[]byte(commitID.String()), map[string]string{"If-Match": `"` + oldHead + `"`})
 	if w.Code != httpInsufficientStorage {
 		t.Fatalf("head move over quota = %d (%s), want %d", w.Code, w.Body.String(), httpInsufficientStorage)
 	}
 
-	after, err := repomgr.GetWithReason(repoID)
+	after, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,21 +298,21 @@ func TestPutHeadRefusesAHeadMoveThatWouldExceedQuota(t *testing.T) {
 // closes it by holding the owner's admission lock across the commit, not
 // only the read.
 func TestConcurrentHeadMovesCannotJointlyExceedQuota(t *testing.T) {
-	repoA, acct := storeV2Library(t)
-	repoB, err := repomgr.CreateRepo("v2b", acct, repomgr.DefaultFormat(false))
+	libraryA, acct := storeV2Library(t)
+	libraryB, err := libmgr.CreateLibrary("v2b", acct, libmgr.DefaultFormat(false))
 	if err != nil {
 		t.Fatal(err)
 	}
 	setQuota(t, acct, 1000)
 
-	oldHeadA, commitA := buildInlineFileCommit(t, acct, repoA, "a.bin", bytes.Repeat([]byte("a"), 600))
-	oldHeadB, commitB := buildInlineFileCommit(t, acct, repoB, "b.bin", bytes.Repeat([]byte("b"), 600))
+	oldHeadA, commitA := buildInlineFileCommit(t, acct, libraryA, "a.bin", bytes.Repeat([]byte("a"), 600))
+	oldHeadB, commitB := buildInlineFileCommit(t, acct, libraryB, "b.bin", bytes.Repeat([]byte("b"), 600))
 
 	type swap struct {
-		repoID, oldHead string
-		commitID        store.ID
+		libraryID, oldHead string
+		commitID           store.ID
 	}
-	swaps := []swap{{repoA, oldHeadA, commitA}, {repoB, oldHeadB, commitB}}
+	swaps := []swap{{libraryA, oldHeadA, commitA}, {libraryB, oldHeadB, commitB}}
 
 	var wg sync.WaitGroup
 	codes := make([]int, len(swaps))
@@ -321,7 +321,7 @@ func TestConcurrentHeadMovesCannotJointlyExceedQuota(t *testing.T) {
 		go func(i int, sw swap) {
 			defer wg.Done()
 			w := idReq(t, putHeadHandler, acct, http.MethodPut, "/head",
-				map[string]string{"repoid": sw.repoID}, []byte(sw.commitID.String()),
+				map[string]string{"libraryid": sw.libraryID}, []byte(sw.commitID.String()),
 				map[string]string{"If-Match": `"` + sw.oldHead + `"`})
 			codes[i] = w.Code
 		}(i, sw)
@@ -342,7 +342,7 @@ func TestConcurrentHeadMovesCannotJointlyExceedQuota(t *testing.T) {
 		t.Fatal("both concurrent head moves were admitted; 600+600 exceeds the 1000 quota")
 	}
 
-	u, err := repomgr.AccountUsage(acct.ID)
+	u, err := libmgr.AccountUsage(acct.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

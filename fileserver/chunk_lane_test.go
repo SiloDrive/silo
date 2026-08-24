@@ -63,11 +63,11 @@ func laneClient(t *testing.T) (*client.APIClient, string, *atomic.Int64) {
 	if err := c.Login(email, password); err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	repo, err := c.CreateRepo("lane")
+	library, err := c.CreateLibrary("lane")
 	if err != nil {
-		t.Fatalf("create repo: %v", err)
+		t.Fatalf("create library: %v", err)
 	}
-	return c, repo.ID, &puts
+	return c, library.ID, &puts
 }
 
 // chunkPutPath reports whether a path addresses one chunk, as opposed to the
@@ -123,10 +123,10 @@ func writeFile(t *testing.T, name string, n int, firstByte byte) (string, []byte
 // good case. The bad case is the one this guards: a client and a server that
 // agree on the shape of every request and disagree about what a name means.
 func TestAFileTheClientChunkedItselfRoundTrips(t *testing.T) {
-	c, repoID, puts := laneClient(t)
+	c, libraryID, puts := laneClient(t)
 
 	local, content := writeFile(t, "big.bin", 12<<20, 'A')
-	if err := c.UploadFile(repoID, "/", local); err != nil {
+	if err := c.UploadFile(libraryID, "/", local); err != nil {
 		t.Fatalf("upload: %v", err)
 	}
 	if puts.Load() == 0 {
@@ -134,7 +134,7 @@ func TestAFileTheClientChunkedItselfRoundTrips(t *testing.T) {
 	}
 
 	back := filepath.Join(t.TempDir(), "back.bin")
-	if err := c.DownloadFile(repoID, "/big.bin", back); err != nil {
+	if err := c.DownloadFile(libraryID, "/big.bin", back); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	got, err := os.ReadFile(back)
@@ -153,10 +153,10 @@ func TestAFileTheClientChunkedItselfRoundTrips(t *testing.T) {
 // would still produce a correct file at the far end, and would look exactly
 // like this one from the outside.
 func TestUploadingTheSameContentTwiceSendsItOnce(t *testing.T) {
-	c, repoID, puts := laneClient(t)
+	c, libraryID, puts := laneClient(t)
 
 	local, _ := writeFile(t, "first.bin", 12<<20, 'A')
-	if err := c.UploadFile(repoID, "/", local); err != nil {
+	if err := c.UploadFile(libraryID, "/", local); err != nil {
 		t.Fatalf("first upload: %v", err)
 	}
 	first := puts.Load()
@@ -172,7 +172,7 @@ func TestUploadingTheSameContentTwiceSendsItOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	puts.Store(0)
-	if err := c.UploadFile(repoID, "/", copied); err != nil {
+	if err := c.UploadFile(libraryID, "/", copied); err != nil {
 		t.Fatalf("second upload: %v", err)
 	}
 	if sent := puts.Load(); sent != 0 {
@@ -181,7 +181,7 @@ func TestUploadingTheSameContentTwiceSendsItOnce(t *testing.T) {
 
 	// And it is a real file, not just a cheap request.
 	back := filepath.Join(t.TempDir(), "back.bin")
-	if err := c.DownloadFile(repoID, "/second.bin", back); err != nil {
+	if err := c.DownloadFile(libraryID, "/second.bin", back); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	got, _ := os.ReadFile(back)
@@ -203,10 +203,10 @@ func TestUploadingTheSameContentTwiceSendsItOnce(t *testing.T) {
 // gear table rather than of the property. "Almost none of it" is the claim
 // worth defending.
 func TestAByteInsertedAtTheFrontResendsAlmostNothing(t *testing.T) {
-	c, repoID, puts := laneClient(t)
+	c, libraryID, puts := laneClient(t)
 
 	local, content := writeFile(t, "original.bin", 12<<20, 'A')
-	if err := c.UploadFile(repoID, "/", local); err != nil {
+	if err := c.UploadFile(libraryID, "/", local); err != nil {
 		t.Fatalf("first upload: %v", err)
 	}
 	whole := puts.Load()
@@ -219,7 +219,7 @@ func TestAByteInsertedAtTheFrontResendsAlmostNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	puts.Store(0)
-	if err := c.UploadFile(repoID, "/", shifted); err != nil {
+	if err := c.UploadFile(libraryID, "/", shifted); err != nil {
 		t.Fatalf("second upload: %v", err)
 	}
 
@@ -230,7 +230,7 @@ func TestAByteInsertedAtTheFrontResendsAlmostNothing(t *testing.T) {
 	}
 
 	back := filepath.Join(t.TempDir(), "back.bin")
-	if err := c.DownloadFile(repoID, "/shifted.bin", back); err != nil {
+	if err := c.DownloadFile(libraryID, "/shifted.bin", back); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	got, _ := os.ReadFile(back)
@@ -246,10 +246,10 @@ func TestAByteInsertedAtTheFrontResendsAlmostNothing(t *testing.T) {
 // looks reachable: three requests for a file that fits in one is the cost this
 // branch exists to avoid.
 func TestASmallFileGoesWholeAndStillArrives(t *testing.T) {
-	c, repoID, puts := laneClient(t)
+	c, libraryID, puts := laneClient(t)
 
 	local, content := writeFile(t, "small.bin", 4096, 'A')
-	if err := c.UploadFile(repoID, "/", local); err != nil {
+	if err := c.UploadFile(libraryID, "/", local); err != nil {
 		t.Fatalf("upload: %v", err)
 	}
 	if sent := puts.Load(); sent != 0 {
@@ -257,7 +257,7 @@ func TestASmallFileGoesWholeAndStillArrives(t *testing.T) {
 	}
 
 	back := filepath.Join(t.TempDir(), "back.bin")
-	if err := c.DownloadFile(repoID, "/small.bin", back); err != nil {
+	if err := c.DownloadFile(libraryID, "/small.bin", back); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	got, _ := os.ReadFile(back)
@@ -273,7 +273,7 @@ func TestASmallFileGoesWholeAndStillArrives(t *testing.T) {
 // between files rather than within one. Two identical copies in the same tree
 // is the case that distinguishes "asked once per file" from "asked once".
 func TestATreeUploadSendsSharedContentOnce(t *testing.T) {
-	c, repoID, puts := laneClient(t)
+	c, libraryID, puts := laneClient(t)
 
 	// Named rather than the temp directory itself: UploadDir keeps the
 	// directory's own name, the way cp -r does, so the tree lands under it.
@@ -289,7 +289,7 @@ func TestATreeUploadSendsSharedContentOnce(t *testing.T) {
 		}
 	}
 
-	up, err := c.UploadDir(repoID, "/", root, nil)
+	up, err := c.UploadDir(libraryID, "/", root, nil)
 	if err != nil {
 		t.Fatalf("upload dir: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestATreeUploadSendsSharedContentOnce(t *testing.T) {
 
 	for _, remote := range []string{"/tree/one.bin", "/tree/sub/two.bin"} {
 		back := filepath.Join(t.TempDir(), "back.bin")
-		if err := c.DownloadFile(repoID, remote, back); err != nil {
+		if err := c.DownloadFile(libraryID, remote, back); err != nil {
 			t.Fatalf("download %s: %v", remote, err)
 		}
 		got, _ := os.ReadFile(back)

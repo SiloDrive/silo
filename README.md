@@ -31,7 +31,7 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
 ```
 
 - One process. No RPC, no Python, no controller.
-- One embedded SQLite database, `silo.db`, in the data directory: users, groups, repos, shares and tokens together.
+- One embedded SQLite database, `silo.db`, in the data directory: users, groups, libraries, shares and tokens together.
 - Content-addressable object store under `{data-dir}/storage/` with separate trees for blocks, commits, and filesystem objects.
 
 ## Features
@@ -39,11 +39,11 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
 - Single-admin bootstrap via environment variables
 - JWT session tokens for the management API
 - Persistent API tokens for SeaDrive compatibility
-- Repo create / list / delete
+- Library create / list / delete
 - File operations: upload, download, mkdir, rename, move, delete
-- Directory listing via `/api/silo/v1/repos/{id}/dir/`
+- Directory listing via `/api/silo/v1/libraries/{id}/dir/`
 - Full Seafile sync protocol for desktop and SeaDrive clients
-- In-process notification server (WebSocket `/notification`) so SeaDrive / Seafile Desktop get push events on repo updates instead of polling
+- In-process notification server (WebSocket `/notification`) so SeaDrive / Seafile Desktop get push events on library updates instead of polling
 - Embedded SQLite backend (WAL mode, read/write connection split)
 - Auto-generated ephemeral JWT signing key if `SILO_JWT_SECRET` is unset
 - Seafile-compatible endpoints: `/api2/auth-token/`, `/api2/repos/`, `/api2/repos/{id}/repo-tokens/`, `/api2/repos/{id}/download-info/`, plus the full sync path
@@ -66,7 +66,7 @@ Prebuilt binaries for macOS and Linux are published on the [releases page](https
 
 ### Build from source
 
-Alternatively, build the binary yourself. From the repo root:
+Alternatively, build the binary yourself. From the project root:
 
 ```bash
 go build ./cmd/silo
@@ -174,18 +174,18 @@ From the TUI: `n` to create a library, `enter` to open it, `u` to upload a local
 The same binary also exposes non-interactive subcommands for scripting:
 
 ```bash
-silo repos                          # list libraries (use --json for scripts)
-silo repo create "My library"       # prints the new repo ID
-silo ls <repo-id> [/path]           # list a directory
-silo put <repo-id> ./file.txt /     # upload a file
-silo put -r <repo-id> ./photos /    # upload a directory, one commit
-silo get <repo-id> /file.txt ~/out  # download
-silo mkdir <repo-id> /sub
-silo mv <repo-id> /a.txt /sub/a.txt
-silo rename <repo-id> /sub/a.txt b.txt
-silo rm <repo-id> /sub/b.txt
-silo repo rm <repo-id>
-silo changes <repo-id> <since-commit>   # what changed since a commit
+silo libraries                          # list libraries (use --json for scripts)
+silo library create "My library"       # prints the new library ID
+silo ls <library-id> [/path]           # list a directory
+silo put <library-id> ./file.txt /     # upload a file
+silo put -r <library-id> ./photos /    # upload a directory, one commit
+silo get <library-id> /file.txt ~/out  # download
+silo mkdir <library-id> /sub
+silo mv <library-id> /a.txt /sub/a.txt
+silo rename <library-id> /sub/a.txt b.txt
+silo rm <library-id> /sub/b.txt
+silo library rm <library-id>
+silo changes <library-id> <since-commit>   # what changed since a commit
 ```
 
 And two that run against the data directory rather than the API:
@@ -353,7 +353,7 @@ Silo has been tested with:
 
 - **Silo TUI** (`cmd/silo`) — full CRUD and browse
 - **SeaDrive** 3.0.21 — sync and file operations via `/api2/` endpoints
-- **Seafile Desktop** — sync via the standard repo token protocol
+- **Seafile Desktop** — sync via the standard library token protocol
 
 The JWT management API (`/api/silo/v1/`) is new and Silo-specific; existing Seafile clients don't know about it.
 
@@ -362,9 +362,9 @@ The JWT management API (`/api/silo/v1/`) is new and Silo-specific; existing Seaf
 Silo is a lean rewrite focused on the sync path and a minimal management API. The following upstream Seafile features are **not** available:
 
 - No user management API — the first user is created at startup (from `SILO_ADMIN_EMAIL`/`SILO_ADMIN_PASSWORD`, or generated and logged), and any further users need a direct database insert
-- No repo sharing API — nothing can *create* a share. The share tables are read
-  and honoured: a row in `SharedRepo` or `RepoGroup` grants the access it
-  describes, and `GET /api/silo/v1/repos` lists directly shared libraries beside
+- No library sharing API — nothing can *create* a share. The share tables are read
+  and honoured: a row in `SharedLibrary` or `LibraryGroup` grants the access it
+  describes, and `GET /api/silo/v1/libraries` lists directly shared libraries beside
   owned ones. Putting the row there means a direct database insert
 - No group management API
 - No `is_staff` / admin privilege check in the API layer — all authenticated users have equal permissions

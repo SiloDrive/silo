@@ -16,7 +16,7 @@ Every other token-issuing endpoint on the Silo lane returns a body whose values
 are all strings:
 
 ```json
-{"token": "…"}          POST /api/silo/v1/repos/{id}/sync-token
+{"token": "…"}          POST /api/silo/v1/libraries/{id}/sync-token
 {"jwt_token": "…"}      GET  /repo/{id}/jwt-token
 ```
 

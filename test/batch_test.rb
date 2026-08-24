@@ -17,23 +17,23 @@ class BatchTest < Minitest::Test
   end
 
   def test_many_operations_land_as_one_commit
-    repo_id = create_test_repo
-    before = client.list_repos.json.find { |r| r["id"] == repo_id }["head_commit_id"]
+    library_id = create_test_library
+    before = client.list_libraries.json.find { |r| r["id"] == library_id }["head_commit_id"]
 
     contents = 3.times.map { "file #{SecureRandom.hex(8)}" }
     ids = contents.map { |c| sha1(c) }
-    contents.each_with_index { |c, i| client.put_block(repo_id, ids[i], c) }
+    contents.each_with_index { |c, i| client.put_block(library_id, ids[i], c) }
 
     ops = [{ op: "mkdir", path: "/reports" }]
     ids.each_with_index { |id, i| ops << { op: "create", path: "/reports/f#{i}.txt", blocks: [id] } }
 
-    resp = client.batch(repo_id, ops)
+    resp = client.batch(library_id, ops)
     assert resp.ok?, resp.to_s
     assert_equal ops.length, resp["ops"]
     assert resp["changed"]
     refute_equal before, resp["commit_id"], "the batch did not advance the head"
 
-    listing = client.list_dir(repo_id, "/reports")
+    listing = client.list_dir(library_id, "/reports")
     assert_equal 3, listing.json.length
 
     # One commit for the lot, which is the whole reason this endpoint exists:
@@ -44,31 +44,31 @@ class BatchTest < Minitest::Test
     # in its own right only when it is empty — one that arrives with content
     # appears solely as the paths inside it — which is why an applier needs
     # mkdir -p semantics. See docs/sync-design.md.
-    changed = client.changes(repo_id, before)
+    changed = client.changes(library_id, before)
     assert changed.ok?, changed.to_s
     paths = changed["changes"].map { |c| c["path"] }.sort
     assert_equal ["/reports/f0.txt", "/reports/f1.txt", "/reports/f2.txt"], paths
   end
 
   def test_an_operation_sees_the_ones_before_it
-    repo_id = create_test_repo
+    library_id = create_test_library
     content = "nested #{SecureRandom.hex(8)}"
-    client.put_block(repo_id, sha1(content), content)
+    client.put_block(library_id, sha1(content), content)
 
-    resp = client.batch(repo_id, [
+    resp = client.batch(library_id, [
       { op: "mkdir", path: "/a" },
       { op: "mkdir", path: "/a/b" },
       { op: "create", path: "/a/b/c.txt", blocks: [sha1(content)] }
     ])
     assert resp.ok?, resp.to_s
-    assert client.get(client.entries_url(repo_id, "/a/b/c.txt")).ok?
+    assert client.get(client.entries_url(library_id, "/a/b/c.txt")).ok?
   end
 
   def test_a_failure_writes_nothing_and_names_the_operation
-    repo_id = create_test_repo
-    assert client.mkdir(repo_id, "/keep").ok?
+    library_id = create_test_library
+    assert client.mkdir(library_id, "/keep").ok?
 
-    resp = client.batch(repo_id, [
+    resp = client.batch(library_id, [
       { op: "mkdir", path: "/first" },
       { op: "mkdir", path: "/second" },
       { op: "delete", path: "/not-here" }
@@ -78,51 +78,51 @@ class BatchTest < Minitest::Test
     assert_equal "delete", resp["op"]
 
     # Nothing from before the failure survived.
-    names = client.list_dir(repo_id, "/").json.map { |e| e["name"] }
+    names = client.list_dir(library_id, "/").json.map { |e| e["name"] }
     assert_equal ["keep"], names, "a failed batch left part of itself behind"
   end
 
   def test_mkdir_of_an_existing_directory_is_not_a_failure
-    repo_id = create_test_repo
-    assert client.batch(repo_id, [{ op: "mkdir", path: "/twice" }]).ok?
+    library_id = create_test_library
+    assert client.batch(library_id, [{ op: "mkdir", path: "/twice" }]).ok?
 
-    resp = client.batch(repo_id, [{ op: "mkdir", path: "/twice" }, { op: "mkdir", path: "/other" }])
+    resp = client.batch(library_id, [{ op: "mkdir", path: "/twice" }, { op: "mkdir", path: "/other" }])
     assert resp.ok?, resp.to_s
-    assert client.get(client.entries_url(repo_id, "/other")).ok?
+    assert client.get(client.entries_url(library_id, "/other")).ok?
   end
 
   def test_a_batch_that_changes_nothing_mints_no_commit
-    repo_id = create_test_repo
-    assert client.batch(repo_id, [{ op: "mkdir", path: "/already" }]).ok?
-    head = client.list_repos.json.find { |r| r["id"] == repo_id }["head_commit_id"]
+    library_id = create_test_library
+    assert client.batch(library_id, [{ op: "mkdir", path: "/already" }]).ok?
+    head = client.list_libraries.json.find { |r| r["id"] == library_id }["head_commit_id"]
 
-    resp = client.batch(repo_id, [{ op: "mkdir", path: "/already" }])
+    resp = client.batch(library_id, [{ op: "mkdir", path: "/already" }])
     assert resp.ok?, resp.to_s
     refute resp["changed"], "an unchanged tree should not report a change"
     assert_equal head, resp["commit_id"], "an unchanged tree should not mint a commit"
   end
 
   def test_if_match_on_the_library_root
-    repo_id = create_test_repo
-    root_etag = client.list_dir(repo_id, "/").header("ETag")
+    library_id = create_test_library
+    root_etag = client.list_dir(library_id, "/").header("ETag")
     assert root_etag, "the root listing carries the ETag a batch preconditions on"
 
-    assert client.batch(repo_id, [{ op: "mkdir", path: "/one" }], if_match: root_etag).ok?
+    assert client.batch(library_id, [{ op: "mkdir", path: "/one" }], if_match: root_etag).ok?
 
     # The same precondition a second time is stale: the library moved.
-    resp = client.batch(repo_id, [{ op: "mkdir", path: "/two" }], if_match: root_etag)
+    resp = client.batch(library_id, [{ op: "mkdir", path: "/two" }], if_match: root_etag)
     assert_equal 412, resp.status, "a stale If-Match must not apply"
-    assert_equal ["one"], client.list_dir(repo_id, "/").json.map { |e| e["name"] }
+    assert_equal ["one"], client.list_dir(library_id, "/").json.map { |e| e["name"] }
   end
 
   def test_an_empty_batch_is_refused
-    repo_id = create_test_repo
-    assert_equal 400, client.batch(repo_id, []).status
+    library_id = create_test_library
+    assert_equal 400, client.batch(library_id, []).status
   end
 
   def test_an_unknown_operation_is_refused
-    repo_id = create_test_repo
-    resp = client.batch(repo_id, [{ op: "chmod", path: "/x" }])
+    library_id = create_test_library
+    resp = client.batch(library_id, [{ op: "chmod", path: "/x" }])
     assert_equal 400, resp.status
     assert_equal 0, resp["index"]
   end

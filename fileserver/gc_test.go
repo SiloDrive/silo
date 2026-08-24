@@ -10,18 +10,18 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 )
 
 // sqliteTestDB points the package's database connection at a throwaway SQLite
 // file and its object stores at a throwaway directory, and restores whatever
 // was there when the test finishes.
 //
-// It initialises repomgr as well as the package globals because every caller
+// It initialises libmgr as well as the package globals because every caller
 // did, on the next line, with a temp dir of its own — and one of them handed
-// repomgr a different directory from the one it set absDataDir to, which is
+// libmgr a different directory from the one it set absDataDir to, which is
 // the failure this shape exists to make impossible. A test that wants to know
 // where the objects went reads absDataDir.
 func sqliteTestDB(t *testing.T) {
@@ -45,7 +45,7 @@ func sqliteTestDB(t *testing.T) {
 	siloPair = pair
 	absDataDir = t.TempDir()
 	account.Init(pair.Read, pair.Write)
-	repomgr.Init(pair.Read, pair.Write, absDataDir)
+	libmgr.Init(pair.Read, pair.Write, absDataDir)
 
 	t.Cleanup(func() {
 		siloPair = origPair
@@ -79,9 +79,9 @@ func dbExec(t *testing.T, query string, args ...interface{}) {
 	}
 }
 
-// The store-sharing cases are the ones that destroy live data: repomgr sets a
-// virtual repo's StoreID to its origin's ID, so a directory named for a dead
-// repo can still hold a live repo's only copy.
+// The store-sharing cases are the ones that destroy live data: libmgr sets a
+// virtual library's StoreID to its origin's ID, so a directory named for a dead
+// library can still hold a live library's only copy.
 func TestUnsafeToReclaim(t *testing.T) {
 	sqliteTestDB(t)
 
@@ -94,42 +94,42 @@ func TestUnsafeToReclaim(t *testing.T) {
 		liveVirt = "66666666-6666-6666-6666-666666666666"
 	)
 
-	insertTestRepo(t, resurrec)
-	dbExec(t, "INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, ?)",
+	insertTestLibrary(t, resurrec)
+	dbExec(t, "INSERT INTO Branch (name, library_id, commit_id) VALUES ('master', ?, ?)",
 		branched, "0401fc662e3bc87a41f299a907c056aaf8322a27")
-	// A live virtual repo whose objects are written into the dead origin's store.
-	dbExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, '/sub', ?)",
+	// A live virtual library whose objects are written into the dead origin's store.
+	dbExec(t, "INSERT INTO VirtualLibrary (library_id, origin_library, path, base_commit) VALUES (?, ?, '/sub', ?)",
 		liveVirt, origin, "0401fc662e3bc87a41f299a907c056aaf8322a27")
-	// A dead repo that is itself virtual: it owns no store directory.
-	dbExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, '/sub', ?)",
+	// A dead library that is itself virtual: it owns no store directory.
+	dbExec(t, "INSERT INTO VirtualLibrary (library_id, origin_library, path, base_commit) VALUES (?, ?, '/sub', ?)",
 		virtual, "77777777-7777-7777-7777-777777777777", "0401fc662e3bc87a41f299a907c056aaf8322a27")
 
 	cases := []struct {
-		name    string
-		repoID  string
-		wantFor string // substring of the expected reason; "" means reclaimable
+		name      string
+		libraryID string
+		wantFor   string // substring of the expected reason; "" means reclaimable
 	}{
 		{"deleted and unreferenced", clean, ""},
-		{"still present in Repo", resurrec, "Repo"},
+		{"still present in Library", resurrec, "Library"},
 		{"still has a branch head", branched, "Branch"},
-		{"origin of a live virtual repo", origin, "origin"},
-		{"is itself a virtual repo", virtual, "virtual"},
+		{"origin of a live virtual library", origin, "origin"},
+		{"is itself a virtual library", virtual, "virtual"},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := unsafeToReclaim(context.Background(), c.repoID)
+			got, err := unsafeToReclaim(context.Background(), c.libraryID)
 			if err != nil {
 				t.Fatalf("unsafeToReclaim returned error: %v", err)
 			}
 			if c.wantFor == "" {
 				if got != "" {
-					t.Errorf("expected %s to be reclaimable, got skip %q", c.repoID, got)
+					t.Errorf("expected %s to be reclaimable, got skip %q", c.libraryID, got)
 				}
 				return
 			}
 			if got == "" {
-				t.Fatalf("expected %s to be skipped for %q, but GC would have deleted it", c.repoID, c.wantFor)
+				t.Fatalf("expected %s to be skipped for %q, but GC would have deleted it", c.libraryID, c.wantFor)
 			}
 			if !strings.Contains(got, c.wantFor) {
 				t.Errorf("skip reason = %q, want it to mention %q", got, c.wantFor)
@@ -138,9 +138,9 @@ func TestUnsafeToReclaim(t *testing.T) {
 	}
 }
 
-// Reclaiming must remove every store directory for the dead repo and clear its
-// GarbageRepos row, and must leave a live repo's store alone.
-func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
+// Reclaiming must remove every store directory for the dead library and clear its
+// GarbageLibraries row, and must leave a live library's store alone.
+func TestReclaimRemovesOnlyTheDeadLibrary(t *testing.T) {
 	sqliteTestDB(t)
 
 	const (
@@ -148,9 +148,9 @@ func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
 		live = "22222222-2222-2222-2222-222222222222"
 	)
 
-	for _, repoID := range []string{dead, live} {
+	for _, libraryID := range []string{dead, live} {
 		for _, objType := range objstore.Types {
-			objDir := filepath.Join(objstore.RepoDir(absDataDir, objType, repoID), "04")
+			objDir := filepath.Join(objstore.LibraryDir(absDataDir, objType, libraryID), "04")
 			if err := os.MkdirAll(objDir, 0700); err != nil {
 				t.Fatalf("failed to create %s: %v", objDir, err)
 			}
@@ -161,17 +161,17 @@ func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
 		}
 	}
 
-	dbExec(t, "INSERT INTO GarbageRepos (repo_id) VALUES (?)", dead)
-	insertTestRepo(t, live)
+	dbExec(t, "INSERT INTO GarbageLibraries (library_id) VALUES (?)", dead)
+	insertTestLibrary(t, live)
 
-	repos, err := collectGarbageRepos()
+	libraries, err := collectGarbageLibraries()
 	if err != nil {
-		t.Fatalf("collectGarbageRepos returned error: %v", err)
+		t.Fatalf("collectGarbageLibraries returned error: %v", err)
 	}
-	if len(repos) != 1 {
-		t.Fatalf("expected 1 garbage repo, got %d", len(repos))
+	if len(libraries) != 1 {
+		t.Fatalf("expected 1 garbage library, got %d", len(libraries))
 	}
-	r := repos[0]
+	r := libraries[0]
 	if r.skip != "" {
 		t.Fatalf("expected %s to be reclaimable, got skip %q", dead, r.skip)
 	}
@@ -190,28 +190,28 @@ func TestReclaimRemovesOnlyTheDeadRepo(t *testing.T) {
 	}
 
 	for _, objType := range objstore.Types {
-		deadDir := objstore.RepoDir(absDataDir, objType, dead)
+		deadDir := objstore.LibraryDir(absDataDir, objType, dead)
 		if _, err := os.Stat(deadDir); !os.IsNotExist(err) {
 			t.Errorf("%s survived reclaim", deadDir)
 		}
-		liveDir := objstore.RepoDir(absDataDir, objType, live)
+		liveDir := objstore.LibraryDir(absDataDir, objType, live)
 		if _, err := os.Stat(liveDir); err != nil {
-			t.Errorf("live repo's %s was removed: %v", liveDir, err)
+			t.Errorf("live library's %s was removed: %v", liveDir, err)
 		}
 	}
 
 	var remaining int
-	if err := siloPair.Read.QueryRow("SELECT COUNT(*) FROM GarbageRepos").Scan(&remaining); err != nil {
-		t.Fatalf("failed to count GarbageRepos: %v", err)
+	if err := siloPair.Read.QueryRow("SELECT COUNT(*) FROM GarbageLibraries").Scan(&remaining); err != nil {
+		t.Fatalf("failed to count GarbageLibraries: %v", err)
 	}
 	if remaining != 0 {
-		t.Errorf("GarbageRepos still has %d rows after reclaim", remaining)
+		t.Errorf("GarbageLibraries still has %d rows after reclaim", remaining)
 	}
 }
 
-// A dead origin whose virtual repo is still live must survive collection
+// A dead origin whose virtual library is still live must survive collection
 // entirely: no directories measured, so a -delete pass has nothing to remove.
-func TestCollectSkipsOriginOfLiveVirtualRepo(t *testing.T) {
+func TestCollectSkipsOriginOfLiveVirtualLibrary(t *testing.T) {
 	sqliteTestDB(t)
 
 	const (
@@ -224,41 +224,41 @@ func TestCollectSkipsOriginOfLiveVirtualRepo(t *testing.T) {
 		t.Fatalf("failed to create %s: %v", objDir, err)
 	}
 	obj := filepath.Join(objDir, "01fc662e3bc87a41f299a907c056aaf8322a27")
-	if err := os.WriteFile(obj, []byte("the virtual repo's only copy"), 0600); err != nil {
+	if err := os.WriteFile(obj, []byte("the virtual library's only copy"), 0600); err != nil {
 		t.Fatalf("failed to write %s: %v", obj, err)
 	}
 
-	dbExec(t, "INSERT INTO GarbageRepos (repo_id) VALUES (?)", origin)
-	insertTestRepo(t, virtual)
-	dbExec(t, "INSERT INTO VirtualRepo (repo_id, origin_repo, path, base_commit) VALUES (?, ?, '/sub', ?)",
+	dbExec(t, "INSERT INTO GarbageLibraries (library_id) VALUES (?)", origin)
+	insertTestLibrary(t, virtual)
+	dbExec(t, "INSERT INTO VirtualLibrary (library_id, origin_library, path, base_commit) VALUES (?, ?, '/sub', ?)",
 		virtual, origin, "0401fc662e3bc87a41f299a907c056aaf8322a27")
 
-	repos, err := collectGarbageRepos()
+	libraries, err := collectGarbageLibraries()
 	if err != nil {
-		t.Fatalf("collectGarbageRepos returned error: %v", err)
+		t.Fatalf("collectGarbageLibraries returned error: %v", err)
 	}
-	if len(repos) != 1 {
-		t.Fatalf("expected 1 garbage repo, got %d", len(repos))
+	if len(libraries) != 1 {
+		t.Fatalf("expected 1 garbage library, got %d", len(libraries))
 	}
-	if repos[0].skip == "" {
-		t.Fatal("GC would delete the store backing a live virtual repo")
+	if libraries[0].skip == "" {
+		t.Fatal("GC would delete the store backing a live virtual library")
 	}
-	if len(repos[0].dirs) != 0 {
-		t.Errorf("skipped repo still had %d directories queued for removal: %v",
-			len(repos[0].dirs), repos[0].dirs)
+	if len(libraries[0].dirs) != 0 {
+		t.Errorf("skipped library still had %d directories queued for removal: %v",
+			len(libraries[0].dirs), libraries[0].dirs)
 	}
 
 	if _, err := os.Stat(obj); err != nil {
-		t.Errorf("the virtual repo's object was disturbed: %v", err)
+		t.Errorf("the virtual library's object was disturbed: %v", err)
 	}
 }
 
-// insertTestRepo creates the catalog row a library needs to exist, in the
+// insertTestLibrary creates the catalog row a library needs to exist, in the
 // default server-readable format. The format columns have no DEFAULT — a
 // creation path that forgets them should fail — so tests write them too.
-func insertTestRepo(t *testing.T, repoID string) {
+func insertTestLibrary(t *testing.T, libraryID string) {
 	t.Helper()
-	f := repomgr.DefaultFormat(false)
-	dbExec(t, "INSERT INTO Repo (repo_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		repoID, f.Chunker, f.MinSize, f.TargetSize, f.MaxSize, f.Normalization, f.E2EE)
+	f := libmgr.DefaultFormat(false)
+	dbExec(t, "INSERT INTO Library (library_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		libraryID, f.Chunker, f.MinSize, f.TargetSize, f.MaxSize, f.Normalization, f.E2EE)
 }

@@ -1,4 +1,4 @@
-package repomgr
+package libmgr
 
 import (
 	"context"
@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	testRepoID  = "328be500-1111-2222-3333-444455556666"
-	absentRepo  = "99999999-8888-7777-6666-555555555555"
-	testOwner   = "owner@example.com"
-	missingHead = "ac9b78b5c6f7b1905277627bafef0fe99beb15ff"
+	testLibraryID = "328be500-1111-2222-3333-444455556666"
+	absentLibrary = "99999999-8888-7777-6666-555555555555"
+	testOwner     = "owner@example.com"
+	missingHead   = "ac9b78b5c6f7b1905277627bafef0fe99beb15ff"
 )
 
 // getTestStore wires a SQLite database and a real on-disk object store, and
@@ -44,11 +44,11 @@ func getTestStore(t *testing.T) string {
 	Init(pair.Read, pair.Write, dataDir)
 	account.Init(pair.Read, pair.Write)
 
-	// Faults are suppressed per (repo, kind) for five minutes, and the map is
+	// Faults are suppressed per (library, kind) for five minutes, and the map is
 	// package state that outlives one test.
 	t.Cleanup(func() {
-		clearFaults(testRepoID)
-		clearFaults(absentRepo)
+		clearFaults(testLibraryID)
+		clearFaults(absentLibrary)
 	})
 
 	return dataDir
@@ -74,12 +74,12 @@ func testAccount(t *testing.T) *account.Account {
 func TestGetWithReasonMissingRowIsNotFound(t *testing.T) {
 	getTestStore(t)
 
-	repo, err := GetWithReason(absentRepo)
-	if repo != nil {
-		t.Fatal("got a repo for an id that was never created")
+	library, err := GetWithReason(absentLibrary)
+	if library != nil {
+		t.Fatal("got a library for an id that was never created")
 	}
-	if !errors.Is(err, ErrRepoNotFound) {
-		t.Fatalf("err = %v, want ErrRepoNotFound", err)
+	if !errors.Is(err, ErrLibraryNotFound) {
+		t.Fatalf("err = %v, want ErrLibraryNotFound", err)
 	}
 	if code, _ := StatusFor(err); code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", code, http.StatusNotFound)
@@ -88,40 +88,40 @@ func TestGetWithReasonMissingRowIsNotFound(t *testing.T) {
 
 // The bug: a `git filter-branch` removed the object store out from under a
 // running server while the database survived, and every endpoint that resolved
-// the library answered 404 "Repo not found" — which tells a sync client the
+// the library answered 404 "Library not found" — which tells a sync client the
 // library was deleted, and the copy it would then delete is the one that could
 // have restored the object.
 func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 	dataDir := getTestStore(t)
 
-	repoID, err := CreateRepo("Porter Test", testAccount(t), DefaultFormat(false))
+	libraryID, err := CreateLibrary("Porter Test", testAccount(t), DefaultFormat(false))
 	if err != nil {
-		t.Fatalf("CreateRepo: %v", err)
+		t.Fatalf("CreateLibrary: %v", err)
 	}
 
-	repo, err := GetWithReason(repoID)
+	library, err := GetWithReason(libraryID)
 	if err != nil {
-		t.Fatalf("a freshly created repo did not load: %v", err)
+		t.Fatalf("a freshly created library did not load: %v", err)
 	}
-	head := repo.HeadCommitID
+	head := library.HeadCommitID
 
 	// Exactly the damage the accident caused: the row stays, the object goes.
 	// A store-v2 commit lives in the objects store, not the old commits
 	// one.
-	if err := os.RemoveAll(objstore.RepoDir(dataDir, objstore.TypeObjects, repoID)); err != nil {
+	if err := os.RemoveAll(objstore.LibraryDir(dataDir, objstore.TypeObjects, libraryID)); err != nil {
 		t.Fatalf("remove object store: %v", err)
 	}
-	t.Cleanup(func() { clearFaults(repoID) })
+	t.Cleanup(func() { clearFaults(libraryID) })
 
-	repo, err = GetWithReason(repoID)
-	if repo != nil {
-		t.Fatal("got a repo whose head commit is gone")
+	library, err = GetWithReason(libraryID)
+	if library != nil {
+		t.Fatal("got a library whose head commit is gone")
 	}
-	if errors.Is(err, ErrRepoNotFound) {
+	if errors.Is(err, ErrLibraryNotFound) {
 		t.Fatalf("a missing object reported the library as absent: %v", err)
 	}
-	if !errors.Is(err, ErrRepoCorrupted) {
-		t.Fatalf("err = %v, want ErrRepoCorrupted", err)
+	if !errors.Is(err, ErrLibraryCorrupted) {
+		t.Fatalf("err = %v, want ErrLibraryCorrupted", err)
 	}
 	code, msg := StatusFor(err)
 	if code != http.StatusInternalServerError {
@@ -136,9 +136,9 @@ func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 		t.Errorf("err = %q, does not name the head commit %s", err, head)
 	}
 
-	// Get keeps its old signature for the callers that only need the repo.
-	if got := Get(repoID); got != nil {
-		t.Error("Get returned a repo whose head commit is gone")
+	// Get keeps its old signature for the callers that only need the library.
+	if got := Get(libraryID); got != nil {
+		t.Error("Get returned a library whose head commit is gone")
 	}
 }
 
@@ -148,18 +148,18 @@ func TestGetWithReasonEmptyHeadIsCorrupted(t *testing.T) {
 
 	f := DefaultFormat(false)
 	if _, err := writeDB.Exec(
-		"INSERT INTO Repo (repo_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		testRepoID, f.Chunker, f.MinSize, f.TargetSize, f.MaxSize, f.Normalization, f.E2EE); err != nil {
-		t.Fatalf("seed Repo: %v", err)
+		"INSERT INTO Library (library_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		testLibraryID, f.Chunker, f.MinSize, f.TargetSize, f.MaxSize, f.Normalization, f.E2EE); err != nil {
+		t.Fatalf("seed Library: %v", err)
 	}
 	if _, err := writeDB.Exec(
-		"INSERT INTO Branch (name, repo_id, commit_id) VALUES ('master', ?, '')", testRepoID); err != nil {
+		"INSERT INTO Branch (name, library_id, commit_id) VALUES ('master', ?, '')", testLibraryID); err != nil {
 		t.Fatalf("seed Branch: %v", err)
 	}
 
-	_, err := GetWithReason(testRepoID)
-	if !errors.Is(err, ErrRepoCorrupted) {
-		t.Fatalf("err = %v, want ErrRepoCorrupted", err)
+	_, err := GetWithReason(testLibraryID)
+	if !errors.Is(err, ErrLibraryCorrupted) {
+		t.Fatalf("err = %v, want ErrLibraryCorrupted", err)
 	}
 	if code, _ := StatusFor(err); code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d", code, http.StatusInternalServerError)
@@ -177,9 +177,9 @@ func TestGetWithReasonDeadDatabaseIsUnavailable(t *testing.T) {
 		t.Fatalf("close read handle: %v", err)
 	}
 
-	_, err := GetWithReason(testRepoID)
-	if !errors.Is(err, ErrRepoUnavailable) {
-		t.Fatalf("err = %v, want ErrRepoUnavailable", err)
+	_, err := GetWithReason(testLibraryID)
+	if !errors.Is(err, ErrLibraryUnavailable) {
+		t.Fatalf("err = %v, want ErrLibraryUnavailable", err)
 	}
 	code, _ := StatusFor(err)
 	if code != http.StatusServiceUnavailable {
@@ -194,23 +194,23 @@ func TestGetWithReasonDeadDatabaseIsUnavailable(t *testing.T) {
 func TestFaultIsReportedOnceUntilRepaired(t *testing.T) {
 	getTestStore(t)
 
-	if !firstReport(testRepoID, ErrRepoCorrupted) {
+	if !firstReport(testLibraryID, ErrLibraryCorrupted) {
 		t.Fatal("the first occurrence was suppressed")
 	}
-	if firstReport(testRepoID, ErrRepoCorrupted) {
+	if firstReport(testLibraryID, ErrLibraryCorrupted) {
 		t.Error("the same fault was reported twice")
 	}
 	// A different fault on the same library is a different thing to say.
-	if !firstReport(testRepoID, ErrRepoUnavailable) {
+	if !firstReport(testLibraryID, ErrLibraryUnavailable) {
 		t.Error("an unrelated fault was suppressed as a repeat")
 	}
 	// As is the same fault on a different library.
-	if !firstReport(absentRepo, ErrRepoCorrupted) {
+	if !firstReport(absentLibrary, ErrLibraryCorrupted) {
 		t.Error("a fault on another library was suppressed as a repeat")
 	}
 
-	clearFaults(testRepoID)
-	if !firstReport(testRepoID, ErrRepoCorrupted) {
+	clearFaults(testLibraryID)
+	if !firstReport(testLibraryID, ErrLibraryCorrupted) {
 		t.Error("a recurrence after a repair was suppressed")
 	}
 }
@@ -236,21 +236,21 @@ func TestALibrarysFormatSurvivesTheCatalog(t *testing.T) {
 
 	// Deliberately not the defaults: defaults would survive a loader that
 	// dropped the columns entirely and filled them in from store's constants.
-	repoID, err := CreateRepo("Formatted", testAccount(t), want)
+	libraryID, err := CreateLibrary("Formatted", testAccount(t), want)
 	if err != nil {
-		t.Fatalf("CreateRepo: %v", err)
+		t.Fatalf("CreateLibrary: %v", err)
 	}
 
-	repo, err := GetWithReason(repoID)
+	library, err := GetWithReason(libraryID)
 	if err != nil {
-		t.Fatalf("a freshly created repo did not load: %v", err)
+		t.Fatalf("a freshly created library did not load: %v", err)
 	}
-	if repo.Format != want {
-		t.Fatalf("loaded %+v, created %+v", repo.Format, want)
+	if library.Format != want {
+		t.Fatalf("loaded %+v, created %+v", library.Format, want)
 	}
 
 	// GetEx reads the same row through its own copy of the query.
-	if ex := GetEx(repoID); ex == nil || ex.Format != want {
+	if ex := GetEx(libraryID); ex == nil || ex.Format != want {
 		t.Fatalf("GetEx loaded %+v, created %+v", ex, want)
 	}
 }
@@ -261,7 +261,7 @@ func TestALibrarysFormatSurvivesTheCatalog(t *testing.T) {
 func TestTheServerWillNotCreateAnEncryptedLibrary(t *testing.T) {
 	getTestStore(t)
 
-	if _, err := CreateRepo("Secret", testAccount(t), DefaultFormat(true)); !errors.Is(err, ErrNoContentKey) {
+	if _, err := CreateLibrary("Secret", testAccount(t), DefaultFormat(true)); !errors.Is(err, ErrNoContentKey) {
 		t.Fatalf("the server created an E2EE library: %v", err)
 	}
 }
@@ -273,27 +273,27 @@ func TestALibrarysMetadataComesFromTheCatalog(t *testing.T) {
 	getTestStore(t)
 	owner := testAccount(t)
 
-	repoID, err := CreateRepo("Holiday photos", owner, DefaultFormat(false))
+	libraryID, err := CreateLibrary("Holiday photos", owner, DefaultFormat(false))
 	if err != nil {
-		t.Fatalf("CreateRepo: %v", err)
+		t.Fatalf("CreateLibrary: %v", err)
 	}
-	repo, err := GetWithReason(repoID)
+	library, err := GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repo.Name != "Holiday photos" {
-		t.Errorf("name = %q, want %q", repo.Name, "Holiday photos")
+	if library.Name != "Holiday photos" {
+		t.Errorf("name = %q, want %q", library.Name, "Holiday photos")
 	}
-	if repo.LastModifier != owner.Email {
-		t.Errorf("last modifier = %q, want %q", repo.LastModifier, owner.Email)
+	if library.LastModifier != owner.Email {
+		t.Errorf("last modifier = %q, want %q", library.LastModifier, owner.Email)
 	}
-	if repo.LastModificationTime == 0 {
+	if library.LastModificationTime == 0 {
 		t.Error("no modification time")
 	}
-	if repo.RootID == "" {
+	if library.RootID == "" {
 		t.Error("no root id — the head's root has to come from the same row as the head")
 	}
-	if repo.HeadCommitID == "" {
+	if library.HeadCommitID == "" {
 		t.Error("no head commit id")
 	}
 }
@@ -304,20 +304,20 @@ func TestALibrarysMetadataComesFromTheCatalog(t *testing.T) {
 func TestRenamingALibraryDoesNotMoveItsHead(t *testing.T) {
 	getTestStore(t)
 
-	repoID, err := CreateRepo("Before", testAccount(t), DefaultFormat(false))
+	libraryID, err := CreateLibrary("Before", testAccount(t), DefaultFormat(false))
 	if err != nil {
-		t.Fatalf("CreateRepo: %v", err)
+		t.Fatalf("CreateLibrary: %v", err)
 	}
-	before, err := GetWithReason(repoID)
+	before, err := GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := SetRepoName(repoID, "After"); err != nil {
-		t.Fatalf("SetRepoName: %v", err)
+	if err := SetLibraryName(libraryID, "After"); err != nil {
+		t.Fatalf("SetLibraryName: %v", err)
 	}
 
-	after, err := GetWithReason(repoID)
+	after, err := GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,19 +14,19 @@ func TestEntriesURLEscapesPerSegment(t *testing.T) {
 		want string
 	}{
 		// The root is the empty match: "entries/" with nothing after it.
-		{"/", "/api/silo/v1/repos/r1/entries/"},
-		{"", "/api/silo/v1/repos/r1/entries/"},
-		{"/notes", "/api/silo/v1/repos/r1/entries/notes"},
+		{"/", "/api/silo/v1/libraries/r1/entries/"},
+		{"", "/api/silo/v1/libraries/r1/entries/"},
+		{"/notes", "/api/silo/v1/libraries/r1/entries/notes"},
 		// Separators stay separators, or the route stops matching.
-		{"/a/b/c.txt", "/api/silo/v1/repos/r1/entries/a/b/c.txt"},
-		{"a/b", "/api/silo/v1/repos/r1/entries/a/b"},
-		{"/trailing/", "/api/silo/v1/repos/r1/entries/trailing"},
+		{"/a/b/c.txt", "/api/silo/v1/libraries/r1/entries/a/b/c.txt"},
+		{"a/b", "/api/silo/v1/libraries/r1/entries/a/b"},
+		{"/trailing/", "/api/silo/v1/libraries/r1/entries/trailing"},
 		// A "?" in a name would otherwise start the query string and truncate
 		// the path — this is the case QueryEscape gets wrong in the other
 		// direction, by turning a space into "+".
-		{"/awkward name?.txt", "/api/silo/v1/repos/r1/entries/awkward%20name%3F.txt"},
-		{"/hash#tag.txt", "/api/silo/v1/repos/r1/entries/hash%23tag.txt"},
-		{"/100%.txt", "/api/silo/v1/repos/r1/entries/100%25.txt"},
+		{"/awkward name?.txt", "/api/silo/v1/libraries/r1/entries/awkward%20name%3F.txt"},
+		{"/hash#tag.txt", "/api/silo/v1/libraries/r1/entries/hash%23tag.txt"},
+		{"/100%.txt", "/api/silo/v1/libraries/r1/entries/100%25.txt"},
 	}
 	for _, c := range cases {
 		if got := entriesURL("r1", c.path); got != c.want {
@@ -72,13 +72,13 @@ func TestFileOperationsUseTheEntriesEndpoint(t *testing.T) {
 			name:   "ListDir",
 			call:   func(c *APIClient) error { _, err := c.ListDir("r1", "/notes"); return err },
 			method: "GET",
-			path:   "/api/silo/v1/repos/r1/entries/notes",
+			path:   "/api/silo/v1/libraries/r1/entries/notes",
 		},
 		{
 			name:   "ListDir at the root",
 			call:   func(c *APIClient) error { _, err := c.ListDir("r1", "/"); return err },
 			method: "GET",
-			path:   "/api/silo/v1/repos/r1/entries/",
+			path:   "/api/silo/v1/libraries/r1/entries/",
 		},
 		{
 			// Without ?type=dir this would be a file upload, which the server
@@ -86,20 +86,20 @@ func TestFileOperationsUseTheEntriesEndpoint(t *testing.T) {
 			name:   "Mkdir asks for a directory explicitly",
 			call:   func(c *APIClient) error { return c.Mkdir("r1", "/notes") },
 			method: "PUT",
-			path:   "/api/silo/v1/repos/r1/entries/notes",
+			path:   "/api/silo/v1/libraries/r1/entries/notes",
 			query:  "type=dir",
 		},
 		{
 			name:   "DeleteFile",
 			call:   func(c *APIClient) error { return c.DeleteFile("r1", "/notes/a.txt") },
 			method: "DELETE",
-			path:   "/api/silo/v1/repos/r1/entries/notes/a.txt",
+			path:   "/api/silo/v1/libraries/r1/entries/notes/a.txt",
 		},
 		{
 			name:   "MoveFile",
 			call:   func(c *APIClient) error { return c.MoveFile("r1", "/a.txt", "/sub/a.txt") },
 			method: "POST",
-			path:   "/api/silo/v1/repos/r1/entries/a.txt",
+			path:   "/api/silo/v1/libraries/r1/entries/a.txt",
 			body:   map[string]string{"op": "move", "to": "/sub/a.txt"},
 		},
 		{
@@ -108,14 +108,14 @@ func TestFileOperationsUseTheEntriesEndpoint(t *testing.T) {
 			name:   "RenameFile becomes a move within the same parent",
 			call:   func(c *APIClient) error { return c.RenameFile("r1", "/notes/old.txt", "new.txt") },
 			method: "POST",
-			path:   "/api/silo/v1/repos/r1/entries/notes/old.txt",
+			path:   "/api/silo/v1/libraries/r1/entries/notes/old.txt",
 			body:   map[string]string{"op": "move", "to": "/notes/new.txt"},
 		},
 		{
 			name:   "RenameFile at the root",
 			call:   func(c *APIClient) error { return c.RenameFile("r1", "/old.txt", "new.txt") },
 			method: "POST",
-			path:   "/api/silo/v1/repos/r1/entries/old.txt",
+			path:   "/api/silo/v1/libraries/r1/entries/old.txt",
 			body:   map[string]string{"op": "move", "to": "/new.txt"},
 		},
 	}
@@ -164,7 +164,7 @@ func TestChangesPassesSinceAsAQueryParameter(t *testing.T) {
 	if got.method != "GET" {
 		t.Errorf("method = %s, want GET", got.method)
 	}
-	if want := "/api/silo/v1/repos/r1/changes"; got.path != want {
+	if want := "/api/silo/v1/libraries/r1/changes"; got.path != want {
 		t.Errorf("path = %s, want %s", got.path, want)
 	}
 	if want := "since=abc123"; got.query != want {

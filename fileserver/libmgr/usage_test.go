@@ -1,4 +1,4 @@
-package repomgr
+package libmgr
 
 import (
 	"bytes"
@@ -12,30 +12,30 @@ import (
 
 // newLibrary creates a store-v2 library owned by the test account and returns
 // it loaded.
-func newLibrary(t *testing.T, name string) *Repo {
+func newLibrary(t *testing.T, name string) *Library {
 	t.Helper()
-	repoID, err := CreateRepo(name, testAccount(t), DefaultFormat(false))
+	libraryID, err := CreateLibrary(name, testAccount(t), DefaultFormat(false))
 	if err != nil {
-		t.Fatalf("CreateRepo: %v", err)
+		t.Fatalf("CreateLibrary: %v", err)
 	}
-	repo, err := GetWithReason(repoID)
+	library, err := GetWithReason(libraryID)
 	if err != nil {
 		t.Fatalf("load %s: %v", name, err)
 	}
-	return repo
+	return library
 }
 
 // commitFile writes a file into a library and moves its head, the way a
 // mutation on the wire would. The test does the head move itself because
 // accounting deliberately has no hook there — the point being tested is that
 // it does not need one.
-func commitFile(t *testing.T, repo *Repo, path string, content []byte) {
+func commitFile(t *testing.T, library *Library, path string, content []byte) {
 	t.Helper()
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := storefmt.ParseID(repo.RootID)
+	root, err := storefmt.ParseID(library.RootID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,16 +51,16 @@ func commitFile(t *testing.T, repo *Repo, path string, content []byte) {
 	if err != nil {
 		t.Fatalf("PutNode %s: %v", path, err)
 	}
-	moveHead(t, repo, st, newRoot)
+	moveHead(t, library, st, newRoot)
 }
 
-func removePath(t *testing.T, repo *Repo, path string) {
+func removePath(t *testing.T, library *Library, path string) {
 	t.Helper()
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := storefmt.ParseID(repo.RootID)
+	root, err := storefmt.ParseID(library.RootID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,12 +68,12 @@ func removePath(t *testing.T, repo *Repo, path string) {
 	if err != nil {
 		t.Fatalf("Remove %s: %v", path, err)
 	}
-	moveHead(t, repo, st, newRoot)
+	moveHead(t, library, st, newRoot)
 }
 
-func moveHead(t *testing.T, repo *Repo, st *objmgr.Store, newRoot storefmt.ID) {
+func moveHead(t *testing.T, library *Library, st *objmgr.Store, newRoot storefmt.ID) {
 	t.Helper()
-	parent, err := storefmt.ParseID(repo.HeadCommitID)
+	parent, err := storefmt.ParseID(library.HeadCommitID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,17 +84,17 @@ func moveHead(t *testing.T, repo *Repo, st *objmgr.Store, newRoot storefmt.ID) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	if _, err := writeDB.ExecContext(ctx,
-		"UPDATE Branch SET commit_id = ?, root_id = ? WHERE repo_id = ? AND name = 'master'",
-		commitID.String(), newRoot.String(), repo.ID); err != nil {
+		"UPDATE Branch SET commit_id = ?, root_id = ? WHERE library_id = ? AND name = 'master'",
+		commitID.String(), newRoot.String(), library.ID); err != nil {
 		t.Fatal(err)
 	}
-	repo.HeadCommitID = commitID.String()
-	repo.RootID = newRoot.String()
+	library.HeadCommitID = commitID.String()
+	library.RootID = newRoot.String()
 }
 
-func recordedRoot(t *testing.T, repoID string) string {
+func recordedRoot(t *testing.T, libraryID string) string {
 	t.Helper()
-	_, at, err := readUsage(repoID)
+	_, at, err := readUsage(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,9 +105,9 @@ func recordedRoot(t *testing.T, repoID string) string {
 // measures it outright. After that the row is the answer.
 func TestUsageMeasuresALibraryWithNoRowYet(t *testing.T) {
 	getTestStore(t)
-	repo := newLibrary(t, "Fresh")
+	library := newLibrary(t, "Fresh")
 
-	u, err := Usage(repo)
+	u, err := Usage(library)
 	if err != nil {
 		t.Fatalf("Usage: %v", err)
 	}
@@ -115,16 +115,16 @@ func TestUsageMeasuresALibraryWithNoRowYet(t *testing.T) {
 		t.Fatalf("a new library uses %+v, want nothing", u)
 	}
 
-	commitFile(t, repo, "/a.txt", bytes.Repeat([]byte("a"), 300))
-	u, err = Usage(repo)
+	commitFile(t, library, "/a.txt", bytes.Repeat([]byte("a"), 300))
+	u, err = Usage(library)
 	if err != nil {
 		t.Fatalf("Usage: %v", err)
 	}
 	if u != (objmgr.Usage{Size: 300, FileCount: 1}) {
 		t.Fatalf("usage = %+v, want 300 bytes in 1 file", u)
 	}
-	if at := recordedRoot(t, repo.ID); at != repo.RootID {
-		t.Errorf("row records root %q, library is on %q — the answer was not stored", at, repo.RootID)
+	if at := recordedRoot(t, library.ID); at != library.RootID {
+		t.Errorf("row records root %q, library is on %q — the answer was not stored", at, library.RootID)
 	}
 }
 
@@ -133,19 +133,19 @@ func TestUsageMeasuresALibraryWithNoRowYet(t *testing.T) {
 // delta. Neither needs anything on the write path to have remembered.
 func TestUsageFollowsALibraryWithoutAWriteHook(t *testing.T) {
 	getTestStore(t)
-	repo := newLibrary(t, "Followed")
+	library := newLibrary(t, "Followed")
 
-	commitFile(t, repo, "/big.txt", bytes.Repeat([]byte("b"), 5000))
-	if u, _ := Usage(repo); u.Size != 5000 {
+	commitFile(t, library, "/big.txt", bytes.Repeat([]byte("b"), 5000))
+	if u, _ := Usage(library); u.Size != 5000 {
 		t.Fatalf("usage = %+v after the first write", u)
 	}
 
 	// Three head moves with nobody looking, then one question.
-	commitFile(t, repo, "/small.txt", bytes.Repeat([]byte("s"), 10))
-	commitFile(t, repo, "/big.txt", bytes.Repeat([]byte("B"), 1000))
-	removePath(t, repo, "/small.txt")
+	commitFile(t, library, "/small.txt", bytes.Repeat([]byte("s"), 10))
+	commitFile(t, library, "/big.txt", bytes.Repeat([]byte("B"), 1000))
+	removePath(t, library, "/small.txt")
 
-	u, err := Usage(repo)
+	u, err := Usage(library)
 	if err != nil {
 		t.Fatalf("Usage: %v", err)
 	}
@@ -160,9 +160,9 @@ func TestUsageFollowsALibraryWithoutAWriteHook(t *testing.T) {
 // been collected. It falls back to measuring what is there now.
 func TestUsageFallsBackToAFullWalkWhenTheOldTreeIsGone(t *testing.T) {
 	getTestStore(t)
-	repo := newLibrary(t, "Cut")
-	commitFile(t, repo, "/a.txt", bytes.Repeat([]byte("a"), 100))
-	if _, err := Usage(repo); err != nil {
+	library := newLibrary(t, "Cut")
+	commitFile(t, library, "/a.txt", bytes.Repeat([]byte("a"), 100))
+	if _, err := Usage(library); err != nil {
 		t.Fatal(err)
 	}
 
@@ -172,13 +172,13 @@ func TestUsageFallsBackToAFullWalkWhenTheOldTreeIsGone(t *testing.T) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	if _, err := writeDB.ExecContext(ctx,
-		"UPDATE RepoUsage SET root_id = ?, size = 999999, file_count = 42 WHERE repo_id = ?",
-		gone.String(), repo.ID); err != nil {
+		"UPDATE LibraryUsage SET root_id = ?, size = 999999, file_count = 42 WHERE library_id = ?",
+		gone.String(), library.ID); err != nil {
 		t.Fatal(err)
 	}
-	commitFile(t, repo, "/b.txt", bytes.Repeat([]byte("b"), 50))
+	commitFile(t, library, "/b.txt", bytes.Repeat([]byte("b"), 50))
 
-	u, err := Usage(repo)
+	u, err := Usage(library)
 	if err != nil {
 		t.Fatalf("a lost baseline made usage unanswerable: %v", err)
 	}
@@ -192,25 +192,25 @@ func TestUsageFallsBackToAFullWalkWhenTheOldTreeIsGone(t *testing.T) {
 // from a root that is no longer recorded has to be dropped on the floor.
 func TestALateWriteDoesNotAddItselfTwice(t *testing.T) {
 	getTestStore(t)
-	repo := newLibrary(t, "Raced")
-	commitFile(t, repo, "/a.txt", bytes.Repeat([]byte("a"), 100))
+	library := newLibrary(t, "Raced")
+	commitFile(t, library, "/a.txt", bytes.Repeat([]byte("a"), 100))
 
-	u, err := Usage(repo)
+	u, err := Usage(library)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale := repo.RootID
-	commitFile(t, repo, "/b.txt", bytes.Repeat([]byte("b"), 100))
-	if _, err := Usage(repo); err != nil {
+	stale := library.RootID
+	commitFile(t, library, "/b.txt", bytes.Repeat([]byte("b"), 100))
+	if _, err := Usage(library); err != nil {
 		t.Fatal(err)
 	}
 
 	// The loser of the race finishes late and tries to publish a total it
 	// computed from the root that has since been superseded.
-	if err := writeUsage(repo.ID, u.Add(objmgr.Usage{Size: 100, FileCount: 1}), stale, repo.RootID); err != nil {
+	if err := writeUsage(library.ID, u.Add(objmgr.Usage{Size: 100, FileCount: 1}), stale, library.RootID); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Usage(repo)
+	got, err := Usage(library)
 	if err != nil {
 		t.Fatal(err)
 	}

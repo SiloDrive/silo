@@ -8,9 +8,9 @@ import (
 	"github.com/dkam/silo/client"
 )
 
-func listing(t *testing.T, c *client.APIClient, repoID, path string) []client.DirEntry {
+func listing(t *testing.T, c *client.APIClient, libraryID, path string) []client.DirEntry {
 	t.Helper()
-	entries, err := c.ListDir(repoID, path)
+	entries, err := c.ListDir(libraryID, path)
 	if err != nil {
 		t.Fatalf("list %s: %v", path, err)
 	}
@@ -33,7 +33,7 @@ func byName(entries []client.DirEntry, name string) *client.DirEntry {
 // reads what the manifests declare, records it, and answers from the record
 // afterwards.
 func TestAListingSaysHowBigEachFileIs(t *testing.T) {
-	c, repoID, _ := laneClient(t)
+	c, libraryID, _ := laneClient(t)
 
 	dir := t.TempDir()
 	// One of each: a file big enough to take the chunk lane, one small enough
@@ -44,15 +44,15 @@ func TestAListingSaysHowBigEachFileIs(t *testing.T) {
 		if err := os.WriteFile(path, make([]byte, size), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := c.UploadFile(repoID, "/", path); err != nil {
+		if err := c.UploadFile(libraryID, "/", path); err != nil {
 			t.Fatalf("upload %s: %v", name, err)
 		}
 	}
-	if err := c.Mkdir(repoID, "/sub"); err != nil {
+	if err := c.Mkdir(libraryID, "/sub"); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	entries := listing(t, c, repoID, "/")
+	entries := listing(t, c, libraryID, "/")
 	for name, want := range written {
 		e := byName(entries, name)
 		if e == nil {
@@ -84,20 +84,20 @@ func TestAListingSaysHowBigEachFileIs(t *testing.T) {
 // be lost: an int64 collapses both onto 0, and a client showing "0 B" tells
 // someone their file is empty when the truth is that nobody measured it.
 func TestZeroBytesAndNoSizeAreDifferentAnswers(t *testing.T) {
-	c, repoID, _ := laneClient(t)
+	c, libraryID, _ := laneClient(t)
 
 	path := filepath.Join(t.TempDir(), "empty.bin")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.UploadFile(repoID, "/", path); err != nil {
+	if err := c.UploadFile(libraryID, "/", path); err != nil {
 		t.Fatalf("upload: %v", err)
 	}
-	if err := c.Mkdir(repoID, "/sub"); err != nil {
+	if err := c.Mkdir(libraryID, "/sub"); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	entries := listing(t, c, repoID, "/")
+	entries := listing(t, c, libraryID, "/")
 	empty := byName(entries, "empty.bin")
 	if empty == nil || empty.Size == nil {
 		t.Fatal("an empty file came back with no size; zero has to be stated, not implied")
@@ -117,17 +117,17 @@ func TestZeroBytesAndNoSizeAreDifferentAnswers(t *testing.T) {
 // if it did, the cache would have become the truth, and a cache that is the
 // truth is a database nobody backs up.
 func TestEmptyingTheSidecarChangesNoAnswer(t *testing.T) {
-	c, repoID, _ := laneClient(t)
+	c, libraryID, _ := laneClient(t)
 
 	path := filepath.Join(t.TempDir(), "file.bin")
 	if err := os.WriteFile(path, make([]byte, 12<<20), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.UploadFile(repoID, "/", path); err != nil {
+	if err := c.UploadFile(libraryID, "/", path); err != nil {
 		t.Fatalf("upload: %v", err)
 	}
 
-	before := byName(listing(t, c, repoID, "/"), "file.bin")
+	before := byName(listing(t, c, libraryID, "/"), "file.bin")
 	if before == nil || before.Size == nil {
 		t.Fatal("the first listing reported no size")
 	}
@@ -136,7 +136,7 @@ func TestEmptyingTheSidecarChangesNoAnswer(t *testing.T) {
 		t.Fatalf("clearing the sidecar: %v", err)
 	}
 
-	after := byName(listing(t, c, repoID, "/"), "file.bin")
+	after := byName(listing(t, c, libraryID, "/"), "file.bin")
 	if after == nil || after.Size == nil {
 		t.Fatal("the listing lost the size when the sidecar was cleared; it is not a cache")
 	}

@@ -33,19 +33,19 @@ module SiloTestHelper
     @anon_client ||= SiloClient.new(silo_url)
   end
 
-  # Creates a repo and ensures it's cleaned up after the test.
-  def create_test_repo(name = "test-#{SecureRandom.hex(4)}")
-    resp = client.create_repo(name)
-    assert resp.ok?, "Failed to create repo: #{resp}"
-    repo_id = resp["id"]
-    @test_repos ||= []
-    @test_repos << repo_id
-    repo_id
+  # Creates a library and ensures it's cleaned up after the test.
+  def create_test_library(name = "test-#{SecureRandom.hex(4)}")
+    resp = client.create_library(name)
+    assert resp.ok?, "Failed to create library: #{resp}"
+    library_id = resp["id"]
+    @test_libraries ||= []
+    @test_libraries << library_id
+    library_id
   end
 
   def teardown
-    (@test_repos || []).each do |repo_id|
-      client.delete_repo(repo_id)
+    (@test_libraries || []).each do |library_id|
+      client.delete_library(library_id)
     end
   end
 end

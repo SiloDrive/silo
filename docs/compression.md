@@ -10,7 +10,7 @@ imports `compress/zlib`.
 
 | | Compressed? | Typical size |
 |---|---|---|
-| Blocks — file content | **no** | 8 MiB each; the bulk of any repo |
+| Blocks — file content | **no** | 8 MiB each; the bulk of any library |
 | Commit objects | **no** | small JSON |
 | fs objects — `SeafDir`, `Seafile` | zlib, default level (`fsmgr.go:492`) | small JSON |
 

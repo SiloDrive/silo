@@ -1,7 +1,7 @@
 # macOS File Provider Client for Silo
 
 Plan for a native macOS selective-sync ("files on demand") client that mounts Silo
-repos into Finder, using Apple's File Provider framework.
+libraries into Finder, using Apple's File Provider framework.
 
 Scope: macOS client + the Silo-side endpoints it needs. Nothing about Linux,
 Windows, or the existing SeaDrive GUI beyond what we can reuse.
@@ -54,7 +54,7 @@ directly out of content-addressing being *correct*:
 1. **Not unique.** Two files with identical content have the same file object ID
    — that is the dedup property, working as intended. But
    `NSFileProviderItemIdentifier` must be unique per item. Two copies of the same
-   file in a repo would collide and Finder would treat them as one item.
+   file in a library would collide and Finder would treat them as one item.
 
 2. **Not stable.** Editing a file changes its ID. File Provider identifiers must
    survive content changes; that is what `NSFileProviderItemVersion` is for.
@@ -120,7 +120,7 @@ content hash is unchanged appearing at a new path is almost certainly a rename.
    └──────────────────────┘
 ```
 
-**One domain per account**, with repos as the top-level entries under
+**One domain per account**, with libraries as the top-level entries under
 `.rootContainer`. (SeaDrive does the same; it keeps the Finder sidebar to one
 entry per server.)
 
@@ -146,7 +146,7 @@ CREATE TABLE IdMap (
   domain_id  TEXT,
   identifier TEXT,     -- the NSFileProviderItemIdentifier
   parent     TEXT,     -- parent's identifier
-  repo_id    TEXT,
+  library_id    TEXT,
   path       TEXT
 );                     -- later migrations add: policy INTEGER, rename_path TEXT
 
@@ -164,12 +164,12 @@ CREATE TABLE WorkingSet (
 The load-bearing statement is:
 
 ```sql
-UPDATE IdMap SET parent=?, repo_id=?, path=? WHERE identifier=?
+UPDATE IdMap SET parent=?, library_id=?, path=? WHERE identifier=?
 ```
 
 Rename and move rewrite the path and keep the identifier — exactly what File
-Provider requires. Deletes cascade by `parent`, `repo_id` and `domain_id`, which
-is how removing a repo or an account tears down its subtree.
+Provider requires. Deletes cascade by `parent`, `library_id` and `domain_id`, which
+is how removing a library or an account tears down its subtree.
 
 Two details worth stealing:
 
@@ -183,8 +183,8 @@ is why unmodified Silo already works with SeaDrive today.
 
 ### Our design
 
-Mirror it. Same two tables in the extension's container, keyed by domain. Repo
-IDs are stable UUIDs so a repo's identifier can be its repo ID; root is
+Mirror it. Same two tables in the extension's container, keyed by domain. Library
+IDs are stable UUIDs so a library's identifier can be its library ID; root is
 `NSFileProviderItemIdentifier.rootContainer`.
 
 There is no reason to invent something different — this schema has survived
@@ -274,19 +274,19 @@ the request it makes.
 |---|---|---|
 | domain setup | `POST /api2/auth-token/` | superseded — use `/api/silo/v1/auth/login` |
 | — | `GET /api/silo/v1/server-info` | exists |
-| `enumerateItems` (root) | `GET /api/silo/v1/repos` | exists, now returns `head_commit_id` |
-| `enumerateItems` (dir) | `GET /api/silo/v1/repos/{id}/dir/?p={path}` | superseded — `entries/{path}` |
+| `enumerateItems` (root) | `GET /api/silo/v1/libraries` | exists, now returns `head_commit_id` |
+| `enumerateItems` (dir) | `GET /api/silo/v1/libraries/{id}/dir/?p={path}` | superseded — `entries/{path}` |
 | `currentSyncAnchor` | `GET /repo/{id}/commit/HEAD` | superseded — `head_commit_id` |
-| `enumerateChanges` | `GET /api/silo/v1/repos/{id}/changes?since={commit}` | **built** |
+| `enumerateChanges` | `GET /api/silo/v1/libraries/{id}/changes?since={commit}` | **built** |
 | `item(for:)` | *none* — local `IdMap` ⋈ `WorkingSet` | — |
-| `fetchContents` | `GET /api/silo/v1/repos/{id}/file?p={path}` → redirect | superseded — `entries/{path}`, no redirect |
+| `fetchContents` | `GET /api/silo/v1/libraries/{id}/file?p={path}` → redirect | superseded — `entries/{path}`, no redirect |
 | — | `GET /files/{token}/{name}` | exists |
 | `createItem` (file) | `GET .../upload-link` then `POST /upload-api/{token}` | superseded — `PUT entries/{path}` |
-| `createItem` (dir) | `POST /api/silo/v1/repos/{id}/mkdir` | superseded — `PUT entries/{path}?type=dir` |
+| `createItem` (dir) | `POST /api/silo/v1/libraries/{id}/mkdir` | superseded — `PUT entries/{path}?type=dir` |
 | `modifyItem` (contents) | `POST /update-api/{token}` | superseded — the same `PUT` |
-| `modifyItem` (rename) | `POST /api/silo/v1/repos/{id}/rename` | superseded — `POST entries/…` `{"op":"move"}` |
-| `modifyItem` (reparent) | `POST /api/silo/v1/repos/{id}/move` | superseded — the same move call |
-| `deleteItem` | `DELETE /api/silo/v1/repos/{id}/file?p={path}` | superseded — `DELETE entries/{path}` |
+| `modifyItem` (rename) | `POST /api/silo/v1/libraries/{id}/rename` | superseded — `POST entries/…` `{"op":"move"}` |
+| `modifyItem` (reparent) | `POST /api/silo/v1/libraries/{id}/move` | superseded — the same move call |
+| `deleteItem` | `DELETE /api/silo/v1/libraries/{id}/file?p={path}` | superseded — `DELETE entries/{path}` |
 | push invalidation | `WS /notification` | exists |
 
 The prediction here held: almost the entire surface already existed, and the
@@ -299,7 +299,7 @@ One capability was added that this plan did not anticipate: **GET carries an
 revalidating a materialised item reads no blocks. See the brief.
 
 Note that identifiers never cross the wire: every request is expressed in
-`(repo_id, path)`, resolved client-side from `IdMap`. Silo's request logs and
+`(library_id, path)`, resolved client-side from `IdMap`. Silo's request logs and
 Sentry traces will therefore look the same as SeaDrive's — a useful property,
 since it means SeaDrive itself is a working reference for what correct traffic
 looks like.
@@ -368,7 +368,7 @@ extension crash reports are unreliable, so lean on breadcrumbs and explicit
 **Done.** Item 1 below shipped, along with the `entries` surface and the ETag
 support the brief describes. M0–M3 need no further server work.
 
-1. ~~`GET /api/silo/v1/repos/{id}/changes?since={commit}`~~ — built. Returns
+1. ~~`GET /api/silo/v1/libraries/{id}/changes?since={commit}`~~ — built. Returns
    `{op, path, old_path, id, size, is_dir}` plus the new anchor, `410 Gone` when
    `since` is unreachable. Renames are emitted server-side, as argued. Note it
    returns `id` (the content hash) rather than `content_hash`, and no `mtime` —
@@ -393,12 +393,12 @@ Swift; the API is completion-handler-heavy and `async/await` tames it. Linking G
 via `c-archive` is possible but not worth the FFI for a REST client — `URLSession`
 is less trouble.
 
-As built, in the `Porter` repo:
+As built, in the `Porter` library:
 
 - `FileProviderExtension: NSFileProviderReplicatedExtension`
 - `FileProviderEnumerator: NSFileProviderEnumerator`
 - `FileProviderItem: NSFileProviderItem`
-- `ItemID` — the `identifier ⇄ (repo_id, path)` mapping, ahead of `IdMap`
+- `ItemID` — the `identifier ⇄ (library_id, path)` mapping, ahead of `IdMap`
 - `SiloAPI` — thin `URLSession` client, mirrors `client/client.go`
 - `Porter.app` — container: login, keychain, add/remove domains
 
@@ -471,7 +471,7 @@ M4. Revisit `reimportItems` when `createItem` exists to receive the push.
 
 The system enumerates `NSFileProviderTrashContainerItemIdentifier` and
 `NSFileProviderWorkingSetContainerItemIdentifier` without being asked, at mount.
-Both must be parsed **before** any repo-ID case, or they reach the server as
+Both must be parsed **before** any library-ID case, or they reach the server as
 library names and earn a 403 apiece, once per mount. Returning an empty list is
 correct for both today: nothing is deletable before M4, and change tracking
 arrives at M3.
@@ -604,7 +604,7 @@ between app and extension needs a matching `keychain-access-groups` entitlement
 on both targets, or `SecItemAdd` fails with `errSecMissingEntitlement`
 (-34018).
 
-**M1 — read-only enumeration.** ~~Root lists repos, directories enumerate. No
+**M1 — read-only enumeration.** ~~Root lists libraries, directories enumerate. No
 downloads. Every file shows as dataless.~~ **Done**, against a live 0.4.1
 server. Two more surprises worth recording: `fileproviderd` launches the
 extension the moment the domain is registered, which races the container app
@@ -612,7 +612,7 @@ writing the account — resolve the account lazily and retry, because an
 extension that caches the failure at `init` stays broken with the credentials
 sitting right there. And the system enumerates
 `NSFileProviderTrashContainerItemIdentifier` unprompted; parse it before the
-repo-ID case or it goes to the server as a library name and earns a 403 per
+library-ID case or it goes to the server as a library name and earns a 403 per
 attempt.
 
 **M2 — `fetchContents`.** ~~On-demand download. This is the milestone where it
@@ -628,16 +628,16 @@ functionality rather than just convenience.
 
 ~~**M3 — sync anchor + `enumerateChanges`.** Remote changes appear without a
 restart. First milestone needing `IdMap` reconciliation, and the first with any
-Silo work behind it (the `/changes` endpoint). Anchor is the repo HEAD commit
+Silo work behind it (the `/changes` endpoint). Anchor is the library HEAD commit
 ID.~~ **Done**, against 0.4.4. A commit on the server reaches the Finder in
 about **one second**, and a rename keeps its identifier across the move rather
 than presenting as a delete and a create. Both were the point of the milestone.
 
-The anchor is the repo HEAD commit ID as planned, but per-repo: `SyncAnchor` is
-a `[repo: head]` map, because the working set spans every library and one commit
+The anchor is the library HEAD commit ID as planned, but per-library: `SyncAnchor` is
+a `[library: head]` map, because the working set spans every library and one commit
 id cannot name the state of several. Three things the plan did not anticipate
 are in the field notes below — `nil` from `currentSyncAnchor` is a *supported*
-answer and the right one for a per-repo enumerator, one `changes` batch can
+answer and the right one for a per-library enumerator, one `changes` batch can
 carry two operations for the same path, and SQLite's `substr` and Swift's
 `String.count` disagree about what a character is.
 
@@ -697,10 +697,10 @@ simply never read back.
   also the debug tool we will use constantly during M1–M4.
 - **Large files.** Whole-file fetch in v1; no resume until range GETs land. A
   10 GB file over a flaky link will be unpleasant until then.
-- **Encrypted repos.** Out of scope for v1. Client-side crypto inside a sandboxed
+- **Encrypted libraries.** Out of scope for v1. Client-side crypto inside a sandboxed
   appex is its own project.
 
 ## Explicitly out of scope
 
-Block-level dedup on upload, the Seafile sync protocol, encrypted repos, Linux
+Block-level dedup on upload, the Seafile sync protocol, encrypted libraries, Linux
 and Windows clients, and any change to `seadrive-gui`.

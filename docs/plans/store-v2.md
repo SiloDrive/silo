@@ -114,8 +114,8 @@ granularity without manifest bloat.
 
 Keying the chunker is what reconciles CDC with E2EE: cut points become a
 function of plaintext *and a secret*, so the server cannot fingerprint known
-files from chunk-size sequences. This is borg's per-repo buzhash seed and
-restic's per-repo Rabin polynomial — well-trodden. It supersedes
+files from chunk-size sequences. This is borg's per-library buzhash seed and
+restic's per-library Rabin polynomial — well-trodden. It supersedes
 encryption.md's "fixed 1 MiB chunks" instruction, which would have quietly
 destroyed delta sync for encrypted libraries (see amendments).
 
@@ -694,7 +694,7 @@ file is uploaded beside it on durable tiers — a few hundred KB next to
 512 MB — and recovery fetches indexes, never packs. Lookups still only ever
 run against the local copies.
 
-SQLite keeps the catalog jobs it is good at: repos, commits, membership, chunk
+SQLite keeps the catalog jobs it is good at: libraries, commits, membership, chunk
 parameters, GC statistics. It never holds chunk locations.
 
 ### Storage encryption — universal
@@ -837,7 +837,7 @@ changes).
 
 ### GC and compaction
 
-Carried from chunking.md; built once, alongside per-repo GC — they are the
+Carried from chunking.md; built once, alongside per-library GC — they are the
 same mark phase.
 
 - **Mark is a tracing collector.** Liveness is global reachability from live
@@ -906,8 +906,8 @@ same mark phase.
 ### History retention
 
 The "delete file history after N days" knob, and it is a GC input rather than
-a feature of its own. `RepoHistoryLimit (repo_id, days)` has sat in the schema
-since the Seafile era (`dbutil/schema.go:158`) with no reader but `DeleteRepo`'s
+a feature of its own. `LibraryHistoryLimit (library_id, days)` has sat in the schema
+since the Seafile era (`dbutil/schema.go:158`) with no reader but `DeleteLibrary`'s
 cleanup — the storage survives, and the mark phase is where it grows teeth.
 
 - **Retention is the definition of "live commit", not a second collector.**
@@ -961,11 +961,11 @@ cleanup — the storage survives, and the mark phase is where it grows teeth.
 Accounting today is built entirely on what phase 2 deletes, and the lane
 store-v2 builds on never had it.
 
-- **What dies.** `size_sched.go` computes `RepoSize`/`RepoFileCount` through
+- **What dies.** `size_sched.go` computes `Librariesize`/`LibraryFileCount` through
   `commitmgr.Load`, `diff.DiffCommits` and an `fsmgr.GetFileCountInfoByPath`
   fallback — all three doomed managers — and is queued only from
   `sync_api.go:1170` and `fileop.go:2962`, both frozen lanes. Its
-  `notifyRepoSizeChange` needs Redis, which a single-binary local Silo has no
+  `notifyLibrariesizeChange` needs Redis, which a single-binary local Silo has no
   reason to run. At the deletion nothing computes a size and nothing asks for
   one.
 - **Quota is already absent from the silo lane.** Every `checkQuota` call site
@@ -995,7 +995,7 @@ store-v2 builds on never had it.
   path and as phase 4's recovery scan's natural companion, never as the
   routine.
 - **The total is a catalog row that repairs itself, and there is no hook on
-  the write path.** `RepoUsage` records `(size, file_count, root_id)`, where
+  the write path.** `LibraryUsage` records `(size, file_count, root_id)`, where
   `root_id` is the root the numbers are true at. A reader that finds a
   different root computes the delta itself and publishes it with a conditional
   update — `WHERE root_id = <the one it read>` — so two readers racing to
@@ -1032,7 +1032,7 @@ store-v2 builds on never had it.
   asked for yet. Cost is bounded by the page and paid once per manifest ever;
   the steady state is one indexed query. The key is the object id alone, with
   no library column, because content-addressing makes the size a function of
-  the id. The two numbers stayed distinct as this required: `RepoUsage` is the
+  the id. The two numbers stayed distinct as this required: `LibraryUsage` is the
   authority for what a library holds, `ObjectSize` answers what a directory
   shows, and neither is computed from the other.
 - **Dedup is not a discount, and a stored-bytes quota is refused.**
@@ -1083,7 +1083,7 @@ store-v2 builds on never had it.
   443, and not 403: a 403 tells a client the request was not allowed and to
   stop, where the truth is that it should free some space and try again.
 - File count rides along in the same row and the same delta, and reaches the
-  wire on the listing. `RepoFileCount` is the dying scheduler's table and is
+  wire on the listing. `LibraryFileCount` is the dying scheduler's table and is
   not it; the two accounting stores are kept apart deliberately, because they
   cover disjoint sets of libraries — 40-hex heads there, 64-hex heads here —
   and sharing a row would have made phase 2's deletion a rewrite instead of a
@@ -1097,7 +1097,7 @@ store-v2 builds on never had it.
     nothing else. Owned, not seen: a library shared with you is charged to
     whoever owns it. `server-info`'s `features` carries `"usage"`, so porter
     feature-detects rather than version-sniffs.
-  - **Per-library `size` and `file_count` go on the repos listing, not on
+  - **Per-library `size` and `file_count` go on the libraries listing, not on
     `account/usage`.** They are library facts, from the same catalog row as
     `update_time` and `last_modifier` — the server-observed columns — and
     splitting one row across two endpoints buys nothing. Sharing settles it: a
@@ -1496,18 +1496,18 @@ Phases are sequential on the branch; each leaves the tree working.
    degenerate implementation (one chunk per "pack", seal a no-op), so phase
    4 swaps implementations, not interfaces, and the seam changes shape once.
 
-   **Step 1 landed 2026-08-23**: the catalog carries the chunker. `Repo` gains
+   **Step 1 landed 2026-08-23**: the catalog carries the chunker. `Library` gains
    the algorithm, sizes, normalisation and the e2ee flag, with no DEFAULT — a
    creation path that forgets them fails at the INSERT. The seed is not stored,
    because a plain library and an E2EE one derive it differently from the same
    row. Parameters are validated on every read, so a row describing no chunker
-   makes the library corrupted rather than merely unusual. `CreateRepo` refuses
+   makes the library corrupted rather than merely unusual. `CreateLibrary` refuses
    an E2EE library outright: its initial commit is sealed under a key the
    server never holds, which is the first thing the fold above has to build.
 
    **Step 2 landed 2026-08-23**: the seam is pack-shaped. `storageBackend`
    goes from four per-object verbs to write-and-seal, ranged read, whole read,
-   stat, list, remove and remove-repo, with the fs backend implementing it one
+   stat, list, remove and remove-library, with the fs backend implementing it one
    object per pack. Sealing turned out to be a name for what temp-file-and-
    rename already did. Absence is normalised to one `ErrNotFound` so the
    tiering logic is written once rather than per backend, and verification
@@ -1579,7 +1579,7 @@ Phases are sequential on the branch; each leaves the tree working.
    rather than by reading this plan:
 
    *The frozen lanes go first, and take auto-merge with them.* `fileop.go`,
-   `sync_api.go`, `merge.go`, `diff/`, `virtual_repo.go`, the SeaDrive
+   `sync_api.go`, `merge.go`, `diff/`, `virtual_library.go`, the SeaDrive
    handlers and their routes — roughly 7000 lines, and
    [`target.md`](../target.md) already gave up Seafile wire compatibility and
    named `seafile-compat-end` as the tag to revert to. Server-side three-way
@@ -1622,10 +1622,10 @@ Phases are sequential on the branch; each leaves the tree working.
 
    *Library metadata moves out of commits and into the catalog.* Seafile keeps
    a library's name, description, last modifier and last modification time
-   inside every commit, and `repomgr.GetWithReason` reads the head commit to
+   inside every commit, and `libmgr.GetWithReason` reads the head commit to
    fill them in. Under E2EE the author and message are sealed and the name has
    nowhere to live at all, so the server would be reading fields it cannot
-   read. `Repo` gains those columns; `store.Commit` carries none of them. The
+   read. `Library` gains those columns; `store.Commit` carries none of them. The
    head commit keeps exactly one server-facing job — supplying the root id,
    through `DecodeCommitPublic`. Storing the last modifier server-side is not
    a concession: the server authenticated the writer, so it already knows, and
@@ -1655,8 +1655,8 @@ Phases are sequential on the branch; each leaves the tree working.
 
    **Step 6a landed 2026-08-23: the catalog is the authority.** A library's
    name, last modifier and modification time were fields inside every commit,
-   mirrored into `RepoInfo` on each head move, with the commit as the source of
-   truth. That is inverted: the commit carries none of them, `RepoInfo` is
+   mirrored into `LibraryInfo` on each head move, with the commit as the source of
+   truth. That is inverted: the commit carries none of them, `LibraryInfo` is
    where they live, and `Branch` gains `root_id` so the head and the root it
    names are one row read in one query — which also takes an object-store read
    off the path every request goes down.
@@ -1690,7 +1690,7 @@ Phases are sequential on the branch; each leaves the tree working.
    one format, so there is nothing to discriminate.
    **Step 6b landed 2026-08-23: the deletion, and the narrowing with it.**
    Roughly 14,000 lines: `fileop.go`, `sync_api.go`, `merge.go`,
-   `virtual_repo.go`, `size_sched.go`, `quota.go`, `crypt.go`, the `fsmgr`,
+   `virtual_library.go`, `size_sched.go`, `quota.go`, `crypt.go`, the `fsmgr`,
    `blockmgr`, `commitmgr`, `diff`, `keycache` and `workerpool` packages, the
    SeaDrive API and every route that reached any of them. Each surviving
    handler had its format branch collapsed onto the store-v2 side rather than
@@ -1718,13 +1718,13 @@ Phases are sequential on the branch; each leaves the tree working.
    the fix with it. `contentionBackoff` moved across.
 
    *The sync credential died with the lane that validated it.* The token cache
-   in `sync_api.go` was the only thing that ever read a `RepoUserToken`, and
-   `POST repos/{id}/sync-token` was the only thing that minted one — for a
+   in `sync_api.go` was the only thing that ever read a `LibraryUserToken`, and
+   `POST libraries/{id}/sync-token` was the only thing that minted one — for a
    `GET /repo/{id}/jwt-token` fallback that the route deletion had already
    removed. Leaving an endpoint that mints a credential nothing validates is
    worse than removing it, so both went. What is left orphaned and deliberately
    untouched, because it is the auth lane's to decide: `middleware.RequireAPIToken`,
-   the `RepoUserToken` table, and `silo token`'s repo-token half.
+   the `LibraryUserToken` table, and `silo token`'s library-token half.
 
 3. **E2EE.** — **folded into phase 2, 2026-08-23.** Identity keys, salt
    endpoint, split-derivation login (with or after auth.md's rewrite), CK
@@ -1735,7 +1735,7 @@ Phases are sequential on the branch; each leaves the tree working.
    **The account side of this has no schema and no route**, found 2026-08-23
    and written up as
    [auth.md § The client's KDF is not this one](../auth.md#the-clients-kdf-is-not-this-one-and-it-needs-four-columns)
-   rather than left to be discovered mid-phase, the way `CreateRepo` refusing
+   rather than left to be discovered mid-phase, the way `CreateLibrary` refusing
    E2EE libraries was. Phase 1 pinned the wire format and auth.md pinned the
    account model, and nothing connects them: four schema items — the published
    X25519 public key, the kind-1 wrapped identity blob, the kind-2 recovery
@@ -1777,7 +1777,7 @@ Phases are sequential on the branch; each leaves the tree working.
    rewrite, with locality and undersize as scheduling inputs and **two
    budgets** — disk I/O for every rewrite, egress for the ones that have to
    download the pack first.
-   Built together with per-repo GC from
+   Built together with per-library GC from
    [`future-features.md`](../future-features.md) — same mark, build it once.
 6. **Durable backends.** NAS fs root and S3 against the four-verb feature
    floor, async upload of sealed packs, verified-then-evictable local cache
@@ -1849,7 +1849,7 @@ ones from this plan:
   loud rather than to prevent. It belongs beside the backup ordering rule,
   which is the other thing that is correct only because a human read it.
 - `store-v2-hash-bench.md` — the G2 x86 run is appended (2026-08-22); the file
-  moved here from the repo root, where the plan cited it but git did not have it.
+  moved here from the project root, where the plan cited it but git did not have it.
 - `target.md` — S3 is promoted from "does not get a vote in any decision" to
   a planned tier of this plan; the ruling sentence gets amended to point
   here.

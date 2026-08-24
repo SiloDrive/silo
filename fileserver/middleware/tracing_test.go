@@ -10,18 +10,18 @@ func TestRouteName(t *testing.T) {
 	}{
 		{
 			"regex-pinned variable and optional slash",
-			`/repo/{repoid:[\da-z]{8}-[\da-z]{4}-[\da-z]{4}-[\da-z]{4}-[\da-z]{12}}/permission-check{slash:\/?}`,
-			"/repo/{repoid}/permission-check",
+			`/libraries/{libraryid:[\da-z]{8}-[\da-z]{4}-[\da-z]{4}-[\da-z]{4}-[\da-z]{12}}/permission-check{slash:\/?}`,
+			"/libraries/{libraryid}/permission-check",
 		},
 		{
 			"two pinned variables",
-			`/repo/{repoid:[\da-z]{8}-[\da-z]{4}-[\da-z]{4}-[\da-z]{4}-[\da-z]{12}}/block/{id:[\da-z]{40}}`,
-			"/repo/{repoid}/block/{id}",
+			`/libraries/{libraryid:[\da-z]{8}-[\da-z]{4}-[\da-z]{4}-[\da-z]{4}-[\da-z]{12}}/block/{id:[\da-z]{40}}`,
+			"/libraries/{libraryid}/block/{id}",
 		},
 		{
 			"plain variable is left alone",
-			"/api/silo/v1/repos/{repoid}/dir/",
-			"/api/silo/v1/repos/{repoid}/dir/",
+			"/api/silo/v1/libraries/{libraryid}/dir/",
+			"/api/silo/v1/libraries/{libraryid}/dir/",
 		},
 		{
 			"no variables",
@@ -30,8 +30,8 @@ func TestRouteName(t *testing.T) {
 		},
 		{
 			"slash variable at the end of a bare route",
-			`/repo/head-commits-multi{slash:\/?}`,
-			"/repo/head-commits-multi",
+			`/libraries/head-commits-multi{slash:\/?}`,
+			"/libraries/head-commits-multi",
 		},
 		{
 			"anonymous wildcard",
@@ -42,8 +42,8 @@ func TestRouteName(t *testing.T) {
 		// would produce a name that reads like a real, shorter route.
 		{
 			"unbalanced brace",
-			"/repo/{repoid",
-			"/repo/{repoid",
+			"/libraries/{libraryid",
+			"/libraries/{libraryid",
 		},
 	}
 	for _, tt := range tests {

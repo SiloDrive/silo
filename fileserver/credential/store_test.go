@@ -100,7 +100,7 @@ func mint(t *testing.T, pair *dbutil.DBPair, kind Kind, o credOpts) (string, Tok
 }
 
 func bearer(s string) *http.Request {
-	r := httptest.NewRequest(http.MethodGet, "/api2/repos/", nil)
+	r := httptest.NewRequest(http.MethodGet, "/api2/libraries/", nil)
 	r.Header.Set("Authorization", "Bearer "+s)
 	return r
 }
@@ -108,7 +108,7 @@ func bearer(s string) *http.Request {
 func TestResolveAcceptsAValidCredential(t *testing.T) {
 	pair := testDB(t)
 	dan := addUser(t, pair, "dan@example.com", true)
-	s, tok := mint(t, pair, KindDevice, credOpts{account: dan, scope: "repo-1:/photos", perm: "r"})
+	s, tok := mint(t, pair, KindDevice, credOpts{account: dan, scope: "library-1:/photos", perm: "r"})
 
 	cred, err := Resolve(bearer(s), KindDevice)
 	if err != nil {
@@ -120,7 +120,7 @@ func TestResolveAcceptsAValidCredential(t *testing.T) {
 	if cred.AccountID != dan {
 		t.Errorf("account = %s, want %s", cred.AccountID, dan)
 	}
-	if got, want := cred.Scope.String(), "repo-1:/photos"; got != want {
+	if got, want := cred.Scope.String(), "library-1:/photos"; got != want {
 		t.Errorf("scope = %q, want %q", got, want)
 	}
 	if cred.Perm != "r" {
@@ -308,7 +308,7 @@ func TestResolveLegacyToken(t *testing.T) {
 		t.Fatalf("inserting credential: %v", err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/api2/repos/", nil)
+	r := httptest.NewRequest(http.MethodGet, "/api2/libraries/", nil)
 	r.Header.Set("Authorization", "Token "+raw)
 
 	cred, err := Resolve(r, KindLegacy)
@@ -321,26 +321,26 @@ func TestResolveLegacyToken(t *testing.T) {
 }
 
 func TestEffectivePerm(t *testing.T) {
-	const repo = "repo-1"
+	const library = "library-1"
 
 	tests := []struct {
-		name        string
-		scope       string
-		credPerm    string
-		accountPerm string
-		repo, path  string
-		want        string
+		name          string
+		scope         string
+		credPerm      string
+		accountPerm   string
+		library, path string
+		want          string
 	}{
-		{"unscoped credential passes the account through", "", "rw", "rw", repo, "/x", "rw"},
-		{"a read-only credential narrows a read-write account", "", "r", "rw", repo, "/x", "r"},
-		{"a read-write credential cannot widen a read-only account", "", "rw", "r", repo, "/x", "r"},
-		{"withdrawn account permission wins", "", "rw", "", repo, "/x", ""},
-		{"library scope covers its own library", repo, "rw", "rw", repo, "/x", "rw"},
-		{"library scope excludes another", repo, "rw", "rw", "repo-2", "/x", ""},
-		{"path scope covers below it", repo + ":/photos", "rw", "rw", repo, "/photos/2024", "rw"},
-		{"path scope excludes a sibling", repo + ":/photos", "rw", "rw", repo, "/documents", ""},
-		{"path scope and a read-only account", repo + ":/photos", "rw", "r", repo, "/photos", "r"},
-		{"an unrecognised permission grants nothing", "", "admin", "rw", repo, "/x", ""},
+		{"unscoped credential passes the account through", "", "rw", "rw", library, "/x", "rw"},
+		{"a read-only credential narrows a read-write account", "", "r", "rw", library, "/x", "r"},
+		{"a read-write credential cannot widen a read-only account", "", "rw", "r", library, "/x", "r"},
+		{"withdrawn account permission wins", "", "rw", "", library, "/x", ""},
+		{"library scope covers its own library", library, "rw", "rw", library, "/x", "rw"},
+		{"library scope excludes another", library, "rw", "rw", "library-2", "/x", ""},
+		{"path scope covers below it", library + ":/photos", "rw", "rw", library, "/photos/2024", "rw"},
+		{"path scope excludes a sibling", library + ":/photos", "rw", "rw", library, "/documents", ""},
+		{"path scope and a read-only account", library + ":/photos", "rw", "r", library, "/photos", "r"},
+		{"an unrecognised permission grants nothing", "", "admin", "rw", library, "/x", ""},
 	}
 
 	for _, tt := range tests {
@@ -349,7 +349,7 @@ func TestEffectivePerm(t *testing.T) {
 			t.Fatalf("ParseScope(%q): %v", tt.scope, err)
 		}
 		c := &Credential{Scope: scope, Perm: tt.credPerm}
-		if got := c.EffectivePerm(tt.accountPerm, tt.repo, tt.path); got != tt.want {
+		if got := c.EffectivePerm(tt.accountPerm, tt.library, tt.path); got != tt.want {
 			t.Errorf("%s: got %q, want %q", tt.name, got, tt.want)
 		}
 	}

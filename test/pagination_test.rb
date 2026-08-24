@@ -18,10 +18,10 @@ class PaginationTest < Minitest::Test
   end
 
   def test_a_listing_without_limit_is_whole_and_unchanged_in_shape
-    repo_id = create_test_repo
-    3.times { |i| client.mkdir(repo_id, "/d#{i}") }
+    library_id = create_test_library
+    3.times { |i| client.mkdir(library_id, "/d#{i}") }
 
-    resp = client.list_dir(repo_id, "/")
+    resp = client.list_dir(library_id, "/")
     assert resp.ok?
     assert_kind_of Array, resp.json, "the unpaged body is still a bare array"
     assert_equal 3, resp.json.length
@@ -29,11 +29,11 @@ class PaginationTest < Minitest::Test
   end
 
   def test_a_listing_pages_through_a_link_header
-    repo_id = create_test_repo
-    5.times { |i| client.mkdir(repo_id, "/d#{i}") }
+    library_id = create_test_library
+    5.times { |i| client.mkdir(library_id, "/d#{i}") }
 
     seen = []
-    resp = client.list_dir(repo_id, "/", "limit=2")
+    resp = client.list_dir(library_id, "/", "limit=2")
     pages = 0
     loop do
       assert resp.ok?, resp.to_s
@@ -52,11 +52,11 @@ class PaginationTest < Minitest::Test
   end
 
   def test_changes_withholds_the_anchor_until_the_last_page
-    repo_id = create_test_repo
-    before = client.list_repos.json.find { |r| r["id"] == repo_id }["head_commit_id"]
-    4.times { |i| client.mkdir(repo_id, "/c#{i}") }
+    library_id = create_test_library
+    before = client.list_libraries.json.find { |r| r["id"] == library_id }["head_commit_id"]
+    4.times { |i| client.mkdir(library_id, "/c#{i}") }
 
-    resp = client.changes(repo_id, before, "limit=2")
+    resp = client.changes(library_id, before, "limit=2")
     assert resp.ok?, resp.to_s
     assert next_link(resp), "there is more to come, so there must be a next link"
     assert_nil resp["anchor"], "recording the anchor here would skip everything unread"
@@ -72,18 +72,18 @@ class PaginationTest < Minitest::Test
     assert resp["anchor"], "the last page carries the anchor"
 
     # And the anchor really is where the client now stands.
-    assert_equal [], client.changes(repo_id, resp["anchor"])["changes"]
+    assert_equal [], client.changes(library_id, resp["anchor"])["changes"]
   end
 
   def test_a_bad_limit_is_refused_rather_than_clamped
-    repo_id = create_test_repo
+    library_id = create_test_library
     ["limit=0", "limit=-1", "limit=many", "limit=10001"].each do |q|
-      assert_equal 400, client.list_dir(repo_id, "/", q).status, "?#{q} was accepted"
+      assert_equal 400, client.list_dir(library_id, "/", q).status, "?#{q} was accepted"
     end
   end
 
   def test_a_cursor_this_server_did_not_issue_is_refused
-    repo_id = create_test_repo
-    assert_equal 400, client.list_dir(repo_id, "/", "cursor=not-a-cursor").status
+    library_id = create_test_library
+    assert_equal 400, client.list_dir(library_id, "/", "cursor=not-a-cursor").status
   end
 end

@@ -114,7 +114,7 @@ verified every object that library's head references.
 ## Upgrading from a two-database install
 
 Every release up to and including 0.4.6 kept two SQLite files, `ccnet.db`
-(users, groups) and `seafile.db` (repos, shares, tokens). The merge into one
+(users, groups) and `seafile.db` (libraries, shares, tokens). The merge into one
 `silo.db` landed after 0.4.6 was tagged, so a development build can report
 0.4.6 and still want the single file — go by what is in the data directory
 rather than by the version string.

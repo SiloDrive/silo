@@ -14,14 +14,14 @@ const (
 	victim    = "victim@example.com"
 	bystander = "bystander@example.com"
 
-	victimSyncA    = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"
-	victimSyncB    = "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
-	bystanderSync  = "cccc3333cccc3333cccc3333cccc3333cccc3333"
-	victimAPI      = "dddd4444dddd4444dddd4444dddd4444dddd4444"
-	bystanderAPI   = "eeee5555eeee5555eeee5555eeee5555eeee5555"
-	sharedRepoID   = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
-	otherRepoID    = "c2e3be72-a275-429b-b580-bc916ece6705"
-	unknownTokenID = "ffff6666ffff6666ffff6666ffff6666ffff6666"
+	victimSyncA     = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"
+	victimSyncB     = "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
+	bystanderSync   = "cccc3333cccc3333cccc3333cccc3333cccc3333"
+	victimAPI       = "dddd4444dddd4444dddd4444dddd4444dddd4444"
+	bystanderAPI    = "eeee5555eeee5555eeee5555eeee5555eeee5555"
+	sharedLibraryID = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
+	otherLibraryID  = "c2e3be72-a275-429b-b580-bc916ece6705"
+	unknownTokenID  = "ffff6666ffff6666ffff6666ffff6666ffff6666"
 )
 
 // tokenTestStore seeds both token tables with two users, so every test can
@@ -41,16 +41,16 @@ func tokenTestStore(t *testing.T) {
 
 	now := time.Now().Unix()
 	for _, tok := range []struct {
-		repoID string
-		acct   *account.Account
-		token  string
+		libraryID string
+		acct      *account.Account
+		token     string
 	}{
-		{sharedRepoID, victimAcct, victimSyncA},
-		{otherRepoID, victimAcct, victimSyncB},
-		{sharedRepoID, bystanderAcct, bystanderSync},
+		{sharedLibraryID, victimAcct, victimSyncA},
+		{otherLibraryID, victimAcct, victimSyncB},
+		{sharedLibraryID, bystanderAcct, bystanderSync},
 	} {
-		dbExec(t, "INSERT INTO RepoUserToken (repo_id, account_id, token, ctime) VALUES (?, ?, ?, ?)",
-			tok.repoID, tok.acct.ID, tok.token, now)
+		dbExec(t, "INSERT INTO LibraryUserToken (library_id, account_id, token, ctime) VALUES (?, ?, ?, ?)",
+			tok.libraryID, tok.acct.ID, tok.token, now)
 	}
 	for _, tok := range []struct {
 		token string
@@ -96,7 +96,7 @@ func TestRevokeAllTokensRemovesBothKinds(t *testing.T) {
 		t.Fatalf("revokeAllTokens returned %v", err)
 	}
 
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != 0 {
+	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != 0 {
 		t.Errorf("%d sync tokens survived revocation, want 0", n)
 	}
 	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, victim).ID); n != 0 {
@@ -104,7 +104,7 @@ func TestRevokeAllTokensRemovesBothKinds(t *testing.T) {
 	}
 
 	// Revoking one account must not sign out the rest of the server.
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
+	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
 		t.Errorf("bystander has %d sync tokens, want 1", n)
 	}
 	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
@@ -121,10 +121,10 @@ func TestRevokeOneSyncTokenLeavesTheOthers(t *testing.T) {
 		t.Fatalf("revokeOneToken returned %v", err)
 	}
 
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE token = ?", victimSyncA); n != 0 {
+	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE token = ?", victimSyncA); n != 0 {
 		t.Errorf("the revoked token is still present")
 	}
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE token = ?", victimSyncB); n != 1 {
+	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE token = ?", victimSyncB); n != 1 {
 		t.Errorf("the user's other sync token was removed too")
 	}
 	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, victim).ID); n != 1 {
@@ -142,7 +142,7 @@ func TestRevokeOneAPIToken(t *testing.T) {
 	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE token = ?", victimAPI); n != 0 {
 		t.Errorf("the revoked API token is still present")
 	}
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != 2 {
+	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != 2 {
 		t.Errorf("sync tokens were removed by an API-token revocation")
 	}
 }
@@ -159,7 +159,7 @@ func TestRevokeOneTokenRefusesAnotherUsersToken(t *testing.T) {
 		}
 	}
 
-	if n := countRows(t, "SELECT COUNT(*) FROM RepoUserToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
+	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
 		t.Errorf("bystander's sync token was revoked")
 	}
 	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {

@@ -135,17 +135,17 @@ Usage:
   silo token list <email>         Show a user's sync and API tokens
   silo token revoke <email> [tok] Revoke every token a user holds, or just one
   silo tui [url]                  Launch the interactive terminal UI
-  silo repos [--json]             List libraries
-  silo repo create <name>         Create a library (prints ID)
-  silo repo rm <repo-id>          Delete a library
-  silo ls <repo-id> [path] [--json]
-  silo get <repo-id> <remote> [local]
-  silo put [-r] <repo-id> <local> [remote-dir]
-  silo mkdir <repo-id> <path>
-  silo rm <repo-id> <path>
-  silo mv <repo-id> <src> <dst>
-  silo rename <repo-id> <path> <new-name>
-  silo changes <repo-id> <since-commit> [--json]
+  silo libraries [--json]         List libraries
+  silo library create <name>      Create a library (prints ID)
+  silo library rm <library-id>    Delete a library
+  silo ls <library-id> [path] [--json]
+  silo get <library-id> <remote> [local]
+  silo put [-r] <library-id> <local> [remote-dir]
+  silo mkdir <library-id> <path>
+  silo rm <library-id> <path>
+  silo mv <library-id> <src> <dst>
+  silo rename <library-id> <path> <new-name>
+  silo changes <library-id> <since-commit> [--json]
   silo version                    Print the build version
 
 Server environment:

@@ -77,7 +77,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.6","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","blocks","pagination","batch","usage","notifications"]}
+{"version":"0.4.6","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","library-rename","blocks","pagination","batch","usage","notifications"]}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an
@@ -130,9 +130,9 @@ surface itself moved under clients before the feature list existed.
 ## Libraries
 
 ```
-GET    /api/silo/v1/repos              list (see the delta endpoint for head_commit_id)
-POST   /api/silo/v1/repos              {"name":"..."} → the new library
-DELETE /api/silo/v1/repos/{repoid}     delete a library
+GET    /api/silo/v1/libraries              list (see the delta endpoint for head_commit_id)
+POST   /api/silo/v1/libraries              {"name":"..."} → the new library
+DELETE /api/silo/v1/libraries/{libraryid}     delete a library
 ```
 
 The container app needs create and delete; the extension itself only enumerates.
@@ -144,7 +144,7 @@ emptying one.
 
 Feature-detect with `"usage"` in `server-info`'s `features`.
 
-Each row of `GET repos` carries `size` and `file_count` for that library, and
+Each row of `GET libraries` carries `size` and `file_count` for that library, and
 the account's total lives on its own endpoint:
 
 ```
@@ -195,11 +195,11 @@ always holding.
 ## The entries endpoint
 
 ```
-GET    /api/silo/v1/repos/{repo}/entries/{path}   dir → listing, file → bytes
-HEAD   /api/silo/v1/repos/{repo}/entries/{path}   headers only
-PUT    /api/silo/v1/repos/{repo}/entries/{path}   body → file, or ?type=dir
-DELETE /api/silo/v1/repos/{repo}/entries/{path}
-POST   /api/silo/v1/repos/{repo}/entries/{path}   {"op":"move","to":"/x/y"}
+GET    /api/silo/v1/libraries/{library}/entries/{path}   dir → listing, file → bytes
+HEAD   /api/silo/v1/libraries/{library}/entries/{path}   headers only
+PUT    /api/silo/v1/libraries/{library}/entries/{path}   body → file, or ?type=dir
+DELETE /api/silo/v1/libraries/{library}/entries/{path}
+POST   /api/silo/v1/libraries/{library}/entries/{path}   {"op":"move","to":"/x/y"}
 ```
 
 Files and directories share a noun because in a content-addressed tree they are
@@ -228,7 +228,7 @@ re-enumeration; retry, and surface it if it persists.
 Before 0.4.3 all three arrived as 404, so a server that lost an object told
 every client the library had been deleted — and the copy a client would then
 delete is the one that could have restored it. If you must run against an
-older server, treat a 404 on a library that `GET /repos` still lists as a
+older server, treat a 404 on a library that `GET /libraries` still lists as a
 server fault rather than a deletion; the two surfaces disagreeing is the tell.
 
 ### Escaping
@@ -245,7 +245,7 @@ use a query-string escaper: it encodes a space as `+`, which is wrong in a path.
 ### Reading a directory
 
 ```
-GET /api/silo/v1/repos/{repo}/entries/
+GET /api/silo/v1/libraries/{library}/entries/
 ```
 ```json
 [
@@ -362,7 +362,7 @@ useless for identity.
 | move or rename | `POST entries/{path}` with `{"op":"move","to":"/new/path"}` |
 | copy | `POST entries/{path}` with `{"op":"copy","to":"/new/path"}` → **201** |
 | delete | `DELETE entries/{path}` |
-| rename a library | `PATCH repos/{repoid}` with `{"name":"New name"}` |
+| rename a library | `PATCH libraries/{libraryid}` with `{"name":"New name"}` |
 
 **`PUT` replaces.** That is what PUT means, and it is deliberately unlike the
 Seafile lane's upload, which is modelled on a person dragging files into a
@@ -539,7 +539,7 @@ specifies.
 Check `features` for `batch`.
 
 ```
-POST /api/silo/v1/repos/{repo}/batch
+POST /api/silo/v1/libraries/{library}/batch
 {"ops":[{"op":"mkdir","path":"/a"},{"op":"create","path":"/a/x.txt","blocks":[…]}]}
 → 200 {"commit_id":"…","ops":2,"changed":true}
 ```
@@ -573,9 +573,9 @@ Check `features` for `pagination`. Two endpoints take `?limit=N`: `GET changes`
 and a directory listing.
 
 ```
-GET /api/silo/v1/repos/{repo}/changes?since={commit}&limit=1000
+GET /api/silo/v1/libraries/{library}/changes?since={commit}&limit=1000
 → 200  {"changes":[…]}
-   Link: </api/silo/v1/repos/{repo}/changes?cursor=…&limit=1000>; rel="next"
+   Link: </api/silo/v1/libraries/{library}/changes?cursor=…&limit=1000>; rel="next"
 …
 → 200  {"anchor":"<commit>","changes":[…]}       (no Link — you are done)
 ```
@@ -599,7 +599,7 @@ Revalidate the whole listing, not a page of it.
 default: a truncated answer that looked complete would be worse than a large
 one. `limit` is capped at 10,000 and a bad value is a **400**, not a clamp.
 
-`GET /repos` does not page — the count is bounded by how many libraries the
+`GET /libraries` does not page — the count is bounded by how many libraries the
 account has.
 
 ## Uploading in blocks
@@ -607,9 +607,9 @@ account has.
 Check `features` for `blocks` first. Three calls:
 
 ```
-POST /api/silo/v1/repos/{repo}/blocks/missing      {"blocks":[sha1,…]} → {"missing":[sha1,…]}
-PUT  /api/silo/v1/repos/{repo}/blocks/{sha1}       the block's bytes
-PUT  /api/silo/v1/repos/{repo}/entries/{path}?type=blocks   {"blocks":[sha1,…]}
+POST /api/silo/v1/libraries/{library}/blocks/missing      {"blocks":[sha1,…]} → {"missing":[sha1,…]}
+PUT  /api/silo/v1/libraries/{library}/blocks/{sha1}       the block's bytes
+PUT  /api/silo/v1/libraries/{library}/entries/{path}?type=blocks   {"blocks":[sha1,…]}
 ```
 
 **You can compute the ids yourself, and that is the point.** Cut the file at
@@ -662,7 +662,7 @@ server-side key cache that nothing ever populates, so the honest answer for any
 file in an encrypted library is
 
 ```
-400  Repo is encrypted. Please provide password to view it.
+400  Library is encrypted. Please provide password to view it.
 ```
 
 and no endpoint accepts one. Silo cannot create such a library either — the only
@@ -766,18 +766,18 @@ file*, *write these bytes* — rather than branching on `e2ee` at each call site
 **Reading an E2EE library:**
 
 ```
-GET  repos/{repo}/entries/{ct-path}              → listing, names as ciphertext
-GET  repos/{repo}/entries/{ct-path}?type=blocks  → the ordered chunk list
-GET  repos/{repo}/blocks/{id}                    → chunk ciphertext → decrypt
+GET  libraries/{library}/entries/{ct-path}              → listing, names as ciphertext
+GET  libraries/{library}/entries/{ct-path}?type=blocks  → the ordered chunk list
+GET  libraries/{library}/blocks/{id}                    → chunk ciphertext → decrypt
 ```
 
 or straight down the object graph, which is what a cold start does:
 
 ```
-GET  repos/{repo}                      → head_commit_id
-GET  repos/{repo}/objects/{commit}     → decode → root directory id
-GET  repos/{repo}/objects/{dir}        → decrypt names → child ids and types
-GET  repos/{repo}/objects/{manifest}   → chunk list, or the inline bytes
+GET  libraries/{library}                      → head_commit_id
+GET  libraries/{library}/objects/{commit}     → decode → root directory id
+GET  libraries/{library}/objects/{dir}        → decrypt names → child ids and types
+GET  libraries/{library}/objects/{manifest}   → chunk list, or the inline bytes
 ```
 
 **Encrypting a depth-N path costs N sequential fetches the first time**, and no
@@ -791,11 +791,11 @@ not on a plain library.
 **Writing, and this shape is the same for both library types:**
 
 ```
-POST repos/{repo}/blocks/missing       {"blocks":[id,…]} → {"missing":[id,…]}
-PUT  repos/{repo}/blocks/{id}          the chunk's bytes  (or batched pack-blocks)
-PUT  repos/{repo}/objects/{id}         manifest, then each directory up the spine,
+POST libraries/{library}/blocks/missing       {"blocks":[id,…]} → {"missing":[id,…]}
+PUT  libraries/{library}/blocks/{id}          the chunk's bytes  (or batched pack-blocks)
+PUT  libraries/{library}/objects/{id}         manifest, then each directory up the spine,
                                        then the commit
-PUT  repos/{repo}/head                 If-Match: <current head commit id>
+PUT  libraries/{library}/head                 If-Match: <current head commit id>
 ```
 
 The server verifies that each object's id is the SHA-256 of the bytes and that
@@ -836,7 +836,7 @@ assigning one.
 called is not.** E2EE covers a library's content and the names of the files
 inside it. A library's own display name and description are server-plaintext,
 permanently and by decision: the server has to sort them, search them and put
-them in `GET /repos` for a client that has not unlocked anything — including a
+them in `GET /libraries` for a client that has not unlocked anything — including a
 client that holds no key for that library at all. Sealing them would produce a
 listing of untitled libraries, or a second name kept in the clear beside the
 sealed one, which is the same disclosure with an extra step.
@@ -887,7 +887,7 @@ and [`target.md`](target.md) records why it will not be.
 ## The delta endpoint
 
 ```
-GET /api/silo/v1/repos/{repo}/changes?since={commit}
+GET /api/silo/v1/libraries/{library}/changes?since={commit}
 ```
 ```json
 {
@@ -910,7 +910,7 @@ advances without special-casing the empty answer.
 
 ### Getting the first anchor
 
-`GET /api/silo/v1/repos` now returns `head_commit_id` per library:
+`GET /api/silo/v1/libraries` now returns `head_commit_id` per library:
 
 ```json
 [{"id":"bf3230f1-…","name":"CLI test","update_time":1786965306,
@@ -967,28 +967,28 @@ exercised against a running server.
 |---|---|
 | domain setup | `POST /api/silo/v1/auth/login` |
 | — | `GET /api/silo/v1/server-info` |
-| `enumerateItems` (root) | `GET /api/silo/v1/repos` — rows carry `size`/`file_count` |
+| `enumerateItems` (root) | `GET /api/silo/v1/libraries` — rows carry `size`/`file_count` |
 | show storage used | `GET /api/silo/v1/account/usage` |
-| `enumerateItems` (dir) | `GET /api/silo/v1/repos/{id}/entries/{path}` |
-| `currentSyncAnchor` | `head_commit_id` from `GET /api/silo/v1/repos` |
-| `enumerateChanges` | `GET /api/silo/v1/repos/{id}/changes?since={commit}` |
+| `enumerateItems` (dir) | `GET /api/silo/v1/libraries/{id}/entries/{path}` |
+| `currentSyncAnchor` | `head_commit_id` from `GET /api/silo/v1/libraries` |
+| `enumerateChanges` | `GET /api/silo/v1/libraries/{id}/changes?since={commit}` |
 | `item(for:)` | *none* — local `IdMap` ⋈ `WorkingSet` |
-| `fetchContents` | `GET /api/silo/v1/repos/{id}/entries/{path}` — bytes on the response |
+| `fetchContents` | `GET /api/silo/v1/libraries/{id}/entries/{path}` — bytes on the response |
 | revalidate a cached item | the same GET with `If-None-Match` → 304 |
 | read at an offset | the same GET with `Range` → 206, repeatable |
-| `createItem` (dir) | `PUT /api/silo/v1/repos/{id}/entries/{path}?type=dir` |
-| `createItem` (file) | `PUT /api/silo/v1/repos/{id}/entries/{path}` — body is the file |
+| `createItem` (dir) | `PUT /api/silo/v1/libraries/{id}/entries/{path}?type=dir` |
+| `createItem` (file) | `PUT /api/silo/v1/libraries/{id}/entries/{path}` — body is the file |
 | `modifyItem` (contents) | the same `PUT` — it replaces |
-| `modifyItem` (rename) | `POST /api/silo/v1/repos/{id}/entries/{path}` `{"op":"move",…}` |
+| `modifyItem` (rename) | `POST /api/silo/v1/libraries/{id}/entries/{path}` `{"op":"move",…}` |
 | `modifyItem` (reparent) | the same call — a move is a move |
-| duplicate an item | `POST /api/silo/v1/repos/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
+| duplicate an item | `POST /api/silo/v1/libraries/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
 | upload a large file | `POST blocks/missing`, `PUT blocks/{sha1}` for each, then `PUT entries/{path}?type=blocks` |
 | enumerate a huge directory | `GET entries/{path}?limit=1000`, then follow `Link: …; rel="next"` |
-| write many things at once | `POST /api/silo/v1/repos/{id}/batch` — one commit, all or nothing |
-| `deleteItem` | `DELETE /api/silo/v1/repos/{id}/entries/{path}` |
+| write many things at once | `POST /api/silo/v1/libraries/{id}/batch` — one commit, all or nothing |
+| `deleteItem` | `DELETE /api/silo/v1/libraries/{id}/entries/{path}` |
 | push invalidation | `WS /notification` |
 
-Identifiers never cross the wire: every request is `(repo_id, path)`, resolved
+Identifiers never cross the wire: every request is `(library_id, path)`, resolved
 client-side from `IdMap`. Silo's logs and Sentry traces therefore look like
 SeaDrive's, which makes SeaDrive a working reference for what correct traffic
 looks like.
@@ -1000,7 +1000,7 @@ library moves, so you can call `/changes` immediately instead of on a timer.
 
 Getting subscribed takes one call, on the lane you are already on:
 
-1. `POST /api/silo/v1/repos/{repoid}/notify-token` — **Bearer** →
+1. `POST /api/silo/v1/libraries/{libraryid}/notify-token` — **Bearer** →
    `{"jwt_token":…, "expires_at":<unix seconds>}`. Valid **72 hours**, and per
    library. Authorized by your session against the library's permissions, so a
    read-only share can subscribe and nothing else is needed.
@@ -1013,17 +1013,17 @@ Getting subscribed takes one call, on the lane you are already on:
 2. Connect to `WS /notification` and send one frame:
 
 ```json
-{"type":"subscribe","content":{"repos":[{"id":"<repo-id>","jwt_token":"<jwt>"}]}}
+{"type":"subscribe","content":{"libraries":[{"id":"<library-id>","jwt_token":"<jwt>"}]}}
 ```
 
 `"unsubscribe"` takes the same shape. Events come back in the same envelope:
 
 ```json
-{"type":"repo-update","content":{"repo_id":"…","commit_id":"…"}}
+{"type":"library-update","content":{"library_id":"…","commit_id":"…"}}
 {"type":"jwt-expired","content":{…}}
 ```
 
-`commit_id` is exactly the anchor `/changes` wants, so a `repo-update` translates
+`commit_id` is exactly the anchor `/changes` wants, so a `library-update` translates
 directly into `GET /changes?since=<your last anchor>`. Do not treat the pushed
 `commit_id` as your new anchor without fetching — you may have missed events.
 
@@ -1043,8 +1043,8 @@ If notifications are disabled server-side, step 1 returns **404**. Treat that as
 
 **Older servers.** `notify-token` landed after 0.4.3. Against a server without
 it the request 404s the same way a disabled notification server does. There is
-no longer a fallback: the repo-token pair that used to serve as one
-(`POST repos/{id}/sync-token` then `GET /repo/{id}/jwt-token`) was the Seafile
+no longer a fallback: the library-token pair that used to serve as one
+(`POST libraries/{id}/sync-token` then `GET /repo/{id}/jwt-token`) was the Seafile
 lane's own auth and went with that lane. Treat a 404 as "poll".
 
 ## Checking your work against the server
@@ -1054,14 +1054,14 @@ can diff against — `client/client.go` is ~100 lines of it.
 
 ```bash
 export SILO_URL=http://server:8082 SILO_EMAIL=… SILO_PASSWORD=…
-silo repos --json                      # libraries, with head_commit_id
-silo ls   <repo> /some/dir             # GET entries/
-silo put  <repo> ./local.txt /dir      # PUT entries/… (body is the file)
-silo get  <repo> /dir/local.txt out    # GET entries/…
-silo mkdir <repo> /new                 # PUT entries/…?type=dir
-silo mv   <repo> /a.txt /sub/a.txt     # POST entries/… {"op":"move"}
-silo rm   <repo> /sub/a.txt            # DELETE entries/…
-silo changes <repo> <since> --json     # the delta endpoint
+silo libraries --json                      # libraries, with head_commit_id
+silo ls   <library> /some/dir             # GET entries/
+silo put  <library> ./local.txt /dir      # PUT entries/… (body is the file)
+silo get  <library> /dir/local.txt out    # GET entries/…
+silo mkdir <library> /new                 # PUT entries/…?type=dir
+silo mv   <library> /a.txt /sub/a.txt     # POST entries/… {"op":"move"}
+silo rm   <library> /sub/a.txt            # DELETE entries/…
+silo changes <library> <since> --json     # the delta endpoint
 ```
 
 Server-side Sentry will show anything Porter sends that Silo does not expect —

@@ -9,7 +9,7 @@ Porter's fallback path can go. See [What was done](#what-was-done) at the end.
 call that makes that impossible, and this is it.
 
 ```
-POST /api/silo/v1/repos/{repoid}/notify-token
+POST /api/silo/v1/libraries/{libraryid}/notify-token
   → 200 {"jwt_token": "…", "expires_at": 1787312025}
 ```
 
@@ -19,7 +19,7 @@ Getting onto the notification socket currently takes two calls, and the second
 one leaves the lane:
 
 ```
-POST /api/silo/v1/repos/{id}/sync-token   Authorization: Bearer …   → {"token":…}
+POST /api/silo/v1/libraries/{id}/sync-token   Authorization: Bearer …   → {"token":…}
 GET  /repo/{id}/jwt-token                 Seafile-Repo-Token: …     → {"jwt_token":…}
 ```
 
@@ -34,7 +34,7 @@ credential model.
 Porter now presents **no credential by default**, for a server that asks for
 none. Every call it makes works that way for free, because they all go through
 one authorizer and an anonymous authorizer stamps nothing. This one does not:
-it needs a *repo token*, and a repo token exists because the Seafile client
+it needs a *library token*, and a library token exists because the Seafile client
 needs one. The only part of Porter that cannot be made credential-agnostic is
 the part that speaks the credential model `auth.md` proposes replacing.
 
@@ -45,8 +45,8 @@ credentials land unless this exists.
 
 ## What it is
 
-`fileserver/api/notify.go`, new. It is `CreateRepoSyncTokenHandler` with
-`GenNotifJWTToken` in place of `GenerateRepoToken`, and an `EnableNotification`
+`fileserver/api/notify.go`, new. It is `CreateLibrariesyncTokenHandler` with
+`GenNotifJWTToken` in place of `GenerateLibraryToken`, and an `EnableNotification`
 check in front:
 
 ```go
@@ -70,17 +70,17 @@ func CreateNotifyTokenHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := middleware.GetUserEmail(r)
-	repoID := mux.Vars(r)["repoid"]
+	libraryID := mux.Vars(r)["libraryid"]
 
-	if share.CheckPerm(repoID, user) == "" {
+	if share.CheckPerm(libraryID, user) == "" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
 
 	expires := time.Now().Add(notifyTokenTTL)
-	token, err := utils.GenNotifJWTToken(repoID, user, expires.Unix())
+	token, err := utils.GenNotifJWTToken(libraryID, user, expires.Unix())
 	if err != nil {
-		log.Errorf("Failed to generate notification token for repo %s: %v", repoID, err)
+		log.Errorf("Failed to generate notification token for library %s: %v", libraryID, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -93,7 +93,7 @@ and one line in `fileserver/server.go`, beside the sync-token route it
 replaces:
 
 ```go
-apiRouter.HandleFunc("/repos/{repoid}/notify-token", api.CreateNotifyTokenHandler).Methods("POST")
+apiRouter.HandleFunc("/libraries/{libraryid}/notify-token", api.CreateNotifyTokenHandler).Methods("POST")
 ```
 
 `api` already imports `option`, `share`, `middleware` and `mux`. It adds `time`
@@ -103,12 +103,12 @@ of Silo's.
 ## What does not change
 
 **The notification server.** `parseNotifToken` verifies a signature, an
-audience and a repo id in a process with no database, and has never known how
+audience and a library id in a process with no database, and has never known how
 the holder was authenticated. The token this issues is the same token, because
 it is the same `utils.GenNotifJWTToken` call. Decoded from the prototype:
 
 ```json
-{"repo_id": "bc0a62c4-…", "username": "test@test.com", "aud": ["silo:notif"], "exp": 1787312025}
+{"library_id": "bc0a62c4-…", "username": "test@test.com", "aud": ["silo:notif"], "exp": 1787312025}
 ```
 
 **`getJWTTokenCB` and the `/repo/{id}/jwt-token` route.** The upstream Seafile
@@ -116,10 +116,10 @@ client still needs them. Nothing is removed by this; the Silo lane simply stops
 depending on them.
 
 What *does* change is who may ask for a token: `share.CheckPerm` on the
-authenticated user, instead of possession of a repo token. That is strictly
+authenticated user, instead of possession of a library token. That is strictly
 better under `auth.md`'s model — `CheckPerm` is where a credential's permission
 ceiling will intersect, so a read-only or single-library credential gets the
-right answer here automatically, whereas a repo token is an all-or-nothing
+right answer here automatically, whereas a library token is an all-or-nothing
 bearer credential with no expiry that only exists to be exchanged.
 
 ## `expires_at`
@@ -155,18 +155,18 @@ Handler behaviour:
 | with no `Authorization` header | `401` |
 | for a library the user cannot see | `403 Permission denied` |
 | with `EnableNotification` off | `404 Notification server is not enabled` |
-| claims in the issued token | `repo_id`, `username`, `aud: [silo:notif]`, `exp` — identical to `getJWTTokenCB` |
+| claims in the issued token | `library_id`, `username`, `aud: [silo:notif]`, `exp` — identical to `getJWTTokenCB` |
 
 Then Porter mounted through a logging proxy, so "no Seafile calls" could be
 counted rather than asserted. Every request it made over a mount, a read, a
 poll and a push:
 
 ```
-5 GET  /api/silo/v1/repos
-4 POST /api/silo/v1/repos/{id}/notify-token
+5 GET  /api/silo/v1/libraries
+4 POST /api/silo/v1/libraries/{id}/notify-token
 2 POST /api/silo/v1/auth/login
-2 GET  /api/silo/v1/repos/{id}/entries/
-1 GET  /api/silo/v1/repos/{id}/changes?since=…
+2 GET  /api/silo/v1/libraries/{id}/entries/
+1 GET  /api/silo/v1/libraries/{id}/changes?since=…
 1 GET  /api/silo/v1/server-info
 1 GET  /notification
 ```
@@ -212,7 +212,7 @@ already read tells you nothing polling would not.
 
 A stranger and an absent library both answer 403, matching
 `CreateAccessTokenHandler`, so the endpoint cannot be used to probe for valid
-repo ids.
+library ids.
 
 **Documented** in `docs/protocol.md` and `docs/porter-brief.md`, where the
 two-call Seafile-lane recipe has been replaced by the one call and demoted to a

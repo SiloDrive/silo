@@ -41,7 +41,7 @@ if retryCnt < maxRetryCnt {
     time.Sleep(time.Duration(random*100) * time.Millisecond)
     ...
 } else {
-    err := fmt.Errorf("stop updating repo %s after %d retries", repoID, maxRetryCnt)
+    err := fmt.Errorf("stop updating library %s after %d retries", libraryID, maxRetryCnt)
     return "", err
 }
 ```
@@ -54,7 +54,7 @@ if errors.Is(err, ErrGCConflict) {
     http.Error(w, "GC conflict; retry", http.StatusConflict)   // ← right
     return
 }
-log.…Errorf("failed to commit %s in repo %s", path, repoID)
+log.…Errorf("failed to commit %s in library %s", path, libraryID)
 http.Error(w, "Internal server error", http.StatusInternalServerError)  // ← wrong for this case
 ```
 
@@ -130,15 +130,15 @@ would describe it better than 404.
 
 **Contention is a sentinel, not an ordinary error.** `ErrRetriesExhausted`
 joins `ErrConflict` and `ErrGCConflict` in `fileserver/fileop.go`, returned
-(wrapped, so the repo id and attempt count survive) from both places a write
+(wrapped, so the library id and attempt count survive) from both places a write
 gives up: `GenNewCommit` after its ten merges, and `postFilesAndGenCommit`
 after its ten re-walks. The second one used to return a bare `ErrConflict`,
 which meant the outer exhaustion and an immediate non-replace conflict were
 literally the same value.
 
 **One place decides what the client is told.** `writeCommitErr(w, r, err, what)`
-sits beside the sentinels — the same reasoning as `repomgr.StatusFor` in
-`missing-object-reports-repo-not-found.md`: `entries.go` and `api_handlers.go`
+sits beside the sentinels — the same reasoning as `libmgr.StatusFor` in
+`missing-object-reports-library-not-found.md`: `entries.go` and `api_handlers.go`
 both commit, and two copies of this decision would drift. It maps contention to
 **503** + `Retry-After: 1` + `write contention; retry`, GC conflict to its
 existing 409, and everything else to 500. It also logs: contention at info,
@@ -180,7 +180,7 @@ became `genNewCommitRetries`, a package var, only so a test can set it to zero.
 **The legacy upload and download paths in `fileop.go` still answer 500.** Same
 error, same wrongness, but they are the Seafile lane's and are entangled with
 the 444/445 codes the upstream client understands — the same reason
-`missing-object-reports-repo-not-found.md` left `fileop.go`'s 400 "Bad repo id"
+`missing-object-reports-library-not-found.md` left `fileop.go`'s 400 "Bad library id"
 alone. `fastForwardOrMerge`'s own three-retry exhaustion is in the same
 category. Worth a separate pass, with a Seafile client to test against.
 

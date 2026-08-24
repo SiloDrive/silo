@@ -21,7 +21,7 @@ import (
 //
 // Where the cut points fall is the library's business, not this file's. The
 // chunker is content-defined and its parameters are stored per library and
-// served on the repos listing, so a client that hardcodes them computes ids
+// served on the libraries listing, so a client that hardcodes them computes ids
 // nothing else in the store shares. Chunking under the wrong parameters is
 // still correct — the server verifies bytes against the id it was given — but
 // it dedups against nothing, which is the entire point of the surface. So
@@ -73,28 +73,28 @@ func (c *APIClient) capabilities() ServerInfo {
 //   - The server did not report the parameters. Guessing them is the one
 //     failure this surface cannot detect: every id would be well-formed, every
 //     upload would succeed, and none of it would ever match anything.
-func (c *APIClient) chunkerFor(repoID string) (store.Params, bool) {
-	repos, err := c.ListRepos()
+func (c *APIClient) chunkerFor(libraryID string) (store.Params, bool) {
+	libraries, err := c.ListLibraries()
 	if err != nil {
 		return store.Params{}, false
 	}
-	for _, repo := range repos {
-		if repo.ID != repoID {
+	for _, library := range libraries {
+		if library.ID != libraryID {
 			continue
 		}
-		if repo.Encrypted || repo.Chunker == nil {
+		if library.Encrypted || library.Chunker == nil {
 			return store.Params{}, false
 		}
 		p := store.Params{
-			Algorithm: repo.Chunker.Algorithm,
+			Algorithm: library.Chunker.Algorithm,
 			// The published constant, derived rather than transmitted. A plain
 			// library chunks under it by definition, so a server sending one
 			// would be sending a value this client would have to check anyway.
 			Seed:          store.PlainSeed(),
-			MinSize:       repo.Chunker.MinSize,
-			TargetSize:    repo.Chunker.TargetSize,
-			MaxSize:       repo.Chunker.MaxSize,
-			Normalization: repo.Chunker.Normalization,
+			MinSize:       library.Chunker.MinSize,
+			TargetSize:    library.Chunker.TargetSize,
+			MaxSize:       library.Chunker.MaxSize,
+			Normalization: library.Chunker.Normalization,
 		}
 		// Validated before use, because these arrived over the wire. A target
 		// below the minimum is a server bug or a hostile server, and either
@@ -109,11 +109,11 @@ func (c *APIClient) chunkerFor(repoID string) (store.Params, bool) {
 
 // MissingChunks asks which of these chunks the library does not already hold.
 // The answer comes back in the order asked, each id once.
-func (c *APIClient) MissingChunks(repoID string, chunks []string) ([]string, error) {
+func (c *APIClient) MissingChunks(libraryID string, chunks []string) ([]string, error) {
 	var result struct {
 		Missing []string `json:"missing"`
 	}
-	err := c.doRequest("POST", "/api/silo/v1/repos/"+repoID+"/blocks/missing",
+	err := c.doRequest("POST", "/api/silo/v1/libraries/"+libraryID+"/blocks/missing",
 		map[string][]string{"blocks": chunks}, &result)
 	if err != nil {
 		return nil, err
@@ -124,8 +124,8 @@ func (c *APIClient) MissingChunks(repoID string, chunks []string) ([]string, err
 // PutChunk uploads one chunk. The server hashes what arrives and refuses it if
 // it does not match chunkID, so a successful call is also proof the bytes
 // crossed intact.
-func (c *APIClient) PutChunk(repoID, chunkID string, newBody func() (io.ReadCloser, int64, error)) error {
-	resp, err := c.doStream("PUT", "/api/silo/v1/repos/"+repoID+"/blocks/"+chunkID,
+func (c *APIClient) PutChunk(libraryID, chunkID string, newBody func() (io.ReadCloser, int64, error)) error {
+	resp, err := c.doStream("PUT", "/api/silo/v1/libraries/"+libraryID+"/blocks/"+chunkID,
 		"application/octet-stream", newBody)
 	if err != nil {
 		return err
@@ -141,8 +141,8 @@ func (c *APIClient) PutChunk(repoID, chunkID string, newBody func() (io.ReadClos
 
 // CommitChunks creates or replaces a file from chunks already uploaded. It
 // transfers no content: the body is the ordered list of ids.
-func (c *APIClient) CommitChunks(repoID, remotePath string, chunks []string) error {
-	return c.doRequest("PUT", entriesURL(repoID, remotePath)+"?type=blocks",
+func (c *APIClient) CommitChunks(libraryID, remotePath string, chunks []string) error {
+	return c.doRequest("PUT", entriesURL(libraryID, remotePath)+"?type=blocks",
 		map[string][]string{"blocks": chunks}, nil)
 }
 
@@ -205,13 +205,13 @@ func chunkFile(localPath string, p store.Params) (ids []string, sources map[stri
 // interrupted at any point leaves the library exactly as it was. Run it again
 // and the chunks that landed are already there — the second attempt asks the
 // same question and gets a shorter answer.
-func (c *APIClient) uploadChunks(repoID, parentDir, localPath string, p store.Params) error {
+func (c *APIClient) uploadChunks(libraryID, parentDir, localPath string, p store.Params) error {
 	ids, sources, err := chunkFile(localPath, p)
 	if err != nil {
 		return fmt.Errorf("failed to read %s: %v", localPath, err)
 	}
 
-	missing, err := c.MissingChunks(repoID, ids)
+	missing, err := c.MissingChunks(libraryID, ids)
 	if err != nil {
 		return err
 	}
@@ -222,18 +222,18 @@ func (c *APIClient) uploadChunks(repoID, parentDir, localPath string, p store.Pa
 			// The server answered with an id that was never offered.
 			return fmt.Errorf("server asked for chunk %.8s, which is not part of this file", id)
 		}
-		if _, err := c.putChunkFrom(repoID, id, src); err != nil {
+		if _, err := c.putChunkFrom(libraryID, id, src); err != nil {
 			return err
 		}
 	}
 
-	return c.CommitChunks(repoID, path.Join("/", parentDir, filepath.Base(localPath)), ids)
+	return c.CommitChunks(libraryID, path.Join("/", parentDir, filepath.Base(localPath)), ids)
 }
 
 // putChunkFrom uploads one chunk out of a local file, and reports how many
 // bytes it sent.
-func (c *APIClient) putChunkFrom(repoID, id string, src chunkSource) (int64, error) {
-	err := c.PutChunk(repoID, id, func() (io.ReadCloser, int64, error) {
+func (c *APIClient) putChunkFrom(libraryID, id string, src chunkSource) (int64, error) {
+	err := c.PutChunk(libraryID, id, func() (io.ReadCloser, int64, error) {
 		// A factory, not a reader: doStream re-sends the body after a 401, and
 		// a reader already drained cannot be sent twice.
 		file, err := os.Open(src.local)

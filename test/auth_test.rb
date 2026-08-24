@@ -37,10 +37,10 @@ class AuthTest < Minitest::Test
   def test_protected_endpoints_reject_no_auth
     c = SiloClient.new(silo_url)
 
-    resp = c.request(:get, "/api/silo/v1/repos", auth: false)
+    resp = c.request(:get, "/api/silo/v1/libraries", auth: false)
     assert_equal 401, resp.status
 
-    resp = c.request(:post, "/api/silo/v1/repos", body: { name: "x" }, auth: false)
+    resp = c.request(:post, "/api/silo/v1/libraries", body: { name: "x" }, auth: false)
     assert_equal 401, resp.status
   end
 
@@ -48,7 +48,7 @@ class AuthTest < Minitest::Test
     c = SiloClient.new(silo_url)
     c.instance_variable_set(:@token, "not.a.valid.jwt.token")
 
-    resp = c.list_repos
+    resp = c.list_libraries
     assert_equal 401, resp.status
   end
 end

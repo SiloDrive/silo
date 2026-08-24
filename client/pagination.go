@@ -52,10 +52,10 @@ func nextLink(h http.Header) string {
 // The entries are a window on the directory as it was when the sequence began.
 // A directory written to mid-listing does not shift items across the boundary —
 // the client finishes reading the version it started on.
-func (c *APIClient) ListDirPage(repoID, path, next string, limit int) ([]DirEntry, string, error) {
+func (c *APIClient) ListDirPage(libraryID, path, next string, limit int) ([]DirEntry, string, error) {
 	target := next
 	if target == "" {
-		target = fmt.Sprintf("%s?limit=%d", entriesURL(repoID, path), limit)
+		target = fmt.Sprintf("%s?limit=%d", entriesURL(libraryID, path), limit)
 	}
 	var entries []DirEntry
 	h, err := c.doRequestHeaders("GET", target, nil, &entries)
@@ -72,11 +72,11 @@ func (c *APIClient) ListDirPage(repoID, path, next string, limit int) ([]DirEntr
 // oversight: recording it early would mark the client up to date for changes it
 // has not seen. A caller that saves the anchor whenever it is non-empty is
 // correct without having to track where in the sequence it is.
-func (c *APIClient) ChangesPage(repoID, since, next string, limit int) (*ChangesResponse, string, error) {
+func (c *APIClient) ChangesPage(libraryID, since, next string, limit int) (*ChangesResponse, string, error) {
 	target := next
 	if target == "" {
-		target = fmt.Sprintf("/api/silo/v1/repos/%s/changes?since=%s&limit=%d",
-			url.PathEscape(repoID), url.QueryEscape(since), limit)
+		target = fmt.Sprintf("/api/silo/v1/libraries/%s/changes?since=%s&limit=%d",
+			url.PathEscape(libraryID), url.QueryEscape(since), limit)
 	}
 	var resp ChangesResponse
 	h, err := c.doRequestHeaders("GET", target, nil, &resp)

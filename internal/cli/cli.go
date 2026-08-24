@@ -41,10 +41,10 @@ func Run(serverURL, email, password string, args []string) error {
 
 	sub, rest := args[0], args[1:]
 	switch sub {
-	case "repos":
-		return cmdRepos(c, rest)
-	case "repo":
-		return cmdRepo(c, rest)
+	case "libraries":
+		return cmdLibraries(c, rest)
+	case "library":
+		return cmdLibrary(c, rest)
 	case "ls":
 		return cmdLs(c, rest)
 	case "get":
@@ -66,88 +66,88 @@ func Run(serverURL, email, password string, args []string) error {
 	}
 }
 
-func cmdRepos(c *client.APIClient, args []string) error {
-	fs := newFlagSet("repos")
+func cmdLibraries(c *client.APIClient, args []string) error {
+	fs := newFlagSet("libraries")
 	jsonOut := fs.Bool("json", false, "output as JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	repos, err := c.ListRepos()
+	libraries, err := c.ListLibraries()
 	if err != nil {
 		return err
 	}
 	if *jsonOut {
-		return printJSON(os.Stdout, repos)
+		return printJSON(os.Stdout, libraries)
 	}
-	printReposText(os.Stdout, repos)
+	printLibrariesText(os.Stdout, libraries)
 	return nil
 }
 
-func cmdRepo(c *client.APIClient, args []string) error {
+func cmdLibrary(c *client.APIClient, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: silo repo <create|rm>")
+		return fmt.Errorf("usage: silo library <create|rm>")
 	}
 	switch args[0] {
 	case "create":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: silo repo create <name>")
+			return fmt.Errorf("usage: silo library create <name>")
 		}
-		repo, err := c.CreateRepo(args[1])
+		library, err := c.CreateLibrary(args[1])
 		if err != nil {
 			return err
 		}
-		fmt.Println(repo.ID)
+		fmt.Println(library.ID)
 		return nil
 	case "rm":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: silo repo rm <repo-id>")
+			return fmt.Errorf("usage: silo library rm <library-id>")
 		}
-		repoID, err := resolveRepo(c, args[1])
+		libraryID, err := resolveLibrary(c, args[1])
 		if err != nil {
 			return err
 		}
-		return c.DeleteRepo(repoID)
+		return c.DeleteLibrary(libraryID)
 	default:
-		return fmt.Errorf("unknown repo subcommand: %s", args[0])
+		return fmt.Errorf("unknown library subcommand: %s", args[0])
 	}
 }
 
-// repoIDPattern is the shape CreateRepo hands out: a UUID. Anything matching
+// libraryIDPattern is the shape CreateLibrary hands out: a UUID. Anything matching
 // it is taken as an id and used directly, and anything else is looked up as a
 // name — so a library really called "4e5d525b-38a0-4198-95c7-2fde63a9b91d"
 // would be unreachable by name, which is a trade worth making against sending
 // every argument through an extra request.
-var repoIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+var libraryIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// resolveRepo turns what someone typed into a library id.
+// resolveLibrary turns what someone typed into a library id.
 //
 // Names are not unique — nothing stops two libraries being called "Photos" —
 // so an ambiguous name is an error that lists the candidates rather than a
 // guess. Picking the first would work for months and then quietly write to the
 // wrong library on the day a second one appeared.
-func resolveRepo(c *client.APIClient, arg string) (string, error) {
-	if repoIDPattern.MatchString(arg) {
+func resolveLibrary(c *client.APIClient, arg string) (string, error) {
+	if libraryIDPattern.MatchString(arg) {
 		return arg, nil
 	}
-	repos, err := c.ListRepos()
+	libraries, err := c.ListLibraries()
 	if err != nil {
 		return "", err
 	}
-	var matches []client.Repo
-	for _, repo := range repos {
-		if repo.Name == arg {
-			matches = append(matches, repo)
+	var matches []client.Library
+	for _, library := range libraries {
+		if library.Name == arg {
+			matches = append(matches, library)
 		}
 	}
 	switch len(matches) {
 	case 1:
 		return matches[0].ID, nil
 	case 0:
-		return "", fmt.Errorf("no library called %q; `silo repos` lists them", arg)
+		return "", fmt.Errorf("no library called %q; `silo libraries` lists them", arg)
 	default:
 		ids := make([]string, 0, len(matches))
-		for _, repo := range matches {
-			ids = append(ids, repo.ID)
+		for _, library := range matches {
+			ids = append(ids, library.ID)
 		}
 		return "", fmt.Errorf("%d libraries are called %q; name one by id: %s",
 			len(matches), arg, strings.Join(ids, ", "))
@@ -162,9 +162,9 @@ func cmdLs(c *client.APIClient, args []string) error {
 	}
 	rest := fs.Args()
 	if len(rest) < 1 {
-		return fmt.Errorf("usage: silo ls [--json] <repo-id> [path]")
+		return fmt.Errorf("usage: silo ls [--json] <library-id> [path]")
 	}
-	repoID, err := resolveRepo(c, rest[0])
+	libraryID, err := resolveLibrary(c, rest[0])
 	if err != nil {
 		return err
 	}
@@ -172,7 +172,7 @@ func cmdLs(c *client.APIClient, args []string) error {
 	if len(rest) >= 2 {
 		path = rest[1]
 	}
-	entries, err := c.ListDir(repoID, path)
+	entries, err := c.ListDir(libraryID, path)
 	if err != nil {
 		return err
 	}
@@ -185,9 +185,9 @@ func cmdLs(c *client.APIClient, args []string) error {
 
 func cmdGet(c *client.APIClient, args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: silo get <repo-id> <remote-path> [local-path]")
+		return fmt.Errorf("usage: silo get <library-id> <remote-path> [local-path]")
 	}
-	repoID, err := resolveRepo(c, args[0])
+	libraryID, err := resolveLibrary(c, args[0])
 	if err != nil {
 		return err
 	}
@@ -196,7 +196,7 @@ func cmdGet(c *client.APIClient, args []string) error {
 	if len(args) >= 3 {
 		local = args[2]
 	}
-	return c.DownloadFile(repoID, remote, local)
+	return c.DownloadFile(libraryID, remote, local)
 }
 
 func cmdPut(c *client.APIClient, args []string) error {
@@ -209,9 +209,9 @@ func cmdPut(c *client.APIClient, args []string) error {
 	}
 	rest := fs.Args()
 	if len(rest) < 2 {
-		return fmt.Errorf("usage: silo put [-r] [-q] [--json] <repo-id> <local-path> [remote-dir]")
+		return fmt.Errorf("usage: silo put [-r] [-q] [--json] <library-id> <local-path> [remote-dir]")
 	}
-	repoID, err := resolveRepo(c, rest[0])
+	libraryID, err := resolveLibrary(c, rest[0])
 	if err != nil {
 		return err
 	}
@@ -226,7 +226,7 @@ func cmdPut(c *client.APIClient, args []string) error {
 		return err
 	}
 	if !info.IsDir() {
-		return c.UploadFile(repoID, parentDir, local)
+		return c.UploadFile(libraryID, parentDir, local)
 	}
 	// Without -r this used to reach the HTTP layer and come back as
 	// "read <dir>: is a directory", which says what failed but not what to do.
@@ -239,7 +239,7 @@ func cmdPut(c *client.APIClient, args []string) error {
 		onFile = nil
 	}
 
-	up, err := c.UploadDir(repoID, parentDir, local, onFile)
+	up, err := c.UploadDir(libraryID, parentDir, local, onFile)
 	// A failure that got partway still reports what landed — that is what tells
 	// the caller whether to re-run or go looking. A failure that wrote nothing
 	// says only why.
@@ -284,46 +284,46 @@ func plural(n int, one string, many ...string) string {
 
 func cmdMkdir(c *client.APIClient, args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: silo mkdir <repo-id> <path>")
+		return fmt.Errorf("usage: silo mkdir <library-id> <path>")
 	}
-	repoID, err := resolveRepo(c, args[0])
+	libraryID, err := resolveLibrary(c, args[0])
 	if err != nil {
 		return err
 	}
-	return c.Mkdir(repoID, args[1])
+	return c.Mkdir(libraryID, args[1])
 }
 
 func cmdRm(c *client.APIClient, args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: silo rm <repo-id> <path>")
+		return fmt.Errorf("usage: silo rm <library-id> <path>")
 	}
-	repoID, err := resolveRepo(c, args[0])
+	libraryID, err := resolveLibrary(c, args[0])
 	if err != nil {
 		return err
 	}
-	return c.DeleteFile(repoID, args[1])
+	return c.DeleteFile(libraryID, args[1])
 }
 
 func cmdMv(c *client.APIClient, args []string) error {
 	if len(args) < 3 {
-		return fmt.Errorf("usage: silo mv <repo-id> <src> <dst>")
+		return fmt.Errorf("usage: silo mv <library-id> <src> <dst>")
 	}
-	repoID, err := resolveRepo(c, args[0])
+	libraryID, err := resolveLibrary(c, args[0])
 	if err != nil {
 		return err
 	}
-	return c.MoveFile(repoID, args[1], args[2])
+	return c.MoveFile(libraryID, args[1], args[2])
 }
 
 func cmdRename(c *client.APIClient, args []string) error {
 	if len(args) < 3 {
-		return fmt.Errorf("usage: silo rename <repo-id> <path> <new-name>")
+		return fmt.Errorf("usage: silo rename <library-id> <path> <new-name>")
 	}
-	repoID, err := resolveRepo(c, args[0])
+	libraryID, err := resolveLibrary(c, args[0])
 	if err != nil {
 		return err
 	}
-	return c.RenameFile(repoID, args[1], args[2])
+	return c.RenameFile(libraryID, args[1], args[2])
 }
 
 // cmdChanges exists mostly so the delta endpoint can be exercised by hand. A
@@ -337,13 +337,13 @@ func cmdChanges(c *client.APIClient, args []string) error {
 	}
 	rest := fs.Args()
 	if len(rest) < 2 {
-		return fmt.Errorf("usage: silo changes [--json] <repo-id> <since-commit>")
+		return fmt.Errorf("usage: silo changes [--json] <library-id> <since-commit>")
 	}
-	repoID, err := resolveRepo(c, rest[0])
+	libraryID, err := resolveLibrary(c, rest[0])
 	if err != nil {
 		return err
 	}
-	resp, err := c.Changes(repoID, rest[1])
+	resp, err := c.Changes(libraryID, rest[1])
 	if err != nil {
 		return err
 	}

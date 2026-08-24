@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	repoID = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
-	objID  = "0401fc662e3bc87a41f299a907c056aaf8322a27"
+	libraryID = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
+	objID     = "0401fc662e3bc87a41f299a907c056aaf8322a27"
 )
 
 // Set from os.MkdirTemp in TestMain (t.TempDir needs a *testing.T, which
@@ -81,7 +81,7 @@ func testWrite(t *testing.T) {
 	defer func() { _ = inputFile.Close() }()
 
 	bend := New(confPath, dataDir, "commit")
-	_ = bend.Write(repoID, objID, inputFile, true)
+	_ = bend.Write(libraryID, objID, inputFile, true)
 }
 
 func testRead(t *testing.T) {
@@ -92,7 +92,7 @@ func testRead(t *testing.T) {
 	defer func() { _ = outputFile.Close() }()
 
 	bend := New(confPath, dataDir, "commit")
-	err = bend.Read(repoID, objID, outputFile)
+	err = bend.Read(libraryID, objID, outputFile)
 	if err != nil {
 		t.Errorf("Failed to read backend : %s\n", err)
 	}
@@ -100,12 +100,12 @@ func testRead(t *testing.T) {
 
 func testExists(t *testing.T) {
 	bend := New(confPath, dataDir, "commit")
-	ret, _ := bend.Exists(repoID, objID)
+	ret, _ := bend.Exists(libraryID, objID)
 	if !ret {
 		t.Errorf("File is not exist\n")
 	}
 
-	filePath := path.Join(dataDir, "storage", "commit", repoID, objID[:2], objID[2:])
+	filePath := path.Join(dataDir, "storage", "commit", libraryID, objID[:2], objID[2:])
 	fileInfo, _ := os.Stat(filePath)
 	if fileInfo.Size() != 130 {
 		t.Errorf("File is exist, but the size of file is incorrect.\n")
@@ -128,11 +128,11 @@ func TestObjStoreZeroLengthObjectIsAbsent(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 	bend := New(confPath, dataDir, "blocks")
 
-	if err := bend.Write(repoID, objID, strings.NewReader(""), true); err != nil {
+	if err := bend.Write(libraryID, objID, strings.NewReader(""), true); err != nil {
 		t.Fatalf("Write() returned %v", err)
 	}
 
-	exists, err := bend.Exists(repoID, objID)
+	exists, err := bend.Exists(libraryID, objID)
 	if err != nil {
 		t.Errorf("Exists() returned error %v, want nil", err)
 	}
@@ -147,7 +147,7 @@ func TestObjStoreExistsOnMissingObject(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 	bend := New(confPath, dataDir, "blocks")
 
-	exists, err := bend.Exists(repoID, objID)
+	exists, err := bend.Exists(libraryID, objID)
 	if err != nil {
 		t.Errorf("Exists() on a missing object returned error %v, want nil", err)
 	}
@@ -156,25 +156,25 @@ func TestObjStoreExistsOnMissingObject(t *testing.T) {
 	}
 }
 
-// The durable write path creates the repo and fan-out directories itself and
+// The durable write path creates the library and fan-out directories itself and
 // fsyncs each one it had to create. Writing into a store that has never seen
-// the repo before is the case where those syncs run.
-func TestObjStoreSyncWriteIntoNewRepoDir(t *testing.T) {
+// the library before is the case where those syncs run.
+func TestObjStoreSyncWriteIntoNewLibraryDir(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 
 	for _, objType := range []string{"blocks", "commit", "fs"} {
 		bend := New(confPath, dataDir, objType)
-		if err := bend.Write(repoID, objID, strings.NewReader("payload"), true); err != nil {
-			t.Fatalf("Write(%s) into a new repo dir returned %v", objType, err)
+		if err := bend.Write(libraryID, objID, strings.NewReader("payload"), true); err != nil {
+			t.Fatalf("Write(%s) into a new library dir returned %v", objType, err)
 		}
 
-		exists, err := bend.Exists(repoID, objID)
+		exists, err := bend.Exists(libraryID, objID)
 		if err != nil || !exists {
 			t.Fatalf("Exists(%s) = (%v, %v), want (true, nil)", objType, exists, err)
 		}
 
 		var buf strings.Builder
-		if err := bend.Read(repoID, objID, &buf); err != nil {
+		if err := bend.Read(libraryID, objID, &buf); err != nil {
 			t.Fatalf("Read(%s) returned %v", objType, err)
 		}
 		if buf.String() != "payload" {
@@ -184,7 +184,7 @@ func TestObjStoreSyncWriteIntoNewRepoDir(t *testing.T) {
 		// The object is published by rename, so nothing partial may be left
 		// beside it — a stray temp file is invisible to reads and to the GC,
 		// which only walks well-formed object paths.
-		fanoutDir := filepath.Join(dataDir, "storage", objType, repoID, objID[:2])
+		fanoutDir := filepath.Join(dataDir, "storage", objType, libraryID, objID[:2])
 		entries, err := os.ReadDir(fanoutDir)
 		if err != nil {
 			t.Fatalf("failed to read %s: %v", fanoutDir, err)
@@ -217,17 +217,17 @@ func TestObjStoreRejectsInvalidObjectID(t *testing.T) {
 	bend := New(confPath, dataDir, "commit")
 	for _, id := range bad {
 		// Each of these would panic rather than return if the guard were gone.
-		if err := bend.Read(repoID, id, io.Discard); err == nil {
+		if err := bend.Read(libraryID, id, io.Discard); err == nil {
 			t.Errorf("Read(%q) returned nil error, want rejection", id)
 		}
-		if err := bend.Write(repoID, id, strings.NewReader("data"), true); err == nil {
+		if err := bend.Write(libraryID, id, strings.NewReader("data"), true); err == nil {
 			t.Errorf("Write(%q) returned nil error, want rejection", id)
 		}
-		exists, err := bend.Exists(repoID, id)
+		exists, err := bend.Exists(libraryID, id)
 		if err == nil || exists {
 			t.Errorf("Exists(%q) = (%v, %v), want (false, error)", id, exists, err)
 		}
-		if _, err := bend.Stat(repoID, id); err == nil {
+		if _, err := bend.Stat(libraryID, id); err == nil {
 			t.Errorf("Stat(%q) returned nil error, want rejection", id)
 		}
 	}
@@ -239,7 +239,7 @@ const sha256ObjID = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f
 
 func writeTestObject(t *testing.T, s *ObjectStore, id, content string) {
 	t.Helper()
-	if err := s.Write(repoID, id, strings.NewReader(content), false); err != nil {
+	if err := s.Write(libraryID, id, strings.NewReader(content), false); err != nil {
 		t.Fatalf("Write(%s): %v", id, err)
 	}
 }
@@ -249,7 +249,7 @@ func TestBothIDWidthsAreStorable(t *testing.T) {
 	for _, id := range []string{objID, sha256ObjID} {
 		writeTestObject(t, s, id, "content for "+id)
 		var got strings.Builder
-		if err := s.Read(repoID, id, &got); err != nil {
+		if err := s.Read(libraryID, id, &got); err != nil {
 			t.Fatalf("Read(%s): %v", id, err)
 		}
 		if got.String() != "content for "+id {
@@ -275,7 +275,7 @@ func TestReadAtReturnsOneRange(t *testing.T) {
 		{15, 1, "f"},
 	} {
 		p := make([]byte, tc.n)
-		got, err := s.ReadAt(repoID, objID, p, tc.off)
+		got, err := s.ReadAt(libraryID, objID, p, tc.off)
 		if err != nil {
 			t.Fatalf("ReadAt(%d,%d): %v", tc.off, tc.n, err)
 		}
@@ -293,7 +293,7 @@ func TestReadAtPastTheEndReportsEOF(t *testing.T) {
 	writeTestObject(t, s, objID, "0123456789")
 
 	p := make([]byte, 8)
-	n, err := s.ReadAt(repoID, objID, p, 6)
+	n, err := s.ReadAt(libraryID, objID, p, 6)
 	if err != io.EOF {
 		t.Fatalf("err = %v, want io.EOF", err)
 	}
@@ -301,7 +301,7 @@ func TestReadAtPastTheEndReportsEOF(t *testing.T) {
 		t.Fatalf("got %q (%d bytes), want %q", p[:n], n, "6789")
 	}
 
-	if _, err := s.ReadAt(repoID, objID, p, 100); err != io.EOF {
+	if _, err := s.ReadAt(libraryID, objID, p, 100); err != io.EOF {
 		t.Fatalf("reading entirely past the end: err = %v, want io.EOF", err)
 	}
 }
@@ -312,17 +312,17 @@ func TestAMissingObjectIsErrNotFound(t *testing.T) {
 	s := New(confPath, dataDir, "notfound")
 	missing := "1111111111111111111111111111111111111111"
 
-	if _, err := s.Stat(repoID, missing); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Stat(libraryID, missing); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Stat: %v, want ErrNotFound", err)
 	}
-	if err := s.Read(repoID, missing, io.Discard); !errors.Is(err, ErrNotFound) {
+	if err := s.Read(libraryID, missing, io.Discard); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Read: %v, want ErrNotFound", err)
 	}
-	if _, err := s.ReadAt(repoID, missing, make([]byte, 1), 0); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ReadAt(libraryID, missing, make([]byte, 1), 0); !errors.Is(err, ErrNotFound) {
 		t.Errorf("ReadAt: %v, want ErrNotFound", err)
 	}
 	// Exists is the one that maps it back to an answer rather than an error.
-	exists, err := s.Exists(repoID, missing)
+	exists, err := s.Exists(libraryID, missing)
 	if exists || err != nil {
 		t.Errorf("Exists = (%v, %v), want (false, nil)", exists, err)
 	}
@@ -340,7 +340,7 @@ func TestListYieldsEveryObjectWithItsSize(t *testing.T) {
 	}
 
 	got := map[string]int64{}
-	if err := s.List(repoID, func(id string, size int64) error {
+	if err := s.List(libraryID, func(id string, size int64) error {
 		got[id] = size
 		return nil
 	}); err != nil {
@@ -356,19 +356,19 @@ func TestListYieldsEveryObjectWithItsSize(t *testing.T) {
 	}
 }
 
-// A repo with no objects and a repo that never existed are the same answer,
+// A library with no objects and a library that never existed are the same answer,
 // and neither is an error.
-func TestListOfAnEmptyRepoIsEmptyNotAnError(t *testing.T) {
+func TestListOfAnEmptyLibraryIsEmptyNotAnError(t *testing.T) {
 	s := New(confPath, dataDir, "list-empty")
 	n := 0
 	if err := s.List("00000000-0000-0000-0000-000000000000", func(string, int64) error {
 		n++
 		return nil
 	}); err != nil {
-		t.Fatalf("List of a repo that was never written: %v", err)
+		t.Fatalf("List of a library that was never written: %v", err)
 	}
 	if n != 0 {
-		t.Fatalf("listed %d objects in an empty repo", n)
+		t.Fatalf("listed %d objects in an empty library", n)
 	}
 }
 
@@ -379,13 +379,13 @@ func TestListSkipsTheDebrisOfAnInterruptedWrite(t *testing.T) {
 	s := New(confPath, dataDir, "list-debris")
 	writeTestObject(t, s, objID, "good")
 
-	fanout := filepath.Join(TypeDir(dataDir, "list-debris"), repoID, objID[:2])
+	fanout := filepath.Join(TypeDir(dataDir, "list-debris"), libraryID, objID[:2])
 	if err := os.WriteFile(filepath.Join(fanout, objID[2:]+".123456"), []byte("partial"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	var ids []string
-	if err := s.List(repoID, func(id string, _ int64) error {
+	if err := s.List(libraryID, func(id string, _ int64) error {
 		ids = append(ids, id)
 		return nil
 	}); err != nil {
@@ -403,7 +403,7 @@ func TestListStopsOnTheCallbacksError(t *testing.T) {
 
 	sentinel := errors.New("stop")
 	seen := 0
-	err := s.List(repoID, func(string, int64) error {
+	err := s.List(libraryID, func(string, int64) error {
 		seen++
 		return sentinel
 	})
@@ -422,34 +422,34 @@ func TestRemoveIsIdempotent(t *testing.T) {
 	writeTestObject(t, s, objID, "doomed")
 
 	for i := range 2 {
-		if err := s.Remove(repoID, objID); err != nil {
+		if err := s.Remove(libraryID, objID); err != nil {
 			t.Fatalf("Remove call %d: %v", i+1, err)
 		}
 	}
-	if exists, err := s.Exists(repoID, objID); exists || err != nil {
+	if exists, err := s.Exists(libraryID, objID); exists || err != nil {
 		t.Fatalf("after Remove: Exists = (%v, %v)", exists, err)
 	}
-	if err := s.Remove(repoID, "bad"); err == nil {
+	if err := s.Remove(libraryID, "bad"); err == nil {
 		t.Error("Remove accepted a malformed id")
 	}
 }
 
-func TestRemoveRepoTakesEverythingAndIsIdempotent(t *testing.T) {
-	s := New(confPath, dataDir, "remove-repo")
+func TestRemoveLibraryTakesEverythingAndIsIdempotent(t *testing.T) {
+	s := New(confPath, dataDir, "remove-library")
 	writeTestObject(t, s, objID, "one")
 	writeTestObject(t, s, sha256ObjID, "two")
 
 	for i := range 2 {
-		if err := s.RemoveRepo(repoID); err != nil {
-			t.Fatalf("RemoveRepo call %d: %v", i+1, err)
+		if err := s.RemoveLibrary(libraryID); err != nil {
+			t.Fatalf("RemoveLibrary call %d: %v", i+1, err)
 		}
 	}
 	n := 0
-	if err := s.List(repoID, func(string, int64) error { n++; return nil }); err != nil {
+	if err := s.List(libraryID, func(string, int64) error { n++; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
-		t.Fatalf("%d objects survived RemoveRepo", n)
+		t.Fatalf("%d objects survived RemoveLibrary", n)
 	}
 }
 
@@ -463,28 +463,28 @@ func TestAStoreWithNoBackendReportsWhy(t *testing.T) {
 	}
 	s := New(confPath, blocked, "commits")
 
-	if err := s.Read(repoID, objID, io.Discard); err == nil {
+	if err := s.Read(libraryID, objID, io.Discard); err == nil {
 		t.Error("Read on a store with no backend returned nil")
 	}
-	if err := s.Write(repoID, objID, strings.NewReader("x"), false); err == nil {
+	if err := s.Write(libraryID, objID, strings.NewReader("x"), false); err == nil {
 		t.Error("Write on a store with no backend returned nil")
 	}
-	if _, err := s.Stat(repoID, objID); err == nil {
+	if _, err := s.Stat(libraryID, objID); err == nil {
 		t.Error("Stat on a store with no backend returned nil")
 	}
-	if _, err := s.Exists(repoID, objID); err == nil {
+	if _, err := s.Exists(libraryID, objID); err == nil {
 		t.Error("Exists on a store with no backend returned nil")
 	}
-	if err := s.List(repoID, func(string, int64) error { return nil }); err == nil {
+	if err := s.List(libraryID, func(string, int64) error { return nil }); err == nil {
 		t.Error("List on a store with no backend returned nil")
 	}
-	if err := s.Remove(repoID, objID); err == nil {
+	if err := s.Remove(libraryID, objID); err == nil {
 		t.Error("Remove on a store with no backend returned nil")
 	}
-	if err := s.RemoveRepo(repoID); err == nil {
-		t.Error("RemoveRepo on a store with no backend returned nil")
+	if err := s.RemoveLibrary(libraryID); err == nil {
+		t.Error("RemoveLibrary on a store with no backend returned nil")
 	}
-	if _, err := s.ReadAt(repoID, objID, make([]byte, 1), 0); err == nil {
+	if _, err := s.ReadAt(libraryID, objID, make([]byte, 1), 0); err == nil {
 		t.Error("ReadAt on a store with no backend returned nil")
 	}
 }

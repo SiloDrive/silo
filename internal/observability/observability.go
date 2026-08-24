@@ -275,7 +275,7 @@ func tracesSampler(rate float64) sentry.TracesSampler {
 // probe.
 var untracedPaths = []string{"/notification", "/debug/pprof", "/protocol-version"}
 
-// untraced reports whether a span name — "GET /repo/…", as sentryhttp builds
+// untraced reports whether a span name — "GET /libraries/…", as sentryhttp builds
 // it from the method and the path — names one of those endpoints.
 func untraced(spanName string) bool {
 	path := spanName
@@ -335,7 +335,7 @@ func (*logrusHook) Fire(entry *log.Entry) error {
 	if site := callSite(stack); site != "" {
 		// Group by the statement that logged and the shape of what it said,
 		// not by the text itself. Nearly every message here interpolates a
-		// repo id, a path or an error string, and a receiver that groups on
+		// library id, a path or an error string, and a receiver that groups on
 		// raw text — Splat hashes the whole message — would file one issue
 		// per file and bury the fact that a single line is failing over and
 		// over.
@@ -405,7 +405,7 @@ var (
 )
 
 // normalizeMessage strips the varying parts out of a log message so that the
-// same failing statement groups as one issue however many repos, blocks or
+// same failing statement groups as one issue however many libraries, blocks or
 // accounts it fires for.
 func normalizeMessage(msg string) string {
 	msg = reQuoted.ReplaceAllString(msg, `"<str>"`)

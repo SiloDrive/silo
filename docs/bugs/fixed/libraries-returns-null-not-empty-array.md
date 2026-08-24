@@ -1,7 +1,7 @@
-# `GET /repos` answers `null` for an empty account, where `/changes` answers `[]`
+# `GET /libraries` answers `null` for an empty account, where `/changes` answers `[]`
 
 **Found:** 18 Aug 2026, against 0.4.1, re-checked against 0.4.3 (`5cd182a`).
-**Status: fixed in 0.4.4.** `scanRepos` allocates.
+**Status: fixed in 0.4.4.** `scanLibraries` allocates.
 **Severity:** low, and permanently cheap to fix. It costs nothing today because
 the only client is written in Go; it costs an afternoon the first time one is
 not.
@@ -11,8 +11,8 @@ Two list endpoints on the same lane disagree about how they spell "nothing".
 ## Symptom
 
 ```
-GET /api/silo/v1/repos            → null
-GET /api/silo/v1/repos/{id}/changes?since=…   → {"anchor":"…","changes":[]}
+GET /api/silo/v1/libraries            → null
+GET /api/silo/v1/libraries/{id}/changes?since=…   → {"anchor":"…","changes":[]}
 ```
 
 `porter-brief.md` is explicit about the second: *changes is always an array,
@@ -20,13 +20,13 @@ never null*. Nothing says anything about the first, and it does the opposite.
 
 ## Cause
 
-`scanRepos` (`fileserver/api/api.go:229`) opens with
+`scanLibraries` (`fileserver/api/api.go:229`) opens with
 
 ```go
-var repos []repoInfo
+var libraries []libraryInfo
 ```
 
-which is nil when the loop never runs. `ListReposHandler` appends shared repos
+which is nil when the loop never runs. `ListLibrariesHandler` appends shared libraries
 to it and hands it to `writeJSON`, and `encoding/json` renders a nil slice as
 `null`. `ChangesHandler` does not have the bug because
 `fileserver/api/changes.go:124` allocates:
@@ -38,11 +38,11 @@ changes := make([]change, 0, len(entries))
 So the fix is one word, in one of two places — either
 
 ```go
-repos := make([]repoInfo, 0)
+libraries := make([]libraryInfo, 0)
 ```
 
-in `scanRepos`, or the same normalisation in `ListReposHandler` before the
-write. `scanRepos` is the better home: it is also called for the shared-repo
+in `scanLibraries`, or the same normalisation in `ListLibrariesHandler` before the
+write. `scanLibraries` is the better home: it is also called for the shared-library
 query, so fixing it there fixes the source rather than the symptom.
 
 ## Why it has not bitten
@@ -60,11 +60,11 @@ TypeScript, Python, Swift or Rust does distinguish them:
 ```
 
 ```python
-for repo in res.json():        # TypeError: 'NoneType' object is not iterable
+for library in res.json():        # TypeError: 'NoneType' object is not iterable
 ```
 
 The macOS File Provider extension in `macos-fileprovider-plan.md` is Swift, and
-`[Repo]?` versus `[Repo]` is a decoding decision it would have to make on the
+`[Library]?` versus `[Library]` is a decoding decision it would have to make on the
 strength of an undocumented behaviour.
 
 ## What makes it a bug rather than a preference
@@ -80,17 +80,17 @@ account is in, so this is the *first* response a fresh client sees.
 Needs an account owning no libraries and party to no shares, which the current
 `SILO_ADMIN_EMAIL` bootstrap does not readily produce — one reason this was
 noticed by reading rather than by running. The code path is unambiguous, and
-`scanRepos` returning nil on an empty result set can be asserted directly in a
+`scanLibraries` returning nil on an empty result set can be asserted directly in a
 unit test without standing up an account at all.
 
 ## What was done
 
-`scanRepos` (`fileserver/api/api.go`) now opens with `repos := make([]repoInfo, 0)`,
+`scanLibraries` (`fileserver/api/api.go`) now opens with `libraries := make([]libraryInfo, 0)`,
 which was the report's preferred of the two homes: it is also called for the
-shared-repo query, so both paths are fixed at the source. `ListReposHandler`
+shared-library query, so both paths are fixed at the source. `ListLibrariesHandler`
 appends to what it returns, so the handler cannot reintroduce nil.
 
-`TestListReposAnswersEmptyArrayNotNull` asserts on the response bytes rather
+`TestListLibrariesAnswersEmptyArrayNotNull` asserts on the response bytes rather
 than the decoded value — decoding into `[]map[string]any` is exactly the thing
 that cannot tell the two spellings apart, so a test written that way would pass
 against the bug. It also checks the populated case still lists, so the fix is

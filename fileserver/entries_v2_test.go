@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
@@ -33,11 +33,11 @@ func storeV2Library(t *testing.T) (string, *account.Account) {
 		t.Fatalf("load account: %v", err)
 	}
 
-	repoID, err := repomgr.CreateRepo("v2", acct, repomgr.DefaultFormat(false))
+	libraryID, err := libmgr.CreateLibrary("v2", acct, libmgr.DefaultFormat(false))
 	if err != nil {
-		t.Fatalf("CreateRepo: %v", err)
+		t.Fatalf("CreateLibrary: %v", err)
 	}
-	return repoID, acct
+	return libraryID, acct
 }
 
 // do runs one request through a handler with the account and mux vars a real
@@ -75,7 +75,7 @@ func withHeader(k, v string) func(*http.Request) {
 // between — the format branch, the tree mutation, the commit and the head
 // swap — is this package's, and objmgr's tests cannot see any of it.
 func TestAStoreV2LibraryRoundTripsAFileOverHTTP(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
 	// Big enough to chunk rather than inline, so the manifest has a chunk list
 	// and the ranged read has boundaries to get wrong.
@@ -85,13 +85,13 @@ func TestAStoreV2LibraryRoundTripsAFileOverHTTP(t *testing.T) {
 	}
 
 	w := do(t, putEntry, acct, http.MethodPut, "/entries/big.bin",
-		map[string]string{"repoid": repoID, "path": "big.bin"}, content)
+		map[string]string{"libraryid": libraryID, "path": "big.bin"}, content)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("PUT = %d (%s), want 201", w.Code, w.Body.String())
 	}
 
 	w = do(t, getEntry, acct, http.MethodGet, "/entries/big.bin",
-		map[string]string{"repoid": repoID, "path": "big.bin"}, nil)
+		map[string]string{"libraryid": libraryID, "path": "big.bin"}, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET = %d (%s), want 200", w.Code, w.Body.String())
 	}
@@ -102,7 +102,7 @@ func TestAStoreV2LibraryRoundTripsAFileOverHTTP(t *testing.T) {
 	// A range, across a chunk boundary wherever the chunker put one.
 	const off, n = 1_000_000, 4096
 	rw := do(t, getEntry, acct, http.MethodGet, "/entries/big.bin",
-		map[string]string{"repoid": repoID, "path": "big.bin"}, nil,
+		map[string]string{"libraryid": libraryID, "path": "big.bin"}, nil,
 		withHeader("Range", fmt.Sprintf("bytes=%d-%d", off, off+n-1)))
 	if rw.Code != http.StatusPartialContent {
 		t.Fatalf("ranged GET = %d, want 206", rw.Code)
@@ -119,20 +119,20 @@ func TestAStoreV2LibraryRoundTripsAFileOverHTTP(t *testing.T) {
 // The head must actually move, and the objects it names must be on disk. A
 // round trip alone would pass if the read were served from anything cached.
 func TestAStoreV2WriteMovesTheHeadToANewCommit(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
-	before, err := repomgr.GetWithReason(repoID)
+	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	w := do(t, putEntry, acct, http.MethodPut, "/entries/a.txt",
-		map[string]string{"repoid": repoID, "path": "a.txt"}, []byte("hello"))
+		map[string]string{"libraryid": libraryID, "path": "a.txt"}, []byte("hello"))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("PUT = %d (%s), want 201", w.Code, w.Body.String())
 	}
 
-	after, err := repomgr.GetWithReason(repoID)
+	after, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,10 +168,10 @@ func TestAStoreV2WriteMovesTheHeadToANewCommit(t *testing.T) {
 
 // A write into a directory that is not there is a 404, not a silent mkdir -p.
 func TestAStoreV2WriteRefusesAMissingParent(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
 	w := do(t, putEntry, acct, http.MethodPut, "/entries/nope/a.txt",
-		map[string]string{"repoid": repoID, "path": "nope/a.txt"}, []byte("hello"))
+		map[string]string{"libraryid": libraryID, "path": "nope/a.txt"}, []byte("hello"))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("PUT into a missing directory = %d, want 404", w.Code)
 	}
@@ -188,14 +188,14 @@ func TestAStoreV2WriteRefusesAMissingParent(t *testing.T) {
 // refusal, and there is no request this can be confused with: a client that
 // declares no length is exactly the one that cannot be caught up front.
 func TestAStoreV2UploadOverTheLimitIsRefusedNotTruncated(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
 	oldMax := option.MaxUploadSize
 	option.MaxUploadSize = 64
 	t.Cleanup(func() { option.MaxUploadSize = oldMax })
 
 	content := bytes.Repeat([]byte("x"), 4096)
-	vars := map[string]string{"repoid": repoID, "path": "big.bin"}
+	vars := map[string]string{"libraryid": libraryID, "path": "big.bin"}
 
 	for _, tc := range []struct {
 		name string
@@ -228,15 +228,15 @@ func TestAStoreV2UploadOverTheLimitIsRefusedNotTruncated(t *testing.T) {
 // inside a batch and 500 outside it, on the same library. One table now, and
 // this is an arm that was missing from it.
 func TestWritingAFileOverADirectoryIsAConflictNotAServerError(t *testing.T) {
-	repoID, acct := storeV2Library(t)
+	libraryID, acct := storeV2Library(t)
 
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
-		map[string]string{"repoid": repoID}, []byte(`{"ops":[{"op":"mkdir","path":"/d"}]}`))
+		map[string]string{"libraryid": libraryID}, []byte(`{"ops":[{"op":"mkdir","path":"/d"}]}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("mkdir = %d (%s)", w.Code, w.Body.String())
 	}
 
-	vars := map[string]string{"repoid": repoID, "path": "d"}
+	vars := map[string]string{"libraryid": libraryID, "path": "d"}
 	w = do(t, putEntry, acct, http.MethodPut, "/entries/d", vars, []byte("nope"))
 	if w.Code != http.StatusConflict {
 		t.Errorf("PUT over a directory = %d (%s), want 409", w.Code, w.Body.String())

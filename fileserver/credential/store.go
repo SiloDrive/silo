@@ -309,8 +309,8 @@ func stampLastUsed(c *Credential) {
 // permission is withdrawn the credential follows immediately.
 //
 // accountPerm is what share.CheckPerm returned for this user and library.
-func (c *Credential) EffectivePerm(accountPerm, repoID, path string) string {
-	if !c.Scope.Covers(repoID, path) {
+func (c *Credential) EffectivePerm(accountPerm, libraryID, path string) string {
+	if !c.Scope.Covers(libraryID, path) {
 		return ""
 	}
 	return minPerm(accountPerm, c.Perm)

@@ -36,7 +36,7 @@ func (c *APIClient) getToken() string {
 	return c.token
 }
 
-type Repo struct {
+type Library struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	UpdateTime int64  `json:"update_time"`
@@ -271,19 +271,19 @@ func (c *APIClient) Login(email, password string) error {
 	return c.reloginLocked()
 }
 
-func (c *APIClient) ListRepos() ([]Repo, error) {
-	var repos []Repo
-	err := c.doRequest("GET", "/api/silo/v1/repos", nil, &repos)
-	return repos, err
+func (c *APIClient) ListLibraries() ([]Library, error) {
+	var libraries []Library
+	err := c.doRequest("GET", "/api/silo/v1/libraries", nil, &libraries)
+	return libraries, err
 }
 
-func (c *APIClient) CreateRepo(name string) (*Repo, error) {
-	var repo Repo
-	err := c.doRequest("POST", "/api/silo/v1/repos", map[string]string{"name": name}, &repo)
+func (c *APIClient) CreateLibrary(name string) (*Library, error) {
+	var library Library
+	err := c.doRequest("POST", "/api/silo/v1/libraries", map[string]string{"name": name}, &library)
 	if err != nil {
 		return nil, err
 	}
-	return &repo, nil
+	return &library, nil
 }
 
 // The file operations below all address one endpoint — entries — with the HTTP
@@ -299,8 +299,8 @@ func (c *APIClient) CreateRepo(name string) (*Repo, error) {
 // rather than a query parameter, so it is escaped per segment: the separators
 // have to survive as separators for the route to match, and everything else has
 // to be escaped or a file named "a?b" would truncate the request.
-func entriesURL(repoID, p string) string {
-	return "/api/silo/v1/repos/" + url.PathEscape(repoID) + "/entries/" + escapePathSegments(p)
+func entriesURL(libraryID, p string) string {
+	return "/api/silo/v1/libraries/" + url.PathEscape(libraryID) + "/entries/" + escapePathSegments(p)
 }
 
 func escapePathSegments(p string) string {
@@ -312,31 +312,31 @@ func escapePathSegments(p string) string {
 	return strings.Join(segments, "/")
 }
 
-func (c *APIClient) ListDir(repoID, path string) ([]DirEntry, error) {
+func (c *APIClient) ListDir(libraryID, path string) ([]DirEntry, error) {
 	var entries []DirEntry
-	err := c.doRequest("GET", entriesURL(repoID, path), nil, &entries)
+	err := c.doRequest("GET", entriesURL(libraryID, path), nil, &entries)
 	return entries, err
 }
 
-func (c *APIClient) DeleteRepo(repoID string) error {
-	return c.doRequest("DELETE", "/api/silo/v1/repos/"+repoID, nil, nil)
+func (c *APIClient) DeleteLibrary(libraryID string) error {
+	return c.doRequest("DELETE", "/api/silo/v1/libraries/"+libraryID, nil, nil)
 }
 
 // Mkdir asks for a directory explicitly. A PUT with no ?type stores the request
 // body as a file, so the parameter is load-bearing rather than decorative: drop
 // it and this creates an empty file where a directory was meant.
-func (c *APIClient) Mkdir(repoID, path string) error {
-	return c.doRequest("PUT", entriesURL(repoID, path)+"?type=dir", nil, nil)
+func (c *APIClient) Mkdir(libraryID, path string) error {
+	return c.doRequest("PUT", entriesURL(libraryID, path)+"?type=dir", nil, nil)
 }
 
 // RenameFile renames by moving: a rename is a move whose destination shares a
 // parent with its source, and the server has no separate operation for it.
-func (c *APIClient) RenameFile(repoID, remotePath, newName string) error {
-	return c.MoveFile(repoID, remotePath, path.Join(path.Dir(remotePath), newName))
+func (c *APIClient) RenameFile(libraryID, remotePath, newName string) error {
+	return c.MoveFile(libraryID, remotePath, path.Join(path.Dir(remotePath), newName))
 }
 
-func (c *APIClient) MoveFile(repoID, src, dst string) error {
-	return c.doRequest("POST", entriesURL(repoID, src),
+func (c *APIClient) MoveFile(libraryID, src, dst string) error {
+	return c.doRequest("POST", entriesURL(libraryID, src),
 		map[string]string{"op": "move", "to": dst}, nil)
 }
 
@@ -344,24 +344,24 @@ func (c *APIClient) MoveFile(repoID, src, dst string) error {
 // dirent points at the object the source already names, so this transfers no
 // content whatever the size — which is the difference between calling it and
 // emulating it with a download followed by an upload.
-func (c *APIClient) CopyFile(repoID, src, dst string) error {
-	return c.doRequest("POST", entriesURL(repoID, src),
+func (c *APIClient) CopyFile(libraryID, src, dst string) error {
+	return c.doRequest("POST", entriesURL(libraryID, src),
 		map[string]string{"op": "copy", "to": dst}, nil)
 }
 
-// RenameRepo renames a library. PATCH, not PUT: the body names what changes and
+// RenameLibrary renames a library. PATCH, not PUT: the body names what changes and
 // leaves the rest alone, so this keeps meaning the same thing when the server
 // grows a second mutable field.
-func (c *APIClient) RenameRepo(repoID, name string) error {
-	return c.doRequest("PATCH", "/api/silo/v1/repos/"+repoID,
+func (c *APIClient) RenameLibrary(libraryID, name string) error {
+	return c.doRequest("PATCH", "/api/silo/v1/libraries/"+libraryID,
 		map[string]string{"name": name}, nil)
 }
 
-func (c *APIClient) DeleteFile(repoID, path string) error {
-	return c.doRequest("DELETE", entriesURL(repoID, path), nil, nil)
+func (c *APIClient) DeleteFile(libraryID, path string) error {
+	return c.doRequest("DELETE", entriesURL(libraryID, path), nil, nil)
 }
 
-// HeadCommitID on Repo is the anchor for the first Changes call; see repoInfo
+// HeadCommitID on Library is the anchor for the first Changes call; see libraryInfo
 // in fileserver/api.
 //
 // Change is one path that differs between two commits, as reported by Changes.
@@ -382,25 +382,25 @@ type ChangesResponse struct {
 
 // Changes reports everything that differs between a commit and the current
 // head. Pass the previous call's Anchor as since; the first call has no anchor,
-// so enumerate with ListDir and use the repo's head commit.
-func (c *APIClient) Changes(repoID, since string) (*ChangesResponse, error) {
+// so enumerate with ListDir and use the library's head commit.
+func (c *APIClient) Changes(libraryID, since string) (*ChangesResponse, error) {
 	var resp ChangesResponse
-	err := c.doRequest("GET", fmt.Sprintf("/api/silo/v1/repos/%s/changes?since=%s",
-		url.PathEscape(repoID), url.QueryEscape(since)), nil, &resp)
+	err := c.doRequest("GET", fmt.Sprintf("/api/silo/v1/libraries/%s/changes?since=%s",
+		url.PathEscape(libraryID), url.QueryEscape(since)), nil, &resp)
 	if err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
-// DownloadFile writes a file from the repo to localPath.
+// DownloadFile writes a file from the library to localPath.
 //
 // The bytes arrive on this response. There used to be a redirect here, to a
 // /files/{token}/{name} URL carrying a one-time credential, and following it
 // took a second unauthenticated request — see docs/capability-urls.md for why
 // that shape existed and why this lane does not need it.
-func (c *APIClient) DownloadFile(repoID, repoPath, localPath string) error {
-	resp, err := c.doStream("GET", entriesURL(repoID, repoPath), "", nil)
+func (c *APIClient) DownloadFile(libraryID, libraryPath, localPath string) error {
+	resp, err := c.doStream("GET", entriesURL(libraryID, libraryPath), "", nil)
 	if err != nil {
 		return err
 	}
@@ -423,7 +423,7 @@ func (c *APIClient) DownloadFile(repoID, repoPath, localPath string) error {
 	return nil
 }
 
-// UploadFile writes a local file into a repo directory.
+// UploadFile writes a local file into a library directory.
 //
 // One request: the body is the file. This used to be three — mint an access
 // token, build a multipart form, POST it to /upload-api/{token} — which is the
@@ -443,20 +443,20 @@ func (c *APIClient) DownloadFile(repoID, repoPath, localPath string) error {
 // path — the server offers it, the library's chunker is known, and the file is
 // large enough to pay for the extra round trips — and any of them failing
 // takes the whole-file path, which always works.
-func (c *APIClient) UploadFile(repoID, parentDir, localPath string) error {
+func (c *APIClient) UploadFile(libraryID, parentDir, localPath string) error {
 	if st, err := os.Stat(localPath); err == nil && st.Size() > chunkLaneThreshold {
 		if c.capabilities().Has("blocks") {
-			if p, ok := c.chunkerFor(repoID); ok {
-				return c.uploadChunks(repoID, parentDir, localPath, p)
+			if p, ok := c.chunkerFor(libraryID); ok {
+				return c.uploadChunks(libraryID, parentDir, localPath, p)
 			}
 		}
 	}
-	return c.uploadWhole(repoID, parentDir, localPath)
+	return c.uploadWhole(libraryID, parentDir, localPath)
 }
 
-func (c *APIClient) uploadWhole(repoID, parentDir, localPath string) error {
+func (c *APIClient) uploadWhole(libraryID, parentDir, localPath string) error {
 	remote := path.Join("/", parentDir, filepath.Base(localPath))
-	resp, err := c.doStream("PUT", entriesURL(repoID, remote), "application/octet-stream",
+	resp, err := c.doStream("PUT", entriesURL(libraryID, remote), "application/octet-stream",
 		func() (io.ReadCloser, int64, error) {
 			file, err := os.Open(localPath)
 			if err != nil {
@@ -544,9 +544,9 @@ type BatchResult struct {
 // Pair it with the block surface for a bulk upload: send the blocks first,
 // which skips everything the server already holds, then create every file in
 // one commit rather than one commit per file.
-func (c *APIClient) Batch(repoID string, ops []BatchOp) (*BatchResult, error) {
+func (c *APIClient) Batch(libraryID string, ops []BatchOp) (*BatchResult, error) {
 	var result BatchResult
-	err := c.doRequest("POST", "/api/silo/v1/repos/"+repoID+"/batch",
+	err := c.doRequest("POST", "/api/silo/v1/libraries/"+libraryID+"/batch",
 		map[string][]BatchOp{"ops": ops}, &result)
 	if err != nil {
 		return nil, err

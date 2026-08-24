@@ -172,7 +172,7 @@ These are not cleanups; they are about where a rule lives.
 
 - **`validPackID` guards one backend, not the seam.** It lives in
   `backend_fs.go` and is called from two places in that file.
-  `ObjectStore.Read/ReadAt/Write/WriteVerified/Stat/List/Remove/RemoveRepo` all
+  `ObjectStore.Read/ReadAt/Write/WriteVerified/Stat/List/Remove/RemoveLibrary` all
   pass the id straight through, and the `storageBackend` interface doc — which
   is otherwise explicit about what the contract is and is not — says nothing
   about id validation. The package doc says phases 4 and 6 add more
@@ -182,8 +182,8 @@ These are not cleanups; they are about where a rule lives.
   "validPackID has already established that the width is one of the two", which
   is not true at that call site, since `WriteVerified` picks the digest before
   any backend runs.
-- **`repoID` is validated nowhere**, and `removeRepo` is
-  `os.RemoveAll(path.Join(b.objDir, repoID))`. The seam validates one
+- **`libraryID` is validated nowhere**, and `removeLibrary` is
+  `os.RemoveAll(path.Join(b.objDir, libraryID))`. The seam validates one
   identifier and not its sibling, on the one verb where the difference is
   destructive.
 - **`validPackID` is also a near-duplicate of `utils.IsObjectIDValid`**
@@ -241,9 +241,9 @@ These are not cleanups; they are about where a rule lives.
 ## Deliberate follow-ups, not cleanups
 
 - **`gc.go`'s `measure` and `reclaim` now duplicate the seam.** `measure` walks
-  the fan-out with `objstore.RepoDir` + `filepath.WalkDir` and `reclaim` deletes
+  the fan-out with `objstore.LibraryDir` + `filepath.WalkDir` and `reclaim` deletes
   with `os.RemoveAll` — which is what `ObjectStore.List` and
-  `RemoveRepo` now do behind the interface. Two walkers of the on-disk layout,
+  `RemoveLibrary` now do behind the interface. Two walkers of the on-disk layout,
   and the S3 backend the seam exists for will only fix one of them. Behaviour
   differs by design — `list` skips temp-file debris that `measure` counts — so
   this is a decision, not a mechanical swap.

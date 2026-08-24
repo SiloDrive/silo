@@ -16,17 +16,17 @@ them. It is not a `/changes` bug — that endpoint reported the damage accuratel
 Against 0.4.2, in any library:
 
 ```
-silo mkdir  $REPO /Precious
-silo put    $REPO ./keep.txt /Precious
-silo put    $REPO ./junk.txt /
-silo mv     $REPO /junk.txt /Precious      # exit 0
-silo get    $REPO /Precious/keep.txt       # 404 Not Found
+silo mkdir  $LIBRARY /Precious
+silo put    $LIBRARY ./keep.txt /Precious
+silo put    $LIBRARY ./junk.txt /
+silo mv     $LIBRARY /junk.txt /Precious      # exit 0
+silo get    $LIBRARY /Precious/keep.txt       # 404 Not Found
 ```
 
 `/Precious` is now a 5-byte file. `keep.txt` is unreachable, as is anything else
 that was under there, however deep.
 
-Over the wire that is `POST /api/silo/v1/repos/{repo}/entries/junk.txt` with
+Over the wire that is `POST /api/silo/v1/libraries/{library}/entries/junk.txt` with
 `{"op":"move","to":"/Precious"}`. `postEntry` delegates to `moveHandler`, so the
 same hole is reachable from the older `?src=&dst=` form.
 
@@ -41,7 +41,7 @@ replace enabled:
 
 ```go
 newDent := fsmgr.NewDirent(srcEntry.ID, dstName, srcEntry.Mode, ...)
-rootAfterAdd, err := DoPostMultiFiles(repo, head.RootID, dstDir,
+rootAfterAdd, err := DoPostMultiFiles(library, head.RootID, dstDir,
     []*fsmgr.SeafDirent{newDent}, user, true, &names)
                                     // ^^^^ replace existing
 ```
@@ -108,9 +108,9 @@ but deleting a directory and creating a file of the same name between two anchor
 reaches the identical shape by a route no guard touches:
 
 ```
-silo mkdir $REPO /Z ; silo put $REPO ./keep.txt /Z     # anchor taken here
-silo rm    $REPO /Z
-silo put   $REPO ./z.txt / ; silo rename $REPO /z.txt Z
+silo mkdir $LIBRARY /Z ; silo put $LIBRARY ./keep.txt /Z     # anchor taken here
+silo rm    $LIBRARY /Z
+silo put   $LIBRARY ./z.txt / ; silo rename $LIBRARY /z.txt Z
 ```
 
 ```json

@@ -1,4 +1,4 @@
-package repomgr
+package libmgr
 
 import (
 	"context"
@@ -29,20 +29,20 @@ import (
 // subtree whose id is unchanged contributes nothing and is skipped unread, so
 // bringing a row forward across one commit reads the directories along one
 // path. A library that has not moved costs one row read and no store at all.
-func Usage(repo *Repo) (objmgr.Usage, error) {
-	stored, at, err := readUsage(repo.ID)
+func Usage(library *Library) (objmgr.Usage, error) {
+	stored, at, err := readUsage(library.ID)
 	if err != nil {
 		return objmgr.Usage{}, err
 	}
-	if at == repo.RootID {
+	if at == library.RootID {
 		return stored, nil
 	}
 
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
 		return objmgr.Usage{}, err
 	}
-	root, err := storefmt.ParseID(repo.RootID)
+	root, err := storefmt.ParseID(library.RootID)
 	if err != nil {
 		return objmgr.Usage{}, err
 	}
@@ -51,7 +51,7 @@ func Usage(repo *Repo) (objmgr.Usage, error) {
 	if err != nil {
 		return objmgr.Usage{}, err
 	}
-	if err := writeUsage(repo.ID, current, at, repo.RootID); err != nil {
+	if err := writeUsage(library.ID, current, at, library.RootID); err != nil {
 		return objmgr.Usage{}, err
 	}
 	return current, nil
@@ -87,18 +87,18 @@ func advance(st *objmgr.Store, stored objmgr.Usage, at string, root storefmt.ID)
 // readUsage returns a library's stored totals and the root they are true at.
 // A library with no row yet reports zero at no root, which advance measures
 // outright.
-func readUsage(repoID string) (objmgr.Usage, string, error) {
+func readUsage(libraryID string) (objmgr.Usage, string, error) {
 	var u objmgr.Usage
 	var at string
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	row := readDB.QueryRowContext(ctx,
-		"SELECT size, file_count, root_id FROM RepoUsage WHERE repo_id = ?", repoID)
+		"SELECT size, file_count, root_id FROM LibraryUsage WHERE library_id = ?", libraryID)
 	switch err := row.Scan(&u.Size, &u.FileCount, &at); {
 	case err == sql.ErrNoRows:
 		return objmgr.Usage{}, "", nil
 	case err != nil:
-		return objmgr.Usage{}, "", fmt.Errorf("failed to read usage of %s: %w", repoID, err)
+		return objmgr.Usage{}, "", fmt.Errorf("failed to read usage of %s: %w", libraryID, err)
 	}
 	return u, at, nil
 }
@@ -110,17 +110,17 @@ func readUsage(repoID string) (objmgr.Usage, string, error) {
 // loser must not add its delta on top of the winner's answer. A skipped update
 // is the correct outcome and not an error — the row already holds a total at
 // least as current as this one, computed the same way from the same trees.
-func writeUsage(repoID string, u objmgr.Usage, from, to string) error {
+func writeUsage(libraryID string, u objmgr.Usage, from, to string) error {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	_, err := writeDB.ExecContext(ctx,
-		"INSERT INTO RepoUsage (repo_id, size, file_count, root_id) VALUES (?, ?, ?, ?) "+
-			"ON CONFLICT(repo_id) DO UPDATE SET size = excluded.size, "+
+		"INSERT INTO LibraryUsage (library_id, size, file_count, root_id) VALUES (?, ?, ?, ?) "+
+			"ON CONFLICT(library_id) DO UPDATE SET size = excluded.size, "+
 			"file_count = excluded.file_count, root_id = excluded.root_id "+
-			"WHERE RepoUsage.root_id = ?",
-		repoID, u.Size, u.FileCount, to, from)
+			"WHERE LibraryUsage.root_id = ?",
+		libraryID, u.Size, u.FileCount, to, from)
 	if err != nil {
-		return fmt.Errorf("failed to record usage of %s: %w", repoID, err)
+		return fmt.Errorf("failed to record usage of %s: %w", libraryID, err)
 	}
 	return nil
 }
@@ -128,7 +128,7 @@ func writeUsage(repoID string, u objmgr.Usage, from, to string) error {
 // AccountUsage totals the libraries an account owns.
 //
 // Owns, not sees: a library shared with you counts against its owner's quota
-// and not yours, which is also why per-library sizes belong on the repos
+// and not yours, which is also why per-library sizes belong on the libraries
 // listing rather than under an account total they must not sum to.
 //
 // The common case is one query and no stores opened, because a library whose
@@ -141,12 +141,12 @@ func AccountUsage(id account.ID) (objmgr.Usage, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	rows, err := readDB.QueryContext(ctx,
-		"SELECT o.repo_id, b.root_id, u.size, u.file_count, u.root_id "+
-			"FROM RepoOwner o "+
-			"JOIN Branch b ON b.repo_id = o.repo_id AND b.name = 'master' "+
-			"LEFT JOIN RepoUsage u ON u.repo_id = o.repo_id "+
-			"LEFT JOIN VirtualRepo v ON v.repo_id = o.repo_id "+
-			"WHERE o.account_id = ? AND v.repo_id IS NULL",
+		"SELECT o.library_id, b.root_id, u.size, u.file_count, u.root_id "+
+			"FROM LibraryOwner o "+
+			"JOIN Branch b ON b.library_id = o.library_id AND b.name = 'master' "+
+			"LEFT JOIN LibraryUsage u ON u.library_id = o.library_id "+
+			"LEFT JOIN VirtualLibrary v ON v.library_id = o.library_id "+
+			"WHERE o.account_id = ? AND v.library_id IS NULL",
 		id)
 	if err != nil {
 		return objmgr.Usage{}, fmt.Errorf("failed to query owned libraries: %w", err)
@@ -156,30 +156,30 @@ func AccountUsage(id account.ID) (objmgr.Usage, error) {
 	var total objmgr.Usage
 	var stale []string
 	for rows.Next() {
-		var repoID, headRoot string
+		var libraryID, headRoot string
 		var size, fileCount sql.NullInt64
 		var at sql.NullString
-		if err := rows.Scan(&repoID, &headRoot, &size, &fileCount, &at); err != nil {
+		if err := rows.Scan(&libraryID, &headRoot, &size, &fileCount, &at); err != nil {
 			return objmgr.Usage{}, err
 		}
 		if at.Valid && at.String == headRoot {
 			total = total.Add(objmgr.Usage{Size: size.Int64, FileCount: fileCount.Int64})
 			continue
 		}
-		stale = append(stale, repoID)
+		stale = append(stale, libraryID)
 	}
 	if err := rows.Err(); err != nil {
 		return objmgr.Usage{}, err
 	}
 
-	for _, repoID := range stale {
-		repo := Get(repoID)
-		if repo == nil {
+	for _, libraryID := range stale {
+		library := Get(libraryID)
+		if library == nil {
 			continue
 		}
-		u, err := Usage(repo)
+		u, err := Usage(library)
 		if err != nil {
-			log.Warnf("Skipping library %s in account usage: %v", repoID, err)
+			log.Warnf("Skipping library %s in account usage: %v", libraryID, err)
 			continue
 		}
 		total = total.Add(u)

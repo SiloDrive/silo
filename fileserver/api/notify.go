@@ -22,10 +22,10 @@ type notifyTokenResponse struct {
 	ExpiresAt int64  `json:"expires_at"`
 }
 
-// CreateNotifyTokenHandler handles POST /api/silo/v1/repos/{repoid}/notify-token.
+// CreateNotifyTokenHandler handles POST /api/silo/v1/libraries/{libraryid}/notify-token.
 // It mints the same notification JWT the deleted /repo/{id}/jwt-token
 // route, but authorizes the session user against share.CheckPerm instead of
-// requiring a repo token — so a Silo-lane client never has to touch the
+// requiring a library token — so a Silo-lane client never has to touch the
 // compatibility surface to get onto the notification socket.
 func CreateNotifyTokenHandler(w http.ResponseWriter, r *http.Request) {
 	// Checked before permission, so a server without the notification endpoint
@@ -37,17 +37,17 @@ func CreateNotifyTokenHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	acct := middleware.GetAccount(r)
-	repoID := mux.Vars(r)["repoid"]
+	libraryID := mux.Vars(r)["libraryid"]
 
-	if share.CheckPerm(repoID, acct.ID) == "" {
+	if share.CheckPerm(libraryID, acct.ID) == "" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
 
 	expires := time.Now().Add(notifyTokenTTL)
-	token, err := utils.GenNotifJWTToken(repoID, acct.Email, expires.Unix())
+	token, err := utils.GenNotifJWTToken(libraryID, acct.Email, expires.Unix())
 	if err != nil {
-		log.Errorf("Failed to generate notification token for repo %s: %v", repoID, err)
+		log.Errorf("Failed to generate notification token for library %s: %v", libraryID, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

@@ -1,4 +1,4 @@
-package repomgr
+package libmgr
 
 import (
 	"errors"
@@ -13,18 +13,18 @@ import (
 func TestACreatedLibraryIsStoreV2(t *testing.T) {
 	getTestStore(t)
 
-	repoID, err := CreateRepo("Fresh", testAccount(t), DefaultFormat(false))
+	libraryID, err := CreateLibrary("Fresh", testAccount(t), DefaultFormat(false))
 	if err != nil {
-		t.Fatalf("CreateRepo: %v", err)
+		t.Fatalf("CreateLibrary: %v", err)
 	}
-	repo, err := GetWithReason(repoID)
+	library, err := GetWithReason(libraryID)
 	if err != nil {
-		t.Fatalf("a freshly created repo did not load: %v", err)
+		t.Fatalf("a freshly created library did not load: %v", err)
 	}
 
 	for _, f := range []struct{ what, id string }{
-		{"head commit", repo.HeadCommitID},
-		{"root", repo.RootID},
+		{"head commit", library.HeadCommitID},
+		{"root", library.RootID},
 	} {
 		if len(f.id) != 2*store.IDSize {
 			t.Errorf("%s id %q is %d characters, want %d — this library is not store-v2",
@@ -32,11 +32,11 @@ func TestACreatedLibraryIsStoreV2(t *testing.T) {
 		}
 	}
 
-	st, err := repo.Store()
+	st, err := library.Store()
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	commitID, err := store.ParseID(repo.HeadCommitID)
+	commitID, err := store.ParseID(library.HeadCommitID)
 	if err != nil {
 		t.Fatalf("parse head id: %v", err)
 	}
@@ -44,9 +44,9 @@ func TestACreatedLibraryIsStoreV2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the head commit did not decode: %v", err)
 	}
-	if commit.Root.String() != repo.RootID {
+	if commit.Root.String() != library.RootID {
 		t.Errorf("commit root %s, Branch root_id %s — the catalog and the object disagree",
-			commit.Root, repo.RootID)
+			commit.Root, library.RootID)
 	}
 	if len(commit.Parents) != 0 {
 		t.Errorf("an initial commit has %d parents, want none", len(commit.Parents))
@@ -77,7 +77,7 @@ func TestACreatedLibraryIsStoreV2(t *testing.T) {
 func TestCreatingAnEncryptedLibraryIsRefusedForTheKeyNotTheCommit(t *testing.T) {
 	getTestStore(t)
 
-	_, err := CreateRepo("Sealed", testAccount(t), DefaultFormat(true))
+	_, err := CreateLibrary("Sealed", testAccount(t), DefaultFormat(true))
 	if !errors.Is(err, ErrNoContentKey) {
 		t.Fatalf("err = %v, want ErrNoContentKey", err)
 	}
