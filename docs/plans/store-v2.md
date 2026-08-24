@@ -961,11 +961,11 @@ cleanup — the storage survives, and the mark phase is where it grows teeth.
 Accounting today is built entirely on what phase 2 deletes, and the lane
 store-v2 builds on never had it.
 
-- **What dies.** `size_sched.go` computes `Librariesize`/`LibraryFileCount` through
+- **What dies.** `size_sched.go` computes `LibrarySize`/`LibraryFileCount` through
   `commitmgr.Load`, `diff.DiffCommits` and an `fsmgr.GetFileCountInfoByPath`
   fallback — all three doomed managers — and is queued only from
   `sync_api.go:1170` and `fileop.go:2962`, both frozen lanes. Its
-  `notifyLibrariesizeChange` needs Redis, which a single-binary local Silo has no
+  `notifyLibrarySizeChange` needs Redis, which a single-binary local Silo has no
   reason to run. At the deletion nothing computes a size and nothing asks for
   one.
 - **Quota is already absent from the silo lane.** Every `checkQuota` call site

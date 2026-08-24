@@ -5,7 +5,7 @@
 The database records what is true and destroys every record of how it got
 there. The pattern repeats across the schema: `FolderPermTimestamp`,
 `FileLockTimestamp`, `LibraryInfo.update_time`, `LibraryTokenPeerInfo.sync_time`
-are all last-write-wins stamps, and `LibrariesyncError` kept exactly one error
+are all last-write-wins stamps, and `LibrarySyncError` kept exactly one error
 per token — the latest — with a PRIMARY KEY that guaranteed the one before
 it was gone. (It has since been dropped, along with the other tables no code
 read; the pattern is what matters, not that particular table.) The new
@@ -70,7 +70,7 @@ release — an unknown name in the table is a bug, not an extension point.
 | `credential.used` | trace | credential id, remote addr — rate-limited, see below |
 | `share.opened` | trace | share id, remote addr, user agent |
 | `gc.completed` | trace | library_id, gc_id, bytes reclaimed, duration |
-| `sync.error` | trace | token, error — what `LibrariesyncError` kept one of |
+| `sync.error` | trace | token, error — what `LibrarySyncError` kept one of |
 
 ¹ Library names are server-visible metadata in both library types today.
 ² A scope in an E2EE library is ciphertext here exactly as it is in the
@@ -212,7 +212,7 @@ waits for evidence anyone needs it.
 2. **Trace events + the retention sweeper.** `share.opened` lands with
    sharing's phase 1 — the share surface should not ship without its
    trail. `sync.error` starts writing — there is nothing to retire, since
-   `LibrariesyncError` has already been dropped.
+   `LibrarySyncError` has already been dropped.
 3. **The chain + `/events/head` + client pinning.** Porter pins
    `(seq, head)` in its local index and verifies on reconnect. The
    threat-model paragraph in store-v2.md gains its clause.

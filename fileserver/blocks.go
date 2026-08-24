@@ -59,7 +59,7 @@ func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Blocks []string `json:"blocks"`
 	}
-	if !decodeJSONBody(w, r, maxBlockListBody, &body, `Expected a JSON body such as {"blocks":["<sha1>",…]}`) {
+	if !decodeJSONBody(w, r, maxBlockListBody, &body, `Expected a JSON body such as {"blocks":["<64 hex characters>",…]}`) {
 		return
 	}
 
@@ -67,7 +67,16 @@ func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
 	for _, raw := range body.Blocks {
 		id, err := store.ParseID(raw)
 		if err != nil {
-			http.Error(w, "Not a chunk id: "+raw, http.StatusBadRequest)
+			// Says what it wanted, because whoever reads this has just been
+			// surprised. The message used to name only what arrived, while
+			// the example three lines above told them to send a SHA-1 — so a
+			// client author who followed the error text was pointed at the
+			// bug rather than away from it. A chunk id is the SHA-256 of the
+			// chunk's bytes; a 40-character SHA-1 is refused here, not
+			// converted.
+			http.Error(w, "Not a chunk id: "+raw+
+				" (want 64 lowercase hex characters, the SHA-256 of the chunk)",
+				http.StatusBadRequest)
 			return
 		}
 		ids = append(ids, id)

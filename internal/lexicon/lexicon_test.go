@@ -53,6 +53,60 @@ func TestNoFilenameSaysRepo(t *testing.T) {
 	}
 }
 
+// TestTheSweepDidNotEatACapitalS guards the defect the rename actually shipped.
+//
+// The sweep matched the old word with an optional trailing "s" under a
+// case-insensitive flag, so "repo" followed by a capital S had the S eaten as
+// if it were the plural: repoSelect became librarieselect, RepoStatus became
+// Librariestatus, RepoSharePerm became LibrariesharePerm. Twenty-two
+// identifiers, all of which compiled, none of which any test could notice —
+// they are names, and a name means nothing to a compiler.
+//
+// "libraries" followed by a lowercase letter is the signature. It cannot occur
+// in English, where the word ends and a space follows, and it cannot occur in
+// an identifier, where the next component starts with a capital. So every
+// match is a casualty.
+func TestTheSweepDidNotEatACapitalS(t *testing.T) {
+	var bad []string
+	walk(t, repoRoot(t), func(rel string, body []byte) {
+		for i, line := range strings.Split(string(body), "\n") {
+			for _, w := range mangled(line) {
+				bad = append(bad, rel+":"+itoa(i+1)+": "+w)
+			}
+		}
+	})
+	if len(bad) > 0 {
+		t.Errorf("the sweep ate a capital S in %d place(s):\n  %s",
+			len(bad), strings.Join(dedupe(bad), "\n  "))
+	}
+}
+
+// mangled returns the "libraries"+lowercase runs on one line.
+func mangled(line string) []string {
+	var out []string
+	low := strings.ToLower(line)
+	const w = "libraries"
+	for i := 0; i+len(w) < len(low); i++ {
+		if low[i:i+len(w)] != w {
+			continue
+		}
+		// The original case, not the lowered copy. LibrariesHandler is a
+		// perfectly good name and lowercases to something indistinguishable
+		// from a casualty — the first draft of this test flagged sixty-two of
+		// them.
+		c := line[i+len(w)]
+		if c < 'a' || c > 'z' {
+			continue
+		}
+		end := i + len(w)
+		for end < len(line) && line[end] >= 'a' && line[end] <= 'z' {
+			end++
+		}
+		out = append(out, line[i:end])
+	}
+	return out
+}
+
 // hit is one line that still says the old word.
 type hit struct {
 	line int

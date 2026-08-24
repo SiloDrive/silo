@@ -690,7 +690,7 @@ func putEntryBlocks(w http.ResponseWriter, r *http.Request, libraryID, path stri
 	var body struct {
 		Blocks []string `json:"blocks"`
 	}
-	if !decodeJSONBody(w, r, maxBlockListBody, &body, `Expected a JSON body such as {"blocks":["<sha1>",…]}`) {
+	if !decodeJSONBody(w, r, maxBlockListBody, &body, `Expected a JSON body such as {"blocks":["<64 hex characters>",…]}`) {
 		return
 	}
 

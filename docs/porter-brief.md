@@ -668,10 +668,15 @@ encryption, and names the ciphertext. See *What store-v2 changes* below.
 Short list, and shorter than it was.
 
 **A plain PUT that dies partway has to start over.** For anything large, use
-the block surface above instead — that is what it is for. The remaining limit
-is that chunking is at fixed offsets, so inserting a byte near the front of a
-file shifts every boundary after it and nothing dedups;
-[`protocol-gaps.md`](protocol-gaps.md) has what fixing that would cost.
+the block surface above instead — that is what it is for.
+
+This paragraph used to end by saying chunking was at fixed offsets, so a byte
+inserted near the front of a file shifted every boundary after it and nothing
+dedups. That is no longer true and has not been since the chunker landed:
+boundaries are content-defined, so an insertion moves one boundary and the rest
+of the file still matches. The note is kept rather than deleted because the
+correction is the more useful fact — a client written against the old sentence
+would cut in the wrong places and dedup against nothing.
 
 **Encrypted libraries are not readable over this API, at all.** An earlier draft
 said they serve whole files but not ranges. That was wrong: every read reaches a
@@ -698,16 +703,32 @@ below, is what to build against.
 
 ## What store-v2 changes — read this before writing anything you would hate to unwind
 
-Everything above describes the server as it runs today. A branch is replacing
-the storage format underneath it, and enough of that is now pinned that
-building against it is cheaper than building around it.
+**Status, honestly — and this paragraph has been wrong in both directions.** It
+once said a branch was replacing the storage format and that nothing here
+answered on a running server yet. That was true when written and is not now, and
+it stayed on the page long enough to contradict the sections above it, which is
+the failure this brief keeps having: a correction lands in one half of the file
+and the other half goes on describing the world it replaced.
 
-**Status, honestly.** The format itself is done and committed: spec in
-[`spec/store-format.md`](spec/store-format.md), Go in
-[`store/`](../store), with test vectors for every piece. The server handlers
-are being cut over now, and nothing in this section answers on a running server
-yet. The plan and its build order are in
-[`plans/store-v2.md`](plans/store-v2.md).
+What actually answers on a running server today:
+
+- **64-hex ids, SHA-256 of the bytes.** `store.ParseID` demands exactly that
+  width, so a 40-character SHA-1 is a 400 at the door rather than a fallback.
+- **Content-defined boundaries, per library.** The `chunker` object on the
+  library's row in `GET /libraries`, frozen at creation.
+- **Manifests, directories and commits by content id**, over `/objects/{id}`
+  and `/head`.
+
+What does not yet answer:
+
+- **Per-library E2EE.** The format is specified and implemented in `store/`,
+  but the server still refuses the block surface for an encrypted library
+  (**400**), so the client-encrypts-and-names-the-ciphertext path is not
+  reachable over HTTP yet.
+
+The format's spec is in [`spec/store-format.md`](spec/store-format.md), the Go
+in [`store/`](../store) with test vectors for every piece, and the remaining
+build order in [`plans/store-v2.md`](plans/store-v2.md).
 
 **porter-fuse should import `store/`, not reimplement it.** It is a Go package
 in this module with no server dependencies — it holds the chunker, the ids, the

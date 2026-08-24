@@ -70,7 +70,7 @@ func TestDeleteLibraryCascadesToVirtualLibraries(t *testing.T) {
 
 // A library listed as its own origin is corrupt data, not a reason to recurse
 // until the stack runs out.
-func TestDeleteLibrariesurvivesSelfReferencingVirtualLibrary(t *testing.T) {
+func TestDeleteLibrarySurvivesSelfReferencingVirtualLibrary(t *testing.T) {
 	sqliteTestDB(t)
 
 	seedLibrary(t, originLibrary, "owner@example.com", "1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa")

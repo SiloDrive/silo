@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS LibraryHead (library_id CHAR(37) PRIMARY KEY, branch_
 -- delta is computed between, and because a commit that publishes an identical
 -- root changes no total.
 --
--- Separate from Librariesize, which the dying scheduler owns, because the two
+-- Separate from LibrarySize, which the dying scheduler owns, because the two
 -- cover disjoint sets of libraries -- 40-hex heads there, 64-hex heads here --
 -- and sharing a row would have made the deletion a rewrite instead of a
 -- subtraction.

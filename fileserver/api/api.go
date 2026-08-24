@@ -281,11 +281,11 @@ type chunkerInfo struct {
 	Normalization int    `json:"normalization"`
 }
 
-// librarieselect is shared by the owned and shared queries so the two cannot drift
+// librarySelect is shared by the owned and shared queries so the two cannot drift
 // into scanning different columns than they select. The join is LEFT because a
 // library with no branch row is broken but should still be listable — a client
 // that can see it can delete it.
-func librarieselect(alias string) string {
+func librarySelect(alias string) string {
 	return "SELECT " + alias + ".library_id, i.name, i.update_time, i.is_encrypted, b.commit_id, " +
 		"b.root_id, u.size, u.file_count, u.root_id, " +
 		"f.chunker, f.chunk_min, f.chunk_target, f.chunk_max, f.chunk_norm "
@@ -377,7 +377,7 @@ func ListLibrariesHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	rows, err := readDB.QueryContext(ctx,
-		librarieselect("o")+
+		librarySelect("o")+
 			"FROM LibraryOwner o LEFT JOIN LibraryInfo i ON o.library_id = i.library_id "+
 			"LEFT JOIN Branch b ON b.library_id = o.library_id AND b.name = 'master' "+
 			usageJoin+"o.library_id "+
@@ -397,7 +397,7 @@ func ListLibrariesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sharedRows, err := readDB.QueryContext(ctx,
-		librarieselect("s")+
+		librarySelect("s")+
 			"FROM SharedLibrary s LEFT JOIN LibraryInfo i ON s.library_id = i.library_id "+
 			"LEFT JOIN Branch b ON b.library_id = s.library_id AND b.name = 'master' "+
 			usageJoin+"s.library_id "+

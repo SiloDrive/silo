@@ -61,7 +61,7 @@ func TestEntryLibraryDoesNotReport404ForAMissingObject(t *testing.T) {
 
 // The 404 still has to work, or a library deleted from the server never
 // propagates and clients keep a copy of something that is genuinely gone.
-func TestEntryLibrariestillReports404ForAnAbsentLibrary(t *testing.T) {
+func TestEntryLibraryStillReports404ForAnAbsentLibrary(t *testing.T) {
 	damagedLibraryTestDB(t)
 
 	// Owned, so the permission check passes and the lookup is what answers.

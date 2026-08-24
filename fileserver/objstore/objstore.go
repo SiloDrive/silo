@@ -97,10 +97,13 @@ type writeOpts struct {
 	// verify, when non-nil, is fed every byte written and its lowercase hex
 	// digest must equal the pack id before the pack is published.
 	//
-	// A hash rather than a bool because the hash function is changing:
-	// today's block ids are SHA-1 of exactly the bytes stored, and store-v2's
-	// chunk ids are SHA-256 of the frame. The backend does not need to know
-	// which, only that what it was handed must agree with the name.
+	// A hash rather than a bool because the store holds both widths. Nothing
+	// on the wire mints a SHA-1 any more — the routes pin their id variable to
+	// sixty-four hex characters and ParseID refuses anything else, so a
+	// 40-character id cannot arrive over HTTP — but the backend still reads
+	// them, because the id's width is how an object on disk says which it is.
+	// The backend does not need to know which, only that what it was handed
+	// must agree with the name.
 	verify hash.Hash
 }
 

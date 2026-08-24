@@ -24,9 +24,9 @@ import (
 
 // Library status
 const (
-	LibrariestatusNormal = iota
-	LibrariestatusReadOnly
-	NLibrariestatus
+	LibraryStatusNormal = iota
+	LibraryStatusReadOnly
+	NLibraryStatus
 )
 
 // Library contains information about a library.
@@ -167,13 +167,13 @@ func Get(id string) *Library {
 	return library
 }
 
-// librarieselect is the one row shape both loaders read.
+// librarySelect is the one row shape both loaders read.
 //
 // It lives in a constant because the column list and the Scan that consumes it
 // have to agree, and two copies of a pair that has to agree is one copy too
 // many — the format columns were added to one of them first, and the second
 // loader silently returned libraries with a zeroed chunker until it wasn't.
-const librarieselect = `SELECT r.library_id, b.commit_id, b.root_id, v.origin_library, v.path, v.base_commit, ` +
+const librarySelect = `SELECT r.library_id, b.commit_id, b.root_id, v.origin_library, v.path, v.base_commit, ` +
 	`r.chunker, r.chunk_min, r.chunk_target, r.chunk_max, r.chunk_norm, r.e2ee, ` +
 	`i.name, i.update_time, i.last_modifier FROM ` +
 	`Library r LEFT JOIN Branch b ON r.library_id = b.library_id ` +
@@ -181,7 +181,7 @@ const librarieselect = `SELECT r.library_id, b.commit_id, b.root_id, v.origin_li
 	`LEFT JOIN LibraryInfo i ON r.library_id = i.library_id ` +
 	`WHERE r.library_id = ? AND b.name = 'master'`
 
-// scanLibraryRow reads one librarieselect row, including the virtual-library columns and
+// scanLibraryRow reads one librarySelect row, including the virtual-library columns and
 // the store id they decide.
 func scanLibraryRow(rows *sql.Rows, id string, library *Library) error {
 	var originLibraryID, path, baseCommitID sql.NullString
@@ -224,9 +224,9 @@ func scanLibraryRow(rows *sql.Rows, id string, library *Library) error {
 func GetWithReason(id string) (*Library, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	stmt, err := readDB.PrepareContext(ctx, librarieselect)
+	stmt, err := readDB.PrepareContext(ctx, librarySelect)
 	if err != nil {
-		return nil, fault(id, ErrLibraryUnavailable, "failed to prepare sql %s: %v", librarieselect, err)
+		return nil, fault(id, ErrLibraryUnavailable, "failed to prepare sql %s: %v", librarySelect, err)
 	}
 	defer func() { _ = stmt.Close() }()
 
@@ -394,7 +394,7 @@ func GetEx(id string) *Library {
 	library := new(Library)
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	stmt, err := readDB.PrepareContext(ctx, librarieselect)
+	stmt, err := readDB.PrepareContext(ctx, librarySelect)
 	if err != nil {
 		library.IsCorrupted = true
 		return library
@@ -525,8 +525,8 @@ func GetAccountForToken(token string) (account.ID, error) {
 	return id, nil
 }
 
-// GetLibrariestatus return library status by library id.
-func GetLibrariestatus(libraryID string) (int, error) {
+// GetLibraryStatus return library status by library id.
+func GetLibraryStatus(libraryID string) (int, error) {
 	var status = -1
 
 	// First, check origin library's status.

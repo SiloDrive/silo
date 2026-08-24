@@ -198,7 +198,7 @@ enforced on the upload path today, and there's no API to set a user's cap.
 - `UserQuota(user, quota)` table holds the cap in bytes. No row → use
   `option.DefaultQuota` (settable via `seafile.conf`, `fileserver/option/`).
 - `-2` (`InfiniteQuota`, `quota.go:14`) means unlimited.
-- `getUserUsage` (`quota.go:83-105`) sums `Librariesize.size` across every library
+- `getUserUsage` (`quota.go:83-105`) sums `LibrarySize.size` across every library
   the user owns via a join on `LibraryOwner`, **excluding virtual libraries**
   (`AND v.library_id IS NULL`) so subdirectory-shares don't double-count.
 - `checkQuota(libraryID, delta)` (`quota.go:17-62`) is called with the
@@ -206,7 +206,7 @@ enforced on the upload path today, and there's no API to set a user's cap.
   origin library and charges the origin's owner — so uploading to a shared
   subdirectory counts against whoever created the parent library, not the
   uploader.
-- `Librariesize` is maintained asynchronously by `size_sched.go` → the
+- `LibrarySize` is maintained asynchronously by `size_sched.go` → the
   `updateSizePool` worker, which recomputes after each commit. Quota
   decisions are therefore eventually consistent; a fast series of uploads
   can momentarily overshoot.

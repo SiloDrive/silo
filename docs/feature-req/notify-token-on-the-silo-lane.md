@@ -45,7 +45,7 @@ credentials land unless this exists.
 
 ## What it is
 
-`fileserver/api/notify.go`, new. It is `CreateLibrariesyncTokenHandler` with
+`fileserver/api/notify.go`, new. It is `CreateLibrarySyncTokenHandler` with
 `GenNotifJWTToken` in place of `GenerateLibraryToken`, and an `EnableNotification`
 check in front:
 

@@ -50,7 +50,7 @@ func CheckPerm(libraryID string, user account.ID) string {
 		return perm
 	}
 
-	perm = checkLibrariesharePerm(libraryID, user)
+	perm = checkLibrarySharePerm(libraryID, user)
 
 	return perm
 }
@@ -69,7 +69,7 @@ func checkVirtualLibraryPerm(libraryID, originLibraryID string, user account.ID,
 	if perm != "" {
 		return perm
 	}
-	perm = checkLibrariesharePerm(originLibraryID, user)
+	perm = checkLibrarySharePerm(originLibraryID, user)
 	return perm
 }
 
@@ -263,7 +263,7 @@ func checkInnerPubLibraryPerm(libraryID string) (string, error) {
 	return perm, nil
 }
 
-func checkLibrariesharePerm(libraryID string, user account.ID) string {
+func checkLibrarySharePerm(libraryID string, user account.ID) string {
 	owner, err := libmgr.GetLibraryOwner(libraryID)
 	if err != nil {
 		log.Errorf("Failed to get library owner: %v", err)

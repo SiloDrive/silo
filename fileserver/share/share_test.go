@@ -172,7 +172,7 @@ func TestCheckPermIndividualShareGrantsTheRecordedPermission(t *testing.T) {
 	}
 }
 
-// A surprising enough rule to pin: checkLibrariesharePerm returns as soon as an
+// A surprising enough rule to pin: checkLibrarySharePerm returns as soon as an
 // individual share answers, so a wider group grant on the same library never
 // even gets asked about. A user shared "r" individually reads "r", even if
 // a group they are also in was shared "rw".
