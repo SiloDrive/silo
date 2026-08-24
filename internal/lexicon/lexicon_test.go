@@ -15,7 +15,8 @@ import (
 // had when it broke is history, and rewriting it would make it a report of a
 // bug that was never filed.
 var historical = map[string]string{
-	"docs/README.md": "states the rule, which means naming the word it retires",
+	"docs/README.md":             "states the rule, which means naming the word it retires",
+	"docs/upgrading-to-0.5.0.md": "tells a client author what to grep for, which means writing it out",
 }
 
 func TestNoGoSourceSaysRepo(t *testing.T) {

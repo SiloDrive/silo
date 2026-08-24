@@ -113,11 +113,11 @@ verified every object that library's head references.
 
 ## Upgrading from a two-database install
 
-Every release up to and including 0.4.6 kept two SQLite files, `ccnet.db`
+Every release up to and including 0.4.4 kept two SQLite files, `ccnet.db`
 (users, groups) and `seafile.db` (libraries, shares, tokens). The merge into one
-`silo.db` landed after 0.4.6 was tagged, so a development build can report
-0.4.6 and still want the single file — go by what is in the data directory
-rather than by the version string.
+`silo.db` landed in 0.5.0. Note that 0.4.5 and 0.4.6 were bumped in source but
+never tagged, so a build can report either and be on either side of the merge —
+go by what is in the data directory rather than by the version string.
 
 A server started on a data directory that still has the old pair refuses to
 start rather than creating an empty `silo.db` beside them, and prints the

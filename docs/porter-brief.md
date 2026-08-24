@@ -77,7 +77,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.6","features":["libraries","entries","entries-copy","conditional-writes","ranged-reads","changes","library-rename","blocks","pagination","batch","usage","notifications"]}
+{"version":"0.5.0","features":["libraries","entries","entries-copy","conditional-writes","ranged-reads","changes","library-rename","blocks","pagination","batch","usage","notifications"]}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an
@@ -99,8 +99,22 @@ stopped redirecting, `PUT` started accepting file content — **0.4.1** added
 conditional writes, **0.4.3** stopped reporting a damaged library as a
 deleted one, **0.4.4** added copy, library rename by `PATCH`, block-by-block
 upload, and this feature list itself, and **0.4.5** added pagination and
-batching. **0.4.6** changes nothing here — it is a server-bootstrap and client
-release — so a client written against 0.4.5 needs no attention. A client built against this document talking to an older server
+batching. **0.4.6** changed nothing here — a server-bootstrap and client
+release — and was never tagged.
+
+**0.5.0 breaks the wire, and is the first release that does.** Every route,
+three JSON names and one notification frame type changed spelling. There is no
+shim and no alias: the old paths answer 404. What moved, and what to grep your
+own code for, is [`upgrading-to-0.5.0.md`](upgrading-to-0.5.0.md) — kept
+separate because it is the one document here that has to write out the names
+this release retired.
+
+Check `features` for `libraries` before the first authenticated request. A
+server without it predates the change, and the 404 that follows on the library
+listing otherwise reaches a person as an account with nothing in it rather than
+as a version mismatch.
+
+A client built against this document talking to an older server
 will fail in confusing ways: against 0.3.x the reads and writes break outright;
 against 0.4.0 the `If-Match` headers are silently ignored, which is worse,
 because losing an edit looks like success; and before 0.4.3 a server that has

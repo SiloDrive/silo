@@ -291,9 +291,65 @@ CREATE INDEX IF NOT EXISTS credential_account_idx ON Credential (account_id);
 CREATE INDEX IF NOT EXISTS credential_expires_idx ON Credential (expires_at);
 `
 
-// CreateSiloTables creates all tables if they don't exist.
+// SchemaVersion identifies the shape of the tables in siloSchema, stored in
+// the database's own PRAGMA user_version. CreateSiloTables refuses to run
+// against a database already stamped with a different version, rather than
+// letting a rename or a dropped column fail wherever the mismatch happens to
+// be hit first — which today is a raw SQLite error deep inside whichever
+// CREATE statement is the first to mention a column the old shape lacks.
+//
+// Bump it whenever a change to siloSchema is not purely additive: a rename, a
+// drop, a type change — anything CREATE TABLE/INDEX IF NOT EXISTS cannot
+// apply to a table that already exists in the old shape. A change that only
+// adds a new table or a new index needs no bump; CREATE TABLE IF NOT EXISTS
+// already applies that safely to an older database.
+const SchemaVersion = 1
+
+// CreateSiloTables creates all tables if they don't exist, after checking
+// the database's schema version against SchemaVersion.
+//
+// A database already stamped with a different version is refused outright:
+// this package has no migration path, and running siloSchema against a
+// database in an incompatible shape produces a confusing failure on whichever
+// statement first names the mismatch instead of a clear one up front.
+//
+// A database with no stamp yet — freshly created, or from before this check
+// existed — is let through. If its actual shape disagrees with siloSchema,
+// execSchema below still fails on the mismatched statement, exactly as it
+// always has; only once the schema has been applied without error is
+// user_version set, so a database is only ever stamped as a version it has
+// actually been verified against.
 func CreateSiloTables(db *sql.DB) error {
-	return execSchema(db, siloSchema)
+	stored, err := schemaVersion(db)
+	if err != nil {
+		return fmt.Errorf("failed to read schema version: %w", err)
+	}
+	if stored != 0 && stored != SchemaVersion {
+		return fmt.Errorf("database schema version %d does not match what this build expects (schema version %d); "+
+			"refusing to start rather than run a mismatched schema against it. "+
+			"If this database is disposable, delete it and let Silo recreate it; "+
+			"otherwise run the binary that wrote version %d, or migrate the database by hand",
+			stored, SchemaVersion, stored)
+	}
+
+	if err := execSchema(db, siloSchema); err != nil {
+		return err
+	}
+
+	if stored != SchemaVersion {
+		if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
+			return fmt.Errorf("failed to record schema version: %w", err)
+		}
+	}
+	return nil
+}
+
+func schemaVersion(db *sql.DB) (int, error) {
+	var v int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+		return 0, err
+	}
+	return v, nil
 }
 
 // stripComments removes -- comments before the schema is split on semicolons.

@@ -19,7 +19,7 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.4.6"
+var Version = "0.5.0"
 
 // normalizeVersion drops the leading "v" a git tag carries, so the version this
 // binary reports does not depend on how it was built.

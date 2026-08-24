@@ -34,6 +34,10 @@ Two consequences worth knowing before you name something:
   `Seafile-Repo-Token` and an `/api2/repos` lane, and rewriting those would
   document a header that never existed.
 
+The migration note for the rename is
+[`upgrading-to-0.5.0.md`](upgrading-to-0.5.0.md) — the only other document here
+allowed to write the old word out, because a client author has to grep for it.
+
 ## Start here
 
 | if you are | read |
