@@ -279,15 +279,12 @@ still uses.
   object-store copy has to follow. It said *both* SQLite files when there were
   two of them; there is one now, `silo.db`.
 
-## Protocol / Client Compat Gaps
+## Protocol / Client Compat Gaps — retired
 
-Things SeaDrive or Seafile Desktop call that Silo currently stubs or 404s.
-Track them here as they're discovered:
-
-- `/api2/events/` — activity feed (returns empty list today)
-- `/api2/starred-files/`
-- `/api2/repos/{id}/commits/` — richer commit metadata than `/history/`
-- Avatar endpoints (`/api2/avatars/…`) — cosmetic, clients tolerate 404
+This section used to track what SeaDrive or Seafile Desktop called that Silo
+stubbed or 404'd on the `/api2/` lane. That lane was deleted outright in
+`5d4baa0`; there is no longer a compat surface to have gaps in. For where the
+Silo lane itself is thin, see [`protocol-gaps.md`](protocol-gaps.md) instead.
 
 ## Credentials
 

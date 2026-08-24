@@ -19,8 +19,11 @@ Downloading a file through `/api/silo/v1` used to take two requests:
 The token is a UUID in a `sync.Map` (`fileserver/tokenstore`), created with
 `oneTime=true` at `api_handlers.go`, and redeemed by `QueryToken` with a
 `LoadAndDelete`. Uploads mirrored it: `POST /api/silo/v1/access-tokens` then
-`POST /upload-api/{token}`. Both remain exactly as they are for the Seafile
-lane, which is the lane that needs them.
+`POST /upload-api/{token}`. At the time this was written both stayed exactly
+as they were for the Seafile lane, which was the lane that needed them; that
+lane — `/upload-api/`, `/files/{token}/...` and the rest — was deleted
+outright in `5d4baa0`, after the "Do not touch" note below was written and
+before it was corrected.
 
 ## Why it exists — and it is a good design, for something else
 
@@ -138,10 +141,19 @@ actual mistake to avoid repeating: not the capability URL itself, which is a
 sound tool, but making every programmatic client walk through one to reach its
 own bytes.
 
-## Do not touch
+## Do not touch — superseded
 
-The Seafile lane. `/files/`, `/upload-api/`, `/update-api/`, `/blks/`, `/zip/`
-and the token store stay exactly as they are: SeaDrive and Seafile Desktop use
-them, they are frozen for compatibility, and Silo's reason for existing is that
-unmodified clients keep working. This note is about which lane the *new* API
-should live in, not about deleting the old one.
+**This section no longer applies.** It said not to touch the Seafile lane —
+`/files/`, `/upload-api/`, `/update-api/`, `/blks/`, `/zip/` and the token
+store — because SeaDrive and Seafile Desktop used it and it was frozen for
+compatibility. That compatibility promise was dropped on purpose and the whole
+lane was deleted in `5d4baa0`; every one of those paths now answers 404. See
+[`docs/target.md`](target.md) for the decision and
+[`docs/protocol.md`](protocol.md) for what the server serves today.
+
+Original text, kept for the record: *"The Seafile lane. `/files/`,
+`/upload-api/`, `/update-api/`, `/blks/`, `/zip/` and the token store stay
+exactly as they are: SeaDrive and Seafile Desktop use them, they are frozen
+for compatibility, and Silo's reason for existing is that unmodified clients
+keep working. This note is about which lane the new API should live in, not
+about deleting the old one."*

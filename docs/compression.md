@@ -1,7 +1,19 @@
 # Compression
 
-What Silo compresses today, why swapping the algorithm is cheaper than it
-looks, and where the actual win is. Nothing here is committed.
+> **Stale as of store-v2.** Everything below reasons about `fsmgr` (zlib on
+> `Seafile`/`SeafDir` JSON objects) and `blockmgr` (raw blocks) — both deleted
+> in `5d4baa0` along with the rest of the pre-store-v2 object format. Store-v2
+> compresses client-side, before encryption (ciphertext doesn't compress),
+> attempt-and-store-raw per chunk — a different point in the pipeline than
+> anything argued for here. See
+> [`docs/plans/store-v2.md`](plans/store-v2.md) (search "Compression") for
+> what's current. Kept because the reasoning about identity vs. encoding, and
+> the measured cost of getting it wrong, is what store-v2's answer was chosen
+> against.
+
+What Silo compressed under the pre-store-v2 format, why swapping the algorithm
+was cheaper than it looked, and where the actual win was. Nothing here was
+committed against the current store.
 
 ## What is compressed today
 

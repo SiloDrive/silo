@@ -72,8 +72,10 @@ directly out of content-addressing being *correct*:
 
 **Therefore something must maintain a synthetic, persistent identifier layer.**
 The open question is which side of the wire it lives on — see "Identifier
-design" below. It is *not* Silo: SeaDrive proves it can be done entirely in the
-client, which is why unmodified Silo works with SeaDrive today.
+design" below. It is *not* Silo: SeaDrive proved it can be done entirely in the
+client, back when the Seafile sync lane it depended on still existed (removed
+`5d4baa0`) — the identity design below still learns from that, even though
+SeaDrive itself can no longer reach a current Silo server.
 
 ### Where content-addressing pays off instead
 
@@ -179,7 +181,8 @@ Two details worth stealing:
   per-subtree rather than per-file. **Do not steal this one** — see below.
 
 **This lives entirely in the client.** Silo never sees an item identifier. That
-is why unmodified Silo already works with SeaDrive today.
+is why unmodified Silo used to work with SeaDrive without either side doing
+extra identity work — while the Seafile sync lane it rode on still existed.
 
 ### Our design
 
@@ -222,8 +225,10 @@ makes dropping and rebuilding `IdMap` dangerous.
 ### The real fork: where reconciliation gets its input
 
 Whichever side holds the map, it has to be maintained when *someone else*
-commits — SeaDrive and Seafile Desktop still write to Silo, and they commit whole
-trees. Given a new commit, we must diff against its parent and classify:
+commits — another client (a porter-fuse mount, the CLI, a future sync agent;
+SeaDrive and Seafile Desktop at the time this was written, before the Seafile
+lane was removed) writes to Silo, and commits whole trees. Given a new commit,
+we must diff against its parent and classify:
 
 - path in both, same content hash → unchanged
 - path only in new → create
@@ -687,8 +692,9 @@ simply never read back.
   Porter needs. Paid membership is still required for distribution, but nothing
   in M1–M5 is blocked on it.
 - **Rename reconciliation** for commits authored by other clients. Benign failure
-  mode, but needs tests with SeaDrive writing concurrently. Mitigated if Silo
-  emits `old_path` rather than leaving the client to infer renames from hashes.
+  mode, but needs tests with another client writing concurrently. Mitigated if
+  Silo emits `old_path` rather than leaving the client to infer renames from
+  hashes.
 - **`IdMap` is now local state we own**, which means it can drift from the
   server. Needs a rebuild path — dropping the tables and re-enumerating must be
   safe. Cheaper than it looks now that pins live in `contentPolicy` rather than

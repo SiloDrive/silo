@@ -1,9 +1,14 @@
 # Protocol Compatibility
 
 This document is the server's **contract with the clients**. It lists the
-HTTP endpoints the Go fileserver implements, groups them by which client uses
-them, and notes which Seafile-protocol endpoints are deliberately stubbed or
-left unimplemented.
+HTTP endpoints the Go fileserver implements.
+
+**The Seafile/SeaDrive sync lane — `/repo/*`, `/api2/*`, `/api/v2.1/*`,
+`/files/{token}/*`, `/seafhttp/*` — was deleted in `5d4baa0` (0.5.0).** Every
+one of those paths answers 404 now; nothing here still stubs or shims them.
+See [`docs/target.md`](target.md) for why, and
+[`porter-brief.md`](porter-brief.md#the-seafile-lanes-are-gone) for the
+one-paragraph version. This document now covers the one lane that remains.
 
 It says which endpoints exist. For what the *status codes* mean — and which are
 already spoken for — see [`responses.md`](responses.md), which is the file to
@@ -20,14 +25,7 @@ decide whether to shim it.
 |---|---|
 | writing a new client | the Silo lane below, then [`porter-brief.md`](porter-brief.md) for the wire contract with captured responses |
 | choosing a status code for a new handler | [`responses.md`](responses.md). Always, and before you write the handler |
-| debugging SeaDrive or Seafile Desktop | the `/api2/` and `/repo/` sections below — every Seafile-family client speaks both |
 | wondering why something is missing | [`protocol-gaps.md`](protocol-gaps.md) |
-
-The organising axis here is the **lane**, not the client, because clients do not
-partition. SeaDrive speaks `/api2/` for its session and `/repo/` for every byte
-it transfers; so does the desktop client; so would any other Seafile-family
-client. Splitting these documents per client would copy the sync lane into each
-one and leave the next protocol change needing three identical edits.
 
 Audience-shaped documents are the *briefs* — `porter-brief.md` is one, written
 for someone building a File Provider extension. A brief names a subset and the
@@ -35,30 +33,29 @@ traps in it, and links here rather than restating.
 
 ## Tested clients
 
-- **SeaDrive for macOS** — tested against 3.0.21 (via Homebrew cask)
 - **silo** — our own Go TUI (`cmd/silo`)
 - **Porter** — our macOS File Provider client. Speaks `/api/silo/v1` only:
-  `entries`, `changes`, `notify-token` and the notification socket. Since
-  `notify-token` landed in 0.4.4 it never touches the Seafile lane at all.
+  `entries`, `changes`, `notify-token` and the notification socket.
 - **porter-fuse** — our FUSE client, same lane.
 
-Other Seafile clients (desktop, CLI, mobile) should work in principle since
-they speak the same underlying sync protocol, but have not been verified.
+## Authentication
 
-## Authentication schemes
-
-Three coexisting auth mechanisms, each for a different client surface:
+One scheme: JWT Bearer.
 
 | Scheme | Header | Used by | Validated against |
 |---|---|---|---|
 | JWT Bearer | `Authorization: Bearer <jwt>` | silo (TUI), Porter, porter-fuse, `/api/silo/v1/*` | `authmgr.ValidateSessionToken` (24h expiry) |
-| API Token | `Authorization: Token <40-hex>` | SeaDrive, `/api2/*` | `apitokenstore.Lookup` (persistent in `ApiToken` SQL table) |
-| Library Token | `Seafile-Repo-Token: <40-hex>` | All sync clients, `/repo/*`, `/accessible-libraries` | `libmgr.GetEmailByToken` (persistent in `LibraryUserToken` SQL table) |
 
-The middleware for each lives in `fileserver/middleware/`:
-- `RequireAuth` (Bearer JWT)
-- `RequireAPIToken` (Token)
-- (library-token validation is inline in `sync_api.go:validateToken`)
+The middleware is `RequireAuth`, in `fileserver/middleware/`.
+
+Two more credential types are minted and stored but currently validate
+nothing live: `RequireAPIToken` (`Authorization: Token`) is orphaned — no
+route mounts it — since the routes that used it were deleted with the sync
+lanes; `libmgr.GetAccountByToken`/`GetAccountForToken` (the
+`LibraryUserToken`/"sync token" table) have no caller outside `libmgr` itself.
+Both credential types are still created and revoked through `silo token`;
+neither currently gates access to anything. See
+`fileserver/middleware/apitoken.go` and [`docs/auth.md`](auth.md).
 
 ## Endpoints
 
@@ -79,7 +76,6 @@ credential: one to learn what it is talking to, one to get a token.
 | POST | `/api/silo/v1/libraries` | Create a new library |
 | DELETE | `/api/silo/v1/libraries/{libraryid}` | Delete a library |
 | PATCH | `/api/silo/v1/libraries/{libraryid}` | `{"name":"New name"}` — rename a library. `PATCH` because the body names only what changes |
-| POST | `/api/silo/v1/libraries/{libraryid}/sync-token` | Generate a library sync token (for subsequent sync-protocol calls) |
 | POST | `/api/silo/v1/libraries/{libraryid}/batch` | `{"ops":[…]}` — many operations, one commit. See the batch surface below |
 | POST | `/api/silo/v1/libraries/{libraryid}/notify-token` | Mint a notification JWT for `WS /notification` (72h; `404` if notifications are disabled) |
 
@@ -317,10 +313,11 @@ capability URL is overhead — for a FUSE client, two round trips per read. See
 [`capability-urls.md`](capability-urls.md), which is the decision; this removes
 the last route that still contradicted it.
 
-The mechanism is untouched. `/files/{token}/{name}` still serves the Seafile
-lane, and `POST /api/silo/v1/access-tokens` with `{"library_id":…, "obj_id":<file
-id>, "op":"download"}` still mints the same token the redirect used, if a
-browser-usable URL is ever wanted here.
+`POST /api/silo/v1/access-tokens` with `{"library_id":…, "obj_id":<file
+id>, "op":"download"}` still mints a token of the same shape the old redirect
+used, if a browser-usable URL is ever wanted here — but nothing currently
+serves it at a `/files/{token}/...`-style path; that route went with the sync
+lanes. See [`capability-urls.md`](capability-urls.md).
 
 ### Change notifications — `WS /notification`
 
@@ -353,89 +350,6 @@ than closing the socket. `unsubscribe` takes the same frame shape as
 `subscribe`. The server pings every 30s and drops a client that has not ponged
 within 90s; most WebSocket libraries answer pings for you.
 
-The older two-hop route still exists and is what the Seafile clients use:
-`POST /api/silo/v1/libraries/{id}/sync-token` for a library token, then
-`GET /repo/{id}/jwt-token` presenting it. That second call rejects a Bearer JWT
-with `403 Invalid token`, because `validateToken` resolves against the
-`LibraryUserToken` table and a Silo-lane client has no row in it — which looks
-exactly like a missing endpoint. `notify-token` exists so no new client has to
-learn that.
-
-### Seahub compatibility API — `/api2/*`
-
-Seahub/DRF-shaped endpoints for SeaDrive. Request/response shapes match
-what the original Seafile Seahub returns. Form-encoded bodies where the
-original used form-encoded; JSON where the original used JSON.
-
-Protected by `RequireAPIToken` (`Authorization: Token <40-hex>`), except
-the login endpoint itself.
-
-| Method | Path | Auth? | Notes |
-|---|---|---|---|
-| POST | `/api2/auth-token/` | No | Form-encoded `username` + `password` → `{"token": "<40-hex>"}` |
-| GET | `/api2/auth/ping/` | Yes | Returns `"pong"`. SeaDrive uses as a token-validity probe |
-| GET | `/api2/account/info/` | Yes | Returns `{email, name, usage, total, institution}` |
-| GET | `/api2/server-info/` | Yes | Returns `{version, features}` |
-| GET | `/api2/repos/` | Yes | List accessible libraries (owned + shared + group) in Seahub format |
-| POST | `/api2/repos/` | Yes | Create a new library. SeaDrive calls this when you `mkdir` in "My Libraries" |
-| GET | `/api2/repos/{id}/download-info/` | Yes | Returns token + metadata + file server URL so SeaDrive can begin sync |
-| POST | `/api2/repos/{id}/?op=rename` | Yes | Form-encoded `library_name` → rename a library. Same handler as the `/api/v2.1/` spelling below |
-| POST | `/api2/repos/{id}/repo-tokens/` | Yes | Alternate path to generate a library sync token (unused by current SeaDrive; kept for other clients) |
-
-Handler implementations: `fileserver/api/seadrive.go`.
-
-### Seahub v2.1 compatibility — `/api/v2.1/*`
-
-SeaDrive reaches for `/api/v2.1/` for two operations rather than the `/api2/`
-spellings of them. Same `Authorization: Token` auth, same handlers — the routes
-exist so a client that picked the newer path finds it there.
-
-| Method | Path | Auth? | Notes |
-|---|---|---|---|
-| POST | `/api/v2.1/repos/{id}/?op=rename` | Yes | Rename a library |
-| DELETE | `/api/v2.1/repos/{id}/` | Yes | Delete a library |
-
-Nothing else under `/api/v2.1/` routes; the rest is a 404, logged as `WARN`.
-
-### Sync protocol — `/repo/*`, `/files/*`, `/seafhttp/*`
-
-The file-level protocol spoken by all Seafile-family clients (SeaDrive,
-desktop client, CLI). Authentication is via `Seafile-Repo-Token` header,
-validated against the `LibraryUserToken` SQL table per request (with a
-2-hour in-memory cache).
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/protocol-version` | Returns `{"version": 2}` |
-| GET | `/accessible-libraries?library_id={id}` | List accessible libraries in sync-protocol format |
-| GET | `/repo/{id}/permission-check` | Verify user can read or write the library |
-| GET/PUT | `/repo/{id}/commit/HEAD` | Read or advance the HEAD commit pointer |
-| GET/PUT | `/repo/{id}/commit/{commit_id}` | Read or upload a commit object |
-| GET/PUT | `/repo/{id}/block/{block_id}` | Read or upload a content block |
-| GET | `/repo/{id}/block-map/{file_id}` | Return block size map for a file (SeaDrive on-demand reads) |
-| GET | `/repo/{id}/fs-id-list` | Enumerate FS object IDs for a commit range |
-| POST | `/repo/{id}/pack-fs` | Bulk download FS objects |
-| POST | `/repo/{id}/check-fs` | Check which FS objects exist server-side |
-| POST | `/repo/{id}/recv-fs` | Upload FS objects |
-| POST | `/repo/{id}/check-blocks` | Check which blocks exist server-side |
-| GET | `/repo/{id}/quota-check?delta=N` | Will this write fit in quota? |
-| GET | `/repo/{id}/jwt-token` | Get a JWT for subscribing to `/notification`. Wants a **library token**, not a Bearer JWT — a Silo-lane client calls [`notify-token`](#change-notifications--ws-notification) instead |
-| POST | `/repo/head-commits-multi` | Get HEAD commits for multiple libraries in one round-trip. Silo requires a sync token here and answers only for libraries that token's owner can read; upstream leaves it unauthenticated. A client that sends no token gets 400 and should fall back to per-library `GET /commit/HEAD`. |
-| GET | `/files/{token}/{filename}` | Download a file via a short-lived access token |
-| GET | `/libraries/{libraryid}/files/{filepath}` | Download a file by path (uses library token) |
-
-Uploads and updates also accept tokenized URLs:
-`/upload-api/{token}`, `/upload-blks-api/{token}`, `/upload-raw-blks-api/{token}`,
-`/update-api/{token}`, `/upload-aj/{token}`, `/update-aj/{token}`.
-
-### Path prefix handling
-
-- **`/seafhttp/` prefix is stripped** by `middleware.StripSeafhttpPrefix`
-  before routing. In nginx-reverse-proxied Seafile deployments, the sync
-  server sits behind a `/seafhttp/` location block, so SeaDrive and the
-  desktop client send requests with that prefix. Our standalone Go server
-  strips the prefix so the same routes match without duplication.
-
 ### Debug middleware
 
 The `-debug` flag wraps the whole server in `middleware.DebugLogger`,
@@ -444,34 +358,15 @@ for every request and flags 404s as `WARN`. Off by default.
 
 ## Not implemented (intentionally)
 
-These endpoints are part of the Seafile ecosystem but return 404 here. They
-are either handled by separate daemons in a standard Seafile deployment or
-not applicable to our single-binary standalone model.
+Anything outside `/api/silo/v1/*` and `/notification` is a 404, including
+every path listed in older revisions of this document under the
+Seafile/SeaDrive sync lane — see the note at the top. That includes
+`/protocol-version` itself: `handleProtocolVersion` (`server.go:570`) still
+exists but nothing mounts it, so it's dead code rather than a live route.
 
-| Path | Normally provided by | Our behavior | Client impact |
-|---|---|---|---|
-| ~~/notification/ping~~ | Integrated into Silo (`fileserver/notif`) | Handled | — |
-| ~~/notification/events~~ | Integrated into Silo (`fileserver/notif`) | Handled | — |
-| Anything else under `/api2/` we haven't listed | Seahub | 404 | Logged as WARN so new SeaDrive releases are easy to catch |
-| Anything under `/api/v2.1/` beyond rename and delete | Seahub REST API v2.1 | 404 | Logged as WARN. The two that are implemented are [above](#seahub-v21-compatibility--apiv21) |
+## Divergence policy
 
-If a client starts hitting something in this list and breaks, the fix is
-usually to add a shim handler that reuses existing `fileserver/` code.
-See `fileserver/api/seadrive.go` for the pattern.
-
-## Upgrade / divergence policy
-
-We track the **protocol**, not the upstream Seafile codebase. When a new
-SeaDrive release ships:
-
-1. Install it against this server with `-debug` logging.
-2. Watch for 404 WARN lines — those are new endpoint probes.
-3. Look at what the real Seahub returns for that endpoint (either from
-   docs, source, or a packet capture against a real Seafile instance).
-4. Add a shim in `fileserver/api/seadrive.go` that reuses existing logic
-   (e.g., `share.CheckPerm`, `libmgr.*`).
-5. Update the tables in this document.
-
-The goal is that this document stays in sync with what the server actually
-serves, so a future maintainer can diff it against any new client release
-and know exactly what to build.
+We track our own **protocol**, not any upstream codebase. When
+`/api/silo/v1` gains an operation, it lands here in the same commit — see
+[`docs/plan.md`](plan.md) for the migration record and
+[`docs/target.md`](target.md) for what this server is aiming at now.

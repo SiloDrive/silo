@@ -1,21 +1,21 @@
 # Silo
 
-A single-binary Go file sync server, protocol-compatible with Seafile clients.
+A single-binary Go file sync server.
 
 Status: pre-1.0 and young, but no longer reckless with your data. Object writes are fsynced before they are published, and every uploaded object is verified against its content hash on the way in, so a crash or a bad client can no longer silently corrupt a library. That said, it has not yet seen wide real-world use — run it, but keep an independent backup of anything you care about.
 
 ## What is Silo?
 
-Silo is a Go rewrite of the Seafile server architecture. Where upstream Seafile ships a C daemon (`seaf-server`), a Python/Django web layer (Seahub), and a process manager to tie them together, Silo collapses all of that into a single Go binary that speaks HTTP directly and talks directly to its database.
+Silo started as a Go rewrite of the Seafile server architecture. Where upstream Seafile ships a C daemon (`seaf-server`), a Python/Django web layer (Seahub), and a process manager to tie them together, Silo collapses all of that into a single Go binary that speaks HTTP directly and talks directly to its database.
 
-It keeps full wire compatibility with existing Seafile clients: Seafile desktop, mobile, and SeaDrive all work against Silo without modification. The promise is the wire protocol — the database schema and the on-disk layout are Silo's own, and are free to change.
+Early releases kept full wire compatibility with existing Seafile clients — Seafile desktop, mobile, and SeaDrive worked against Silo without modification. That compatibility was dropped on purpose in favour of Silo's own protocol and object format (`/api/silo/v1/`, content-defined chunking, per-library E2EE); a Seafile-family client can no longer talk to a current Silo server at all. See [`docs/target.md`](docs/target.md) for why, and [`docs/porter-brief.md`](docs/porter-brief.md) for the wire contract that replaced it.
 
 Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.com/charmbracelet/bubbletea) for interactive file management without a browser.
 
 ## Architecture
 
 ```
-  Client (TUI / SeaDrive / Seafile Desktop)
+  Client (TUI / porter-fuse / File Provider / …)
               │
               │ HTTP :8082
               ▼
@@ -38,15 +38,13 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
 
 - Single-admin bootstrap via environment variables
 - JWT session tokens for the management API
-- Persistent API tokens for SeaDrive compatibility
 - Library create / list / delete
 - File operations: upload, download, mkdir, rename, move, delete
 - Directory listing via `/api/silo/v1/libraries/{id}/dir/`
-- Full Seafile sync protocol for desktop and SeaDrive clients
-- In-process notification server (WebSocket `/notification`) so SeaDrive / Seafile Desktop get push events on library updates instead of polling
+- Content-defined chunking, SHA-256 content addressing, per-library end-to-end encryption — see [`docs/plans/store-v2.md`](docs/plans/store-v2.md)
+- In-process notification server (WebSocket `/notification`) so a client gets push events on library updates instead of polling
 - Embedded SQLite backend (WAL mode, read/write connection split)
 - Auto-generated ephemeral JWT signing key if `SILO_JWT_SECRET` is unset
-- Seafile-compatible endpoints: `/api2/auth-token/`, `/api2/repos/`, `/api2/repos/{id}/repo-tokens/`, `/api2/repos/{id}/download-info/`, plus the full sync path
 
 ## Quick start
 
@@ -138,7 +136,7 @@ The credentials are optional. Started with an empty user table and no `SILO_ADMI
 [WARNING] This password is stored hashed and will not be shown again. Save it now.
 ```
 
-Save it — the password is stored hashed, so later runs cannot print it again. Setting `SILO_ADMIN_EMAIL` alone names the account and still generates the password; setting `SILO_ADMIN_PASSWORD` skips the whole thing. Once any user exists, this never fires again. No config file is required — Silo runs on compiled defaults plus environment variables. If you want to tweak low-level settings (quota defaults, cache limits, cluster options) you can pass a `seafile.conf` with `-C /path/to/seafile.conf`.
+Save it — the password is stored hashed, so later runs cannot print it again. Setting `SILO_ADMIN_EMAIL` alone names the account and still generates the password; setting `SILO_ADMIN_PASSWORD` skips the whole thing. Once any user exists, this never fires again. No config file is required — Silo runs on compiled defaults plus environment variables. If you want to tweak low-level settings (quota defaults, cache limits, cluster options) you can pass a `silo.conf` with `-C /path/to/silo.conf`.
 
 **Loopback is the default on purpose.** Silo speaks plaintext — TLS is the reverse proxy's job — and every credential it uses is a bearer token in a header. To reach it from other machines, see [Exposing the server](#exposing-the-server).
 
@@ -217,7 +215,7 @@ not reclaim unreferenced history inside a library that still exists.
 | `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
 | `SILO_VERIFY_FS_OBJECT_HASHES` | Check uploaded fs objects hash to their id (costs a decompress each; blocks and commits are always checked) | `true` |
 | `SILO_AUTH_CACHE_TTL` | How long token/permission lookups are cached (`0` disables) | `5m` |
-| `SILO_API_TOKEN_TTL` | How long a SeaDrive API token lasts. A value below one hour is refused rather than clamped — it would expire every existing token irrecoverably | `720h` (30 days) |
+| `SILO_API_TOKEN_TTL` | How long a persistent API token (`silo token`) lasts. A value below one hour is refused rather than clamped — it would expire every existing token irrecoverably | `720h` (30 days) |
 | `SILO_ENABLE_NOTIFICATIONS` | Serve the WebSocket notification endpoint. `false` turns it off, and `notify-token` then answers `404` | `true` |
 | `SILO_GROUP_TABLE_NAME` | Name of the groups table, for a database inherited from a deployment that renamed it | `Group` |
 | `SILO_LOGIN_RATE_LIMIT` | Throttle failed logins per address and per account | `true` |
@@ -231,7 +229,7 @@ not reclaim unreferenced history inside a library that still exists.
 | `SILO_EMAIL` | Account email (client/TUI) | — |
 | `SILO_PASSWORD` | Account password (client/TUI) | — |
 
-Env vars take precedence over `seafile.conf`, so the same binary can be pointed at different deployments without editing files. `seafile.conf` itself is optional — if you don't pass `-C`, Silo uses compiled defaults.
+Env vars take precedence over `silo.conf`, so the same binary can be pointed at different deployments without editing files. `silo.conf` itself is optional — if you don't pass `-C`, Silo uses compiled defaults.
 
 ### CLI flags
 
@@ -239,12 +237,12 @@ Env vars take precedence over `seafile.conf`, so the same binary can be pointed 
 |---|---|
 | `-d <dir>` | Data directory (default: `$SILO_DATA_DIR` or `~/.local/share/silo`) |
 | `-b <addr>` | Bind address, `serve` only (default: `$SILO_HOST` or `127.0.0.1`) |
-| `-C <file>` | Path to `seafile.conf` (optional; only needed to override compiled defaults) |
+| `-C <file>` | Path to `silo.conf` (optional; only needed to override compiled defaults) |
 | `-l <file>` | Log file path |
 | `-P <file>` | PID file path |
 | `-debug` | Log every HTTP request |
 
-Flags beat environment variables, which beat `seafile.conf`, which beats the
+Flags beat environment variables, which beat `silo.conf`, which beats the
 compiled defaults. So `-b` overrides `SILO_HOST` for one invocation without
 disturbing whatever the service normally runs with.
 
@@ -327,9 +325,8 @@ since from there Silo cannot tell whether anything is terminating TLS for it.
 
 ## Revoking access
 
-Sync tokens have no expiry — Seafile clients persist them and treat them as
-durable — so revoking one is the only way to cut a device off. A password
-change does not.
+Sync tokens have no expiry, so revoking one is the only way to cut a device
+off. A password change does not.
 
 ```sh
 silo token list bob@example.com      # sync tokens (per device) and API tokens
@@ -349,17 +346,21 @@ server to apply a revocation at once.
 
 ## Client compatibility
 
-Silo has been tested with:
+Silo speaks its own protocol (`/api/silo/v1/`) rather than Seafile's. Seafile
+and SeaDrive clients could talk to early Silo releases; that compatibility was
+dropped on purpose and a Seafile-family client gets a 404 on every route
+today — see [`docs/target.md`](docs/target.md).
+
+Tested clients:
 
 - **Silo TUI** (`cmd/silo`) — full CRUD and browse
-- **SeaDrive** 3.0.21 — sync and file operations via `/api2/` endpoints
-- **Seafile Desktop** — sync via the standard library token protocol
-
-The JWT management API (`/api/silo/v1/`) is new and Silo-specific; existing Seafile clients don't know about it.
+- **porter-fuse** and the macOS File Provider client (Porter) — `entries`,
+  `changes`, `notify-token` and the notification socket; see
+  [`docs/porter-brief.md`](docs/porter-brief.md)
 
 ## What's not implemented
 
-Silo is a lean rewrite focused on the sync path and a minimal management API. The following upstream Seafile features are **not** available:
+Silo is a lean rewrite focused on the sync path and a minimal management API. The following are **not** available:
 
 - No user management API — the first user is created at startup (from `SILO_ADMIN_EMAIL`/`SILO_ADMIN_PASSWORD`, or generated and logged), and any further users need a direct database insert
 - No library sharing API — nothing can *create* a share. The share tables are read
@@ -368,7 +369,7 @@ Silo is a lean rewrite focused on the sync path and a minimal management API. Th
   owned ones. Putting the row there means a direct database insert
 - No group management API
 - No `is_staff` / admin privilege check in the API layer — all authenticated users have equal permissions
-- No web UI — use the TUI or a Seafile client
+- No web UI — use the TUI
 - No trash / restore or history / revision endpoints
 - No encrypted libraries — Silo cannot create them, and Seafile's format will not
   be supported. See [`docs/encryption.md`](docs/encryption.md) for why, and for
@@ -401,6 +402,6 @@ reading one as a description is the mistake it exists to prevent.
 
 ## Origin and license
 
-Silo started as a fork of [haiwen/seafile-server](https://github.com/haiwen/seafile-server). It reuses the on-disk object format and the wire protocol, which is what keeps upstream clients working. The database schema started there too, but it is not part of the promise and has already diverged — a client cannot see the schema, so nothing about compatibility depends on it.
+Silo started as a fork of [haiwen/seafile-server](https://github.com/haiwen/seafile-server). Early releases reused the on-disk object format and the wire protocol to keep upstream clients working; both have since been replaced by Silo's own (see [`docs/target.md`](docs/target.md)), and nothing about compatibility with upstream depends on the database schema, which diverged early and was never part of the promise.
 
 Licensed under **AGPLv3**, inherited from the upstream project. See [`NOTICE`](NOTICE) for attribution and [`LICENSE.txt`](LICENSE.txt) for the full license text.

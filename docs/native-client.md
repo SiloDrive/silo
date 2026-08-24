@@ -1,10 +1,25 @@
 # A Native Silo Client
 
-Silo ships a CLI and a TUI, but neither of them syncs. They drive the
-management API (`/api/silo/v1/`) one file at a time, which is a different thing
-from what SeaDrive and Seafile Desktop do over the sync protocol.
+> **Partly stale as of 5d4baa0 / store-v2.** Two things below no longer hold.
+> The `/repo/*` sync-protocol table in "What the CLI does today" describes
+> routes deleted with the Seafile lane in `5d4baa0` — nothing to cross to
+> any more. And "Tier 2" describes the block surface as it worked under fixed
+> 8 MiB SHA-1 chunking (`fileop.go`, `blockmgr/blockmgr.go` — both deleted in
+> the same commit); store-v2 replaced it with content-defined SHA-256
+> chunking, so the mechanism `blocks/missing` uses today is not the one
+> described here. Kept because the *reasoning* — ask before you send, dedup
+> is a network problem not a storage one — is what tier 2 actually shipped on,
+> and still holds under the new chunker. See
+> [`docs/plans/store-v2.md`](plans/store-v2.md) for what's current and
+> [`porter-brief.md`](porter-brief.md) for the live wire contract.
 
-This document is about closing that gap, in three tiers that can be built
+Silo ships a CLI and a TUI, but neither of them syncs on its own — they drive
+the management API (`/api/silo/v1/`) one file at a time. Early revisions of
+this document compared that to what SeaDrive and Seafile Desktop did over the
+Seafile sync protocol; that protocol no longer exists (`5d4baa0`), so the
+comparison is now historical.
+
+This document is about closing the sync gap, in three tiers that can be built
 independently and in order. Nothing here is committed.
 
 ## What the CLI does today, and why it is not sync
@@ -150,5 +165,7 @@ the contained afternoon that is left, and it is worth more than it was: a
 recursive `put` over the block surface skips everything the server already
 holds, so re-running it over a mostly-unchanged tree is cheap rather than a
 full re-upload. Tier 3 should not start until someone actually wants a headless
-agent badly enough to maintain it — until then, Seafile Desktop is the answer
-for ongoing sync.
+agent badly enough to maintain it — Seafile Desktop is no longer a fallback
+for ongoing sync, since it can no longer reach a current Silo server at all;
+porter-fuse and Porter (the File Provider client) are the answer today, and
+neither offers headless, GUI-free sync to a NAS.

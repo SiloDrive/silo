@@ -99,6 +99,10 @@ has the upgrade recipe for a data directory that still has the old pair.
 - Various permission tables
 
 Schema lives in `fileserver/dbutil/schema.go` and is applied at startup.
+`CreateSiloTables` stamps the database with `SchemaVersion` (SQLite's
+`PRAGMA user_version`) once the schema has applied cleanly, and refuses to
+start against a database already stamped with a different version — see
+[`backup.md`](backup.md#schema-version).
 
 ## Storage layout
 

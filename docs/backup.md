@@ -111,6 +111,60 @@ To confirm the store matches the heads, restore into a scratch data directory
 and run `silo serve` against it — a client that syncs a library end to end has
 verified every object that library's head references.
 
+## Schema version
+
+`silo.db` carries its own schema version in SQLite's `PRAGMA user_version` —
+no extra table, just the four bytes SQLite reserves in the file header for
+exactly this. `fileserver/dbutil/schema.go` defines `SchemaVersion`, the
+version the running binary expects.
+
+At startup, `CreateSiloTables` reads `PRAGMA user_version` before touching
+anything. Unstamped (`0`) is two different populations wearing one value — a
+database this call is about to create, and every database written before the
+stamp existed — and it tells them apart by whether `sqlite_master` already
+holds any tables:
+
+- **Unstamped and empty** — a genuinely fresh database. The schema is applied
+  (`CREATE TABLE`/`INDEX IF NOT EXISTS`), and only once that succeeds is the
+  database stamped with `SchemaVersion`.
+- **Unstamped but already holding tables** — written before this check
+  existed, which the library rename (`0.5.0`) already shipped against.
+  Refused immediately with its own message: *"this database has tables but
+  no schema version stamp, so it was written before this build's schema
+  (schema version N) ... this package has no migration path."* Different
+  wording from a version mismatch below, but from the operator's side it's
+  the same situation: a database this build cannot be trusted to run
+  against.
+- **Stamped, and it matches** — the schema is (re-)applied as above; normal
+  startup.
+- **Stamped, and it doesn't match** — refused immediately, before any SQL
+  runs, with an error naming both versions:
+
+  ```
+  database schema version 3 does not match what this build expects (schema version 4);
+  refusing to start rather than run a mismatched schema against it. If this database
+  is disposable, delete it and let Silo recreate it; otherwise run the binary that
+  wrote version 3, or migrate the database by hand
+  ```
+
+This only catches a version *this build* wrote and a later or earlier build
+disagreeing about — it is not a migration system, for either case above.
+`SchemaVersion` bumps only for a change to `siloSchema` that `IF NOT EXISTS`
+cannot apply safely to an existing database: a rename, a drop, a type change.
+A purely additive change (new table, new index) needs no bump.
+
+You can inspect or clear the stamp directly:
+
+```sh
+sqlite3 <data-dir>/silo.db 'PRAGMA user_version'          # what it's stamped as
+sqlite3 <data-dir>/silo.db 'PRAGMA user_version = 0'       # forget the stamp
+```
+
+Clearing it does not make an incompatible database compatible — it only
+removes the fast, clear refusal in favour of whatever error the schema
+statements produce on their own, which is where every version predating this
+check already stood.
+
 ## Upgrading from a two-database install
 
 Every release up to and including 0.4.4 kept two SQLite files, `ccnet.db`

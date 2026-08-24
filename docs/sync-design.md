@@ -1,5 +1,22 @@
 # Sync design notes
 
+> **The first four sections below are stale as of `5d4baa0` and store-v2.**
+> "Two lanes, one store" describes the Seafile sync lane (`/repo/…`, `/api2/…`)
+> as a live, frozen surface; it was deleted outright in `5d4baa0`, so there is
+> now one lane, not two. "SHA-1 is the address" and "Compression is a wire
+> encoding" both reason from that lane's existence and from the pre-store-v2
+> object format (fixed-offset chunking, SHA-1 ids, zlib-compressed `fsmgr`
+> objects) — store-v2 replaced the hash (SHA-256), the chunking (content-defined),
+> and the object encoding entirely; see
+> [`docs/plans/store-v2.md`](plans/store-v2.md) for what's current. "The change
+> that actually makes sync fast" proposes a `pack-blocks` alongside `pack-fs`,
+> both Seafile-lane calls that no longer exist. Kept because the reasoning —
+> why a content hash is the right address, why compression is per-lane, why
+> batching beats a faster codec — outlived the specific lane and format it was
+> argued against, even though none of those sections describe the server as it
+> stands today. **"Delta endpoint" and "Resolved: the shape of the Silo lane"
+> below are current** and describe `/api/silo/v1` as it exists now.
+
 Reasoning and constraints behind Silo's storage and sync protocol. Not a spec —
 the endpoints are in the code and in
 [`macos-fileprovider-plan.md`](macos-fileprovider-plan.md). This is the *why*,

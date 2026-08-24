@@ -12,16 +12,16 @@ Nothing catches that but a list.
 The *why* behind a code lives in the bug report that decided it. This file is
 the index; `docs/bugs/fixed/` is the reasoning.
 
-## Three lanes, and codes do not mean the same thing on all of them
+## One lane
 
 | lane | prefix | who speaks it | codes |
 |---|---|---|---|
 | **Silo** | `/api/silo/v1/…` | porter-fuse, the File Provider extension, `client/`, anything new | standard HTTP, documented below |
-| **Seafile sync** | `/repo/…`, `/protocol-version` | the upstream Seafile desktop client | standard, plus the `44x` block |
-| **Seahub compat** | `/api2/…` | SeaDrive | DRF-shaped, follows the Silo lane's meanings |
 
-New work belongs on the Silo lane. The other two are compatibility surfaces
-whose codes are fixed by what an existing client already believes.
+The Seafile sync (`/repo/…`) and Seahub-compat (`/api2/…`) lanes this section
+used to describe were deleted in `5d4baa0` (0.5.0); everything under them is
+now a 404. See [`protocol.md`](protocol.md) and
+[`docs/target.md`](target.md).
 
 ## Silo lane
 
@@ -114,9 +114,7 @@ rename a file in response to something whose only correct handling is to send
 the identical request again. From 0.4.4 it answers `503` with `Retry-After`,
 alongside write contention, which is what it always meant.
 
-The Seafile lane still answers `409` on its own upload paths. That number is
-upstream's contract, not ours, and is not to be changed. See
-`docs/bugs/fixed/write-contention-returns-500.md`.
+See `docs/bugs/fixed/write-contention-returns-500.md`.
 
 ### `404` — three different subjects
 
@@ -183,35 +181,16 @@ returning it.
 | `402`, `451` | — | no plausible use; do not invent one |
 | `423 Locked` | **WebDAV `LOCK`** if that frontend lands — see `protocol-frontends.md` | do *not* spend it on "encrypted library, no key supplied" (currently `400`/`403`); WebDAV clients read `423` as a lock they can wait on or steal |
 | `428 Precondition Required` | forcing conditional writes | only if Silo ever refuses unconditional writes; it does not today |
-| `507 Insufficient Storage` | quota exhausted | `macos-fileprovider-plan.md` already maps it to `.insufficientQuota` alongside `413`. The quota path currently answers `443` on the Seafile lane only |
+| `507 Insufficient Storage` | quota exhausted | `macos-fileprovider-plan.md` already maps it to `.insufficientQuota` alongside `413` |
 
 `424` used to belong here and no longer does — the block surface claimed it.
 It is a WebDAV code, but a WebDAV frontend would use it inside a `207
 Multi-Status` body rather than as a response of its own, so the two do not
 collide.
 
-## Seafile sync lane: the `44x` block
-
-`fileserver/http_code.go`. These are not real HTTP codes — they are Seafile's,
-and the upstream desktop client understands them by number. They exist only on
-`/repo/…` and the legacy upload and download paths, and **nothing new should
-return them**.
-
-| code | constant | means |
-|---|---|---|
-| `440` | `seafHTTPResBadFileName` | illegal filename |
-| `441` | `seafHTTPResExists` / `seafHTTPResNotExists` | already exists / does not exist (yes, the same number for both) |
-| `442` | `seafHTTPResTooLarge` | file too large |
-| `443` | `seafHTTPResNoQuota` | over quota |
-| `444` | `seafHTTPResLibraryDeleted` | library deleted |
-| `445` | `seafHTTPResLibraryCorrupted` | library corrupted |
-| `446` | `seafHTTPResBlockMissing` | block missing |
-
-The legacy upload and download paths in `fileop.go` also still answer `400`
-"Bad library id" where the Silo lane would answer `404`/`500`, and `500` for write
-contention where the Silo lane answers `503`. Both are known and deliberate:
-those paths are entangled with the `44x` codes above, and changing them needs a
-Seafile client to test against.
+The Seafile sync lane's non-standard `44x` codes (`fileserver/http_code.go`,
+`seafHTTPRes*`) went with the lane itself in `5d4baa0`; nothing on the current
+server returns them.
 
 ## Rules for adding a code
 
