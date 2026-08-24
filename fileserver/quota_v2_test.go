@@ -6,12 +6,63 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 )
+
+// checkQuotaV2 used to read owner, quota and usage as three independent
+// queries with nothing serializing them: two requests racing the same
+// owner's headroom could each read the same pre-write usage and both be
+// admitted, together landing the owner over quota by more than either write
+// alone. lockOwner closes that by making a second caller for the same owner
+// wait for the first to finish — and must not block an unrelated owner's
+// check while it does.
+func TestLockOwnerSerializesTheSameOwnerButNotADifferentOne(t *testing.T) {
+	owner := account.ID{9, 9, 9}
+	other := account.ID{1, 2, 3}
+
+	unlockFirst := lockOwner(owner)
+
+	sameOwnerDone := make(chan struct{})
+	go func() {
+		unlock := lockOwner(owner)
+		defer unlock()
+		close(sameOwnerDone)
+	}()
+
+	select {
+	case <-sameOwnerDone:
+		t.Fatal("a second checkQuota for the same owner proceeded while the first still held the lock")
+	case <-time.After(100 * time.Millisecond):
+		// Still blocked, as it must be.
+	}
+
+	otherOwnerDone := make(chan struct{})
+	go func() {
+		unlock := lockOwner(other)
+		defer unlock()
+		close(otherOwnerDone)
+	}()
+
+	select {
+	case <-otherOwnerDone:
+		// A different owner is not held up by the first at all.
+	case <-time.After(time.Second):
+		t.Fatal("a different owner's quota check was blocked by an unrelated owner's lock")
+	}
+
+	unlockFirst()
+	select {
+	case <-sameOwnerDone:
+		// The second caller for the same owner proceeds once the first releases.
+	case <-time.After(time.Second):
+		t.Fatal("the second caller for the same owner never proceeded after the first released")
+	}
+}
 
 // setQuota gives an account a ceiling. Without one there is none: a server
 // nobody has configured a quota on does not refuse writes.

@@ -159,6 +159,63 @@ func TestRequireAuthCaseInsensitiveBearer(t *testing.T) {
 	}
 }
 
+// A database failure while resolving the account behind a session token must
+// not read as the token being bad: sessionLookup used to fold every
+// account.ByID error into ErrInvalidCredential, so an outage answered 401 —
+// indistinguishable from every session having simply expired — instead of
+// the 500 an unexpected condition deserves. apiTokenLookup already made this
+// distinction; this pins sessionLookup to the same rule.
+func TestRequireAuthReportsADatabaseFailureAsAnErrorNotAnExpiry(t *testing.T) {
+	if option.DBOpTimeout <= 0 {
+		option.DBOpTimeout = 5 * time.Second
+	}
+	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
+		t.Fatalf("create tables: %v", err)
+	}
+	account.Init(pair.Read, pair.Write)
+
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	if _, _, err := account.Create(ctx, "erin@example.com", "PBKDF2SHA256$1$00$00", false); err != nil {
+		cancel()
+		t.Fatalf("create account: %v", err)
+	}
+	acct, err := account.ByEmail(ctx, "erin@example.com")
+	cancel()
+	if err != nil {
+		t.Fatalf("read account: %v", err)
+	}
+
+	token, err := authmgr.GenerateSessionToken(acct.ID)
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	// A session token verifies from its signature alone; only the account
+	// read behind it touches the database, so closing the pool now turns
+	// that lookup into a real failure rather than a missing row.
+	if err := pair.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	handler := RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not be called")
+	}))
+
+	req := httptest.NewRequest("GET", "/api/silo/v1/repos", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("a database failure resolving the account answered %d, want %d",
+			rr.Code, http.StatusInternalServerError)
+	}
+}
+
 func TestGetUserEmailNoContext(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	email := GetUserEmail(req)

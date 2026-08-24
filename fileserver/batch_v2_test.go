@@ -143,6 +143,33 @@ func TestBatchMkdirOfAnExistingDirectoryIsRefusedOnStoreV2(t *testing.T) {
 	}
 }
 
+// A batch "copy" of "/" would alias the library's own root into a subpath of
+// itself: Resolve(root, "/") returns the root node with no error, and
+// PutNode has no self-reference check of its own — the guard Rename gets for
+// free from splitLeaf refusing the root, copy does not.
+func TestBatchCopyOfTheLibraryRootIsRefused(t *testing.T) {
+	repoID, acct := storeV2Library(t)
+	before, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
+		map[string]string{"repoid": repoID},
+		[]byte(`{"ops":[{"op":"copy","path":"/","to":"/backup"}]}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("copy of the library root = %d (%s), want 400", w.Code, w.Body.String())
+	}
+
+	after, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.HeadCommitID != before.HeadCommitID {
+		t.Error("a refused batch still moved the head")
+	}
+}
+
 // Resumable upload: chunks go up separately, then one call names them in
 // order. The file that comes back has to be the file that went up.
 func TestChunksNamedInOrderBecomeTheFile(t *testing.T) {

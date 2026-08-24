@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
@@ -207,6 +208,146 @@ func TestAHeadSwapToAnUnknownCommitIsRefused(t *testing.T) {
 		[]byte(absent), map[string]string{"If-Match": `"` + repo.HeadCommitID + `"`})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("swap to an absent commit = %d (%s), want 400", w.Code, w.Body.String())
+	}
+}
+
+// buildInlineFileCommit uploads a one-file tree by id — an inline manifest,
+// a root directory naming it, and a commit naming that root descending from
+// the library's current head — and returns the swap the caller still has to
+// make: the head it descends from, and the commit id PUT head would move to.
+// Nothing is published; the tree exists but the head does not name it yet.
+func buildInlineFileCommit(t *testing.T, acct *account.Account, repoID, name string, content []byte) (oldHead string, commitID store.ID) {
+	t.Helper()
+	vars := map[string]string{"repoid": repoID}
+	repo, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHead = repo.HeadCommitID
+
+	m := &store.Manifest{FileSize: int64(len(content)), Inline: content}
+	manifestBytes, err := m.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestID := store.ObjectID(manifestBytes)
+	w := idReq(t, putObjectHandler, acct, http.MethodPut, "/objects/"+manifestID.String(),
+		merge(vars, "id", manifestID.String()), manifestBytes, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("PUT manifest = %d (%s), want 201", w.Code, w.Body.String())
+	}
+
+	dir := &store.Directory{Entries: []store.DirEntry{{
+		ChildID: manifestID, Type: store.NodeFile, Name: []byte(name), Mode: 0o644,
+	}}}
+	dirBytes, err := dir.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootID := store.ObjectID(dirBytes)
+	w = idReq(t, putObjectHandler, acct, http.MethodPut, "/objects/"+rootID.String(),
+		merge(vars, "id", rootID.String()), dirBytes, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("PUT directory = %d (%s), want 201", w.Code, w.Body.String())
+	}
+
+	parent, err := store.ParseID(oldHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitBytes, commitID := buildCommit(t, rootID, []store.ID{parent}, acct.Email)
+	w = idReq(t, putObjectHandler, acct, http.MethodPut, "/objects/"+commitID.String(),
+		merge(vars, "id", commitID.String()), commitBytes, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("PUT commit = %d (%s), want 201", w.Code, w.Body.String())
+	}
+	return oldHead, commitID
+}
+
+// putHeadHandler publishes a tree without ever asking whether the owner
+// could still afford it — the per-object checks a client passed on the way
+// up are only an estimate, and nothing charged the exact number at the
+// moment that estimate is supposed to be replaced. This is that charge.
+func TestPutHeadRefusesAHeadMoveThatWouldExceedQuota(t *testing.T) {
+	repoID, acct := storeV2Library(t)
+	setQuota(t, acct, 1000)
+
+	oldHead, commitID := buildInlineFileCommit(t, acct, repoID, "big.bin", bytes.Repeat([]byte("a"), 1500))
+
+	vars := map[string]string{"repoid": repoID}
+	w := idReq(t, putHeadHandler, acct, http.MethodPut, "/head", vars,
+		[]byte(commitID.String()), map[string]string{"If-Match": `"` + oldHead + `"`})
+	if w.Code != httpInsufficientStorage {
+		t.Fatalf("head move over quota = %d (%s), want %d", w.Code, w.Body.String(), httpInsufficientStorage)
+	}
+
+	after, err := repomgr.GetWithReason(repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.HeadCommitID != oldHead {
+		t.Error("the refused head move published the tree anyway")
+	}
+}
+
+// Two libraries under one owner, each individually well under quota, but
+// together over it. checkQuotaV2's usage read used to race a concurrent one
+// with nothing serializing the sequence, so two head moves — the point
+// where usage is actually charged — could each read the account's usage
+// before either had committed and both be admitted. lockOwner (quota_v2.go)
+// closes it by holding the owner's admission lock across the commit, not
+// only the read.
+func TestConcurrentHeadMovesCannotJointlyExceedQuota(t *testing.T) {
+	repoA, acct := storeV2Library(t)
+	repoB, err := repomgr.CreateRepo("v2b", acct, repomgr.DefaultFormat(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setQuota(t, acct, 1000)
+
+	oldHeadA, commitA := buildInlineFileCommit(t, acct, repoA, "a.bin", bytes.Repeat([]byte("a"), 600))
+	oldHeadB, commitB := buildInlineFileCommit(t, acct, repoB, "b.bin", bytes.Repeat([]byte("b"), 600))
+
+	type swap struct {
+		repoID, oldHead string
+		commitID        store.ID
+	}
+	swaps := []swap{{repoA, oldHeadA, commitA}, {repoB, oldHeadB, commitB}}
+
+	var wg sync.WaitGroup
+	codes := make([]int, len(swaps))
+	for i, sw := range swaps {
+		wg.Add(1)
+		go func(i int, sw swap) {
+			defer wg.Done()
+			w := idReq(t, putHeadHandler, acct, http.MethodPut, "/head",
+				map[string]string{"repoid": sw.repoID}, []byte(sw.commitID.String()),
+				map[string]string{"If-Match": `"` + sw.oldHead + `"`})
+			codes[i] = w.Code
+		}(i, sw)
+	}
+	wg.Wait()
+
+	admitted := 0
+	for _, code := range codes {
+		switch code {
+		case http.StatusOK:
+			admitted++
+		case httpInsufficientStorage:
+		default:
+			t.Fatalf("head move answered %d, want 200 or %d", code, httpInsufficientStorage)
+		}
+	}
+	if admitted > 1 {
+		t.Fatal("both concurrent head moves were admitted; 600+600 exceeds the 1000 quota")
+	}
+
+	u, err := repomgr.AccountUsage(acct.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Size > 1000 {
+		t.Fatalf("account usage after the race is %d, over the 1000 quota", u.Size)
 	}
 }
 

@@ -315,6 +315,71 @@ func TestChunkSizesMustAccountForTheWholeFile(t *testing.T) {
 	}
 }
 
+// wraparoundChunkSizes builds chunk sizes that sum to exactly want, but only
+// if the addition is done in unbounded arithmetic. Summed as int64 the way
+// Validate and parsePublicSection used to, the running total passes through a
+// full 2^64 cycle — 65536 chunks at the MaxFileSize ceiling is exactly
+// 2^16 * 2^48 = 2^64 — and comes back around to 0 having "forgotten" all of
+// it, leaving only the final adjusting chunk. The true sum is enormously
+// larger than MaxFileSize; the wrapped one lands exactly on want.
+func wraparoundChunkSizes(want int64) []int64 {
+	const cycle = 1 << 16 // 2^64 / MaxFileSize
+	sizes := make([]int64, cycle+1)
+	for i := range sizes[:cycle] {
+		sizes[i] = MaxFileSize
+	}
+	sizes[cycle] = want
+	return sizes
+}
+
+// Before the overflow guard, chunk sizes chosen to wrap the running int64
+// total could land it on exactly the declared file size: the check `total ==
+// FileSize` cannot tell a genuine sum from one that overflowed all the way
+// back around to the same value. Validate is the client-shaped check, run
+// on every read via ReadFileRange.
+func TestChunkSizesThatWrapInt64AreRefusedNotAccepted(t *testing.T) {
+	const wantFileSize = 100000 // > InlineThreshold, well under MaxFileSize
+	sizes := wraparoundChunkSizes(wantFileSize)
+	chunks := make([]ChunkRef, len(sizes))
+	cid := id(1)
+	for i, sz := range sizes {
+		chunks[i] = ChunkRef{ID: cid, Size: sz}
+	}
+	m := &Manifest{FileSize: wantFileSize, Chunks: chunks}
+	if err := m.Validate(); !errors.Is(err, ErrEncoding) {
+		t.Fatalf("a manifest whose chunk sizes wrap int64 back to the declared file size was accepted: %v", err)
+	}
+}
+
+// buildRawPublicManifest hand-encodes a manifest's public section — bypassing
+// Encode, which now runs Validate and would itself refuse this — because the
+// server-side decoder has to survive bytes an attacker built directly on the
+// wire, not only ones this package's own encoder produced.
+func buildRawPublicManifest(fileSize uint64, chunkSizes []int64) []byte {
+	b := []byte{ManifestVersion, 0}
+	b = appendUvarint(b, fileSize)
+	b = appendUvarint(b, uint64(len(chunkSizes)))
+	cid := id(1)
+	for _, sz := range chunkSizes {
+		b = append(b, cid[:]...)
+		b = appendUvarint(b, uint64(sz))
+	}
+	return b
+}
+
+// The same wraparound, against the public-section parser a server without a
+// content key uses for garbage collection: DecodeManifestPublic must refuse
+// bytes an attacker crafted so the chunk-size sum overflows int64 and lands
+// on the declared file size, rather than trusting the total that arithmetic
+// forgot most of.
+func TestPublicChunkSizesThatWrapInt64AreRefusedNotAccepted(t *testing.T) {
+	const wantFileSize = 100000
+	raw := buildRawPublicManifest(wantFileSize, wraparoundChunkSizes(wantFileSize))
+	if _, err := DecodeManifestPublic(raw); !errors.Is(err, ErrEncoding) {
+		t.Fatalf("a manifest whose public chunk sizes wrap int64 back to the declared file size was accepted: %v", err)
+	}
+}
+
 // The server holds no content key and still has to enumerate a manifest's
 // chunks, or it could never reclaim anything in an E2EE library. This is that
 // path, and what it must agree with is the keyed one.

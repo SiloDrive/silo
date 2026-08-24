@@ -291,6 +291,31 @@ func TestRenameKeepsIdentityAndRefusesCollisions(t *testing.T) {
 	})
 }
 
+// File onto file is the one collision Rename must allow: it destroys nothing
+// the caller did not name, and moveOrCopy's own precondition check
+// deliberately falls through to it — replacing the destination the same way
+// PUT entries/{path} does.
+func TestRenameOntoAnExistingFileReplacesIt(t *testing.T) {
+	bothTypes(t, func(t *testing.T, s *Store) {
+		root := buildTree(t, s)
+
+		newRoot, err := s.Rename(root, "photos/raw/a.dng", "notes.txt", opTime)
+		if err != nil {
+			t.Fatalf("file onto file: %v, want it allowed", err)
+		}
+		var buf bytes.Buffer
+		if err := s.ReadPath(newRoot, "notes.txt", &buf); err != nil {
+			t.Fatal(err)
+		}
+		if buf.String() != "raw one" {
+			t.Errorf("notes.txt reads %q after the rename, want the moved file's content", buf.String())
+		}
+		if _, err := s.Resolve(newRoot, "photos/raw/a.dng"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("the source survived a rename that succeeded: %v", err)
+		}
+	})
+}
+
 func TestADirectoryCannotBeMovedIntoItself(t *testing.T) {
 	bothTypes(t, func(t *testing.T, s *Store) {
 		root := buildTree(t, s)

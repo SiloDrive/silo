@@ -164,6 +164,20 @@ func TestCopyIntoOwnSubtreeTerminates(t *testing.T) {
 	}
 }
 
+// A Resolve failure other than "not found" used to answer a flat 404 here,
+// skipping the shared error table batch operations already use — so a path
+// component that is not a directory read as a plain 404 through this
+// endpoint and as 409 everywhere else the same error is produced.
+func TestMoveSourceThroughAFileAnswersConflictNotNotFound(t *testing.T) {
+	repoID, acct := storeV2Library(t)
+	put(t, repoID, acct, "/f.txt", []byte("not a directory"))
+
+	w := postOp(t, repoID, acct, "/f.txt/nested", "move", "/elsewhere")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("move through a file = %d (%s), want 409", w.Code, w.Body.String())
+	}
+}
+
 func mkdir(t *testing.T, repoID string, acct *account.Account, path string) {
 	t.Helper()
 	vars := map[string]string{"repoid": repoID, "path": strings.TrimPrefix(path, "/")}
