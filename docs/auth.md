@@ -1,44 +1,67 @@
 # Credentials and Authentication
 
-What Silo stores today, what is wrong with it, and the design that replaces it.
+The account model and the credential design: what has landed, what is built
+but not yet wired, and what remains. The historical findings against the
+inherited Seafile model are kept lower down; most are closed or mooted now,
+and each says which.
 
-Silo has **no deployments**. Every credential in every table can be discarded
-and reissued. That removes the constraint that shapes most auth rewrites — the
-deprecation window where an old format and a new one have to coexist — and it
-is the reason this document proposes replacing the credential model outright
-rather than patching it. The window closes the first time someone else runs
-this server, so the decision is worth making now.
+Silo still has **no deployments**. Every credential in every table can be
+discarded and reissued, which is what licensed replacing the credential model
+outright rather than patching it. That freedom expires the first time someone
+else runs this server.
 
-## What is stored today
+## Where this stands
+
+**Landed:**
+
+- **The identity split.** `Account` (UUIDv7), `AccountEmail`,
+  `AccountIdentity`, `AccountPassword`; `account_id` is the only user key on
+  the live tables and `EmailUser` is gone. `is_active` is checked on **every
+  authenticated request** — `requireCredential` (`middleware/auth.go`) asks
+  once, unskippably, for every lane, which is the check the split existed to
+  make possible.
+- **A user lifecycle**: `silo user list | add | passwd | disable | enable`,
+  over `account.Create` / `SetPassword` / `SetActive`. `BootstrapAdmin`
+  replaces the cleartext `SILO_ADMIN_PASSWORD` path with a generated,
+  logged-once password when the account table is empty.
+- **One lane.** Everything outside `/api/silo/v1/*` and `/notification` is a
+  404 since `5d4baa0`. The three-credential, three-header shape this document
+  was written against no longer exists to authenticate to.
+
+**Built, not yet mounted:**
+
+- **The `Credential` table and the `credential` package** — the token format,
+  `credential.Resolve` (`credential/store.go:110`), scope parsing. The schema
+  comment on the table is the honest status line: *"Both lanes still write
+  their own tables. Nothing reads this one yet."* Mounting `Resolve` on the
+  routes is the step that retires everything in the next list.
+
+**What a client actually presents today:**
 
 | Credential | Where | Form on disk | Lifetime | Revocable |
 |---|---|---|---|---|
-| Account password | `EmailUser.passwd` | PBKDF2-SHA256, 600k rounds, 32-byte random salt | — | n/a |
+| Account password | `AccountPassword.hash` | self-describing prefix, PBKDF2-SHA256 600k today | — | n/a |
 | Session JWT | not stored — signed with `option.JWTPrivateKey` | HS256, `aud=silo:session` | 24h | **no** |
-| API token | `ApiToken.token` | **cleartext**, 160-bit random | 30d, sliding | yes |
-| Sync token | `LibraryUserToken.token` | **cleartext**, SHA1(uuid) | **never expires** | yes |
-| Access token | `tokenstore`, memory only | uuid v4, cleartext | 1h | n/a |
+| Access token | `tokenstore`, memory only | uuid v4, cleartext | 1h | one-time redeem |
 | Notification JWT | not stored — same key | HS256, `aud=silo:notif` | 72h, per library | no |
-| Encrypted-library key | `keycache`, memory only | derived key, never persisted | process | n/a |
 
-Three lanes, three credentials, and a client that wants all of Silo needs all
-three: `Authorization: Bearer <jwt>` on `/api/silo/v1`, `Authorization: Token
-<hex>` on `/api2` and `/api/v2.1`, and `Seafile-Repo-Token: <hex>` on `/repo`.
-That shape is inherited from Seafile, not chosen, and the cost lands on the
-client — `porter-brief.md` has to spend a section explaining which credential
-goes where.
+Two stores linger beside that table as dead weight: `ApiToken` and
+`LibraryUserToken` rows are still minted (and revoked) by `silo token`, still
+cleartext, and authenticate **nothing** — `RequireAPIToken`
+(`middleware/apitoken.go`) is defined but mounted on no route, and the sync
+lane that read `LibraryUserToken` is deleted. They are the old model's stumps,
+and they go when the `Credential` swap lands rather than being patched.
 
 ## What is right, and worth keeping
 
 Credit where it is due, because the password column is the best-protected thing
 in the database and that did not happen by accident.
 
-`hashPassword` (`authmgr.go:208`) writes `PBKDF2SHA256$600000$<salt>$<derived>`
-at OWASP's current work factor, sixty times Seafile's 10,000. `needsRehash` /
-`upgradeHash` (`authmgr.go:227`, `authmgr.go:246`) silently replace any legacy
-hash — unsalted SHA-1, or SHA-256 with the public constant salt at
-`authmgr.go:34` — the next time the user successfully logs in, which is the
-only moment the plaintext is in hand and known good.
+`hashPassword` writes `PBKDF2SHA256$600000$<salt>$<derived>` at OWASP's
+current work factor, sixty times Seafile's 10,000. `needsRehash` /
+`upgradeHash` (`authmgr.go:249`, `authmgr.go:268`) silently replace any legacy
+hash the next time the user successfully logs in, which is the only moment the
+plaintext is in hand and known good.
 
 `ValidateSessionToken` passes `jwt.WithValidMethods` and `jwt.WithAudience`, so
 a token cannot select its own algorithm and a notification token cannot be
@@ -55,50 +78,43 @@ outage does not present itself to a client as "your credential is invalid".
 
 None of that changes below. What changes is everything around it.
 
-## What is wrong
+## The findings, and where each stands
 
-### 1. The token columns are cleartext
+The numbered findings this design was argued from, kept because later sections
+cite them — each now carries its status.
 
-`apitokenstore.Create` (`apitokenstore.go:62`) inserts the raw token;
-`libmgr.GenerateLibraryToken` (`libmgr.go:987`) does the same. A read of
-`silo.db` — a backup, a snapshot, a stray `SELECT` through some future admin
-surface — yields immediately usable credentials for every device of every user,
-with no cracking required.
+### 1. The token columns are cleartext — *demoted to dead weight*
 
-This is the worst single property of the current system and the cheapest to
-fix. See [why a fast hash is the right one](#why-tokens-want-a-fast-hash-and-passwords-do-not).
+`apitokenstore.Create` inserts the raw token and `libmgr` did the same for
+sync tokens. What has changed is the blast radius: no route authenticates
+against either store any more, so a read of `silo.db` no longer yields a
+usable credential from them. They remain the wrong pattern sitting in the
+schema, and the fix is unchanged — the `Credential` swap stores
+`SHA-256(secret)` only. See
+[why a fast hash is the right one](#why-tokens-want-a-fast-hash-and-passwords-do-not).
 
-### 2. `is_active` is never read
+### 2. `is_active` is never read — *closed*
 
-The column is in the schema (`schema.go:17`), `EnsureAdmin` writes it
-(`authmgr.go:278`), and **nothing in the codebase ever selects it**.
-`ValidatePassword` fetches `passwd` alone. There is no way to disable an
-account.
+Closed by the identity split. `requireCredential` (`middleware/auth.go`)
+checks `IsActive` after every successful lookup, on every lane, with a comment
+that names this finding as the reason it lives there and not per-lane. The
+account-lifecycle half is closed too: `silo user` exists, and disabling an
+account stops its sessions on the next request.
 
-Worse, no token lookup joins back to the user at all. Deleting a row from
-`EmailUser` does not stop that user's sessions, API tokens, or sync tokens —
-every one of them keeps working, because each store answers "who is this
-token's email" without ever asking whether that email is still anybody.
+### 3. Sessions cannot be revoked — *open; the next thing the swap fixes*
 
-Compounding it: the only account-creation path is `SILO_ADMIN_EMAIL` /
-`SILO_ADMIN_PASSWORD` read from the environment. There is one account and no
-lifecycle.
+`/api/silo/v1` has no logout endpoint, no `jti`, and no deny list. A session
+JWT is valid for its full 24 hours no matter what happens to the account
+behind it — password changed, laptop stolen. (Deactivating the account now
+works, per finding 2 — but that kills the account, not one session.)
 
-### 3. The lane Porter uses cannot log out
+The only whole-lane kill switch is rotating `SILO_JWT_SECRET`, which also
+invalidates every notification token in flight.
 
-`/api2` has `SeaDriveLogoutHandler`, which deletes the row. `/api/silo/v1` has
-no logout endpoint, no `jti`, and no deny list. A session JWT is valid for its
-full 24 hours no matter what happens to the account behind it — password
-changed, user deleted, laptop stolen.
+### 4. The JWT secret is ephemeral by default — *open*
 
-The only kill switch is rotating `SILO_JWT_SECRET`, which also invalidates
-every notification token in flight.
-
-### 4. The JWT secret is ephemeral by default
-
-`LoadJWTConfig` (`option.go:573`) generates a random key when
-`SILO_JWT_SECRET` is unset and logs a line about it. Every restart invalidates
-every session simultaneously.
+`LoadJWTConfig` generates a random key when `SILO_JWT_SECRET` is unset and
+logs a line about it. Every restart invalidates every session simultaneously.
 
 Because there is also no refresh endpoint, the documented client workaround is
 to **keep the account password in the Keychain** and re-login on 401
@@ -107,62 +123,54 @@ secret in the system into long-term storage on every device, to work around a
 session that cannot be renewed. That is the wrong secret in the wrong place for
 the wrong reason.
 
-### 5. Nothing has a scope
+### 5. Nothing has a scope — *open until `Resolve` mounts*
 
-Every credential grants the whole account. A read-only, single-library
+Every live credential grants the whole account. A read-only, single-library
 credential — the thing you actually want to hand a backup tool, or a mount you
 do not fully trust — is not expressible. `share.CheckPerm` has no notion of a
-ceiling that a credential could lower.
+ceiling that a credential could lower. The `Credential` row carries `scope`
+and `perm` for exactly this; nothing reads them yet.
 
-### 6. Nothing has a name
+### 6. Nothing has a name — *open until `Resolve` mounts*
 
-`silo token list` prints indistinguishable 40-char hex strings with no label,
-no last-used timestamp, and no client identity. Deciding which one to revoke is
-a guess. And `GenerateLibraryToken` mints a fresh row per call with no expiry, so
-`LibraryUserToken` only ever grows.
+`silo token list` prints indistinguishable hex strings with no label, no
+last-used timestamp, and no client identity. Deciding which one to revoke is a
+guess. `Credential.label` and `last_used` exist for this; same gate as 5.
 
-### 7. Login says which accounts exist
+### 7. Login says which accounts exist — *open*
 
-`ValidatePassword` fetches `passwd` and returns immediately when there is no
-row. An address that exists costs 600,000 PBKDF2 rounds — around 80 ms
-(`authmgr.go:197`) — and one that does not costs a database round trip. That
-gap is not noise; it is a directory listing for anyone willing to time the
-endpoint.
-
+`ValidatePassword` (`authmgr.go:47`) returns immediately when there is no
+account. An address that exists costs 600,000 PBKDF2 rounds — tens of
+milliseconds — and one that does not costs a database round trip. That gap is
+not noise; it is a directory listing for anyone willing to time the endpoint.
 The login limiter does not help, because enumeration needs one attempt per
 address rather than ten, and Argon2id widens the gap rather than closing it.
+The dummy-hash fix is slated with the Argon2id change in
+[the order of work](#order-of-work).
 
-### 8. The credential model was inherited, not chosen
+### 8. The credential model was inherited, not chosen — *history*
 
-`LibraryUserToken.token` is `CHAR(41)` because the C daemon hashed a UUID to forty
-hex characters and left room for a NUL — the hash accomplishing nothing, since
-a UUID through SHA-1 is still exactly a UUID's worth of randomness. There are
-three credentials on three headers because Seahub and `seaf-server` were
-separate programs that had to authenticate callers to each other. Sync tokens
-are per library, never expire, and only ever accumulate, because that was the
-cheapest thing for a daemon holding no session state.
-
-Not one of those is a decision Silo made. They are the seams of a distributed
-system Silo does not have, and they currently reach all the way into the
-schema. What to do about it is
-[below](#compatibility-is-an-adapter-not-a-shape).
+`LibraryUserToken.token` was `CHAR(41)` because the C daemon hashed a UUID to
+forty hex characters and left room for a NUL. There were three credentials on
+three headers because Seahub and `seaf-server` were separate programs that had
+to authenticate callers to each other. Sync tokens were per library, never
+expired, and only ever accumulated, because that was the cheapest thing for a
+daemon holding no session state. None of those was a decision Silo made — and
+the question this finding used to open, how much of that shape to keep for
+legacy clients' sake, was answered by deleting the legacy lanes whole.
 
 ### 9. Smaller things
 
-`utils.GetAuthorizationToken` (`utils/http.go:14`) splits the header on a space
-and returns field 1 — it ignores the scheme entirely, so `Bearer`, `Token` and
-`Basic` are indistinguishable on the sync lane. Harmless today only because the
-three stores are disjoint; it forecloses ever telling two schemes apart on one
-lane, and it turns "you sent the wrong credential" into "invalid token".
+`utils.GetAuthorizationToken` (`utils/http.go:14`) splits the header on a
+space and ignores the scheme entirely. The sync lane that made this matter is
+gone and the function now has no callers — it should be deleted before
+something finds it. `requireCredential` checks its scheme properly.
 
-The 5-minute `tokenCache` / `permCache` (`sync_api.go:101`) means sync-lane
-revocation lags. `entries` deliberately does not cache. Both choices are
-defensible; having both is not.
-
-`SILO_ADMIN_PASSWORD` arrives in cleartext through the environment, so it sits
-in `docker-compose.yml`, in `.envrc`, and in the process environment of a
-running container. It is hashed the moment it reaches the database; everything
-before that point is plaintext.
+`SILO_ADMIN_PASSWORD` in the environment is *half-closed*: `BootstrapAdmin`
+generates and logs a password when the table is empty and none was supplied,
+so the default path no longer requires a cleartext password in the
+environment. The variable still works when set, and the single-use setup
+credential that would retire it fully waits on credentials existing at all.
 
 ## Why tokens want a fast hash, and passwords do not
 
@@ -184,21 +192,18 @@ rounds the same attack runs at a few thousand per second per core — a
 millionfold tax, paid by the attacker on every guess and by Silo once per
 login.
 
-And the blast radius differs. A leaked sync token grants one library, forever,
-and nothing else. A cracked password is plausibly the user's email password,
-which is the account that can reset everything else they own. The slow KDF
-protects the human as much as the service.
+And the blast radius differs. A leaked token grants what the token grants and
+nothing else. A cracked password is plausibly the user's email password, which
+is the account that can reset everything else they own. The slow KDF protects
+the human as much as the service.
 
-## Identity: an account is not an email address
+## Identity: an account is not an email address — *landed*
 
-Email is not a column on the user today. It *is* the key, repeated as a foreign
-key across fourteen tables and 59 SQL statements in 16 files:
-`LibraryOwner.owner_id`, `SharedLibrary.from_email`/`to_email`, `LibraryUserToken.email`,
-`ApiToken.email`, `FolderUserPerm.user`, `GroupUser.user_name`,
-`LibraryGroup.user_name`, `UserQuota.user`, `UserShareQuota.user`,
-`LibraryTrash.owner_id`, `OrgLibrary.user`, `OrgSharedLibrary.from_email`/`to_email`,
-`UserRole.email`, `Binding.email`.
+This section is the argument that produced the schema now in
+`dbutil/schema.go`; it is kept as the record of why the shape is what it is.
 
+Before the split, email was not a column on the user — it *was* the key,
+repeated as a foreign key across fourteen tables and 59 SQL statements.
 Four consequences, in rising order of how much they hurt:
 
 - Changing an address is a fourteen-table migration, and a half-applied one is
@@ -268,35 +273,15 @@ guard against exactly that is the sentinel string `"!"`, checked in two places
 (`authmgr.go:39`, `authmgr.go:73`). A row that does not exist cannot be
 compared against.
 
-### What SeaDrive actually needs
+### Email lives in API responses, not in the schema
 
-The Seafile and SeaDrive clients never send an account id and never will. What
-they send and receive is email:
-
-- `POST /api2/auth-token/` — email and password in, token out.
-- `GET /api2/account/info/` — returns `email` and `name` (`api/seadrive.go:248`).
-- `GET /api2/repos/{id}/download-info/` — returns `email` (`api/seadrive.go:265`).
-
-All three keep working, because email survives exactly where it belongs: **in
-the API responses, not in the schema.** Each becomes a join.
-
-So the legacy tables key on `account_id` and the API layer resolves the address
-on the way out.
-
-**There is no migration, because there is nothing to migrate.** No Silo is
-deployed, and the Seafile data behind the development copies is duplicated and
-disposable. The schema is not evolved into the right shape — it is simply
-written in the right shape, and `EmailUser` is deleted rather than drained.
-That also means no importer: a database from before this point is recreated,
-not upgraded.
-
-It lands as one commit, because half-normalised is worse than either end: a
-query written against the half that has not moved yet is silently wrong rather
-than broken.
-
-This freedom expires the day ShelfLife hosts its first real user. From then on
-every schema change is a migration, and the cost of getting the shape wrong
-stops being an afternoon.
+That was the rule the split was executed under, and it held: tables key on
+`account_id`, and the API layer joins to produce an address on the way out
+wherever a response wants one. There was no migration because there was
+nothing to migrate — `EmailUser` was deleted, not drained, and a database from
+before the split is recreated, not upgraded. (The subsection here used to
+enumerate the `/api2` endpoints whose responses needed the email join for
+SeaDrive's sake; that lane is deleted and the constraint is gone with it.)
 
 ### The one place email is permanent
 
@@ -310,57 +295,17 @@ the git model — an author string on a commit is historical display data, not a
 identity key, and it is *correct* for it to record the address in use at the
 time. Silo must simply never resolve a permission from it.
 
-## Compatibility is an adapter, not a shape
+## The legacy adapter — retired unbuilt
 
-Silo keeps working with SeaDrive and Seafile Desktop. What it stops doing is
-letting them choose the credential model — and the difference between those two
-positions is only *where the translation happens*: in four handlers at the
-edge, or in the schema.
-
-At the edge. What the legacy clients actually require is small:
-
-| What a legacy client needs | What it costs |
-|---|---|
-| `POST /api2/auth-token/`, form-encoded | one handler |
-| Forty hex characters in `Authorization: Token` | an *encoding* — 8 hex of credential id, 32 hex of secret. 128 bits, still an id-first lookup, still one `Resolve` |
-| `Seafile-Repo-Token` per library | one `kind`, minted only by `/api2/repos/{id}/repo-tokens/` |
-| An email address in `/api2` responses | a join, already required by [the identity split](#identity-an-account-is-not-an-email-address) |
-
-Whether SeaDrive genuinely enforces forty characters is an assertion in a
-comment (`api/seadrive.go:17`), not a tested fact. The Ruby harness in `test/`
-against a 3.0.21 client would settle it in an afternoon, and it is worth
-settling — but it gates nothing, because the answer only picks an encoding.
-
-### What we stop carrying
-
-- **Per-library sync tokens, for anything that is not a legacy client.** Look at
-  what they are: no expiry, no label, no last-used, one row per (library, device)
-  forever, and a README paragraph explaining that changing your password does
-  not revoke them. A device credential reaches every library the account
-  reaches, and narrowing is `scope` and `perm` on the row — not a second token
-  type with its own table and its own header.
-- **Three headers.** `Authorization` on every Silo-native lane.
-  `Seafile-Repo-Token` becomes an input the legacy handlers translate, not a
-  concept `Resolve` knows about.
-- **`CHAR(41)` and `SHA1(uuid)`**, which existed only to fit a column width
-  chosen in C.
-- **The schema-compatibility promise.** The README used to offer "the sync
-  protocol, block storage layout, and database schema are unchanged, so ...
-  clients work against Silo without modification". The causal claim was never
-  true — a client cannot see the schema — and the identity split breaks the
-  literal one anyway. `README.md:11` now promises the wire only: *Seafile and
-  SeaDrive clients keep working; the schema and the on-disk layout are Silo's
-  own, and are free to change.* Left in place, that sentence would have been a
-  compat claim quietly acting as a veto on every decision in this document.
-
-### A legacy client is a legacy trust level
-
-This should be visible rather than discovered. A `legacy` credential is a
-bearer secret, is account-wide or library-wide with no ceiling, and cannot
-participate in [proof of possession](#proof-of-possession). That is not a
-defect awaiting a fix; it is what an unmodifiable client can support. So `silo
-credential list` labels it as such, and an operator who wants the stronger
-guarantee knows that it means moving that device to Porter.
+A long section here designed the compatibility story for SeaDrive and Seafile
+Desktop: a `legacy` credential kind, an edge adapter translating
+`Authorization: Token` and `Seafile-Repo-Token` into `Resolve` calls, and a
+"legacy client is a legacy trust level" rule for labelling what an
+unmodifiable client cannot support. The lane deletion (`5d4baa0`) removed the
+clients before the adapter was built, so none of it is needed: there is one
+lane, one header, and no bearer-only client class to carve out. The design
+below sheds the `legacy` kind with nothing else moving — which is itself the
+best evidence the adapter really was an adapter and not a shape.
 
 ## The design
 
@@ -395,32 +340,35 @@ guessing at one, which is why `ghp_` tokens carry the same thing.
 | `device` | Porter, the File Provider extension | a signature — [proof of possession](#proof-of-possession) | absolute, default 90d | optional library + permission ceiling |
 | `session` | the TUI, the CLI | a signature, or a bearer secret where there is no key store | 24h | account |
 | `access` | capability URLs (`/files/`, `/zip/`) | bearer, memory only | 1h | one object, one op |
-| `legacy` | SeaDrive, Seafile Desktop | bearer, forty hex characters | absolute | account on `/api2`, one library on `Seafile-Repo-Token` |
 | `s3` | an S3 frontend, if it is ever built | SigV4 | absolute | see [S3](#s3-needs-a-master-key-not-a-column) |
 
-`legacy` is what was going to be a `sync` kind. One kind rather than two,
-because what distinguishes it is not which header it arrives on but that it is
-[unmodifiable, and therefore bearer](#a-legacy-client-is-a-legacy-trust-level).
+(A `legacy` kind for SeaDrive existed in this table until the legacy lanes
+were deleted; see [the retired adapter](#the-legacy-adapter--retired-unbuilt).)
 
-### The table
+### The table — *landed; unread*
+
+The DDL lives in `dbutil/schema.go` now and differs from the first draft here
+in one deliberate way: `scope` is `TEXT NOT NULL DEFAULT ''` rather than
+nullable — empty means "every library", so there is one spelling of unscoped
+rather than two, and `credential.ParseScope` owns the encoding of the narrower
+forms (which can name a folder inside a library, not just a library).
 
 ```sql
 CREATE TABLE Credential (
   id          TEXT    PRIMARY KEY,   -- public, travels in the token
-  kind        TEXT    NOT NULL,      -- 'device'|'session'|'access'|'legacy'|'s3'
+  kind        TEXT    NOT NULL,      -- 'device'|'session'|'access'|'s3'
   secret_hash BLOB,                  -- SHA-256 of the secret, for bearer kinds
   public_key  BLOB,                  -- SPKI, for proof-of-possession kinds
   account_id  BLOB    NOT NULL REFERENCES Account(id),
   label       TEXT    NOT NULL,      -- "dan's macbook, porter-fuse"
-  scope       TEXT,                  -- NULL = all libraries; else a library id
+  scope       TEXT    NOT NULL DEFAULT '',  -- '' = all libraries
   perm        TEXT    NOT NULL,      -- 'r' | 'rw' — a ceiling, never a grant
   client_id   TEXT,                  -- device identity, when the lane has one
-  ctime       INTEGER NOT NULL,
-  expires_at  INTEGER,               -- absolute; NULL = no expiry
-  last_used   INTEGER,
+  ctime       BIGINT  NOT NULL,
+  expires_at  BIGINT,                -- absolute; NULL = no expiry
+  last_used   BIGINT,
   CHECK (secret_hash IS NULL OR public_key IS NULL)
 );
-CREATE INDEX credential_account_idx ON Credential (account_id);
 ```
 
 `label` and `last_used` are not decoration. They are what turns revocation from
@@ -570,10 +518,10 @@ out to be unnecessary, because of what Silo's writes already are.
 Almost every write is content-addressed, idempotent, and carries the content's
 own hash in the request line:
 
-- `PUT /repo/{id}/block/{block-id}` — the block id *is* the hash of the bytes.
-- `PUT /repo/{id}/commit/{commit-id}` — likewise.
-- `recv-fs` carries a batch of fs objects, each verified against its own id on
-  the way in.
+- `PUT /libraries/{id}/blocks/{chunk-id}` — the chunk id *is* the hash of the
+  bytes, and the server verifies what arrives against it.
+- The object uploads behind `batch` — manifests, directories, commits — each
+  verified against its own id on the way in.
 
 Signing the request line therefore binds the payload already: bytes that hash
 to something else are rejected by the write path regardless of who sent them.
@@ -582,13 +530,13 @@ stored, under an id they already have.
 
 What is left is the small set of requests where replay means something:
 
-- `PUT /repo/{id}/commit/HEAD?head=<commit-id>` — the branch update, and the
-  one genuine state change on the sync lane. No body at all; the target is in
-  the query string, so the request line covers it.
+- The commit/head advance — the one genuine state change in a sync. Its
+  target travels in the request line, so the signature covers it, and the
+  head move is a compare-and-swap: a replayed advance fails its precondition.
 - The mutations on `/api/silo/v1` — mkdir, rename, move, delete, and writes to
   `entries` — which have small bodies and already accept `If-Match` /
-  `If-None-Match` (`entries.go:305`). A conditional write is replay-proof by
-  construction: the second attempt fails its precondition.
+  `If-None-Match`. A conditional write is replay-proof by construction: the
+  second attempt fails its precondition.
 
 So: **sign the request line, the date and a nonce always; add a content digest
 only where the body is small and is not already named by its hash.** The
@@ -616,11 +564,11 @@ fifty, which is the price paid for a key the Secure Enclave will actually hold.
 A directory walk issuing a few hundred requests pays single-digit milliseconds
 in total, comfortably under the storage reads it is making anyway.
 
-The clients that can do this are the ones we control: Porter, the File Provider
-extension, the TUI, the CLI, and any future SFTP frontend by way of SSH keys.
-The ones that cannot are SeaDrive and Seafile Desktop — and, for a different
-reason, S3, whose SigV4 needs a shared secret the server can recompute with.
-Those stay bearer, and say so.
+The clients that can do this are the ones we control — which, since the lane
+deletion, is all of them: Porter, the File Provider extension, the TUI, the
+CLI, and any future SFTP frontend by way of SSH keys. The one exception left
+is S3, whose SigV4 needs a shared secret the server can recompute with;
+capability URLs also stay bearer, because a URL cannot sign anything.
 
 ### Permission ceilings
 
@@ -668,20 +616,19 @@ those buckets stop colliding with legitimate traffic altogether.
 
 Cache by credential id, and hold a per-account generation counter that a
 revocation, a password change, or a deactivation bumps. A cache hit checks the
-generation, so revocation is immediate rather than lagging `AuthCacheTTL`.
-`invalidateLibraryAuth` (`sync_api.go:1453`) already does the library-scoped version
-of this; the account-scoped version is the same idea one level up.
+generation, so revocation is immediate rather than lagging a cache TTL. (The
+sync lane once had a library-scoped version of this; the account-scoped one is
+the same idea a level up, and with one lane there is only one cache to get
+right.)
 
 ## What Porter does
 
 Today: log in with email+password, get a 24h JWT, keep the password in the
-Keychain because there is no refresh. Also hold an API token for `/api2`, also
-hold a sync token per library.
+Keychain because there is no refresh — the workaround finding 4 describes.
 
 After: log in once, get a **device credential**, store *that* in the Keychain,
 never the password. One credential, one header — `Authorization: Bearer
-silo_device_…` — on every lane. `Seafile-Repo-Token` survives only for the
-upstream Seafile client, which cannot be changed.
+silo_device_…` — everywhere.
 
 The credential is durable, so there is no refresh problem and no re-login
 stampede on restart. It is labelled, so a lost laptop is one identifiable row.
@@ -997,16 +944,12 @@ guards are about the boundary rather than the feature:
 - **Never in a release container's default configuration**, and it should be
   visible in `docker-compose.yml` only as a commented line explaining itself.
 
-Encrypted libraries are unaffected: the server still cannot read one without
-the password in `keycache`, and no-auth does not change that. Turning
-authentication off gives away everything the account can see, which is the
-point — it does not give away what the server itself cannot decrypt.
+E2EE libraries are unaffected: the server holds only ciphertext and no-auth
+does not change that. Turning authentication off gives away everything the
+account can see, which is the point — it does not give away what the server
+itself cannot decrypt.
 
 ## OIDC
-
-`future-features.md:301` lists LDAP/SAML/OIDC under Non-Goals. Committing to
-this reverses that line, which should be updated rather than left to
-contradict.
 
 ### Silo brokers login; it does not federate every request
 
@@ -1281,22 +1224,23 @@ one of them. The honest consequence is that the master key becomes the most
 sensitive value in the deployment. That is inherent to serving S3 at all; the
 mitigation is keeping it out of the database and out of the backup set.
 
-### Encrypted libraries have nowhere to put the second password
+### E2EE libraries have nowhere to put the second secret
 
-Three different things are called "password":
+Three different things authenticate something:
 
-- **Account password** — `EmailUser`, grants everything.
-- **Encrypted-library password** — client-side key derivation, cached in
-  `keycache`, never leaves the client in usable form. See `encryption.md`.
-- **Device credential** — proposed above.
+- **Account password** — `AccountPassword`, grants the account.
+- **The library content key (CK)** — client-side, wrapped to member identity
+  keys, never on the server in usable form. See `encryption.md`.
+- **Device credential** — above.
 
-A WebDAV or S3 mount of an encrypted library needs two of them, and those
-protocols have nowhere to carry the second. Either frontends refuse encrypted
-libraries with an explicit error, or an out-of-band step primes `keycache`
-before mounting. The failure mode if nobody decides is that the mount silently
-serves ciphertext — the same bug the TUI has today. This is a paragraph of
-policy, not a project, but it should be written before the first frontend
-ships.
+A WebDAV or S3 mount of an E2EE library needs the second as well as the third,
+and those protocols have nowhere to carry it — and the server-side answer
+(hold a key for the client) is exactly what the E2EE guardrails forbid. So
+frontends that cannot run the client crypto must refuse E2EE libraries with an
+explicit error, and the listing's `encrypted` flag is how they know. The
+failure mode if nobody decides is a mount silently serving ciphertext. A
+paragraph of policy, not a project, but it should be written before the first
+frontend ships.
 
 ## Order of work
 
@@ -1306,8 +1250,9 @@ ships.
    SeaDrive expects. `EmailUser` is deleted, not drained. Everything else
    assumes this, and it lands whole rather than in pieces.
 2. **`Credential`, device credentials, hashed secrets, one `Resolve`** — with
-   the `is_active` join that closes findings 1, 2, 5, 6 and 8 at once, and the
-   legacy adapter that keeps SeaDrive working through it rather than beside it.
+   the `is_active` join that closes findings 1, 5 and 6 at once. (The legacy
+   adapter this step once included is retired — the clients it served are
+   gone.)
 3. **A real user CLI** (`silo user add | disable | passwd`), which step 1 makes
    possible and `future-features.md`'s admin API then builds on. Done, with
    `list` and `enable` alongside — a `disable` with no way back is a one-way
@@ -1344,14 +1289,18 @@ ships.
    surface, and step 2's `Credential` is the artefact it produces.
 10. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
-Steps 1 and 2 are the ones with a deadline: they are free only while there are
-no deployments. Both are done, and so is step 3.
+Where the list stands: **step 1 is done**, and so is **step 3**. **Step 2 is
+half done** — the table, the token format, `Resolve` and scope parsing are all
+built and tested, but no route reads them yet; the schema comment on
+`Credential` says so in as many words. Mounting `Resolve` — and retiring the
+session JWT, the orphaned `ApiToken`/`LibraryUserToken` stores and the `silo
+token` command with it — is the next step with a deadline flavour to it, since
+every day the routes run on JWTs is a day findings 3, 5 and 6 stay open.
 
-Two things step 3 surfaced rather than fixed, both belonging to step 4. A
+Two things step 3 surfaced rather than fixed, both belonging to later steps. A
 password change does not revoke anything: sessions are JWTs signed against a
-server-wide secret, so there is nothing per-account to revoke, and the sync
-tokens the desktop clients hold were never tied to the password at all. `silo
-user passwd` says so on the way out and points at `silo token revoke`, which
-is honest rather than sufficient. And `is_staff` can be set when an account is
-created but not afterwards, which is fine only until
-[`plans/admin-check.md`](plans/admin-check.md) makes the flag mean something.
+server-wide secret, so there is nothing per-account to revoke. `silo user
+passwd` says so on the way out, which is honest rather than sufficient. And
+`is_staff` can be set when an account is created but not afterwards, which is
+fine only until [`plans/admin-check.md`](plans/admin-check.md) makes the flag
+mean something.

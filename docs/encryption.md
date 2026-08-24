@@ -1,17 +1,207 @@
 # Encryption
 
 **Decision, 2026-08-18: Silo will not support Seafile's encrypted libraries.**
+We built our own end-to-end scheme instead. The audit that forced that decision
+is kept [at the end of this document](#why-not-seafiles-scheme); it is history
+now, and reading it is optional.
 
-We will build our own end-to-end scheme instead. Nothing below is implemented.
-This document exists to record why we walked away, to sketch the replacement,
-and — the part that matters day to day — to list the things we must not build,
-because each of them would quietly make the replacement impossible.
+**This document is no longer the design.** It began as the sketch that
+established a modern scheme was reachable. The design has since been written
+for real: the wire format — chunking, content crypto, manifests, names — is
+specified in [`spec/store-format.md`](spec/store-format.md), and the account
+model that holds the key material is pinned in [`auth.md`](auth.md). Where this
+document and those disagree, they bind. What stays alive here is the
+orientation below, the guardrails, and the record of what the sketch got
+superseded on.
 
-This file previously held a plan for *creating* Seafile-format encrypted
-libraries from the TUI. That plan is withdrawn. It was also wrong on a load-
-bearing detail: it claimed `enc_version=4` was AES-128-ECB and "crypto-identical
-to v3". v4 is AES-256-CBC. Implementing it as written would have produced
-libraries no Seafile client could open. Do not resurrect it from git history.
+## The scheme
+
+Two tiers of key, and the indirection between them is what buys everything
+else:
+
+- **An identity keypair per account** (X25519), generated client-side at
+  enrolment. The public key is published — it is what another member's client
+  wraps a library key *to*, so it must be servable to people who are not its
+  owner. The private key is sealed under a key derived client-side from the
+  passphrase and stored server-side as an opaque blob
+  (`AccountIdentityKey.wrapped_key` in [`auth.md`](auth.md)), so a new device
+  can bootstrap from the passphrase alone. The server can store that blob but
+  never open it: login uses a *split derivation* — the client stretches the
+  passphrase into an `authKey` and only that crosses the wire, while the
+  sealing key lives on the branch of the derivation the server is never sent.
+- **A content key per library** (CK), 32 random bytes generated client-side at
+  creation, never derived from a password. Everything in the library derives
+  from CK: the chunk keys, the name encryption, the chunker seed. CK is
+  **wrapped to each member's public key** — one sealed blob per member, bound
+  to the recipient so blobs cannot be swapped or replayed across libraries.
+- **Ten recovery codes per account**, each stored as its own independent wrap
+  of the identity key (`AccountRecoveryWrap`, one row per code). Redeeming one
+  deletes its row and leaves the other nine valid — the server never learns a
+  code; redemption is the client fetching the set and trying each blob.
+
+Seafile bound the library to a password, so sharing meant telling someone the
+password and revocation was impossible. Wrapping to identities means sharing is
+"wrap CK for one more public key", and a passphrase change re-wraps only the
+user's *own private key* — CK is untouched and not one byte of content is
+re-encrypted. Recovery protects exactly one secret, the identity key, and
+through it every library the account can open.
+
+### Content
+
+Chunking is **keyed FastCDC** — the same `fastcdc-gear64/v1` as a plain
+library, but seeded from CK (`HKDF-SHA256(CK, salt="silo/chunker/v1")`), so cut
+points are a function of plaintext *and a secret*. The sketch that used to live
+at the top of this file mandated fixed-offset chunks on the grounds that CDC
+cut points leak plaintext structure; the spec closed that leak by keying the
+cut points instead, which keeps delta sync and gives the server nothing to
+fingerprint. **An E2EE library must never chunk under the plain seed** — see
+the Seeds section of the spec for the second, subtler reason (`seal_hash`
+would otherwise be a content-confirmation oracle).
+
+Each chunk is sealed under a key derived from its own plaintext
+(spec, [Content crypto](spec/store-format.md)):
+
+```
+H_p   = SHA-256(plaintext_chunk)
+K_c   = HKDF-SHA256(CK, salt="silo/chunk/v1", info=H_p, L=32)
+frame = AES-256-GCM(K_c, zero nonce, plaintext_chunk)
+id    = SHA-256(frame)
+```
+
+Convergent on purpose: identical plaintext under the same CK yields an
+identical frame and a stable id, so within-library dedup and delta sync work
+exactly as in a plain library. What that costs is a content-confirmation
+oracle extending only to holders of CK — the library's own members — and the
+spec accepts that trade explicitly. The AEAD tag gives integrity per chunk and
+localises tampering to the chunk it touched.
+
+Ranged reads fall out for free, and this is worth being explicit about: the
+server is not decrypting anything, so a range request is a plain byte range
+over stored bytes. Manifests carry a mandatory per-chunk plaintext size, so
+the client maps a plaintext range onto chunk indices, asks for the ciphertext
+covering them, decrypts, and trims. The old Seafile scheme could not serve
+ranges on encrypted libraries; this one serves them the same way it serves
+everything else.
+
+### Names and metadata
+
+Settled — this used to be the open question that decided the shape of the API.
+Each path segment is encrypted with **AES-CMAC-SIV, under a key derived per
+directory** (spec, [Names](spec/store-format.md)). SIV is deterministic by
+design, which is the point: `entries/{path}` routes on ciphertext, so a client
+must be able to compute the same bytes the directory object holds. The
+equality leak that determinism implies — identical names within a directory
+encrypt identically — is stated and accepted. Directory and commit objects
+additionally carry **sealed sections** for the metadata that has no reason to
+be public, with sizes and structure bounded so the server can validate what it
+stores without reading it.
+
+### What it costs
+
+- **Cross-library and cross-user dedup end for E2EE libraries.** A different
+  CK gives a different seed, different keys, different frames. Decided and
+  priced in the spec: "that was always the price of E2EE." Within one library,
+  dedup survives in full.
+- **No server-side anything**: no thumbnails, no preview, no full-text search,
+  no server-side zip, no charset guessing. That machinery is gone anyway.
+- **Compression must happen client-side, before encryption.** Ciphertext does
+  not compress.
+- **Revocation is not retroactive.** Rotating CK and re-wrapping for the
+  remaining members stops future reads; a departing member keeps whatever
+  ciphertext and old CK they already had. Only re-encrypting the library fixes
+  that, and that is O(library). Said plainly rather than implied otherwise.
+
+## Status
+
+The format is specified with test vectors. The server side already treats an
+E2EE library as opaque in the ways that matter — the store hashes what it
+stores, and the changes feed works on a library the server cannot read, which
+is the point of the design. What does not exist yet:
+
+- **The account key schema** — the four items in
+  [`auth.md`](auth.md#the-clients-kdf-is-not-this-one-and-it-needs-four-columns):
+  `client_kdf_params`, `AccountIdentityKey`, `AccountRecoveryWrap`, and the
+  pre-login parameters endpoint. That endpoint is the sharp piece: it is
+  unauthenticated by necessity, must answer unknown addresses with stable
+  plausible parameters or it enumerates accounts, and its answer is
+  attacker-influenced input to the client's KDF — the parameter ceiling in the
+  store package is what makes that safe, and it must stay load-bearing.
+- **A client.** Creating an E2EE library is a client operation — the initial
+  commit is sealed under a key the server never holds — so
+  `CreateLibraryHandler` mints server-readable libraries only, deliberately,
+  until a client exists to do the sealing.
+
+## Guardrails — what not to build
+
+The way this dies is not a decision to abandon it; it is a series of small,
+individually reasonable features that each assume the server can read content,
+until the assumption is load-bearing and removing it means breaking things
+people use.
+
+**Never add a server-side key cache or a `set-password` endpoint.** The
+inherited ones (`fileserver/keycache/`, `parseCryptKey`) are deleted. The
+temptation will recur — some feature will want the server to "just briefly"
+hold a key. That endpoint's whole purpose is to hand the server a key, which
+is the assumption this design deletes. No.
+
+**Object ids stay hashes of stored bytes, never plaintext.** ETags work over
+ciphertext precisely because the server hashes what it stores. If anything
+ever computes an id from plaintext server-side, end-to-end is over that same
+day.
+
+**Names stay opaque to the server.** No case folding, no Unicode
+normalisation, no behaviour derived from a file extension anywhere on the
+`entries/` path. `parseContentType` (`entries.go:876`) guessing a MIME type
+from the suffix is exactly the pattern to keep away from that path.
+
+**Mind the name budget.** `shouldIgnoreFile` rejects names that are not valid
+UTF-8 or are 256 bytes or longer, and encrypted names must be encoded, not raw
+bytes. The spec's Name rules section owns the exact arithmetic; the guardrail
+is that whoever touches the limit does it deliberately, knowing ciphertext
+inflation is why it binds earlier than it reads.
+
+**Range support must never depend on the server understanding content.** The
+old lane refused ranges on encrypted libraries because the *server* was doing
+the decryption; that branch died with the lane. Anything that makes ranged
+reads smarter about file contents takes us the wrong way.
+
+**Per-user key material has a designed home — build that, not a variant.**
+This guardrail used to say "leave room"; the room is now drawn, in `auth.md`'s
+schema. The failure mode has moved: improvising a slightly different shape
+because the designed one is not implemented yet.
+
+**Keep client-supplied library ids possible.** Key wrapping binds to the
+library id, so the client has to be able to create a library with a UUID it
+chose. Seafile's `magic` had the same constraint for worse reasons; the
+constraint outlived `magic`.
+
+**Do not ship features that require plaintext.** Full-text search, thumbnails,
+office preview, virus scanning, server-side folder zip. Each is defensible on
+its own and each becomes a reason not to do this. If one is genuinely wanted,
+scope it explicitly to unencrypted libraries so the boundary is visible in the
+code rather than discovered later.
+
+## What the sketch got superseded on
+
+The original sketch in this file established reachability; the spec then made
+different calls on four of its specifics. Recorded so nobody resurrects the
+sketch's version from history:
+
+- **Fixed 1 MiB chunks → keyed FastCDC.** The sketch ruled out CDC because cut
+  points leak structure; the spec keys the cut points with a CK-derived seed
+  instead, keeping delta sync and closing the leak.
+- **XChaCha20-Poly1305 with random per-file nonces → convergent AES-256-GCM
+  per chunk.** The sketch derived a file key from a random nonce; the spec
+  derives a chunk key from the chunk's own plaintext hash, which is what makes
+  within-library dedup survive encryption.
+- **The dedup question → decided.** The sketch left "random nonces vs
+  convergent" open; the spec chose convergent within a library and accepted
+  the members-only confirmation oracle explicitly.
+- **Names Option A vs B → settled as A, hardened.** Deterministic AES-SIV per
+  segment so path routing keeps working, plus sealed sections in directory and
+  commit objects for what need not be public.
+- **"Delete `keycache/` and `parseCryptKey`" → done**, along with the entire
+  lane they were wired into.
 
 ## Why not Seafile's scheme
 
@@ -38,11 +228,10 @@ with rehash-on-login, so the same binary would hash a login password 600× harde
 than the password protecting a user's encrypted files.
 
 **`magic` is a published offline-cracking oracle.** It is
-`PBKDF2(library_id + password, salt, 1000)`, stored in plaintext in the commit JSON
-and served to any authenticated client by `SeaDriveDownloadInfoHandler`. Anyone
-with a database copy — or any account that can call download-info — gets an
-offline verifier at a work factor a single GPU chews through at millions of
-guesses per second.
+`PBKDF2(library_id + password, salt, 1000)`, stored in plaintext in the commit
+JSON and served to any authenticated client. Anyone with a database copy — or
+any account that could call download-info — got an offline verifier at a work
+factor a single GPU chews through at millions of guesses per second.
 
 **One key and one IV for the entire library, forever.** After unwrapping
 `random_key`, both the file key and the IV come from `seafile_derive_key` over
@@ -57,184 +246,34 @@ server can flip bits that the client will decrypt without complaint. For a
 scheme whose whole premise is not trusting the server, this is the one that
 matters most in principle.
 
-Metadata is not protected at all. `fsmgr` imports `crypto/sha1` and nothing
-else: filenames, directory structure, file sizes and block boundaries are all
-plaintext. Only content is encrypted.
+Metadata is not protected at all: filenames, directory structure, file sizes
+and block boundaries are all plaintext. Only content is encrypted.
 
 Upstream knows. `pwd_hash` / `pwd_hash_algo` / `pwd_hash_params` in the commit
 format are their replacement for `magic`, backed by argon2id in
-`common/password-hash.c`. It is a serious fix to one of the four. Silo carries
-those fields through `CommitToLibrary` / `LibraryToCommit` but computes and verifies
-none of them.
+`common/password-hash.c`. It is a serious fix to one of the four. Silo carried
+those fields through and computed none of them.
 
-## Why we can walk away
+This file previously also held a plan for *creating* Seafile-format encrypted
+libraries from the TUI. That plan is withdrawn, and it was wrong on a
+load-bearing detail: it claimed `enc_version=4` was AES-128-ECB and
+"crypto-identical to v3". v4 is AES-256-CBC. Implementing it as written would
+have produced libraries no Seafile client could open. Do not resurrect it from
+git history.
+
+## Why we could walk away
 
 Silo has never been able to create an encrypted library — `libmgr.CreateLibrary`
-hardcodes `is_encrypted=0` and no endpoint accepts a password. Upstream only
-ever created them through Seahub's browser JavaScript, and we have no Seahub.
+writes `is_encrypted=0` and no endpoint accepts a password. Upstream only ever
+created them through Seahub's browser JavaScript, and we have no Seahub.
 
 So there is no installed base. No Silo user has an encrypted library that Silo
-made, and the only way to have one at all is to import it from an upstream
-Seafile install. Refusing the format costs us nothing we currently offer, and
-buys a free hand.
+made, and the only way to have one at all was to import it from an upstream
+Seafile install. Refusing the format cost us nothing we offered, and bought a
+free hand.
 
-## What we would build instead
-
-A sketch, not a specification. Everything here is open to revision until
-someone writes the code — the point is to establish that a modern scheme is
-reachable, and what it needs from the rest of Silo.
-
-### Keys
-
-- **Identity keypair per user**, X25519. The private key is wrapped under the
-  user's passphrase with argon2id and stored server-side as an opaque blob, so a
-  new device can bootstrap from the passphrase alone. The public key is
-  published.
-- **Content key per library** (CK), 32 random bytes generated client-side at
-  creation, never derived from a password.
-- CK is **wrapped to each member's public key** — one sealed blob per member.
-
-The indirection is what buys everything else. Seafile binds the library to a
-password, so sharing means telling someone the password and revocation is
-impossible. Wrapping to identities means sharing is "wrap CK for one more
-public key", and a password change re-wraps only the user's *own private key* —
-CK is untouched and not one byte of content is re-encrypted.
-
-### Content
-
-- Fixed **1 MiB chunks**, not content-defined boundaries: CDC cut points are a
-  function of the plaintext and leak its structure.
-- Per-file key `FK = HKDF-SHA256(CK, file_nonce)`, where `file_nonce` is 16
-  random bytes kept in the file's metadata.
-- Chunk *i* sealed with **XChaCha20-Poly1305**, nonce `file_nonce || i`,
-  additional data binding the file id, chunk index and chunk count so chunks
-  cannot be reordered, duplicated, or moved between files.
-- The AEAD tag gives integrity per chunk, and localises tampering to the chunk
-  it touched rather than the whole file.
-
-Ranged reads fall out for free, and this is worth being explicit about: the
-server is not decrypting anything, so a range request is a plain byte range over
-stored bytes. The client maps a plaintext range onto chunk indices, asks for the
-ciphertext range covering them, decrypts, and trims. **The new scheme should
-serve ranges on encrypted libraries, where Seafile's cannot.**
-
-### Names and metadata — the open question
-
-This one decides the shape of the API, so it should be settled before code.
-
-**Option A — deterministic name encryption.** Each path segment encrypted with
-AES-SIV under `HKDF(CK, "names")`, encoded base64url. `entries/{path}` keeps
-working exactly as built; the server routes on ciphertext without knowing it.
-Leaks name equality within a library, approximate name length, directory shape,
-and file sizes.
-
-**Option B — encrypted directory objects.** The server stores fs objects as
-opaque blobs and the client walks the tree by id. Leaks the shape of the tree
-and nothing else. Costs a second access pattern: `entries/{path}` is
-path-addressed and simply does not apply, so encrypted libraries would need an
-id-addressed surface alongside it.
-
-A is cheap and compatible with everything we have just built. B is the one that
-actually delivers "the server knows nothing". Recommendation is A first with B
-kept reachable, which is mostly a matter of not hard-wiring path-addressing into
-places that could take an id.
-
-### What it costs
-
-- **Cross-user dedup ends.** Random per-file nonces mean identical files
-  encrypt differently for different libraries. Within one library, deriving
-  `FK` from a plaintext hash instead of a random nonce (convergent encryption)
-  restores dedup at the cost of a confirmation-of-file oracle to anyone holding
-  CK — which is the library's own members, so it may be an acceptable trade.
-  Decide deliberately.
-- **No server-side anything**: no thumbnails, no preview, no full-text search,
-  no server-side zip of a folder, no charset guessing. We are removing that
-  machinery anyway.
-- **Compression must happen client-side, before encryption.** Ciphertext does
-  not compress. `docs/compression.md` describes a server-side story that cannot
-  apply to encrypted libraries.
-- **Revocation is not retroactive.** Rotating CK and re-wrapping for the
-  remaining members stops future reads; a departing member keeps whatever
-  ciphertext and old CK they already had. Only re-encrypting the library fixes
-  that, and that is O(library). Say so plainly rather than implying otherwise.
-
-## Guardrails — what not to build
-
-The replacement is a long way off. The way it dies is not a decision to abandon
-it; it is a series of small, individually reasonable features that each assume
-the server can read content, until the assumption is load-bearing and removing
-it means breaking things people use.
-
-**Never add a server-side key cache or a `set-password` endpoint.**
-`fileserver/keycache/` and `parseCryptKey` exist, are wired into both the
-Seafile lane and `entries/`, and are dead: nothing in the tree calls
-`keycache.SetKey`, so `parseCryptKey` can only ever return its 400. The obvious
-tidy-up is to add the missing endpoint and make the feature work. Do not. That
-endpoint's whole purpose is to hand the server a key, which is the assumption we
-are deleting. Delete the cache instead.
-
-**Object ids stay hashes of stored bytes, never plaintext.** `ETag: "v1-{id}"`
-works over ciphertext precisely because the server hashes what it stores. If
-anything ever computes an id from plaintext server-side, end-to-end is over that
-same day.
-
-**Names stay opaque to the server.** No case folding, no Unicode
-normalisation, no behaviour derived from a file extension anywhere on the
-`entries/` path. `parseContentType` guessing a MIME type from the suffix
-(`fileop.go:88`) is exactly the pattern to keep out; the new lane already passes
-`siloTextCharset = ""` rather than inheriting the Seafile lane's `charset=gbk`
-guess, and that instinct is the right one.
-
-**Mind the name budget.** `shouldIgnoreFile` rejects names that are not valid
-UTF-8 or are 256 bytes or longer. Encrypted names must therefore be encoded, not
-raw bytes, and base64url inflates by about 1.4× — which caps plaintext names
-around 180 characters. Either accept that or raise the limit deliberately, but
-know it is there.
-
-**Range support must never depend on the server understanding content.**
-`serveFile` currently refuses ranges on encrypted libraries because the *server*
-is doing the decryption. Under the new scheme that branch should disappear
-rather than grow. Anything that makes ranged reads smarter about file contents
-takes us the wrong way.
-
-**Leave room for per-user key material.** There is nowhere today to publish a
-user's public key or store their wrapped private key. Whatever shape it takes,
-do not design account management such that a user is permanently just a row with
-a password hash.
-
-**Keep client-supplied library ids possible.** Key wrapping may bind to the
-library id, so the client has to be able to create a library with a UUID it
-chose. Seafile's `magic` had the same constraint for worse reasons; the
-constraint is worth preserving even though `magic` is not.
-
-**Do not ship features that require plaintext.** Full-text search, thumbnails,
-office preview, virus scanning, server-side folder zip. Each is defensible on
-its own and each becomes a reason not to do this. If one is genuinely wanted,
-scope it explicitly to unencrypted libraries so the boundary is visible in the
-code rather than discovered later.
-
-## What happens to Seafile encrypted libraries now
-
-Today an encrypted library that arrived by import is readable only by sync
-clients, which do their own crypto. Any read through `entries/` or the file
-server hits `parseCryptKey` and gets:
-
-```
-400  Library is encrypted. Please provide password to view it.
-```
-
-That message is misleading — no endpoint accepts one, and none will. The honest
-behaviour is to refuse explicitly, with a message that says the format is
-unsupported, and to mark such libraries in the listing so a client can grey them
-out rather than discovering it per file. Small change; not made yet.
-
-## Before implementing
-
-1. Settle names and metadata — Option A or B above. It decides whether
-   `entries/{path}` covers encrypted libraries or they need their own surface.
-2. Decide dedup: random per-file nonces, or convergent within a library.
-3. Decide where key material lives on the wire, and what a user's published
-   public key looks like as a resource.
-4. Delete `fileserver/keycache/`, `parseCryptKey`, and the `IsEncrypted`
-   branches in `serveFile` and `putEntryFile` — the server-side decryption path
-   is dead code that currently reads as a feature.
+As for any imported Seafile encrypted library that might still sit in a data
+directory: the sync lane that could read one was deleted whole (`5d4baa0`),
+and the server-side decryption stubs (`keycache/`, `parseCryptKey`) with it.
+Such a library is unreadable through Silo today, and the listing's `encrypted`
+flag is how a client knows to say so rather than discovering it per file.

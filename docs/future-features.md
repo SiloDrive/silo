@@ -105,16 +105,15 @@ Group membership should participate in `CheckPerm` via the existing
 
 ## File Locking
 
-Seafile supports per-file advisory locks so two clients editing the same
-document don't clobber each other. SeaDrive and Seafile Desktop both honour
-the lock state when present. Tables `FileLocks` and `FileLockTimestamp` exist
-in the schema.
+Per-file advisory locks, so two clients editing the same document don't
+clobber each other — a feature Seafile had and Porter would want for the same
+reason.
 
-### Endpoints
+### Endpoints (sketch, on the Silo lane)
 
-- `PUT    /api2/repos/{id}/file/?p=/path&operation=lock`
-- `PUT    /api2/repos/{id}/file/?p=/path&operation=unlock`
-- `GET    /api2/repos/{id}/locked-files/`
+- `PUT    /api/silo/v1/libraries/{id}/locks/{path}`
+- `DELETE /api/silo/v1/libraries/{id}/locks/{path}`
+- `GET    /api/silo/v1/libraries/{id}/locks`
 
 ### Behaviour
 
@@ -123,8 +122,11 @@ in the schema.
 - Two lock types upstream: **manual** (no expiry, explicit unlock) and
   **auto** (short TTL, refreshed on each save). Start with manual, add auto
   later.
-- Enforcement point: `put-file` / `update-file` / `commit` upload path in
-  `fileop.go` — reject with 403 if the target path is locked by someone else.
+- Enforcement point: the write paths — `entries` PUT and the batch/commit
+  lane — reject with 403 when the target path is locked by someone else.
+  (Open question for E2EE libraries: a *path* is ciphertext to the server, so
+  the lock key has to be whatever the client can name — probably the
+  encrypted segment path, which the server can compare without reading.)
 - Surface lock state in directory listings (`is_locked`, `lock_owner`,
   `lock_time`) so clients render a padlock icon.
 
@@ -132,8 +134,7 @@ in the schema.
 
 Locks are the clearest case for pushing events over the notification
 WebSocket instead of relying on poll-then-list. When a lock is taken or
-released, publish a `file-lock-changed` event (same frame shape upstream
-uses, so SeaDrive handles it without changes) to every subscriber of the
+released, publish a `file-lock-changed` event to every subscriber of the
 library. Clients repaint the padlock icon immediately rather than waiting for
 the next directory refresh.
 
@@ -144,14 +145,14 @@ same time so we don't ship a half-real-time feature.
 ## Trash, History, Revisions
 
 Commits are already content-addressable and immutable, so "history" is mostly
-a matter of exposing what's already on disk. Upstream endpoints to port:
+a matter of exposing what's already on disk. The shapes wanted, on the Silo
+lane:
 
-- `GET  /api2/repos/{id}/history/`                  — commit log for the library
-- `GET  /api2/repos/{id}/file/revision/?p=/path`    — revisions of a single file
-- `POST /api2/repos/{id}/file/revert/`              — revert a file to a commit
-- `GET  /api2/repos/{id}/trash/`                    — deleted-but-reachable entries
-- `POST /api2/repos/{id}/trash/restore/`            — restore from trash
-- `DELETE /api2/repos/{id}/trash/`                  — empty trash
+- commit log for a library
+- revisions of a single file
+- revert a file to a commit
+- list deleted-but-reachable entries ("trash")
+- restore from trash; empty trash
 
 Trash is interesting because a file deleted from a library it stays in is
 still reachable via old commits forever — `silo gc` only reclaims libraries
@@ -168,71 +169,64 @@ and it deliberately never inspects a library that still exists, which is what
 lets it run without reasoning about concurrent writes. Stop the server first;
 nothing locks the data directory.
 
-What is still missing is GC *within* a live library. If you delete a 10 GB file
-from a library you keep, its blocks stay on disk indefinitely under
-`{data-dir}/storage/blocks/`, because an old commit still references them. That
-needs a pass that:
+What is still missing is GC *within* a live library. If you delete a 10 GB
+file from a library you keep, its chunks stay on disk indefinitely under
+`{data-dir}/storage/`, because an old commit still references them. That needs
+a pass that:
 
-1. Walks reachable commits per library (`commitmgr.Load` from each library's head,
-   following parents), collecting the live fs-object and block set via
-   `fsmgr`.
-2. Scans `storage/blocks/{store_id}/` and removes anything not in the live
-   set. Same pass for `storage/fs/` and `storage/commits/` for entries older
-   than the head chain.
-3. Respects a retention window so trash/history still works — a block
+1. Walks reachable commits per library from the head, following parents,
+   collecting the live object and chunk set through the manifests and
+   directory objects.
+2. Scans that library's stores under `storage/<type>/<library>/` and removes
+   anything not in the live set.
+3. Respects a retention window so trash/history still works — a chunk
    referenced by any commit within the window is live.
 
-Should run per library (one library can be GC'd without locking the whole server)
-and must coordinate with in-flight uploads so a block that's written but not
-yet committed isn't reaped. Upstream does this via a "fs-mgr freeze" flag;
-we'd do something similar.
+Should run per library (one library can be GC'd without locking the whole
+server) and must coordinate with in-flight uploads so a chunk that's written
+but not yet committed isn't reaped — the unused `GCID` generation stamp in the
+schema is the mechanism [`chunking.md`](chunking.md)'s compaction design
+assigns to that job; they are the same mark phase.
 
-## Quota
+## Quota — enforcement landed; the API around it has not
 
-Quota is **per user**, not per library — a user's cap applies to the total size
-of every library they own. The logic is in `fileserver/quota.go` but isn't
-enforced on the upload path today, and there's no API to set a user's cap.
+Quota is **per user**, not per library — a user's cap applies to the total
+size of every library they own. Enforcement is real now: `checkQuotaV2` /
+`refuseOverQuota` (`fileserver/quota_v2.go`) gate the write path.
 
 ### How it works
 
-- `UserQuota(user, quota)` table holds the cap in bytes. No row → use
-  `option.DefaultQuota` (settable via `seafile.conf`, `fileserver/option/`).
-- `-2` (`InfiniteQuota`, `quota.go:14`) means unlimited.
-- `getUserUsage` (`quota.go:83-105`) sums `LibrarySize.size` across every library
-  the user owns via a join on `LibraryOwner`, **excluding virtual libraries**
-  (`AND v.library_id IS NULL`) so subdirectory-shares don't double-count.
-- `checkQuota(libraryID, delta)` (`quota.go:17-62`) is called with the
-  projected upload size. For a virtual library, it first resolves to the
-  origin library and charges the origin's owner — so uploading to a shared
-  subdirectory counts against whoever created the parent library, not the
-  uploader.
-- `LibrarySize` is maintained asynchronously by `size_sched.go` → the
-  `updateSizePool` worker, which recomputes after each commit. Quota
-  decisions are therefore eventually consistent; a fast series of uploads
-  can momentarily overshoot.
+- The cap lives per account (`libmgr.AccountQuota`); `quota <= 0` means no
+  ceiling was ever set (`option.InfiniteQuota` is `-2`, and
+  `option.DefaultQuota` defaults to it).
+- The charge is **logical size at head** (`libmgr.AccountUsage`), not stored
+  bytes — dedup and compaction move stored bytes under the user's feet, and a
+  number that changes because the server ran a background job is not one
+  anybody can act on.
+- Admission is serialized **per owner**: two writes racing for the same
+  headroom decide one after the other, so they cannot both read the same
+  pre-write total and land the owner over quota together.
+- An overwrite is charged as an addition — refusing slightly early at the
+  boundary, never late, and never accumulating: when the head moves,
+  accounting measures the tree and the exact number replaces the estimate.
+- The refusal is **507 Insufficient Storage**, a real status chosen over the
+  old sync lane's invented 443: distinguishable from 403, which would tell a
+  client to stop rather than to free space and retry.
+- A quota the server cannot read is a refusal, not a shrug — admitting writes
+  because the lookup failed is how a quota comes to be unenforced without
+  anybody noticing.
 
 ### What's missing
 
-- **Enforcement wiring**: `checkQuota` is defined but the upload path in
-  `fileop.go` doesn't consistently short-circuit on a quota violation with
-  the right HTTP status. Needs to return `443 QUOTA_FULL` (Seafile-specific
-  code already present in `http_code.go`) before the block write, not
-  after.
-- **Admin API**: no endpoints to read or set quota. Wanted:
+- **Admin API**: no endpoints to read or set a cap. Wanted:
   - `GET /api/silo/v1/users/{email}/quota` — returns `{quota, usage}`
   - `PUT /api/silo/v1/users/{email}/quota` — set cap (admin only)
   - `GET /api/silo/v1/account/quota` — self lookup, no admin needed
-- **Default quota config**: surface `option.DefaultQuota` as an env var
-  (`SILO_DEFAULT_QUOTA`, following every other variable Silo added) so it's
-  settable without editing `seafile.conf`.
-- **Per-library quota** (extension, not upstream-compatible): there's no
-  `LibraryQuota` table in the schema. For "this shared team library can grow
-  to 500 GB regardless of who owns it" we'd need to add one and have
-  `checkQuota` consult it alongside the user cap, taking the smaller of
-  the two.
-- **Grace behaviour**: decide what happens *at* the cap — upstream refuses
-  any further writes outright. A soft-limit / hard-limit split would be
-  friendlier but is more work.
+- **Per-library quota** (extension): for "this shared team library can grow
+  to 500 GB regardless of who owns it", a `LibraryQuota` consulted alongside
+  the user cap, taking the smaller of the two.
+- **Grace behaviour**: decide what happens *at* the cap beyond the hard 507 —
+  a soft-limit warning threshold would be friendlier but is more work.
 
 ## Encrypted Libraries
 
@@ -244,13 +238,16 @@ on the ciphertext.
 
 Silo has never been able to create an encrypted library, so there is no
 installed base to stay compatible with. The replacement — X25519 identity keys,
-a per-library content key wrapped per member, chunked AEAD — is sketched in
-[`docs/encryption.md`](encryption.md), along with the list of things not to
-build if we want to keep it reachable.
+a per-library content key wrapped per member, convergent chunked AEAD — is now
+*specified*, not sketched: the wire format in
+[`spec/store-format.md`](spec/store-format.md), the account model in
+[`auth.md`](auth.md). [`docs/encryption.md`](encryption.md) keeps the
+orientation, the guardrails, and the record of why Seafile's format was
+refused. What gates implementation is the account key schema and the pre-login
+KDF parameters endpoint, both pinned in `auth.md`.
 
-Note the server-side decrypt-key cache (`keycache/`) is **not** working
-support: nothing ever calls `SetKey`, so `parseCryptKey` can only return its
-400. It reads as a feature and is dead code.
+(The server-side decrypt-key cache this note used to warn about —
+`keycache/`, `parseCryptKey` — has since been deleted outright.)
 
 ## Web UI
 
@@ -262,8 +259,8 @@ A web UI is the one thing that brings back a consumer which cannot set an
 `Authorization` header — a `<video>` src, an `<img>` thumbnail, a download
 link. That is the point at which signed URLs become worth building, and
 [`capability-urls.md`](capability-urls.md) records what they should look like
-(stateless and signed) versus the stateful one-time token the Seafile lane
-still uses.
+(stateless and signed) versus the stateful one-time access tokens
+(`tokenstore`) the file-serving routes use today.
 
 ## Admin / Ops
 
@@ -315,6 +312,55 @@ expect", but "what *other* protocols could front the same store". WebDAV, S3,
 SFTP and friends, with the architectural constraints that rule each in or out,
 are surveyed in [`protocol-frontends.md`](protocol-frontends.md).
 
+## A Plain Library as a Distributable Read-Only Store
+
+Parked, not scheduled. Recorded because the format already does most of the
+work and it would be a shame to drift away from that by accident.
+
+The observation: a plain library under store-v2 is, structurally, what casync
+was invented to be — a content-addressed chunk store for distributing large
+file trees over dumb transport. Nothing about consuming one read-only needs
+the Silo server:
+
+- **The store is a static tree.** `storage/<type>/<libraryID>/<aa>/<rest>`
+  (`objstore.go:80`) is servable as-is from nginx, an S3 bucket, or a torrent.
+  Only writes need Silo; `rsync -a` of the store directory — already the
+  documented backup path — is also a mirror.
+- **Every object is immutable, so cache lifetime is forever.** The id is the
+  ETag and there is no invalidation problem. The only mutable thing in the
+  whole system is the branch head: one commit id.
+- **Random access needs no server help.** Manifests carry a mandatory
+  per-chunk plaintext size beside each chunk id (spec, Manifests), so a lazy
+  consumer — FUSE mount, File Provider — maps any byte range to the chunks
+  that cover it and fetches only those.
+- **Updates are deltas for free.** A new version of the tree is a new manifest
+  and a few new chunks; mirrors and consumers fetch only what changed. This is
+  the property OS-image distribution wants and mostly fakes.
+- **The mirror does not need to be trusted.** Everything hashes down to the
+  commit id, so a consumer holding one 64-character string verifies the whole
+  tree. The plain chunker seed is a public constant precisely so a third party
+  can re-chunk source files and reproduce the store independently.
+
+The loss of encryption is not a loss here: content distributed widely is
+public by intent, and what distribution actually needs — integrity, and
+authenticity of the head — the content addressing already half-provides.
+
+What would need building, in order of how much it matters:
+
+1. **A signed head.** The commit id is the root of all verification but the
+   head pointer is the one thing a mirror can lie about. A detached signature
+   over `(library id, branch, commit id)` closes it, and is small enough to
+   publish beside the store.
+2. **An export command** (`silo export`?) that writes or syncs one library's
+   objects into a standalone tree with the head (and signature) alongside —
+   the store layout is already right, so this is mostly selection and copy.
+3. **A read-only consumer** — anything from a fetch-and-verify CLI to a FUSE
+   mount. The manifest size fields make the mount cheap in principle.
+
+What stays out: serving this from the Silo API unauthenticated. The wire lane
+stays authenticated; distribution happens from an exported copy on transport
+built for it. That split keeps the server's security story one sentence long.
+
 ## A Native Silo Client
 
 The CLI and TUI drive the management API, which is not sync. Two of the three
@@ -324,9 +370,11 @@ one commit. What remains is a full headless sync agent — no incremental
 comparison against the remote tree, and nothing in the read direction. All
 three tiers are in [`native-client.md`](native-client.md).
 
-The middle tier is the interesting one, and is much cheaper than it sounds:
-Silo chunks at fixed 8 MiB offsets rather than content-defined boundaries, so
-any client can compute the server's block ids with stdlib SHA-1 and a loop.
+The middle tier is the interesting one, and cheaper than it sounds: the
+`store` module holds the chunker and the ids with no server dependencies, so a
+client computes the server's chunk ids by building the same package the server
+does — under the library's own `chunker` parameters, fetched from the listing,
+never defaults.
 
 ## Search (Filename Index)
 
@@ -383,38 +431,31 @@ Not being built now — parked here until a client actually needs it.
 
 ## Compression
 
-zlib appears in exactly one package (`fsmgr`) and covers metadata only —
-blocks and commits are stored raw. Because an fs object's id is the SHA-1 of
-its *uncompressed* JSON, the compression format is not part of object
-identity, so it can be changed without rewriting a single id, and mixed
-formats can coexist by sniffing magic bytes on read.
+Nothing compresses today: store-v2 objects and chunks are stored raw (the
+zlib-over-fs-objects inheritance died with the old object format). The
+identity rule that makes compression legal later is unchanged — an id is the
+hash of the *stored form* the client sent, so a storage tier is free to hold
+a compressed representation as long as it serves back the exact bytes the id
+names. The right place for it is pack-level ZSTD seekable compression, which
+[`chunking.md`](chunking.md)'s packing section owns; it pays nothing on media
+workloads, so measure first. The original analysis is in
+[`compression.md`](compression.md), now historical.
 
-The larger prize is compressing blocks, which is possible for the same reason
-one level down, but pays nothing on media workloads. Measure first.
-Analysis in [`compression.md`](compression.md).
+## Chunking — landed; packing and compaction remain
 
-## Chunking
+Content-defined chunking shipped with store-v2: keyed FastCDC
+(`fastcdc-gear64/v1`), 256 KiB / 1 MiB / 4 MiB, per-library parameters, SHA-256
+ids, inlining under 64 KiB. [`chunking.md`](chunking.md) describes the scheme;
+[`spec/store-format.md`](spec/store-format.md) binds it.
 
-Silo cuts files at fixed 8 MiB offsets, so a boundary is a function of where
-you are rather than what is there. Insert a byte near the front of a file and
-every block id after it changes; `blocks/missing` will report a file it has
-held for months as entirely absent, because under the new names it is.
-
-Content-defined chunking fixes it at the root, and the objection previously
-raised against it — that it would cost cross-lane dedup — rests on a claim
-about upstream client chunking that nobody has verified. The chunker itself is
-under a hundred lines. The real costs are that its parameters become permanent
-wire protocol, and that smaller blocks force packing, which in turn forces a
-compactor.
-
-[`chunking.md`](chunking.md) has the argument, the test that decides it, and
-the pack and compaction design. It supersedes the opposite verdict in
-[`protocol-gaps.md`](protocol-gaps.md).
-
-Note that the compactor and the per-library garbage collector above are the same
-project: both need a mark phase that walks live commits, and block liveness is
-a global reachability property that cannot be maintained as a running counter.
-Build them together or build the mark twice.
+What that decision left on the table is still future work: smaller chunks
+raise object counts ~8×, which eventually forces **packing**, which in turn
+forces a **compactor**. The design notes for both are in
+[`chunking.md`](chunking.md). Note that the compactor and the per-library
+garbage collector above are the same project: both need a mark phase that
+walks live commits, and chunk liveness is a global reachability property that
+cannot be maintained as a running counter. Build them together or build the
+mark twice.
 
 ## Replication and Parity
 
@@ -495,5 +536,7 @@ Things we're explicitly *not* going to build, to keep scope honest:
   implement and to get wrong, and it is planned rather than ruled out; see
   Credentials above. (A reverse proxy doing header-auth also remains
   acceptable; Silo will trust a configurable header.)
-- **Mobile apps** — use the upstream Seafile mobile clients, they speak our
-  protocol.
+- **Mobile apps** — not from this repo. (This bullet used to say "use the
+  upstream Seafile mobile clients"; that stopped being true when the Seafile
+  lanes were deleted. A mobile client would be a Porter-family project against
+  `/api/silo/v1`, not a server feature.)
