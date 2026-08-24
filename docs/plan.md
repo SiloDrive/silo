@@ -1,20 +1,38 @@
 # Migration record and compatibility constraints
 
+> **Stale as of 2026-08-24. Do not read the constraints below as binding.**
+>
+> This file said "these hold for anything added from here on", and then three
+> of the four stopped holding without anything here changing. An agent reading
+> it to learn what binds its work would have been bound to a Seafile lane that
+> no longer exists, an on-disk format that has been replaced, and a source file
+> that has been deleted.
+>
+> Each false claim is annotated below with the commit that ended it. What
+> *should* bind new work is not decided here and is deliberately not invented:
+> `docs/plans/store-v2.md` is the document that knows, and the one live
+> constraint is marked as such.
+>
+> This is a **record** in the sense `docs/README.md` uses the word — kept
+> because the reasoning explains why the code looks the way it does, not
+> because it describes the server.
+
 The plan this file used to hold — eliminate the C daemon and the Python web
 layer, extend the Go fileserver into a standalone single-binary server, and
 build a TUI on top of it — has landed. What follows is the record of what
-replaced what, and the constraints that still bind every change.
+replaced what, and the constraints that bound every change *at the time it was
+written*.
 
 ## What landed
 
 | Upstream dependency | Replacement |
 |---|---|
 | searpc `seafile_web_query_access_token` | `fileserver/tokenstore/` — `sync.Map` + TTL |
-| searpc `seafile_get_decrypt_key` | `fileserver/keycache/` — `sync.Map` + TTL |
+| searpc `seafile_get_decrypt_key` | ~~`fileserver/keycache/`~~ — **gone**; the package was deleted with the Seafile lanes (5d4baa0) |
 | searpc `publish_event` | logrus, plus `fileserver/notif/` over WebSocket |
 | searpc client, `-p` flag, Unix socket | removed outright |
 | Web-layer login | `POST /api/silo/v1/auth/login` → JWT, `fileserver/authmgr/` |
-| Web-layer API tokens for sync clients | `POST /api2/auth-token/`, `fileserver/apitokenstore/` |
+| Web-layer API tokens for sync clients | ~~`POST /api2/auth-token/`~~ — the `/api2` lane is **gone** (5d4baa0); `fileserver/apitokenstore/` remains |
 | 174 C RPC handlers for library operations | `/api/silo/v1/` handlers in `fileserver/api/` |
 | Separate notification-server binary | in-process, `/notification` |
 | Separate controller process | none needed — one process |
@@ -26,23 +44,42 @@ administration, trash/restore and history remain unimplemented — see
 
 ## Standing constraints
 
-These hold for anything added from here on.
+**Three of these four no longer hold.** They are kept, struck through, with the
+commit that ended each, because deleting them would lose the reason the code
+was shaped around them for as long as it was.
 
-- **Client compatibility.** SeaDrive and Seafile Desktop must keep working. The
+- ~~**Client compatibility.**~~ **Ended by 5d4baa0.** The Seafile lanes were
+  deleted outright; `fileserver/server.go` registers no such route. Nothing
+  requires SeaDrive or Seafile Desktop to keep working, and the header below is
+  a name this server no longer reads. Original text:
+  <br>**Client compatibility.** SeaDrive and Seafile Desktop must keep working. The
   sync HTTP API (`/repo/{id}/commit`, `/repo/{id}/block`, `/repo/{id}/fs-id-list`,
   and the rest) does not change, and neither does the `Seafile-Repo-Token`
   header. New surface goes in the Silo lane (`/api/silo/v1/`), which is free to
   differ — see `docs/sync-design.md`.
-- **Data compatibility.** Same table definitions, same on-disk object layout.
+- ~~**Data compatibility.**~~ **Ended twice.** The object layout was replaced by
+  store-v2 — SHA-256 ids, `fastcdc-gear64/v1` content-defined chunking, binary
+  manifests (c9d5b92, 2efc3dd) — and the two-database guard this bullet
+  describes was deleted in d644f8f, so no server refuses to start on anything.
+  Table definitions have since been renamed wholesale (dee67bd). The standing
+  licence is the opposite of this bullet: there are no installs, so there is no
+  migration to preserve. Original text:
+  <br>**Data compatibility.** Same table definitions, same on-disk object layout.
   No migrations of row contents. The one exception is where the tables *live*:
   `ccnet.db` and `seafile.db` became a single `silo.db`. No table was
   redefined, so the two files concatenate — a server that finds the old pair
   refuses to start and prints the commands, rather than silently creating an
   empty database beside them. See `docs/backup.md`.
-- **Password compatibility.** Every hash format an existing install may hold has
+- **Password compatibility.** — **the one constraint here that still holds.**
+  Verified against `fileserver/authmgr/authmgr.go`, which still dispatches all
+  three formats. Every hash format an existing install may hold has
   to validate: `PBKDF2SHA256$…` at whatever iteration count it records, legacy
   SHA256-with-fixed-salt, and unsalted SHA1. Old formats are flagged for rehash
   on successful login rather than rejected.
-- **Encryption compatibility.** AES-CBC for library versions 1, 2 and 4, and
+- ~~**Encryption compatibility.**~~ **Ended by 5d4baa0.** `fileserver/crypt.go`
+  does not exist. Encryption at rest is store-v2's per-library E2EE, which is a
+  different scheme with different guarantees — see `docs/plans/store-v2.md`,
+  not the text below. Original text:
+  <br>**Encryption compatibility.** AES-CBC for library versions 1, 2 and 4, and
   AES-128-ECB for version 3, matching what clients already write
   (`fileserver/crypt.go`). See `docs/encryption.md`.
