@@ -430,11 +430,26 @@ version without a follow-up GET:
 {"id":"b8d0fa06…","name":"greeting.txt","size":14,"type":"file"}
 ```
 
-**Check the id you get back.** You can compute it yourself: files are chunked at
-fixed 8 MiB offsets and a block's name is the SHA-1 of its bytes, so a client
-that hashes as it uploads knows what id the server should arrive at. If the two
-differ, the bytes that landed are not the bytes you sent. That is a complete
-end-to-end integrity check for the transfer, and it costs a comparison.
+**Check the id you get back.** It is the file's **manifest** id, not a hash of
+the bytes you sent. A client that hashes as it uploads computes the wrong thing
+and mismatches on every file, including the ones that transferred perfectly —
+so do not read a mismatch as corruption until the check itself is right.
+
+Computing it means building the manifest, which a client holding `store/` can
+do. Chunk the content under the library's **own** `chunker` parameters, taken
+from its listing row: they are per-library data and a client that compiles them
+in as constants gets different ids the moment a library is created with
+anything else. Each chunk's id is the SHA-256 of its bytes. Encode the manifest
+and hash that, and you have the id the `PUT` will return.
+
+A file under 64 KiB never reaches the chunker at all: its bytes are inlined
+into the manifest, so the id is still the hash of a manifest — one that wraps
+the bytes behind a header — and never of the bytes alone.
+
+Done that way it is a complete end-to-end integrity check for the transfer, and
+it costs a comparison. `fileserver/manifest_id_test.go` runs exactly this
+against a live server for an inline and a chunked file, if you want a worked
+example to check an implementation against.
 
 **The parent directory must exist** — a PUT into a missing directory is a
 **404**, not an implicit `mkdir -p`. A typo in a path should not silently build
@@ -1066,7 +1081,7 @@ exercised against a running server.
 | `modifyItem` (rename) | `POST /api/silo/v1/libraries/{id}/entries/{path}` `{"op":"move",…}` |
 | `modifyItem` (reparent) | the same call — a move is a move |
 | duplicate an item | `POST /api/silo/v1/libraries/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
-| upload a large file | `POST blocks/missing`, `PUT blocks/{sha1}` for each, then `PUT entries/{path}?type=blocks` |
+| upload a large file | `POST blocks/missing`, `PUT blocks/{id}` for each, then `PUT entries/{path}?type=blocks` |
 | enumerate a huge directory | `GET entries/{path}?limit=1000`, then follow `Link: …; rel="next"` |
 | write many things at once | `POST /api/silo/v1/libraries/{id}/batch` — one commit, all or nothing |
 | `deleteItem` | `DELETE /api/silo/v1/libraries/{id}/entries/{path}` |

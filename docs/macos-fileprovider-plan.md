@@ -275,23 +275,30 @@ enumeration.
 This is the contract to verify against Sentry. Every File Provider callback and
 the request it makes.
 
+The left column is **history**: it records the request as the client made it at
+the time. The rows marked superseded name endpoints deleted in 0.4.4 (31ed8e2),
+which is before the `repo` → `library` rename — so they are spelled `/repos/`,
+because that is the only spelling they ever had. Renaming them would file a
+report of an endpoint that never existed under a name it never had, in the
+column someone consults when they find an old client still calling one.
+
 | Callback | Method + path | Status |
 |---|---|---|
 | domain setup | `POST /api2/auth-token/` | superseded — use `/api/silo/v1/auth/login` |
 | — | `GET /api/silo/v1/server-info` | exists |
 | `enumerateItems` (root) | `GET /api/silo/v1/libraries` | exists, now returns `head_commit_id` |
-| `enumerateItems` (dir) | `GET /api/silo/v1/libraries/{id}/dir/?p={path}` | superseded — `entries/{path}` |
+| `enumerateItems` (dir) | `GET /api/silo/v1/repos/{id}/dir/?p={path}` | superseded — `entries/{path}` |
 | `currentSyncAnchor` | `GET /repo/{id}/commit/HEAD` | superseded — `head_commit_id` |
 | `enumerateChanges` | `GET /api/silo/v1/libraries/{id}/changes?since={commit}` | **built** |
 | `item(for:)` | *none* — local `IdMap` ⋈ `WorkingSet` | — |
-| `fetchContents` | `GET /api/silo/v1/libraries/{id}/file?p={path}` → redirect | superseded — `entries/{path}`, no redirect |
+| `fetchContents` | `GET /api/silo/v1/repos/{id}/download?p={path}` → redirect | superseded — `entries/{path}`, no redirect |
 | — | `GET /files/{token}/{name}` | exists |
 | `createItem` (file) | `GET .../upload-link` then `POST /upload-api/{token}` | superseded — `PUT entries/{path}` |
-| `createItem` (dir) | `POST /api/silo/v1/libraries/{id}/mkdir` | superseded — `PUT entries/{path}?type=dir` |
+| `createItem` (dir) | `POST /api/silo/v1/repos/{id}/mkdir` | superseded — `PUT entries/{path}?type=dir` |
 | `modifyItem` (contents) | `POST /update-api/{token}` | superseded — the same `PUT` |
-| `modifyItem` (rename) | `POST /api/silo/v1/libraries/{id}/rename` | superseded — `POST entries/…` `{"op":"move"}` |
-| `modifyItem` (reparent) | `POST /api/silo/v1/libraries/{id}/move` | superseded — the same move call |
-| `deleteItem` | `DELETE /api/silo/v1/libraries/{id}/file?p={path}` | superseded — `DELETE entries/{path}` |
+| `modifyItem` (rename) | `POST /api/silo/v1/repos/{id}/rename` | superseded — `POST entries/…` `{"op":"move"}` |
+| `modifyItem` (reparent) | `POST /api/silo/v1/repos/{id}/move` | superseded — the same move call |
+| `deleteItem` | `DELETE /api/silo/v1/repos/{id}/file?p={path}` | superseded — `DELETE entries/{path}` |
 | push invalidation | `WS /notification` | exists |
 
 The prediction here held: almost the entire surface already existed, and the
@@ -398,7 +405,7 @@ Swift; the API is completion-handler-heavy and `async/await` tames it. Linking G
 via `c-archive` is possible but not worth the FFI for a REST client — `URLSession`
 is less trouble.
 
-As built, in the `Porter` library:
+As built, in the `Porter` repository:
 
 - `FileProviderExtension: NSFileProviderReplicatedExtension`
 - `FileProviderEnumerator: NSFileProviderEnumerator`

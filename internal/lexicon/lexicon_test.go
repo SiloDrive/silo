@@ -17,6 +17,8 @@ import (
 var historical = map[string]string{
 	"docs/README.md":             "states the rule, which means naming the word it retires",
 	"docs/upgrading-to-0.5.0.md": "tells a client author what to grep for, which means writing it out",
+	"docs/macos-fileprovider-plan.md": "its request inventory records endpoints deleted in 0.4.4, " +
+		"before the rename, so /repos/ is the only spelling they ever had",
 }
 
 func TestNoGoSourceSaysRepo(t *testing.T) {
