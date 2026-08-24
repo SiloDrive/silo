@@ -77,7 +77,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.6","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","library-rename","blocks","pagination","batch","usage","notifications"]}
+{"version":"0.4.6","features":["libraries","entries","entries-copy","conditional-writes","ranged-reads","changes","library-rename","blocks","pagination","batch","usage","notifications"]}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an
@@ -607,17 +607,33 @@ account has.
 Check `features` for `blocks` first. Three calls:
 
 ```
-POST /api/silo/v1/libraries/{library}/blocks/missing      {"blocks":[sha1,…]} → {"missing":[sha1,…]}
-PUT  /api/silo/v1/libraries/{library}/blocks/{sha1}       the block's bytes
-PUT  /api/silo/v1/libraries/{library}/entries/{path}?type=blocks   {"blocks":[sha1,…]}
+POST /api/silo/v1/libraries/{library}/blocks/missing      {"blocks":[id,…]} → {"missing":[id,…]}
+PUT  /api/silo/v1/libraries/{library}/blocks/{id}         the chunk's bytes
+PUT  /api/silo/v1/libraries/{library}/entries/{path}?type=blocks   {"blocks":[id,…]}
 ```
 
-**You can compute the ids yourself, and that is the point.** Cut the file at
-`block_size` offsets — the number is in `server-info` — and SHA-1 each piece.
-Those are the names the server uses, so you can ask what it already holds
-before sending anything. Do not guess the block size: chunking at a different
-offset uploads correctly and dedups against nothing, which fails silently and
-forever.
+**You can compute the ids yourself, and that is the point.** An id is the
+**SHA-256** of the chunk's bytes, sixty-four hex characters. Those are the
+names the server uses, so you can ask what it already holds before sending
+anything.
+
+**The boundaries are content-defined, and the parameters belong to the
+library.** There is no `block_size` in `server-info` and there has not been
+one since chunking stopped happening at fixed offsets — one number shared by
+every library is meaningless when boundaries fall where the content puts them.
+Read the `chunker` object off the library's row in `GET /libraries`
+(`algorithm`, `min_size`, `target_size`, `max_size`, `normalization`), frozen
+at creation.
+
+**If the library's row carries no `chunker`, upload whole files instead.** Do
+not substitute defaults. Chunking under the wrong parameters uploads
+*correctly* — the server verifies every chunk against its id — and dedups
+against nothing, so there is no error to see and no point at which it starts
+working. It is the one failure on this surface that nothing detects, which is
+why the only safe response to "I cannot read the parameters" is not to use the
+surface. Our own client had this bug: it cut at fixed 8 MiB offsets and hashed
+SHA-1, and files under the threshold hid it because they never took the
+chunked path at all.
 
 **Nothing exists until the third call.** Blocks are immutable and named by
 their content, so uploading them changes no path, mints no commit and touches
@@ -637,9 +653,10 @@ only point at which another client can see anything.
 answers **400** if it does not match the id you sent it under, so a successful
 PUT is an end-to-end integrity check and not merely an acknowledgement.
 
-**Already-present blocks answer 204 before reading the body.** Send `Expect:
-100-continue` and you skip the transfer entirely, which matters when a
-`blocks/missing` answer has gone stale under you.
+**Already-present blocks answer 200 before reading the body**, where a stored
+one answers 201. Send `Expect: 100-continue` and you skip the transfer
+entirely, which matters when a `blocks/missing` answer has gone stale under
+you.
 
 **Encrypted libraries are excluded** (**400**). Their blocks are ciphertext, so
 you cannot name one without doing the encryption yourself. Under store-v2 that

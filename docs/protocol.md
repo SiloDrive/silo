@@ -72,7 +72,7 @@ credential: one to learn what it is talking to, one to get a token.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.6","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. No chunker parameters: they belong to the library, and the libraries listing carries them |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.6","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. No chunker parameters: they belong to the library, and the libraries listing carries them. The `libraries` name says this server serves `/libraries/…`; a client that does not find it is talking to a build that predates the word and should say so rather than read the 404 that follows as an empty account |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
 | POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
 | GET | `/api/silo/v1/libraries` | List the caller's libraries — owned, plus any shared directly to them through `SharedLibrary` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |

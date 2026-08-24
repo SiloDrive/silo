@@ -121,6 +121,7 @@ func TestTheLibraryRoutesAnswer(t *testing.T) {
 		{"PATCH", "/api/silo/v1/libraries/" + id},
 		{"POST", "/api/silo/v1/libraries/" + id + "/batch"},
 		{"POST", "/api/silo/v1/libraries/" + id + "/blocks/missing"},
+
 		{"GET", "/api/silo/v1/libraries/" + id + "/entries/"},
 		{"PUT", "/api/silo/v1/libraries/" + id + "/head"},
 	} {
@@ -128,6 +129,39 @@ func TestTheLibraryRoutesAnswer(t *testing.T) {
 		if code == http.StatusNotFound {
 			t.Errorf("%s %s: 404, so the route is not registered (%s)",
 				c.method, c.path, strings.TrimSpace(body))
+		}
+	}
+}
+
+// TestTheIDAddressedRoutesAnswer covers /blocks/{id} and /objects/{id}, which
+// every other test in this package reaches by calling the handler with a vars
+// map — so nothing asserted they were on the router at all. porter does not
+// exercise either, so its strict fake cannot catch it either.
+//
+// They cannot be measured the way the routes above are. Those answer 404 only
+// when unregistered; these answer 404 for an object nobody stored, which is
+// the same status for the opposite reason — the first draft of this test
+// "passed" by finding a route it had just deleted, because the surviving route
+// beside it 404'd for a missing chunk. So the probe is a method the route does
+// not serve: mux answers 405 when the path matched and the method did not, and
+// 404 only when nothing matched at all. 405 is the proof of registration.
+func TestTheIDAddressedRoutesAnswer(t *testing.T) {
+	base, token := wire(t)
+	id := makeLibrary(t, base, token)
+
+	// Sixty-four hex characters: the routes pin their variable to that width,
+	// so a shorter placeholder would miss the route and report a registered
+	// route as absent.
+	const hexID = "0000000000000000000000000000000000000000000000000000000000000000"
+
+	for _, path := range []string{
+		"/api/silo/v1/libraries/" + id + "/blocks/" + hexID,
+		"/api/silo/v1/libraries/" + id + "/objects/" + hexID,
+	} {
+		code, _ := call(t, "POST", base+path, token, "")
+		if code == http.StatusNotFound {
+			t.Errorf("POST %s: 404, so the route is not registered "+
+				"(a registered route answers 405 to a method it does not serve)", path)
 		}
 	}
 }
