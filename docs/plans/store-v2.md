@@ -1021,13 +1021,20 @@ store-v2 builds on never had it.
   back to measuring the current tree outright, which also covers an object lost
   to corruption for free. That fallback is a full walk on a request path; it is
   the price of the cheap answer having expired, and it happens once.
-- **The listing sidecar is still owed.** Accounting was supposed to read a
-  `(child_id → file_size)` index populated at commit time for the listing, and
-  that index does not exist: `entries/` listings still omit `size` on store-v2,
-  and accounting reaches its number by delta instead. When the sidecar lands
-  the two must not become two definitions of one number — the row above stays
-  the authority for what a library holds, and the index answers what a
-  directory shows.
+- **The listing sidecar has landed, filled on read rather than at commit.**
+  The `(child_id → file_size)` index exists as `ObjectSize`, and `entries/`
+  listings carry `size` again. It is populated by the listing itself — read the
+  manifests a page is missing, answer, and write the numbers down — rather than
+  at commit time as this plan first had it, for the reason accounting is
+  repair-on-read: there is more than one way for a manifest to reach a store,
+  and a table depending on every one of them calling it is a table with holes
+  nobody notices, because a missing size is indistinguishable from one not
+  asked for yet. Cost is bounded by the page and paid once per manifest ever;
+  the steady state is one indexed query. The key is the object id alone, with
+  no library column, because content-addressing makes the size a function of
+  the id. The two numbers stayed distinct as this required: `RepoUsage` is the
+  authority for what a library holds, `ObjectSize` answers what a directory
+  shows, and neither is computed from the other.
 - **Dedup is not a discount, and a stored-bytes quota is refused.**
   Cross-library dedup exists only for plain libraries — a different CK mints a
   different frame (Content crypto) — so charging stored bytes would bill two

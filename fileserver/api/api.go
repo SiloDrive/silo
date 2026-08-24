@@ -7,6 +7,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/repomgr"
 	"github.com/dkam/silo/fileserver/share"
@@ -524,10 +525,15 @@ func DeleteRepoHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type dirEntry struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	ID       string `json:"id"`
-	Size     int64  `json:"size,omitempty"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	ID   string `json:"id"`
+	// Size is a pointer for the reason repoInfo.Size is: absent and zero are
+	// different answers, and rendering "not measured" as 0 B states a fact the
+	// server never gave. A directory never carries one — a directory object
+	// has no file_size, and the sum of what is under it is a different
+	// question with a different endpoint.
+	Size     *int64 `json:"size,omitempty"`
 	Mtime    int64  `json:"mtime"`
 	Modifier string `json:"modifier,omitempty"`
 }
@@ -584,20 +590,25 @@ func ListDirByID(w http.ResponseWriter, r *http.Request, repo *repomgr.Repo, dir
 	if more {
 		setNextLink(w, r, encodeCursor(pageCursor{Dir: dirID, Offset: to}))
 	}
+	// Sized after windowing, not before, so a page costs a page. This is the
+	// whole reason the fill lives here rather than in listEntries: a client
+	// asking for twenty entries out of a hundred thousand should pay for
+	// twenty, and listEntries reads the directory object entire because that
+	// is what a directory object is.
+	page := entries[from:to]
+	withFileSizes(repo, page)
+
 	// The body stays an array whether or not it is paged. Pagination lives in
 	// a header precisely so that adding it did not change the shape of a
 	// response every existing client already parses.
-	writeJSON(w, http.StatusOK, entries[from:to])
+	writeJSON(w, http.StatusOK, page)
 }
 
 // listEntries reads one directory.
 //
-// It reports no size, and that is a gap rather than a decision about the wire:
-// a dirent does not carry one — the size lives in the file's manifest — and
-// reading N manifests to answer one listing is exactly what the plan's listing
-// bullet rules out. The size returns as the advisory sidecar the server fills
-// from its object index when a commit is processed. Until that index exists,
-// sizes are omitted rather than paid for.
+// It reports no size: a dirent does not carry one — the size lives in the
+// file's manifest — so sizes are a second lookup, and withFileSizes does it
+// for the page that is actually served.
 func listEntries(repo *repomgr.Repo, dirID string) ([]dirEntry, error) {
 	st, err := repo.Store()
 	if err != nil {
@@ -625,4 +636,79 @@ func listEntries(repo *repomgr.Repo, dirID string) ([]dirEntry, error) {
 		})
 	}
 	return entries, nil
+}
+
+// withFileSizes fills in the size of every file on a page.
+//
+// The sizes come from the sidecar, which is a recorded copy of one number out
+// of each manifest. What is not recorded yet is read from the manifests
+// themselves and written down on the way past, so a directory pays for this
+// once however often it is listed — the ids are content hashes and never
+// change, so a row once written is right forever.
+//
+// The read is public, not opened: file_size is in the part of a manifest the
+// server can read without a content key, which is what lets an end-to-end
+// encrypted library show sizes at all. The plan's argument for making it
+// public is the same one that makes garbage collection possible.
+//
+// Nothing here can fail the listing. A store that cannot be opened, a manifest
+// that cannot be read, a database that will not take the write — each costs
+// one entry its size, which the wire already has a way to say.
+func withFileSizes(repo *repomgr.Repo, page []dirEntry) {
+	ids := make([]string, 0, len(page))
+	for _, e := range page {
+		if e.Type == "file" {
+			ids = append(ids, e.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	sizes, err := repomgr.FileSizes(ids)
+	if err != nil {
+		log.Warnf("could not read recorded file sizes: %v", err)
+		sizes = map[string]int64{}
+	}
+
+	// Whatever the sidecar did not have, read from the manifest and remember.
+	var st *objmgr.Store
+	found := map[string]int64{}
+	for _, id := range ids {
+		if _, ok := sizes[id]; ok {
+			continue
+		}
+		if len(found) >= repomgr.MaxSizeRepairs {
+			break
+		}
+		if st == nil {
+			if st, err = repo.Store(); err != nil {
+				log.Warnf("could not open store %s to size a listing: %v", repo.StoreID, err)
+				break
+			}
+		}
+		parsed, err := store.ParseID(id)
+		if err != nil {
+			continue
+		}
+		m, err := st.GetManifestPublic(parsed)
+		if err != nil {
+			// A missing manifest is a broken library, not a broken listing.
+			// The entry loses its size and the name still lists, which is what
+			// lets someone see the damage and delete it.
+			continue
+		}
+		found[id] = m.FileSize
+		sizes[id] = m.FileSize
+	}
+	repomgr.RecordFileSizes(found)
+
+	for i := range page {
+		if page[i].Type != "file" {
+			continue
+		}
+		if size, ok := sizes[page[i].ID]; ok {
+			page[i].Size = &size
+		}
+	}
 }

@@ -139,6 +139,27 @@ CREATE TABLE IF NOT EXISTS Repo (
   chunk_norm   INTEGER  NOT NULL,
   e2ee         INTEGER  NOT NULL
 );
+-- The listing sidecar: what a manifest says its file is, by manifest id.
+--
+-- A directory entry carries a name, a type and a child id, and deliberately no
+-- size — the size lives in the file's manifest, and reading one manifest per
+-- entry to answer one listing is the cost this table exists to pay once
+-- instead of every time.
+--
+-- Keyed by object id alone, with no store or library column, because
+-- content-addressing makes that correct: the id is the hash of the encoded
+-- manifest, so two libraries holding the same id hold the same bytes and the
+-- same declared size. A manifest shared by dedup is measured once.
+--
+-- Advisory, in the plan's sense. The manifest is the authority and this is a
+-- copy of one number out of it; nothing sizes an allocation or decides a sync
+-- from here. The row cannot go stale — an id names fixed bytes forever — so
+-- the only failure available is a missing row, which reads as "not looked up
+-- yet" and is filled the next time the entry is listed.
+CREATE TABLE IF NOT EXISTS ObjectSize (
+  object_id CHAR(64) PRIMARY KEY,
+  file_size BIGINT   NOT NULL
+);
 CREATE TABLE IF NOT EXISTS RepoOwner (repo_id CHAR(37) PRIMARY KEY, account_id BLOB NOT NULL REFERENCES Account(id));
 CREATE INDEX IF NOT EXISTS OwnerIndex ON RepoOwner (account_id);
 
