@@ -3,7 +3,9 @@ package silod
 import (
 	"net/http"
 	"strconv"
+	"sync"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/repomgr"
 	log "github.com/sirupsen/logrus"
 )
@@ -44,6 +46,44 @@ func checkQuotaV2(repo *repomgr.Repo, delta int64) *batchFailure {
 		log.Errorf("Failed to find the owner of %s for a quota check: %v", repo.ID, err)
 		return &batchFailure{http.StatusInternalServerError, "Internal server error"}
 	}
+	unlock := lockOwner(owner)
+	defer unlock()
+	return checkQuotaLocked(repo, owner, delta)
+}
+
+// ownerLocks serializes quota admission per account, so that two requests
+// racing for the same owner's headroom read usage and decide one after the
+// other rather than both against the same pre-write total.
+//
+// A bare read-then-decide, run twice concurrently, admits both: each reads
+// the same usage, each computes usage+delta<=quota as true, and together they
+// land the owner over quota by more than either alone would have. The lock is
+// keyed by owner rather than by repo because the same owner can hold many
+// libraries and a head move on any of them changes the one total every other
+// library's check is weighed against.
+var ownerLocks sync.Map // account.ID -> *sync.Mutex
+
+// lockOwner acquires the owner's admission lock and returns the func that
+// releases it.
+//
+// A caller that only needs the read-then-decide to be atomic — the per-chunk
+// estimate checks — can call checkQuotaV2, which holds this only for the
+// check. A caller whose write is what actually changes usage — the head-move
+// gate — must hold it from before the check through the commit, via
+// checkQuotaLocked, or the same race reopens one level up: the lock would
+// protect the check but not the write the check was supposed to gate.
+func lockOwner(id account.ID) func() {
+	v, _ := ownerLocks.LoadOrStore(id, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// checkQuotaLocked is checkQuotaV2's read-and-decide step, for a caller that
+// already holds owner's admission lock (see lockOwner) across a write that
+// changes usage — the head-move gate keeps the lock through its commit so
+// the total this decides against cannot be admitted against twice.
+func checkQuotaLocked(repo *repomgr.Repo, owner account.ID, delta int64) *batchFailure {
 	quota, err := repomgr.AccountQuota(owner)
 	if err != nil {
 		log.Errorf("Failed to read the quota of the owner of %s: %v", repo.ID, err)

@@ -101,6 +101,17 @@ func (m *Manifest) Validate() error {
 		if c.Size <= 0 {
 			return fmt.Errorf("%w: chunk %d is %d bytes", ErrEncoding, i, c.Size)
 		}
+		if c.Size > MaxFileSize {
+			return fmt.Errorf("%w: chunk %d is %d bytes, above the %d ceiling",
+				ErrEncoding, i, c.Size, int64(MaxFileSize))
+		}
+		// Checked before adding, not after: total and c.Size are each already
+		// bounded by MaxFileSize (2^48), but a manifest can list far more
+		// chunks than fit in that ceiling divided by one, and int64 wraps
+		// silently long before the loop runs out of chunks to add.
+		if total > MaxFileSize-c.Size {
+			return fmt.Errorf("%w: chunk %d overflows the file size total", ErrEncoding, i)
+		}
 		total += c.Size
 	}
 	if total != m.FileSize {
@@ -407,11 +418,16 @@ func parsePublicSection(b []byte) (*PublicManifest, int, error) {
 			return nil, 0, fmt.Errorf("%w: manifest chunk %d size", ErrEncoding, i)
 		}
 		p += n
-		// The upper bound keeps total from overflowing on a hostile size; the
-		// total check below would catch the value anyway, but only after the
-		// addition it was chosen to break.
+		// The upper bound keeps a single size from overflowing on its own, but
+		// a manifest can list far more chunks than MaxFileSize/MaxFileSize
+		// leaves room for, so the running total is checked before every add
+		// too — int64 wraps silently, and a wrapped total can land on exactly
+		// the declared FileSize by construction.
 		if size == 0 || size > uint64(MaxFileSize) {
 			return nil, 0, fmt.Errorf("%w: manifest chunk %d is %d bytes", ErrEncoding, i, size)
+		}
+		if total > MaxFileSize-int64(size) {
+			return nil, 0, fmt.Errorf("%w: manifest chunk %d overflows the file size total", ErrEncoding, i)
 		}
 		m.Chunks[i].Size = int64(size)
 		total += int64(size)

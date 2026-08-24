@@ -210,6 +210,14 @@ func applyBatchOpV2(st *objmgr.Store, root store.ID, verb string, p prepOp, now 
 	case "move":
 		return v2Result(st.Rename(root, p.path, p.to, now))
 	case "copy":
+		// Rename refuses this for "move" on its own (from has no segments to
+		// split a leaf from); copy has no such gate, since it resolves and
+		// puts rather than splitting a leaf, and Resolve(root, "/") happily
+		// returns the root node. Left unchecked, this would alias the tree's
+		// own root into a subpath of itself.
+		if p.path == "/" {
+			return store.ID{}, &batchFailure{http.StatusBadRequest, "The library root cannot be copied"}
+		}
 		node, err := st.Resolve(root, p.path)
 		if err != nil {
 			return v2Result(store.ID{}, err)

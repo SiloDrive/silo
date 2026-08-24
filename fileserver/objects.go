@@ -402,6 +402,37 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// This is the load-bearing quota check, not the per-chunk estimate every
+	// upload already passed: those admit content that names nothing yet, and a
+	// head move is what makes it reachable. The lock is held through the
+	// commit below, because the exact number this measures is only true until
+	// something else changes the owner's usage.
+	owner, err := repomgr.GetRepoOwner(repo.ID)
+	if err != nil || owner.IsZero() {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to find the owner of %s for a quota check", repo.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	unlock := lockOwner(owner)
+	defer unlock()
+
+	oldRoot, err := store.ParseID(repo.RootID)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to parse current root of repo %s", repo.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	delta, err := st.MeasureDelta(oldRoot, commit.Root)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to measure usage delta for repo %s", repo.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if fail := checkQuotaLocked(repo, owner, delta.Size); fail != nil {
+		http.Error(w, fail.message, fail.code)
+		return
+	}
+
 	acct := middleware.GetAccount(r)
 	_, err = updateBranch(repo.ID, repo.StoreID, headMove{
 		CommitID: newHead.String(),

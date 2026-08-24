@@ -99,22 +99,25 @@ func RequireAuth(next http.Handler) http.Handler {
 	return requireCredential(next, "bearer", sessionLookup, "")
 }
 
-// sessionLookup treats every validation failure as a bad token: a JWT is
-// verified from its signature alone, so there is no store here that could be
+// sessionLookup treats a bad signature as a bad token: a JWT is verified from
+// its signature alone, so ValidateSessionToken has no store that could be
 // down and no error that means anything but "this token is not good".
 //
 // The account read is this lane's only query — a JWT has no row to join
-// against — which is why it lives here rather than in requireCredential.
+// against — which is why it lives here rather than in requireCredential. It
+// separates "no such account" from a store that is unreachable, the same way
+// apiTokenLookup does, so a database outage does not masquerade as every
+// session having expired.
 func sessionLookup(ctx context.Context, secret string) (*account.Account, error) {
 	id, err := authmgr.ValidateSessionToken(secret)
 	if err != nil {
 		return nil, ErrInvalidCredential
 	}
 	acct, err := account.ByID(ctx, id)
-	if err != nil {
+	if errors.Is(err, account.ErrNotFound) {
 		return nil, ErrInvalidCredential
 	}
-	return acct, nil
+	return acct, err
 }
 
 // WithAccount returns a request carrying an authenticated account, for the

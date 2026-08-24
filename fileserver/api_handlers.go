@@ -283,7 +283,8 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 
 	src, err := st.Resolve(root, srcPath)
 	if err != nil {
-		http.Error(w, "Source not found", http.StatusNotFound)
+		writeTreeErr(w, r, err, "Source not found",
+			fmt.Sprintf("resolve %s in repo %s", srcPath, repoID))
 		return
 	}
 

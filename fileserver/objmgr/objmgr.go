@@ -32,6 +32,7 @@ import (
 	"io"
 
 	"github.com/dkam/silo/fileserver/objstore"
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/store"
 )
 
@@ -133,7 +134,7 @@ func (s *Store) Params() store.Params { return s.params }
 // server can accept chunks for a library it cannot read without trusting the
 // uploader about what they are.
 func (s *Store) PutChunk(id store.ID, data []byte) error {
-	if err := s.chunks.WriteVerified(s.storeID, id.String(), bytes.NewReader(data), true); err != nil {
+	if err := s.chunks.WriteVerified(s.storeID, id.String(), bytes.NewReader(data), option.SyncObjectWrites); err != nil {
 		if errors.Is(err, objstore.ErrContentMismatch) {
 			return fmt.Errorf("%w: chunk %s", ErrIDMismatch, id)
 		}
@@ -201,7 +202,7 @@ func (s *Store) ChunkStoredSize(id store.ID) (int64, error) {
 // id that names something else is the one corruption a content-addressed store
 // can catch on its own.
 func (s *Store) PutObject(id store.ID, encoded []byte) error {
-	if err := s.objects.WriteVerified(s.storeID, id.String(), bytes.NewReader(encoded), true); err != nil {
+	if err := s.objects.WriteVerified(s.storeID, id.String(), bytes.NewReader(encoded), option.SyncObjectWrites); err != nil {
 		if errors.Is(err, objstore.ErrContentMismatch) {
 			return fmt.Errorf("%w: object %s", ErrIDMismatch, id)
 		}

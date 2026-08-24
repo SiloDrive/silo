@@ -298,10 +298,13 @@ func (s *Store) Remove(root store.ID, p string, now int64) (store.ID, error) {
 
 // Rename moves the entry at from to to, and returns the new root id.
 //
-// It refuses to overwrite anything, of either type. A rename that lands on an
-// occupied name is a collision the caller has to decide about — keep both
-// under a suffixed name, prefer one side, ask a human — and a tree layer that
-// picked silently would be making that decision for every caller at once.
+// A destination holding a directory is always refused — replacing it would
+// drop its whole subtree as a side effect of a move — and so is moving a
+// directory onto an existing file, which the caller has to decide about
+// rather than a tree layer picking silently. File onto file is the one
+// collision that destroys nothing the caller did not name, and it is
+// allowed, replacing the destination: the same rule PutNode already applies
+// when a path is written directly.
 //
 // It also refuses to move a directory into its own subtree, which would
 // detach the subtree from the root and leave it referenced only by itself.
@@ -333,8 +336,13 @@ func (s *Store) Rename(root store.ID, from, to string, now int64) (store.ID, err
 	if err != nil {
 		return store.ID{}, err
 	}
-	if _, err := s.Resolve(root, to); err == nil {
-		return store.ID{}, fmt.Errorf("%w: %q", ErrExists, to)
+	if dst, err := s.Resolve(root, to); err == nil {
+		switch {
+		case dst.IsDir():
+			return store.ID{}, fmt.Errorf("%w: %q", ErrIsDir, to)
+		case node.IsDir():
+			return store.ID{}, fmt.Errorf("%w: %q", ErrExists, to)
+		}
 	} else if !errors.Is(err, ErrNotFound) {
 		return store.ID{}, err
 	}
