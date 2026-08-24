@@ -140,7 +140,7 @@ The credentials are optional. Started with an empty user table and no `SILO_ADMI
 
 Save it — the password is stored hashed, so later runs cannot print it again. Setting `SILO_ADMIN_EMAIL` alone names the account and still generates the password; setting `SILO_ADMIN_PASSWORD` skips the whole thing. Once any user exists, this never fires again. No config file is required — Silo runs on compiled defaults plus environment variables. If you want to tweak low-level settings (quota defaults, cache limits, cluster options) you can pass a `seafile.conf` with `-C /path/to/seafile.conf`.
 
-**Loopback is the default on purpose.** Silo speaks plaintext unless given a certificate, and every credential it uses — sync tokens, API tokens, JWTs — is a bearer token in a header. To reach it from other machines, see [Exposing the server](#exposing-the-server).
+**Loopback is the default on purpose.** Silo speaks plaintext — TLS is the reverse proxy's job — and every credential it uses is a bearer token in a header. To reach it from other machines, see [Exposing the server](#exposing-the-server).
 
 ### Run the TUI client
 
@@ -209,7 +209,6 @@ not reclaim unreferenced history inside a library that still exists.
 |---|---|---|
 | `SILO_DATA_DIR` | Data directory | `~/.local/share/silo` |
 | `SILO_HOST` | Bind address | `127.0.0.1` (`0.0.0.0` in the Docker image) |
-| `SILO_TLS_CERT` / `SILO_TLS_KEY` | Serve HTTPS directly (set both) | — |
 | `SILO_PORT` | Listen port | `8082` |
 | `SILO_ADMIN_EMAIL` | Create admin user on startup | `admin@silo.local` when the user table is empty |
 | `SILO_ADMIN_PASSWORD` | Admin password | generated and logged on first run |
@@ -292,12 +291,13 @@ issues are grouped, and how to change the tracing sample rate.
 
 ## Exposing the server
 
-Silo binds `127.0.0.1` by default and speaks plaintext. Every credential it
-uses is a bearer token in a header, so publishing that port without TLS hands
-those tokens to anyone on the path. Two supported ways to expose it:
+Silo binds `127.0.0.1` by default and speaks plaintext, and it has no HTTPS of
+its own — terminating TLS is the reverse proxy's job, and a proxy does it
+better: it reloads a renewed certificate without restarting the file server.
+Every credential Silo uses is a bearer token in a header, so publishing that
+port without a proxy in front hands those tokens to anyone on the path.
 
-**Behind a TLS reverse proxy** (recommended). Leave Silo on loopback and
-terminate TLS in front of it:
+Leave Silo on loopback and terminate TLS in front of it:
 
 ```nginx
 server {
@@ -322,17 +322,8 @@ server {
 Then set `SILO_TRUST_PROXY_HEADERS=true` so per-address rate limiting sees the
 real client rather than the proxy.
 
-**Serving TLS directly**, for a deployment with no proxy:
-
-```bash
-SILO_HOST=0.0.0.0 \
-SILO_TLS_CERT=/etc/silo/fullchain.pem \
-SILO_TLS_KEY=/etc/silo/privkey.pem \
-./silo serve -d /path/to/silo-data
-```
-
-Setting `SILO_HOST` to a non-loopback address without either option logs a
-warning on every start.
+Setting `SILO_HOST` to a non-loopback address logs a warning on every start,
+since from there Silo cannot tell whether anything is terminating TLS for it.
 
 ## Revoking access
 

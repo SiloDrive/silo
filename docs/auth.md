@@ -1169,7 +1169,7 @@ Everything else — authorization, token, JWKS, and device endpoints — comes f
 `/.well-known/openid-configuration`. Hardcoding those URLs is how integrations
 break on an IdP upgrade.
 
-`GET /api/silo/v1/server-info` (`server.go:724`, already unauthenticated)
+`GET /api/silo/v1/server-info` (`server.go:534`, already unauthenticated)
 advertises whether OIDC is configured, so Porter shows the right first screen
 without being told.
 
@@ -1241,7 +1241,7 @@ receives a code and a URL from Silo, polls Silo, and stores one credential.
 
 When OIDC is not configured, `server-info` says so and Porter collects an email
 and a password itself, posting them to `POST /api/silo/v1/auth/login`
-(`server.go:699`). There is no device code on that path and no approval page —
+(`server.go:533`). There is no device code on that path and no approval page —
 see [Password login](#password-login). Porter does not otherwise know or care
 how the human was authenticated, which is the point of brokering: the response
 is a credential either way.

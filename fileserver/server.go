@@ -4,7 +4,6 @@ package silod
 import (
 	"context"
 	"crypto/subtle"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
@@ -375,20 +374,6 @@ func Run(args []string) error {
 	go handleSignals()
 	go handleUser1Signal()
 
-	tlsCert, tlsKey := option.TLSCertFile, option.TLSKeyFile
-	useTLS := tlsCert != "" && tlsKey != ""
-	scheme := "http"
-	if useTLS {
-		scheme = "https"
-		// Pinned rather than left to the default so that the floor is a
-		// property of this server and not of whichever Go version built it.
-		// 1.2 rather than 1.3 is now a floor with no client left to justify
-		// it: it was set for the desktop clients whose lanes have been
-		// deleted, and porter is the only thing that talks to this server.
-		// Raising it to 1.3 is a one-line change and wants a decision rather
-		// than a drift.
-		httpServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	}
 	// Bind before reporting, and before backgrounding the serve loop. A
 	// listener opened inside the goroutine could only report its failure by
 	// logging, and Run would then block on shutdownDone forever — a process
@@ -405,17 +390,11 @@ func Run(args []string) error {
 	// Reported as configured rather than as ln.Addr(), which renders a 0.0.0.0
 	// bind as "[::]" — accurate, since the wildcard listener is dual-stack,
 	// but not what anyone typed, and it would disagree with the warning below.
-	log.Printf("Silo server listening on %s://%s:%d", scheme, option.Host, option.Port)
-	warnIfExposedWithoutTLS(useTLS)
+	log.Printf("Silo server listening on http://%s:%d", option.Host, option.Port)
+	warnIfExposedWithoutTLS()
 
 	go func() {
-		var err error
-		if useTLS {
-			err = httpServer.ServeTLS(ln, tlsCert, tlsKey)
-		} else {
-			err = httpServer.Serve(ln)
-		}
-		if err != nil && err != http.ErrServerClosed {
+		if err := httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Errorf("File server exiting: %v", err)
 		}
 	}()
@@ -442,21 +421,19 @@ func logGeneratedAdmin(email, password string) {
 
 // warnIfExposedWithoutTLS says so when the server is reachable from off the
 // machine over plaintext. Every credential Silo uses is a bearer token sent in
-// a header — sync tokens, API tokens, JWTs — so anyone on the path can lift
-// one and keep it. It is a warning rather than a refusal because terminating
-// TLS at a reverse proxy is the normal deployment, and the server cannot tell
-// from here whether one is in front of it.
-func warnIfExposedWithoutTLS(useTLS bool) {
-	if useTLS {
-		return
-	}
+// a header, so anyone on the path can lift one and keep it.
+//
+// Silo speaks plaintext and only plaintext: TLS belongs to the reverse proxy
+// in front of it. It is a warning rather than a refusal because the server
+// cannot tell from here whether a proxy is there.
+func warnIfExposedWithoutTLS() {
 	ip := net.ParseIP(option.Host)
 	if ip != nil && ip.IsLoopback() {
 		return
 	}
 	log.Warnf("Listening on %s without TLS. Passwords and tokens will cross the "+
-		"network in clear text — put a TLS reverse proxy in front (and set "+
-		"SILO_TRUST_PROXY_HEADERS=true), or set SILO_TLS_CERT and SILO_TLS_KEY.",
+		"network in clear text — put a TLS reverse proxy in front, and set "+
+		"SILO_TRUST_PROXY_HEADERS=true so rate limiting sees the real client.",
 		option.Host)
 }
 
