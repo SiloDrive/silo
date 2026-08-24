@@ -85,7 +85,8 @@ func TestPageKeysMoveAWholeScreen(t *testing.T) {
 func browseModel(n, width, height int) model {
 	entries := make([]client.DirEntry, n)
 	for i := range entries {
-		entries[i] = client.DirEntry{Name: fmt.Sprintf("file%03d", i), Type: "file", Size: 1024}
+		size := int64(1024)
+		entries[i] = client.DirEntry{Name: fmt.Sprintf("file%03d", i), Type: "file", Size: &size}
 	}
 	return model{
 		view:           viewBrowse,

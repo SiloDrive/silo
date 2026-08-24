@@ -661,7 +661,13 @@ func (m model) renderBrowse() string {
 			body = append(body, cursor+name+ts)
 			continue
 		}
-		body = append(body, cursor+name+"  "+dimStyle.Render(format.Bytes(entry.Size))+ts)
+		// A file whose size the server did not send shows nothing rather than
+		// "0 B", which would read as an empty file.
+		size := ""
+		if entry.Size != nil {
+			size = "  " + dimStyle.Render(format.Bytes(*entry.Size))
+		}
+		body = append(body, cursor+name+size+ts)
 	}
 
 	return m.frame(header, body, m.footer(headerRows, browseHelp))

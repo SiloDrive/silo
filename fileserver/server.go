@@ -541,16 +541,15 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/repos/{repoid}", api.DeleteRepoHandler).Methods("DELETE")
 	apiRouter.HandleFunc("/repos/{repoid}", patchRepoHandler).Methods("PATCH")
 	apiRouter.HandleFunc("/repos/{repoid}/changes", api.ChangesHandler).Methods("GET")
-	// The block surface. "missing" cannot collide with a block id — the id
-	// route only matches 40 hex characters — but it is listed first anyway,
+	// The chunk surface. "missing" cannot collide with a chunk id — the id
+	// route only matches 64 hex characters — but it is listed first anyway,
 	// because relying on a regex to keep two routes apart is the kind of thing
 	// that stops being true when someone loosens the regex.
 	apiRouter.HandleFunc("/repos/{repoid}/batch", batchHandler).Methods("POST")
 	apiRouter.HandleFunc("/repos/{repoid}/blocks/missing", blocksMissingHandler).Methods("POST")
-	// The id-addressed surface, store-v2 only. A chunk id is sixty-four hex
-	// characters, so the id and the route regex cannot
-	// collide however the library is stored — the width is the format, not a
-	// convention. See objects.go.
+	// The id-addressed surface. A chunk id is sixty-four hex characters, so
+	// the id and the route regex cannot collide — the width is the format, not
+	// a convention. See objects.go.
 	apiRouter.HandleFunc("/repos/{repoid}/blocks/{id:[0-9a-f]{64}}", getChunkHandler).Methods("GET", "HEAD")
 	apiRouter.HandleFunc("/repos/{repoid}/blocks/{id:[0-9a-f]{64}}", putChunkHandler).Methods("PUT")
 	apiRouter.HandleFunc("/repos/{repoid}/objects/{id:[0-9a-f]{64}}", getObjectHandler).Methods("GET", "HEAD")

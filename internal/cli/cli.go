@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/dkam/silo/client"
 )
@@ -100,9 +102,55 @@ func cmdRepo(c *client.APIClient, args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: silo repo rm <repo-id>")
 		}
-		return c.DeleteRepo(args[1])
+		repoID, err := resolveRepo(c, args[1])
+		if err != nil {
+			return err
+		}
+		return c.DeleteRepo(repoID)
 	default:
 		return fmt.Errorf("unknown repo subcommand: %s", args[0])
+	}
+}
+
+// repoIDPattern is the shape CreateRepo hands out: a UUID. Anything matching
+// it is taken as an id and used directly, and anything else is looked up as a
+// name — so a library really called "4e5d525b-38a0-4198-95c7-2fde63a9b91d"
+// would be unreachable by name, which is a trade worth making against sending
+// every argument through an extra request.
+var repoIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// resolveRepo turns what someone typed into a library id.
+//
+// Names are not unique — nothing stops two libraries being called "Photos" —
+// so an ambiguous name is an error that lists the candidates rather than a
+// guess. Picking the first would work for months and then quietly write to the
+// wrong library on the day a second one appeared.
+func resolveRepo(c *client.APIClient, arg string) (string, error) {
+	if repoIDPattern.MatchString(arg) {
+		return arg, nil
+	}
+	repos, err := c.ListRepos()
+	if err != nil {
+		return "", err
+	}
+	var matches []client.Repo
+	for _, repo := range repos {
+		if repo.Name == arg {
+			matches = append(matches, repo)
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0].ID, nil
+	case 0:
+		return "", fmt.Errorf("no library called %q; `silo repos` lists them", arg)
+	default:
+		ids := make([]string, 0, len(matches))
+		for _, repo := range matches {
+			ids = append(ids, repo.ID)
+		}
+		return "", fmt.Errorf("%d libraries are called %q; name one by id: %s",
+			len(matches), arg, strings.Join(ids, ", "))
 	}
 }
 
@@ -116,7 +164,10 @@ func cmdLs(c *client.APIClient, args []string) error {
 	if len(rest) < 1 {
 		return fmt.Errorf("usage: silo ls [--json] <repo-id> [path]")
 	}
-	repoID := rest[0]
+	repoID, err := resolveRepo(c, rest[0])
+	if err != nil {
+		return err
+	}
 	path := "/"
 	if len(rest) >= 2 {
 		path = rest[1]
@@ -136,7 +187,10 @@ func cmdGet(c *client.APIClient, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: silo get <repo-id> <remote-path> [local-path]")
 	}
-	repoID := args[0]
+	repoID, err := resolveRepo(c, args[0])
+	if err != nil {
+		return err
+	}
 	remote := args[1]
 	local := filepath.Base(remote)
 	if len(args) >= 3 {
@@ -157,7 +211,10 @@ func cmdPut(c *client.APIClient, args []string) error {
 	if len(rest) < 2 {
 		return fmt.Errorf("usage: silo put [-r] [-q] [--json] <repo-id> <local-path> [remote-dir]")
 	}
-	repoID := rest[0]
+	repoID, err := resolveRepo(c, rest[0])
+	if err != nil {
+		return err
+	}
 	local := rest[1]
 	parentDir := "/"
 	if len(rest) >= 3 {
@@ -229,28 +286,44 @@ func cmdMkdir(c *client.APIClient, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: silo mkdir <repo-id> <path>")
 	}
-	return c.Mkdir(args[0], args[1])
+	repoID, err := resolveRepo(c, args[0])
+	if err != nil {
+		return err
+	}
+	return c.Mkdir(repoID, args[1])
 }
 
 func cmdRm(c *client.APIClient, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: silo rm <repo-id> <path>")
 	}
-	return c.DeleteFile(args[0], args[1])
+	repoID, err := resolveRepo(c, args[0])
+	if err != nil {
+		return err
+	}
+	return c.DeleteFile(repoID, args[1])
 }
 
 func cmdMv(c *client.APIClient, args []string) error {
 	if len(args) < 3 {
 		return fmt.Errorf("usage: silo mv <repo-id> <src> <dst>")
 	}
-	return c.MoveFile(args[0], args[1], args[2])
+	repoID, err := resolveRepo(c, args[0])
+	if err != nil {
+		return err
+	}
+	return c.MoveFile(repoID, args[1], args[2])
 }
 
 func cmdRename(c *client.APIClient, args []string) error {
 	if len(args) < 3 {
 		return fmt.Errorf("usage: silo rename <repo-id> <path> <new-name>")
 	}
-	return c.RenameFile(args[0], args[1], args[2])
+	repoID, err := resolveRepo(c, args[0])
+	if err != nil {
+		return err
+	}
+	return c.RenameFile(repoID, args[1], args[2])
 }
 
 // cmdChanges exists mostly so the delta endpoint can be exercised by hand. A
@@ -266,7 +339,11 @@ func cmdChanges(c *client.APIClient, args []string) error {
 	if len(rest) < 2 {
 		return fmt.Errorf("usage: silo changes [--json] <repo-id> <since-commit>")
 	}
-	resp, err := c.Changes(rest[0], rest[1])
+	repoID, err := resolveRepo(c, rest[0])
+	if err != nil {
+		return err
+	}
+	resp, err := c.Changes(repoID, rest[1])
 	if err != nil {
 		return err
 	}

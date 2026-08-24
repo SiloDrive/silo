@@ -66,10 +66,16 @@ type ChunkerParams struct {
 }
 
 type DirEntry struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"` // "file" or "dir"
-	ID       string `json:"id"`
-	Size     int64  `json:"size,omitempty"`
+	Name string `json:"name"`
+	Type string `json:"type"` // "file" or "dir"
+	ID   string `json:"id"`
+	// Size is a pointer because absent and zero are different answers, and on
+	// this endpoint the difference is the common case. A store-v2 dirent
+	// carries no size — it lives in the file's manifest — so the server omits
+	// it rather than reading N manifests to answer one listing. Rendering that
+	// as 0 B states a fact the server never gave: an empty file and a file of
+	// unknown size are not the same thing to anyone reading the output.
+	Size     *int64 `json:"size,omitempty"`
 	Mtime    int64  `json:"mtime"`
 	Modifier string `json:"modifier,omitempty"`
 }

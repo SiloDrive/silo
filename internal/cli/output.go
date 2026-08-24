@@ -40,9 +40,16 @@ func printDirText(w io.Writer, entries []client.DirEntry) {
 		if e.Type == "dir" {
 			kind = "d"
 		}
+		// Three states, not two. A directory has no size to report, a file
+		// whose size the server did not send is unknown, and only the third
+		// case is a number. The first two look different on purpose: "-" is
+		// "this kind of thing has no size" and "?" is "nobody said".
 		size := "-"
 		if e.Type != "dir" {
-			size = format.Bytes(e.Size)
+			size = "?"
+			if e.Size != nil {
+				size = format.Bytes(*e.Size)
+			}
 		}
 		mtime := ""
 		if e.Mtime > 0 {
