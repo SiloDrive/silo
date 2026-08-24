@@ -72,7 +72,7 @@ credential: one to learn what it is talking to, one to get a token.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.6","features":[…],"block_size":8388608}` — semver with no leading `v`, the capability list a client should branch on instead of the version, and the offset a client must chunk at for its block ids to match the store's |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.4.6","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. No chunker parameters: they belong to the library, and the repos listing carries them |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
 | POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
 | GET | `/api/silo/v1/repos` | List the caller's libraries — owned, plus any shared directly to them through `SharedRepo` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |
@@ -221,15 +221,24 @@ Feature name `blocks`. Three calls, and the shape of every resumable upload:
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/silo/v1/repos/{repoid}/blocks/missing` | `{"blocks":[sha1,…]}` → `{"missing":[sha1,…]}` — which of these do you not already have? |
-| PUT | `/api/silo/v1/repos/{repoid}/blocks/{sha1}` | Upload one block. `201` when stored, `204` when it was already there |
-| PUT | `/api/silo/v1/repos/{repoid}/entries/{path}?type=blocks` | `{"blocks":[sha1,…]}` — create the file from them. `201` and an `ETag`, as any other write |
+| POST | `/api/silo/v1/repos/{repoid}/blocks/missing` | `{"blocks":[id,…]}` → `{"missing":[id,…]}` — which of these do you not already have? |
+| PUT | `/api/silo/v1/repos/{repoid}/blocks/{id}` | Upload one chunk. `201` when stored, `204` when it was already there |
+| PUT | `/api/silo/v1/repos/{repoid}/entries/{path}?type=blocks` | `{"blocks":[id,…]}` — create the file from them. `201` and an `ETag`, as any other write |
 
-A client can compute block ids without asking: chunking is at fixed
-`block_size` offsets and a block's id is the SHA-1 of its bytes, so anything
-with a stdlib SHA-1 and a loop arrives at exactly the names the server would.
-That is the whole reason "which of these do you have?" is a question worth
-asking — the alternative is a negotiation.
+An id is the SHA-256 of the chunk's bytes, so a client computes the names the
+server would without asking. Where the cuts fall is the other half, and that
+one is per library: the chunker is content-defined, and its parameters come
+from the `chunker` object on the repos listing. Chunking under anything else
+still uploads correctly and still reads back — the server verifies bytes
+against the id it was given — but the ids match nothing already in the store,
+so nothing dedups. **A client that cannot read a library's parameters must
+upload whole files rather than guess them**: every id would be well-formed,
+every request would succeed, and the failure would be invisible.
+
+Content-defined boundaries are what make the question worth asking at all.
+Under the fixed offsets this surface started with, inserting one byte near the
+front of a file shifted every boundary after it, so a re-upload matched nothing
+and sent the whole file again.
 
 The id is not taken on trust in either direction. The server hashes what
 arrives and refuses a block that does not match the id it was offered under

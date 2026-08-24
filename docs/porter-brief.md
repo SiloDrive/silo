@@ -77,7 +77,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.4.6","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","blocks","pagination","batch","notifications"],"block_size":8388608}
+{"version":"0.4.6","features":["entries","entries-copy","conditional-writes","ranged-reads","changes","repo-rename","blocks","pagination","batch","usage","notifications"]}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an

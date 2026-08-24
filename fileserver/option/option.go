@@ -42,7 +42,6 @@ var (
 	MaxUploadSize          uint64
 	FsIdListRequestTimeout int64
 	// Block size for indexing uploaded files
-	FixedBlockSize uint64
 	// Maximum number of goroutines to index uploaded files
 	MaxIndexingThreads uint32
 	WebTokenExpireTime uint32
@@ -200,7 +199,6 @@ func initDefaultOptions() {
 	// loopback cannot be reached through a published port at all.
 	Host = "127.0.0.1"
 	Port = 8082
-	FixedBlockSize = 1 << 23
 	MaxIndexingThreads = 1
 	WebTokenExpireTime = 7200
 	ClusterSharedTempFileMode = 0600
@@ -415,12 +413,6 @@ func parseFileServerSection(section *ini.Section) {
 		threads, err := key.Uint()
 		if err == nil {
 			MaxIndexingThreads = uint32(threads)
-		}
-	}
-	if key, err := section.GetKey("fixed_block_size"); err == nil {
-		blkSize, err := key.Uint64()
-		if err == nil {
-			FixedBlockSize = blkSize * (1 << 20)
 		}
 	}
 	if key, err := section.GetKey("web_token_expire_time"); err == nil {

@@ -44,6 +44,25 @@ type Repo struct {
 	// HeadCommitID is where the library is now — the anchor to pass to Changes
 	// on the first call, before there is a previous anchor to hand back.
 	HeadCommitID string `json:"head_commit_id"`
+	// Chunker is how this library's bytes are cut, and it is the library's
+	// property rather than the server's: two libraries on one server can be
+	// chunked differently, and a client that assumed otherwise would compute
+	// ids that dedup against nothing. Nil means the server did not say, which
+	// is a reason to upload whole files rather than to fall back on a guess.
+	Chunker *ChunkerParams `json:"chunker,omitempty"`
+}
+
+// ChunkerParams is a library's chunker as the server reports it.
+//
+// No seed: a plain library chunks under the published constant, which every
+// implementation derives for itself, and an E2EE library's seed comes from a
+// content key no server holds.
+type ChunkerParams struct {
+	Algorithm     string `json:"algorithm"`
+	MinSize       int    `json:"min_size"`
+	TargetSize    int    `json:"target_size"`
+	MaxSize       int    `json:"max_size"`
+	Normalization int    `json:"normalization"`
 }
 
 type DirEntry struct {
@@ -411,21 +430,19 @@ func (c *APIClient) DownloadFile(repoID, repoPath, localPath string) error {
 // from wherever the first attempt stopped.
 // UploadFile sends a local file to a library.
 //
-// Which way it goes is the server's answer, not a flag: a server advertising
-// the block surface gets the block path for anything over one block, and
-// everything else gets a single PUT of the body. One request beats four for a
-// small file, and for a large one the block path is worth its extra round
-// trips — it skips content the server already holds, and an interrupted
-// upload resumes from what landed rather than from zero.
+// Which way it goes is not a flag. A big file goes up as chunks, which skips
+// content the server already holds and resumes from what landed rather than
+// from zero; a small one goes as a single PUT, which is one request against
+// three and needs no hashing at all. Three things have to hold for the chunk
+// path — the server offers it, the library's chunker is known, and the file is
+// large enough to pay for the extra round trips — and any of them failing
+// takes the whole-file path, which always works.
 func (c *APIClient) UploadFile(repoID, parentDir, localPath string) error {
-	info := c.capabilities()
-	if info.Has("blocks") {
-		size := int64(-1)
-		if st, err := os.Stat(localPath); err == nil {
-			size = st.Size()
-		}
-		if size > int64(blockSizeOf(info)) {
-			return c.uploadBlocks(repoID, parentDir, localPath, int64(blockSizeOf(info)))
+	if st, err := os.Stat(localPath); err == nil && st.Size() > chunkLaneThreshold {
+		if c.capabilities().Has("blocks") {
+			if p, ok := c.chunkerFor(repoID); ok {
+				return c.uploadChunks(repoID, parentDir, localPath, p)
+			}
 		}
 	}
 	return c.uploadWhole(repoID, parentDir, localPath)
@@ -462,10 +479,6 @@ func (c *APIClient) uploadWhole(repoID, parentDir, localPath string) error {
 type ServerInfo struct {
 	Version  string   `json:"version"`
 	Features []string `json:"features"`
-	// BlockSize is the offset the server chunks at. Chunking at any other
-	// size still uploads correctly and still reads back, but the ids will
-	// match nothing already in the store, so nothing dedups.
-	BlockSize uint64 `json:"block_size"`
 }
 
 // Has reports whether the server advertises a capability. Prefer it to

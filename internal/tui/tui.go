@@ -738,8 +738,8 @@ func uploadSummary(up *client.TreeUpload) string {
 		return "Uploaded"
 	}
 	summary := fmt.Sprintf("Uploaded %d files in %d directories", up.Files, up.Dirs)
-	if up.BlocksHeld > 0 {
-		summary += fmt.Sprintf(" (%d blocks already on the server)", up.BlocksHeld)
+	if up.ChunksHeld > 0 {
+		summary += fmt.Sprintf(" (%d chunks already on the server)", up.ChunksHeld)
 	}
 	return summary
 }

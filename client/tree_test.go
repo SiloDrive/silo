@@ -17,10 +17,10 @@ import (
 // client sends: how many requests, in what order, and carrying what.
 type treeServer struct {
 	features []string
-	held     map[string]bool // blocks the server already has
+	held     map[string]bool // chunks the server already has
 
 	batches   [][]BatchOp // one entry per batch request
-	blocksPut []string
+	chunksPut []string
 	asked     [][]string // one entry per blocks/missing request
 	puts      []string   // whole-file PUTs, the fallback path
 	mkdirs    []string
@@ -34,12 +34,10 @@ func newTreeServer(t *testing.T, features ...string) (*treeServer, *APIClient) {
 		path := r.URL.Path
 		switch {
 		case path == "/api/silo/v1/server-info":
-			_ = json.NewEncoder(w).Encode(ServerInfo{
-				Version: "test", Features: ts.features, BlockSize: 8,
-			})
+			_ = json.NewEncoder(w).Encode(ServerInfo{Version: "test", Features: ts.features})
 
 		case path == "/api/silo/v1/repos":
-			_ = json.NewEncoder(w).Encode([]Repo{{ID: "r1", Name: "Library"}})
+			_ = json.NewEncoder(w).Encode([]Repo{{ID: "r1", Name: "Library", Chunker: testChunker()}})
 
 		case strings.HasSuffix(path, "/blocks/missing"):
 			var body struct {
@@ -58,7 +56,7 @@ func newTreeServer(t *testing.T, features ...string) (*treeServer, *APIClient) {
 		case strings.Contains(path, "/blocks/"):
 			id := path[strings.LastIndex(path, "/")+1:]
 			_, _ = io.Copy(io.Discard, r.Body)
-			ts.blocksPut = append(ts.blocksPut, id)
+			ts.chunksPut = append(ts.chunksPut, id)
 			ts.held[id] = true
 
 		case strings.HasSuffix(path, "/batch"):
@@ -180,8 +178,8 @@ func TestUploadDirSendsBlocksOnceAndCommitsInOneBatch(t *testing.T) {
 	if len(ts.asked[0]) != 2 {
 		t.Errorf("offered %d distinct blocks, want 2 (alpha, beta)", len(ts.asked[0]))
 	}
-	if len(ts.blocksPut) != 2 {
-		t.Errorf("uploaded %d blocks, want 2", len(ts.blocksPut))
+	if len(ts.chunksPut) != 2 {
+		t.Errorf("uploaded %d blocks, want 2", len(ts.chunksPut))
 	}
 
 	// One commit for the whole tree, with every mkdir ahead of every create.
@@ -204,7 +202,7 @@ func TestUploadDirSendsBlocksOnceAndCommitsInOneBatch(t *testing.T) {
 		t.Errorf("ops = %v,\nwant %s", ops, want)
 	}
 
-	if up.Files != 3 || up.Dirs != 3 || up.Commits != 1 || up.BlocksSent != 2 || up.BlocksHeld != 0 {
+	if up.Files != 3 || up.Dirs != 3 || up.Commits != 1 || up.ChunksSent != 2 || up.ChunksHeld != 0 {
 		t.Errorf("summary = %+v, want 3 files, 3 dirs, 1 commit, 2 blocks sent, 0 held", up)
 	}
 }
@@ -218,17 +216,17 @@ func TestUploadDirSecondRunSendsNothing(t *testing.T) {
 	if _, err := c.UploadDir("r1", "/", root, nil); err != nil {
 		t.Fatal(err)
 	}
-	sentFirst := len(ts.blocksPut)
+	sentFirst := len(ts.chunksPut)
 
 	up, err := c.UploadDir("r1", "/", root, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ts.blocksPut) != sentFirst {
-		t.Errorf("the second run uploaded %d more blocks, want 0", len(ts.blocksPut)-sentFirst)
+	if len(ts.chunksPut) != sentFirst {
+		t.Errorf("the second run uploaded %d more blocks, want 0", len(ts.chunksPut)-sentFirst)
 	}
-	if up.BlocksSent != 0 || up.BlocksHeld != 2 {
-		t.Errorf("second run: sent %d, held %d; want 0 sent and 2 held", up.BlocksSent, up.BlocksHeld)
+	if up.ChunksSent != 0 || up.ChunksHeld != 2 {
+		t.Errorf("second run: sent %d, held %d; want 0 sent and 2 held", up.ChunksSent, up.ChunksHeld)
 	}
 }
 
@@ -242,7 +240,7 @@ func TestUploadDirFallsBackToOneRequestPerEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(ts.batches) != 0 || len(ts.blocksPut) != 0 {
+	if len(ts.batches) != 0 || len(ts.chunksPut) != 0 {
 		t.Error("the fallback used the batch or block surface")
 	}
 	wantMkdirs := "[/tree /tree/empty /tree/sub]"

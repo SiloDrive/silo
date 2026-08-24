@@ -6,6 +6,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+
+	"github.com/dkam/silo/store"
 )
 
 // Uploading a whole directory.
@@ -13,13 +15,13 @@ import (
 // UploadFile is the wrong shape for a tree twice over: it re-sends content the
 // server already holds, and it mints one commit per file, so a folder of five
 // hundred photos arrives as five hundred commits for what the user did once.
-// The two surfaces that fix those are the block surface and the batch surface,
-// and they compose — name every block in the tree, send only the ones nobody
+// The two surfaces that fix those are the chunk surface and the batch surface,
+// and they compose — name every chunk in the tree, send only the ones nobody
 // has, then create every directory and file in one ordered, all-or-nothing
 // request:
 //
 //	POST repos/{id}/blocks/missing   which of these do you not have?
-//	PUT  repos/{id}/blocks/{sha1}    only the ones it asked for
+//	PUT  repos/{id}/blocks/{id}      only the ones it asked for
 //	POST repos/{id}/batch            mkdir …, create …  -> one commit
 //
 // Dedup is across the tree, not just within a file: a block claimed by one
@@ -51,9 +53,9 @@ const maxIDsPerQuery = 5000
 type TreeUpload struct {
 	Dirs       int   `json:"dirs"`
 	Files      int   `json:"files"`
-	Bytes      int64 `json:"bytes"` // block content actually sent
-	BlocksSent int   `json:"blocks_sent"`
-	BlocksHeld int   `json:"blocks_held"`
+	Bytes      int64 `json:"bytes"` // chunk content actually sent
+	ChunksSent int   `json:"chunks_sent"`
+	ChunksHeld int   `json:"chunks_held"`
 	Commits    int   `json:"commits"`
 	// Skipped are local paths that were neither a directory nor a regular
 	// file. What is on the other end of a symlink is the caller's decision,
@@ -65,15 +67,7 @@ type TreeUpload struct {
 type treeFile struct {
 	local  string
 	remote string
-	blocks []string
-}
-
-// blockSource is a place the bytes of a block can be read from. Any one
-// occurrence will do — every copy of a block has the same content, which is
-// what its id means.
-type blockSource struct {
-	local string
-	off   int64
+	chunks []string
 }
 
 // UploadDir uploads localDir, and everything under it, into parentDir. The
@@ -113,8 +107,10 @@ func (c *APIClient) UploadDir(repoID, parentDir, localDir string, onFile func(re
 	result := &TreeUpload{Skipped: skipped}
 
 	server := c.capabilities()
-	if server.Has("batch") && server.Has("blocks") && !c.encrypted(repoID) {
-		return result, c.uploadTreeBatched(repoID, dirs, files, int64(blockSizeOf(server)), onFile, result)
+	if server.Has("batch") && server.Has("blocks") {
+		if p, ok := c.chunkerFor(repoID); ok {
+			return result, c.uploadTreeBatched(repoID, dirs, files, p, onFile, result)
+		}
 	}
 	return result, c.uploadTreeSerially(repoID, dirs, files, onFile, result)
 }
@@ -153,44 +149,44 @@ func walkTree(localDir, remoteBase string) (dirs []string, files []treeFile, ski
 
 // uploadTreeBatched sends the content nobody has, then writes the whole tree
 // in as few commits as the server's limits allow.
-func (c *APIClient) uploadTreeBatched(repoID string, dirs []string, files []treeFile, blockSize int64, onFile func(string), result *TreeUpload) error {
-	// Name every block in the tree first. Nothing is sent yet: the point of
+func (c *APIClient) uploadTreeBatched(repoID string, dirs []string, files []treeFile, p store.Params, onFile func(string), result *TreeUpload) error {
+	// Name every chunk in the tree first. Nothing is sent yet: the point of
 	// hashing everything up front is to be able to ask one question about all
-	// of it, and to ask about a block once however many files contain it.
-	sources := make(map[string]blockSource)
+	// of it, and to ask about a chunk once however many files contain it.
+	sources := make(map[string]chunkSource)
 	var ids []string // distinct, in the order first seen
 	for i := range files {
-		blocks, offsets, err := chunkFile(files[i].local, blockSize)
+		chunks, found, err := chunkFile(files[i].local, p)
 		if err != nil {
 			return fmt.Errorf("failed to read %s: %v", files[i].local, err)
 		}
-		files[i].blocks = blocks
-		for _, id := range blocks {
+		files[i].chunks = chunks
+		for _, id := range chunks {
 			if _, seen := sources[id]; seen {
 				continue
 			}
-			sources[id] = blockSource{local: files[i].local, off: offsets[id]}
+			sources[id] = found[id]
 			ids = append(ids, id)
 		}
 	}
 
-	missing, err := c.missingInChunks(repoID, ids)
+	missing, err := c.missingInBatches(repoID, ids)
 	if err != nil {
 		return err
 	}
-	result.BlocksHeld = len(ids) - len(missing)
+	result.ChunksHeld = len(ids) - len(missing)
 
 	for _, id := range missing {
 		src, ok := sources[id]
 		if !ok {
 			// The server answered with an id that was never offered.
-			return fmt.Errorf("server asked for block %.8s, which is not part of this upload", id)
+			return fmt.Errorf("server asked for chunk %.8s, which is not part of this upload", id)
 		}
-		sent, err := c.putBlockFrom(repoID, id, src.local, src.off, blockSize)
+		sent, err := c.putChunkFrom(repoID, id, src)
 		if err != nil {
 			return err
 		}
-		result.BlocksSent++
+		result.ChunksSent++
 		result.Bytes += sent
 	}
 
@@ -202,18 +198,21 @@ func (c *APIClient) uploadTreeBatched(repoID string, dirs []string, files []tree
 		ops = append(ops, BatchOp{Op: "mkdir", Path: dir})
 	}
 	for _, f := range files {
-		ops = append(ops, BatchOp{Op: "create", Path: f.remote, Blocks: f.blocks})
+		ops = append(ops, BatchOp{Op: "create", Path: f.remote, Blocks: f.chunks})
 	}
 	return c.applyInBatches(repoID, ops, onFile, result)
 }
 
-// missingInChunks asks about a long block list in several requests, and keeps
-// the server's answers in the order asked.
-func (c *APIClient) missingInChunks(repoID string, ids []string) ([]string, error) {
+// missingInBatches asks about a long chunk list in several requests, and keeps
+// the server's answers in the order asked. Named for the request splitting
+// rather than for the chunks, which are what is being asked about — the two
+// senses of the word meet on this one line and only one of them is the
+// format's.
+func (c *APIClient) missingInBatches(repoID string, ids []string) ([]string, error) {
 	var missing []string
 	for start := 0; start < len(ids); start += maxIDsPerQuery {
 		end := min(start+maxIDsPerQuery, len(ids))
-		got, err := c.MissingBlocks(repoID, ids[start:end])
+		got, err := c.MissingChunks(repoID, ids[start:end])
 		if err != nil {
 			return nil, err
 		}
@@ -304,22 +303,4 @@ func (c *APIClient) uploadTreeSerially(repoID string, dirs []string, files []tre
 		}
 	}
 	return nil
-}
-
-// encrypted reports whether the library refuses to be written block by block.
-// An encrypted library holds ciphertext the client produced, so the server
-// cannot assemble a file out of blocks it was handed, and batch create says so
-// rather than guessing. Asking costs one request; not asking costs a batch
-// that fails partway through a tree.
-func (c *APIClient) encrypted(repoID string) bool {
-	repos, err := c.ListRepos()
-	if err != nil {
-		return false
-	}
-	for _, repo := range repos {
-		if repo.ID == repoID {
-			return repo.Encrypted
-		}
-	}
-	return false
 }

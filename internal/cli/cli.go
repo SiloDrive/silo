@@ -199,7 +199,7 @@ func cmdPut(c *client.APIClient, args []string) error {
 }
 
 // printTreeUpload reports the shape of the transfer rather than only its size:
-// blocks held is content the server already had, which is the whole reason
+// chunks held is content the server already had, which is the whole reason
 // this is not a loop over single-file uploads.
 func printTreeUpload(w io.Writer, up *client.TreeUpload) {
 	for _, path := range up.Skipped {
@@ -207,9 +207,9 @@ func printTreeUpload(w io.Writer, up *client.TreeUpload) {
 	}
 	fmt.Fprintf(w, "%s in %s, %s across %s\n",
 		plural(up.Files, "file"), plural(up.Dirs, "directory", "directories"),
-		plural(up.BlocksSent, "block"), plural(up.Commits, "commit"))
-	if up.BlocksHeld > 0 {
-		fmt.Fprintf(w, "%s already on the server, not sent\n", plural(up.BlocksHeld, "block"))
+		plural(up.ChunksSent, "chunk"), plural(up.Commits, "commit"))
+	if up.ChunksHeld > 0 {
+		fmt.Fprintf(w, "%s already on the server, not sent\n", plural(up.ChunksHeld, "chunk"))
 	}
 }
 

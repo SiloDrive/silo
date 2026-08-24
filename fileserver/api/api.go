@@ -25,13 +25,16 @@ func Init(read, _ *sql.DB) {
 type siloServerInfo struct {
 	Version  string   `json:"version"`
 	Features []string `json:"features"`
-	// BlockSize is the offset a client must chunk at for its block ids to
-	// match the ones this store already holds. It is reported rather than
-	// assumed because it is configurable, and a client that guesses wrong
-	// does not fail — it silently uploads blocks that dedup against nothing
-	// and are useless to every other client of the same library.
-	BlockSize uint64 `json:"block_size"`
 }
+
+// There is deliberately no block_size here.
+//
+// There used to be, and it named the offset a fixed-size chunker cut at — one
+// number, server-wide, that every library shared. Content-defined chunking
+// killed both halves of that: boundaries fall where the content puts them, not
+// at multiples of anything, and the parameters belong to the library rather
+// than to the server that happens to be serving it. A client asks the repos
+// listing, which answers per library. See repoInfo.Chunker.
 
 // features names the capabilities a client may branch on, so a new client can
 // ask this server what it does instead of comparing version strings against a
@@ -55,7 +58,7 @@ func features() []string {
 		"ranged-reads",       // Range on GET entries, unencrypted libraries
 		"changes",            // GET repos/{id}/changes?since=
 		"repo-rename",        // PATCH repos/{id}
-		"blocks",             // blocks/missing, PUT blocks/{sha1}, PUT entries?type=blocks
+		"blocks",             // blocks/missing, PUT blocks/{id}, PUT entries?type=blocks
 		"pagination",         // ?limit on changes and directory listings, Link: rel="next"
 		"batch",              // POST repos/{id}/batch — many operations, one commit
 		"usage",              // GET account/usage, and size/file_count on the repos listing
@@ -69,9 +72,8 @@ func features() []string {
 // ServerInfoHandler handles GET /api/silo/v1/server-info.
 func ServerInfoHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, siloServerInfo{
-		Version:   option.Version,
-		Features:  features(),
-		BlockSize: option.FixedBlockSize,
+		Version:  option.Version,
+		Features: features(),
 	})
 }
 
@@ -240,6 +242,34 @@ type repoInfo struct {
 	// never told.
 	Size      *int64 `json:"size,omitempty"`
 	FileCount *int64 `json:"file_count,omitempty"`
+	// Chunker is how this library's bytes are cut. It is on the listing
+	// because a client cannot name a file's chunks without it, and naming them
+	// is what the whole chunk surface rests on: "which of these do you have?"
+	// is only askable by a client that arrives at the same ids the server
+	// would. These are per-library data frozen at creation, never a constant
+	// compiled into a client — a client that chunks differently computes
+	// different ids for the same bytes and dedups against nothing.
+	//
+	// Absent, like Size, means the server could not say. A client that cannot
+	// read the parameters must not guess them; it uploads whole files instead,
+	// which is slower and always correct.
+	Chunker *chunkerInfo `json:"chunker,omitempty"`
+}
+
+// chunkerInfo is the chunker as a client needs it.
+//
+// There is no seed here, and its absence is the design rather than an
+// omission. A plain library chunks under the published constant every
+// implementation derives for itself, and an E2EE library's seed is HKDF over
+// the content key — which the server does not hold and must never be handed.
+// Putting a seed on this wire would be the server claiming to know something
+// that, for exactly the libraries that matter, it does not.
+type chunkerInfo struct {
+	Algorithm     string `json:"algorithm"`
+	MinSize       int    `json:"min_size"`
+	TargetSize    int    `json:"target_size"`
+	MaxSize       int    `json:"max_size"`
+	Normalization int    `json:"normalization"`
 }
 
 // repoSelect is shared by the owned and shared queries so the two cannot drift
@@ -248,8 +278,14 @@ type repoInfo struct {
 // that can see it can delete it.
 func repoSelect(alias string) string {
 	return "SELECT " + alias + ".repo_id, i.name, i.update_time, i.is_encrypted, b.commit_id, " +
-		"b.root_id, u.size, u.file_count, u.root_id "
+		"b.root_id, u.size, u.file_count, u.root_id, " +
+		"f.chunker, f.chunk_min, f.chunk_target, f.chunk_max, f.chunk_norm "
 }
+
+// formatJoin brings in the library's chunker. LEFT for the same reason as the
+// others: a row missing here is a broken library, and a client that can see it
+// must still be able to list it and delete it.
+const formatJoin = "LEFT JOIN Repo f ON f.repo_id = "
 
 // usageJoin brings in the recorded totals. LEFT, like the branch join, because
 // a library nobody has asked the size of yet has no row and must still list.
@@ -266,10 +302,12 @@ func scanRepos(rows *sql.Rows) []repoInfo {
 	repos := make([]repoInfo, 0)
 	for rows.Next() {
 		var repo repoInfo
-		var name, isEncrypted, commitID, headRoot, measuredAt sql.NullString
+		var name, isEncrypted, commitID, headRoot, measuredAt, chunker sql.NullString
 		var updateTime, size, fileCount sql.NullInt64
+		var chunkMin, chunkTarget, chunkMax, chunkNorm sql.NullInt64
 		if err := rows.Scan(&repo.ID, &name, &updateTime, &isEncrypted, &commitID,
-			&headRoot, &size, &fileCount, &measuredAt); err != nil {
+			&headRoot, &size, &fileCount, &measuredAt,
+			&chunker, &chunkMin, &chunkTarget, &chunkMax, &chunkNorm); err != nil {
 			log.Warnf("Failed to scan repo row: %v", err)
 			continue
 		}
@@ -277,6 +315,15 @@ func scanRepos(rows *sql.Rows) []repoInfo {
 		repo.UpdateTime = updateTime.Int64
 		repo.Encrypted = isEncrypted.String == "1"
 		repo.HeadCommitID = commitID.String
+		if chunker.Valid {
+			repo.Chunker = &chunkerInfo{
+				Algorithm:     chunker.String,
+				MinSize:       int(chunkMin.Int64),
+				TargetSize:    int(chunkTarget.Int64),
+				MaxSize:       int(chunkMax.Int64),
+				Normalization: int(chunkNorm.Int64),
+			}
+		}
 		// A row measured at the root the library is on needs nothing computed,
 		// which is the case a listing is almost always in. The rest are
 		// brought forward one at a time below, so a poll pays only for the
@@ -325,6 +372,7 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 			"FROM RepoOwner o LEFT JOIN RepoInfo i ON o.repo_id = i.repo_id "+
 			"LEFT JOIN Branch b ON b.repo_id = o.repo_id AND b.name = 'master' "+
 			usageJoin+"o.repo_id "+
+			formatJoin+"o.repo_id "+
 			"WHERE o.account_id = ?", id)
 	if err != nil {
 		log.Errorf("Failed to query repos: %v", err)
@@ -344,6 +392,7 @@ func ListReposHandler(w http.ResponseWriter, r *http.Request) {
 			"FROM SharedRepo s LEFT JOIN RepoInfo i ON s.repo_id = i.repo_id "+
 			"LEFT JOIN Branch b ON b.repo_id = s.repo_id AND b.name = 'master' "+
 			usageJoin+"s.repo_id "+
+			formatJoin+"s.repo_id "+
 			"WHERE s.to_account_id = ?", id)
 	if err != nil {
 		log.Errorf("Failed to query shared repos: %v", err)

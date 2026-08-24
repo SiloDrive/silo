@@ -43,24 +43,24 @@ func TestServerInfoAdvertisesFeatures(t *testing.T) {
 	}
 }
 
-// TestServerInfoReportsTheBlockSize covers the one field a client must have
-// exactly right rather than approximately: chunk at any other offset and every
-// id computed is a name nothing else in the store shares, so the upload works
-// and dedups against nothing.
-func TestServerInfoReportsTheBlockSize(t *testing.T) {
-	original := option.FixedBlockSize
-	t.Cleanup(func() { option.FixedBlockSize = original })
-	option.FixedBlockSize = 4 << 20
-
+// TestServerInfoCarriesNoChunkerParameters pins the removal rather than the
+// field. block_size was one server-wide fixed offset, and content-defined
+// chunking made both halves of that wrong — the parameters are per library and
+// there is no offset. A client reading a chunk size from here would be reading
+// a number that cannot be right for every library the server holds, so the
+// right answer is that there is nothing here to read.
+func TestServerInfoCarriesNoChunkerParameters(t *testing.T) {
 	w := httptest.NewRecorder()
 	ServerInfoHandler(w, httptest.NewRequest("GET", "/api/silo/v1/server-info", nil))
 
-	var got siloServerInfo
+	var got map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("failed to decode %s: %v", w.Body.String(), err)
 	}
-	if got.BlockSize != 4<<20 {
-		t.Errorf("block_size = %d, want %d — a configured size that is not reported is worse than none", got.BlockSize, 4<<20)
+	for _, gone := range []string{"block_size", "chunk_size"} {
+		if v, ok := got[gone]; ok {
+			t.Errorf("server-info still reports %s = %v; chunker parameters belong to the library, not the server", gone, v)
+		}
 	}
 }
 
