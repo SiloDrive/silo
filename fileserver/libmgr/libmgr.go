@@ -693,6 +693,14 @@ func DeleteLibrary(libraryID string) error {
 		"DELETE FROM LibraryUsage WHERE library_id = ?",
 		"DELETE FROM LibraryHistoryLimit WHERE library_id = ?",
 		"DELETE FROM LibraryValidSince WHERE library_id = ?",
+		"DELETE FROM LibraryRetention WHERE library_id = ?",
+		// Keyed by store id, which is spelled library_id in this table. They
+		// are the same string for an ordinary library, and for a virtual one
+		// the row belongs to the origin and lives under the origin's id — so
+		// this clears the child's row when it has one and never reaches past
+		// it to the origin's.
+		"DELETE FROM GCID WHERE library_id = ?",
+		"DELETE FROM LastGCID WHERE library_id = ?",
 	}
 
 	for _, sqlStr := range deletes {
