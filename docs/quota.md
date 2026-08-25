@@ -25,6 +25,7 @@ because answering any of them alone produces a number nobody can act on.
 | Per-library size on the libraries listing | `api/api.go:250` | built |
 | Quota answering `df` on a porter-fuse mount | `internal/vfs/statfs.go` (porter-fuse) | built |
 | History enumerable and readable at a point in time | `GET …/commits`, `entries/{path}?at=` | built (`6943a16`) |
+| The three numbers: head, history, unreferenced | `objmgr.Census`, `silo df` | built (`fc6e846`) |
 | Server-wide ceiling | — | not built |
 | Charging blocks rather than logical size | — | not built |
 | Date-based history expiry | — | not built |
@@ -444,10 +445,15 @@ deleted.
 
 ## Order of work
 
-1. **The mark phase and the three numbers.** Set union over object ids per
-   library: live at head, history-only, unreferenced. Reporting only. Nothing
-   deletes and no charge changes, so it is safe to land alone and it is the
-   thing that tells us whether the rest is worth it.
+1. ~~**The mark phase and the three numbers.**~~ **Done** — `fc6e846`.
+   `objmgr.Census` is the set union; `silo df` prints it per library and never
+   deletes. It measures an E2EE library without its key, since every edge it
+   follows is published in both library types.
+
+   What it found on a five-write test library: `account/usage` answering
+   300,000 bytes over a store holding 1,500,980, with history at 80% of the
+   disk. That is the case this was built to make visible, and it is worse than
+   expected — which settles whether the retention work below is worth doing.
 2. **Collect the unreferenced.** No policy decision attached — objects reachable
    from nothing are nobody's history. Coordinate with in-flight uploads via the
    `GCID` generation stamp the schema already carries for it.
