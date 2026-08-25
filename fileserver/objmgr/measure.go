@@ -20,15 +20,11 @@ type Usage struct {
 	FileCount int64
 }
 
-// Add and Sub let a delta be applied to a total without either caller
-// remembering that there are two numbers travelling together. A delta is an
-// ordinary Usage with negative fields.
+// Add lets a delta be applied to a total without the caller remembering that
+// there are two numbers travelling together. A delta is an ordinary Usage with
+// negative fields.
 func (u Usage) Add(d Usage) Usage {
 	return Usage{Size: u.Size + d.Size, FileCount: u.FileCount + d.FileCount}
-}
-
-func (u Usage) Sub(d Usage) Usage {
-	return Usage{Size: u.Size - d.Size, FileCount: u.FileCount - d.FileCount}
 }
 
 // Measure totals a whole tree.
@@ -75,57 +71,11 @@ func (s *Store) MeasureDelta(oldRoot, newRoot store.ID) (Usage, error) {
 }
 
 func (s *Store) deltaDir(oldID, newID store.ID, u *Usage) error {
-	if oldID == newID {
-		return nil
-	}
-	oldEntries, err := s.publicEntries(oldID)
-	if err != nil {
-		return err
-	}
-	newEntries, err := s.publicEntries(newID)
-	if err != nil {
-		return err
-	}
-
-	// Both lists are in strictly increasing bytewise order by stored name, so
-	// this is a merge rather than a lookup per entry — the same property the
-	// diff leans on, for the same reason.
-	i, j := 0, 0
-	for i < len(oldEntries) || j < len(newEntries) {
-		switch {
-		case j == len(newEntries):
-			if err := s.applyEntry(oldEntries[i], u, -1); err != nil {
-				return err
-			}
-			i++
-		case i == len(oldEntries):
-			if err := s.applyEntry(newEntries[j], u, +1); err != nil {
-				return err
-			}
-			j++
-		default:
-			o, n := oldEntries[i], newEntries[j]
-			switch cmp := compareNames(o.Name, n.Name); {
-			case cmp < 0:
-				if err := s.applyEntry(o, u, -1); err != nil {
-					return err
-				}
-				i++
-			case cmp > 0:
-				if err := s.applyEntry(n, u, +1); err != nil {
-					return err
-				}
-				j++
-			default:
-				if err := s.deltaEntry(o, n, u); err != nil {
-					return err
-				}
-				i++
-				j++
-			}
-		}
-	}
-	return nil
+	return s.mergeDirs(oldID, newID,
+		func(o store.DirEntry) error { return s.applyEntry(o, u, -1) },
+		func(n store.DirEntry) error { return s.applyEntry(n, u, +1) },
+		func(o, n store.DirEntry) error { return s.deltaEntry(o, n, u) },
+	)
 }
 
 // deltaEntry accounts for two entries that share a name.

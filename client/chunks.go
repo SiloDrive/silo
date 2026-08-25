@@ -73,7 +73,35 @@ func (c *APIClient) capabilities() ServerInfo {
 //   - The server did not report the parameters. Guessing them is the one
 //     failure this surface cannot detect: every id would be well-formed, every
 //     upload would succeed, and none of it would ever match anything.
+//
+// chunkerCache is one library's answer from chunkerFor, including the "send it
+// whole" answer — a library that cannot use the chunk lane cannot start being
+// able to, so that verdict is worth remembering too.
+type chunkerCache struct {
+	params store.Params
+	ok     bool
+}
+
 func (c *APIClient) chunkerFor(libraryID string) (store.Params, bool) {
+	c.mu.Lock()
+	hit, cached := c.chunkers[libraryID]
+	c.mu.Unlock()
+	if cached {
+		return hit.params, hit.ok
+	}
+
+	params, ok := c.fetchChunkerFor(libraryID)
+
+	c.mu.Lock()
+	if c.chunkers == nil {
+		c.chunkers = map[string]chunkerCache{}
+	}
+	c.chunkers[libraryID] = chunkerCache{params: params, ok: ok}
+	c.mu.Unlock()
+	return params, ok
+}
+
+func (c *APIClient) fetchChunkerFor(libraryID string) (store.Params, bool) {
 	libraries, err := c.ListLibraries()
 	if err != nil {
 		return store.Params{}, false

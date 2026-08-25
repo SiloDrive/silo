@@ -75,33 +75,6 @@ func movesIntoOwnSubtree(srcPath, dstDir string) bool {
 	return strings.HasPrefix(dst, src+"/")
 }
 
-func renameLibraryHandler(w http.ResponseWriter, r *http.Request) {
-	acct := middleware.GetAccount(r)
-	libraryID := mux.Vars(r)["libraryid"]
-
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid form data", http.StatusBadRequest)
-		return
-	}
-	newName := r.FormValue("library_name")
-	if newName == "" {
-		http.Error(w, "library_name is required", http.StatusBadRequest)
-		return
-	}
-
-	// A rename touches no object, so the head commit is not needed and is not
-	// loaded: the permission check and the catalog row are the whole of it.
-	library := entryLibrary(w, libraryID, acct.ID, true)
-	if library == nil {
-		return
-	}
-	if !renameLibrary(w, r, library, newName) {
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
 // patchLibraryHandler handles PATCH /api/silo/v1/libraries/{libraryid}. Renaming is the
 // only field so far, which is why this is a PATCH and not a PUT: the body names
 // what changes, and everything unmentioned is left alone, so adding a second

@@ -198,6 +198,37 @@ func testChunker() *ChunkerParams {
 	}
 }
 
+// A library's chunking is frozen when the library is created, so the listing
+// that reports it is worth reading once.
+//
+// UploadFile calls chunkerFor per file, so without a cache a directory of large
+// files fetches the whole libraries listing once per file — and that listing is
+// not a cheap read on the server: it joins the shares and brings each library's
+// usage forward, which can walk a tree. UploadDir already asks once for the
+// whole tree; this is the same economy for files uploaded on their own.
+func TestTheChunkerIsReadOncePerLibrary(t *testing.T) {
+	var listings int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/silo/v1/libraries" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		listings++
+		_ = json.NewEncoder(w).Encode([]Library{{ID: "r", Chunker: testChunker()}})
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.URL)
+
+	for i := 0; i < 3; i++ {
+		if _, ok := c.chunkerFor("r"); !ok {
+			t.Fatalf("chunkerFor refused a plain library with parameters")
+		}
+	}
+	if listings != 1 {
+		t.Errorf("the libraries listing was fetched %d times, want 1", listings)
+	}
+}
+
 // clientListing returns a client talking to a server whose only surface is the
 // libraries listing, which is all chunkerFor reads.
 func clientListing(t *testing.T, libraries []Library) *APIClient {

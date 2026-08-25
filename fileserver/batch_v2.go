@@ -29,7 +29,7 @@ func (e *batchErr) Error() string {
 	return fmt.Sprintf("operation %d: %s", e.at, e.fail.message)
 }
 
-// plibraryp is one operation with everything that does not depend on the tree
+// prepOp is one operation with everything that does not depend on the tree
 // already worked out.
 //
 // The split is what keeps the retry cheap, and it is worth being deliberate
@@ -39,7 +39,7 @@ func (e *batchErr) Error() string {
 // the server would otherwise read and hash again on every attempt. What is
 // left inside is the tree rewrite, which is the one thing that genuinely has
 // to be re-applied to whichever root won.
-type plibraryp struct {
+type prepOp struct {
 	path     string
 	to       string
 	manifest store.ID
@@ -132,10 +132,10 @@ func batchV2(w http.ResponseWriter, r *http.Request, library *libmgr.Library, us
 // with a typo in the last verb used to be discovered only after the other 999
 // had built manifests and rewritten the tree — all of it thrown away. Nothing
 // here touches the tree, so nothing here can be undone.
-func prepBatch(w http.ResponseWriter, st *objmgr.Store, ops []batchOp) ([]plibraryp, bool) {
-	prepped := make([]plibraryp, len(ops))
+func prepBatch(w http.ResponseWriter, st *objmgr.Store, ops []batchOp) ([]prepOp, bool) {
+	prepped := make([]prepOp, len(ops))
 	for i, op := range ops {
-		p := plibraryp{path: entryPath(op.Path)}
+		p := prepOp{path: entryPath(op.Path)}
 
 		// The name an operation creates is checked here rather than left to
 		// the mutation layer, because objmgr.SplitPath rejects only "." and
@@ -201,7 +201,7 @@ func batchFailed(w http.ResponseWriter, i int, op batchOp, fail *batchFailure) {
 // Every lookup is against that working root rather than the head, which is
 // what makes an ordered batch mean anything: an operation has to see what the
 // ones before it did.
-func applyBatchOpV2(st *objmgr.Store, root store.ID, verb string, p plibraryp, now int64) (store.ID, *batchFailure) {
+func applyBatchOpV2(st *objmgr.Store, root store.ID, verb string, p prepOp, now int64) (store.ID, *batchFailure) {
 	switch verb {
 	case "mkdir":
 		return v2Result(st.Mkdir(root, p.path, defaultDirMode, now))

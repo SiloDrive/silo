@@ -28,6 +28,12 @@ type APIClient struct {
 	// not yet asked; a failed ask caches the zero value, because a server that
 	// cannot answer has no capabilities worth waiting for.
 	serverInfo *ServerInfo
+	// chunkers is what the libraries listing said about each library's
+	// chunking, keyed by library id. A library's parameters are frozen when it
+	// is created, so this never needs invalidating within a process — and
+	// without it every large file uploaded on its own re-fetches the whole
+	// listing to read one library's row.
+	chunkers map[string]chunkerCache
 }
 
 func (c *APIClient) getToken() string {

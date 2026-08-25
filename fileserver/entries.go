@@ -8,9 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	upath "path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -333,7 +331,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, library *libmgr.Library, 
 	if parseContentType(fileName) == "image/svg+xml" {
 		w.Header().Set("Content-Security-Policy", "sandbox")
 	}
-	setCommonHeaders(w, r, "download", fileName)
+	setContentHeaders(w, fileName)
 
 	byteRanges := strings.Join(r.Header["Range"], "")
 	if byteRanges == "" {
@@ -766,11 +764,11 @@ func putEntryBlocks(w http.ResponseWriter, r *http.Request, libraryID, path stri
 // request itself if the limit is already known to be exceeded.
 //
 // The limit is policy and spooling to a temp file is mechanism, so the policy
-// lives here rather than inside spoolBody, where it started. A lane that does
-// not spool — putEntryFileV2 chunks the stream straight into the object store
-// — needs the same bound and none of the temp file, and taking only the
-// LimitReader from spoolBody is how it came to enforce half the rule. The half
-// it took is the half that silently truncates.
+// lives here rather than inside the temp-file spool where it started. A lane
+// that does not spool — putEntryFileV2 chunks the stream straight into the
+// object store — needs the same bound and none of the temp file, and taking
+// only the LimitReader from the spool is how it came to enforce half the rule.
+// The half it took is the half that silently truncates.
 //
 // Two checks, because neither alone is enough. Content-Length refuses the
 // ordinary case before a byte is transferred. A chunked upload declares no
@@ -794,39 +792,6 @@ func boundedBody(w http.ResponseWriter, r *http.Request) (io.Reader, bool) {
 func overBound(size int64) bool {
 	return option.MaxUploadSize > 0 && uint64(size) > option.MaxUploadSize
 }
-
-// spoolBody writes the request body to a temp file, returning its path and
-// size. On failure it has already answered the request.
-func spoolBody(w http.ResponseWriter, r *http.Request, fileName string) (string, int64, error) {
-	body, ok := boundedBody(w, r)
-	if !ok {
-		return "", 0, errTooLarge
-	}
-
-	tmpDir := filepath.Join(absDataDir, "httptemp", "cluster-shared")
-	f, err := os.CreateTemp(tmpDir, "put-*")
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Error("failed to create upload temp file")
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return "", 0, err
-	}
-	defer func() { _ = f.Close() }()
-
-	size, err := io.Copy(f, body)
-	if err != nil {
-		_ = os.Remove(f.Name())
-		// A client that disconnected mid-body is not an error worth reporting.
-		return "", 0, err
-	}
-	if overBound(size) {
-		_ = os.Remove(f.Name())
-		http.Error(w, "File is too large", http.StatusRequestEntityTooLarge)
-		return "", 0, errTooLarge
-	}
-	return f.Name(), size, nil
-}
-
-var errTooLarge = errors.New("upload exceeds the configured maximum size")
 
 func writeEntryJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -976,13 +941,13 @@ func parseContentType(fileName string) string {
 			contentType = "video/webm"
 		case "mkv":
 			contentType = "video/x-matroska"
-		case "jpeg", "JPEG", "jpg", "JPG":
+		case "jpeg", "jpg":
 			contentType = "image/jpeg"
-		case "png", "PNG":
+		case "png":
 			contentType = "image/png"
-		case "gif", "GIF":
+		case "gif":
 			contentType = "image/gif"
-		case "svg", "SVG":
+		case "svg":
 			contentType = "image/svg+xml"
 		case "heic":
 			contentType = "image/heic"
@@ -1004,31 +969,24 @@ func parseContentType(fileName string) string {
 	return contentType
 }
 
-// setCommonHeaders sets the content type and disposition for a file response.
+// setContentHeaders sets the content type and disposition for a file response.
+//
+// Always attachment, never inline: this server has one download lane and it
+// hands the bytes to a sync client, not to a browser that is about to render
+// them. The filename is written twice because Safari garbles an unencoded
+// UTF-8 one, so the RFC 5987 form carries the truth and the bare one is the
+// fallback for anything that does not read it.
 //
 // No charset is declared, even on text/*: see the note above the constants.
-func setCommonHeaders(rsp http.ResponseWriter, r *http.Request, operation, fileName string) {
+func setContentHeaders(rsp http.ResponseWriter, fileName string) {
 	fileType := parseContentType(fileName)
-	if fileType != "" {
-		rsp.Header().Set("Content-Type", fileType)
-	} else {
-		rsp.Header().Set("Content-Type", "application/octet-stream")
+	if fileType == "" {
+		fileType = "application/octet-stream"
 	}
-
-	var contFileName string
-	if operation == "download" || operation == "download-link" ||
-		operation == "downloadblks" {
-		// Since the file name downloaded by safari will be garbled, we need to encode the filename.
-		// Safari cannot parse unencoded utf8 characters.
-		contFileName = fmt.Sprintf("attachment;filename*=utf-8''%s;filename=\"%s\"", url.PathEscape(fileName), fileName)
-	} else {
-		contFileName = fmt.Sprintf("inline;filename*=utf-8''%s;filename=\"%s\"", url.PathEscape(fileName), fileName)
-	}
-	rsp.Header().Set("Content-Disposition", contFileName)
-
-	if fileType != "image/jpg" {
-		rsp.Header().Set("X-Content-Type-Options", "nosniff")
-	}
+	rsp.Header().Set("Content-Type", fileType)
+	rsp.Header().Set("Content-Disposition",
+		fmt.Sprintf("attachment;filename*=utf-8''%s;filename=\"%s\"", url.PathEscape(fileName), fileName))
+	rsp.Header().Set("X-Content-Type-Options", "nosniff")
 }
 
 // parseRange reads a single byte range out of a Range header.

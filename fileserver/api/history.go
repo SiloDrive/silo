@@ -148,26 +148,36 @@ func walkHistory(st *objmgr.Store, start string, limit int) ([]commitInfo, strin
 		if err != nil {
 			break
 		}
-		public, err := st.GetCommitPublic(id)
-		if err != nil {
-			break
-		}
-
-		info := commitInfo{ID: cur, CreatedAt: public.CreatedAt}
-		// Best effort, and deliberately not fatal: the walk's job is the
-		// shape of the history, and a commit whose sealed half will not
-		// decode should still appear in the list by id and time.
+		// A plain commit is one object and one decode: the public section is
+		// a prefix of what GetCommit already returns, so reading it twice
+		// would open and re-read the same file for every commit on the page.
+		// Only an E2EE library needs the public read on its own, because the
+		// rest of the object will not decode without the key.
+		var createdAt int64
+		var parents []store.ID
 		if plain {
-			if c, err := st.GetCommit(id); err == nil {
-				info.Author, info.Message = c.Author, c.Message
+			c, err := st.GetCommit(id)
+			if err != nil {
+				break
 			}
+			createdAt, parents = c.CreatedAt, c.Parents
+			out = append(out, commitInfo{ID: cur, CreatedAt: createdAt, Author: c.Author, Message: c.Message})
+		} else {
+			// The walk's job is the shape of the history, so a commit whose
+			// sealed half will not decode still appears in the list by id and
+			// time.
+			public, err := st.GetCommitPublic(id)
+			if err != nil {
+				break
+			}
+			createdAt, parents = public.CreatedAt, public.Parents
+			out = append(out, commitInfo{ID: cur, CreatedAt: createdAt})
 		}
-		out = append(out, info)
 
-		if len(public.Parents) == 0 {
+		if len(parents) == 0 {
 			break
 		}
-		cur = public.Parents[0].String()
+		cur = parents[0].String()
 	}
 	return out, ""
 }

@@ -88,8 +88,8 @@ func TestAWriteThatWouldExceedQuotaIsRefused(t *testing.T) {
 	// 900 of 1000 used, and this one asks for 200 more.
 	vars = map[string]string{"libraryid": libraryID, "path": "second.bin"}
 	w := do(t, entriesHandler, acct, "PUT", "/x", vars, bytes.Repeat([]byte("b"), 200))
-	if w.Code != httpInsufficientStorage {
-		t.Fatalf("over-quota write = %d (%s), want %d", w.Code, w.Body.String(), httpInsufficientStorage)
+	if w.Code != http.StatusInsufficientStorage {
+		t.Fatalf("over-quota write = %d (%s), want %d", w.Code, w.Body.String(), http.StatusInsufficientStorage)
 	}
 
 	// And the refusal left nothing behind: the file must not exist.
@@ -111,8 +111,8 @@ func TestDeletingAFileMakesRoomImmediately(t *testing.T) {
 		t.Fatalf("first write = %d, want 201", w.Code)
 	}
 	next := map[string]string{"libraryid": libraryID, "path": "next.bin"}
-	if w := do(t, entriesHandler, acct, "PUT", "/x", next, bytes.Repeat([]byte("b"), 500)); w.Code != httpInsufficientStorage {
-		t.Fatalf("write over the ceiling = %d, want %d", w.Code, httpInsufficientStorage)
+	if w := do(t, entriesHandler, acct, "PUT", "/x", next, bytes.Repeat([]byte("b"), 500)); w.Code != http.StatusInsufficientStorage {
+		t.Fatalf("write over the ceiling = %d, want %d", w.Code, http.StatusInsufficientStorage)
 	}
 
 	if w := do(t, entriesHandler, acct, "DELETE", "/x", vars, nil); w.Code != http.StatusNoContent && w.Code != http.StatusOK {

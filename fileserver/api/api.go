@@ -8,7 +8,6 @@ import (
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/tokenstore"
@@ -654,20 +653,10 @@ func listEntries(library *libmgr.Library, dirID string) ([]dirEntry, error) {
 
 // withFileSizes fills in the size of every file on a page.
 //
-// The sizes come from the sidecar, which is a recorded copy of one number out
-// of each manifest. What is not recorded yet is read from the manifests
-// themselves and written down on the way past, so a directory pays for this
-// once however often it is listed — the ids are content hashes and never
-// change, so a row once written is right forever.
-//
-// The read is public, not opened: file_size is in the part of a manifest the
-// server can read without a content key, which is what lets an end-to-end
-// encrypted library show sizes at all. The plan's argument for making it
-// public is the same one that makes garbage collection possible.
-//
-// Nothing here can fail the listing. A store that cannot be opened, a manifest
-// that cannot be read, a database that will not take the write — each costs
-// one entry its size, which the wire already has a way to say.
+// The sizes come from libmgr, which reads them through the sidecar and repairs
+// what it does not have yet. How much repair a listing is worth, and that a
+// repaired size is written down, are the sidecar's decisions and are made
+// there; what belongs here is only which entries want a size.
 func withFileSizes(library *libmgr.Library, page []dirEntry) {
 	ids := make([]string, 0, len(page))
 	for _, e := range page {
@@ -678,44 +667,7 @@ func withFileSizes(library *libmgr.Library, page []dirEntry) {
 	if len(ids) == 0 {
 		return
 	}
-
-	sizes, err := libmgr.FileSizes(ids)
-	if err != nil {
-		log.Warnf("could not read recorded file sizes: %v", err)
-		sizes = map[string]int64{}
-	}
-
-	// Whatever the sidecar did not have, read from the manifest and remember.
-	var st *objmgr.Store
-	found := map[string]int64{}
-	for _, id := range ids {
-		if _, ok := sizes[id]; ok {
-			continue
-		}
-		if len(found) >= libmgr.MaxSizeRepairs {
-			break
-		}
-		if st == nil {
-			if st, err = library.Store(); err != nil {
-				log.Warnf("could not open store %s to size a listing: %v", library.StoreID, err)
-				break
-			}
-		}
-		parsed, err := store.ParseID(id)
-		if err != nil {
-			continue
-		}
-		m, err := st.GetManifestPublic(parsed)
-		if err != nil {
-			// A missing manifest is a broken library, not a broken listing.
-			// The entry loses its size and the name still lists, which is what
-			// lets someone see the damage and delete it.
-			continue
-		}
-		found[id] = m.FileSize
-		sizes[id] = m.FileSize
-	}
-	libmgr.RecordFileSizes(found)
+	sizes := libmgr.FileSizes(library, ids)
 
 	for i := range page {
 		if page[i].Type != "file" {

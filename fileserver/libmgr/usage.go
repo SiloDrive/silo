@@ -211,3 +211,36 @@ func AccountQuota(id account.ID) (int64, error) {
 	}
 	return quota, nil
 }
+
+// SetAccountQuota gives an account a ceiling, replacing any it already has.
+//
+// An upsert because the table is keyed by account: a plain INSERT works
+// exactly once per account and fails afterwards, so an operator raising
+// somebody's quota would be told nothing and leave the old number in force.
+//
+// It lives here rather than in the caller because the encoding of a ceiling is
+// AccountQuota's to define — that "no ceiling" is an absent row and not a
+// stored zero is a convention with exactly one interpreter, and a second
+// writer that spelled it differently would be invisible from either side.
+func SetAccountQuota(id account.ID, quota int64) error {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	_, err := writeDB.ExecContext(ctx,
+		"INSERT INTO UserQuota (account_id, quota) VALUES (?, ?) "+
+			"ON CONFLICT(account_id) DO UPDATE SET quota = excluded.quota", id, quota)
+	if err != nil {
+		return fmt.Errorf("failed to set quota: %w", err)
+	}
+	return nil
+}
+
+// ClearAccountQuota removes an account's ceiling, dropping it back to the
+// server default. See SetAccountQuota for why the absent row is the encoding.
+func ClearAccountQuota(id account.ID) error {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	if _, err := writeDB.ExecContext(ctx, "DELETE FROM UserQuota WHERE account_id = ?", id); err != nil {
+		return fmt.Errorf("failed to remove quota: %w", err)
+	}
+	return nil
+}

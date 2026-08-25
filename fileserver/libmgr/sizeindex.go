@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/store"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -28,7 +31,7 @@ import (
 // Reading it back is the only thing that has to be right, and reading it back
 // repairs it.
 
-// MaxSizeRepairs bounds how many manifests one listing will open to fill gaps.
+// maxSizeRepairs bounds how many manifests one listing will open to fill gaps.
 //
 // The steady state is zero: a directory listed once has every size recorded,
 // and the ids never change because they are content hashes. This is for the
@@ -36,13 +39,73 @@ import (
 // directory is a slow response rather than an unbounded one. Entries past the
 // cap come back without a size and are filled by the next request, so the gap
 // closes on its own.
-const MaxSizeRepairs = 1024
+const maxSizeRepairs = 1024
 
-// FileSizes returns the recorded size for each id that has one. Ids with no
-// row are simply absent from the result: the caller cannot tell a file of zero
-// bytes from one nobody has measured unless the two answers stay distinct all
-// the way out to the wire.
-func FileSizes(ids []string) (map[string]int64, error) {
+// FileSizes returns the size of each of these manifests, reading through to
+// the manifests themselves for any the sidecar does not have yet and writing
+// what it finds back on the way past.
+//
+// Read-through and repair are one call because they are one policy: how many
+// manifests a gap is worth opening, and that a repaired size is recorded, are
+// decisions about the sidecar and not about whoever is asking. A second
+// consumer of file sizes that had to re-implement the loop would either skip
+// the recording — leaving the table permanently empty for the ids only it
+// asks about — or pick its own cap, and neither is visible from here.
+//
+// The manifest read is public, not opened: file_size is in the part a server
+// can read without a content key, which is what lets an end-to-end encrypted
+// library show sizes at all.
+//
+// Nothing here fails the caller. A store that cannot be opened, a manifest
+// that cannot be read, a database that will not take the write — each costs
+// one id its size, and an id with no size is simply absent from the result.
+// The caller cannot tell a file of zero bytes from one nobody has measured
+// unless the two answers stay distinct all the way out to the wire.
+func FileSizes(library *Library, ids []string) map[string]int64 {
+	sizes, err := recordedSizes(ids)
+	if err != nil {
+		log.Warnf("could not read recorded file sizes: %v", err)
+		sizes = map[string]int64{}
+	}
+	if len(sizes) == len(ids) {
+		return sizes
+	}
+
+	var st *objmgr.Store
+	found := map[string]int64{}
+	for _, id := range ids {
+		if _, ok := sizes[id]; ok {
+			continue
+		}
+		if len(found) >= maxSizeRepairs {
+			break
+		}
+		if st == nil {
+			if st, err = library.Store(); err != nil {
+				log.Warnf("could not open store %s to size a listing: %v", library.StoreID, err)
+				break
+			}
+		}
+		parsed, err := store.ParseID(id)
+		if err != nil {
+			continue
+		}
+		m, err := st.GetManifestPublic(parsed)
+		if err != nil {
+			// A missing manifest is a broken library, not a broken listing.
+			// The entry loses its size and the name still lists, which is what
+			// lets someone see the damage and delete it.
+			continue
+		}
+		found[id] = m.FileSize
+		sizes[id] = m.FileSize
+	}
+	recordFileSizes(found)
+	return sizes
+}
+
+// recordedSizes returns the recorded size for each id that has one.
+func recordedSizes(ids []string) (map[string]int64, error) {
 	sizes := make(map[string]int64, len(ids))
 	if len(ids) == 0 {
 		return sizes, nil
@@ -87,7 +150,7 @@ func FileSizes(ids []string) (map[string]int64, error) {
 	return sizes, nil
 }
 
-// RecordFileSizes writes sizes that were not recorded before.
+// recordFileSizes writes sizes that were not recorded before.
 //
 // Failures are logged and swallowed. This is a cache of a number the manifest
 // still holds, so a write that does not land costs the next listing one
@@ -97,7 +160,7 @@ func FileSizes(ids []string) (map[string]int64, error) {
 // INSERT OR IGNORE rather than upsert, because a row cannot be wrong: the key
 // is a content hash, so an existing row was written from the same bytes this
 // one came from. A concurrent writer racing here is two processes agreeing.
-func RecordFileSizes(sizes map[string]int64) {
+func recordFileSizes(sizes map[string]int64) {
 	if len(sizes) == 0 {
 		return
 	}
@@ -111,7 +174,7 @@ func RecordFileSizes(sizes map[string]int64) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.PrepareContext(ctx, "INSERT OR IGNORE INTO ObjectSize (object_id, file_size) VALUES (?, ?)")
+	stmt, err := tx.PrepareContext(ctx, dbutil.InsertOrIgnore("ObjectSize", "object_id, file_size"))
 	if err != nil {
 		log.Warnf("could not record file sizes: %v", err)
 		return

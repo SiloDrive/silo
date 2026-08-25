@@ -277,8 +277,8 @@ func TestPutHeadRefusesAHeadMoveThatWouldExceedQuota(t *testing.T) {
 	vars := map[string]string{"libraryid": libraryID}
 	w := idReq(t, putHeadHandler, acct, http.MethodPut, "/head", vars,
 		[]byte(commitID.String()), map[string]string{"If-Match": `"` + oldHead + `"`})
-	if w.Code != httpInsufficientStorage {
-		t.Fatalf("head move over quota = %d (%s), want %d", w.Code, w.Body.String(), httpInsufficientStorage)
+	if w.Code != http.StatusInsufficientStorage {
+		t.Fatalf("head move over quota = %d (%s), want %d", w.Code, w.Body.String(), http.StatusInsufficientStorage)
 	}
 
 	after, err := libmgr.GetWithReason(libraryID)
@@ -333,9 +333,9 @@ func TestConcurrentHeadMovesCannotJointlyExceedQuota(t *testing.T) {
 		switch code {
 		case http.StatusOK:
 			admitted++
-		case httpInsufficientStorage:
+		case http.StatusInsufficientStorage:
 		default:
-			t.Fatalf("head move answered %d, want 200 or %d", code, httpInsufficientStorage)
+			t.Fatalf("head move answered %d, want 200 or %d", code, http.StatusInsufficientStorage)
 		}
 	}
 	if admitted > 1 {

@@ -69,9 +69,9 @@ func TestLostRaceIsReportedAsContention(t *testing.T) {
 		t.Fatalf("uncontended write = %d (%s)", w.Code, w.Body.String())
 	}
 
-	orig := commitAttemptsForTest
-	commitAttemptsForTest = 1
-	t.Cleanup(func() { commitAttemptsForTest = orig })
+	orig := commitAttempts
+	commitAttempts = 1
+	t.Cleanup(func() { commitAttempts = orig })
 
 	_, _, err = mutateTree(stale, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Mkdir(root, "/loser", defaultDirMode, now)
@@ -102,7 +102,6 @@ func TestWriteCommitErr(t *testing.T) {
 	}{
 		{"retries exhausted", fmt.Errorf("stop updating library x: %w", ErrRetriesExhausted),
 			http.StatusServiceUnavailable, true},
-		{"conflict", ErrConflict, http.StatusServiceUnavailable, true},
 		// A GC conflict is retried identically, so it is told apart from a lost
 		// branch-head race only in the log — never by the status, which would
 		// have to be 409, which now means "rename and retry".

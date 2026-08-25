@@ -1,6 +1,7 @@
 package objmgr
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"path"
@@ -58,6 +59,28 @@ func (s *Store) renderName(name []byte) string {
 }
 
 func (s *Store) diffDir(oldID, newID store.ID, prefix string, out *[]Change) error {
+	return s.mergeDirs(oldID, newID,
+		func(o store.DirEntry) error { return s.emitSubtree(o, prefix, "delete", out) },
+		func(n store.DirEntry) error { return s.emitSubtree(n, prefix, "create", out) },
+		func(o, n store.DirEntry) error { return s.diffEntry(o, n, prefix, out) },
+	)
+}
+
+// mergeDirs walks two directories side by side: onlyOld sees a name that only
+// the old one has, onlyNew a name only the new one has, and both a name they
+// share.
+//
+// Both lists are in strictly increasing bytewise order by stored name, so this
+// is a merge rather than a lookup per entry: the format's ordering rule is what
+// turns the comparison from O(n log n) into O(n). Two equal ids are the same
+// tree, so the walk stops there without reading either side.
+//
+// The diff and the usage delta are this one walk over different actions, and
+// they have to agree — a divergence would be a listing and an accounting that
+// disagree about the same pair of trees, with nothing to say which was right.
+// So the ordering assumption is written once, here, and the two callers supply
+// only what they do per entry.
+func (s *Store) mergeDirs(oldID, newID store.ID, onlyOld, onlyNew func(store.DirEntry) error, both func(o, n store.DirEntry) error) error {
 	if oldID == newID {
 		return nil
 	}
@@ -71,37 +94,34 @@ func (s *Store) diffDir(oldID, newID store.ID, prefix string, out *[]Change) err
 		return err
 	}
 
-	// Both lists are in strictly increasing bytewise order by stored name, so
-	// this is a merge rather than a lookup per entry: the format's ordering
-	// rule is what turns the comparison from O(n log n) into O(n).
 	i, j := 0, 0
 	for i < len(oldEntries) || j < len(newEntries) {
 		switch {
 		case j == len(newEntries):
-			if err := s.emitSubtree(oldEntries[i], prefix, "delete", out); err != nil {
+			if err := onlyOld(oldEntries[i]); err != nil {
 				return err
 			}
 			i++
 		case i == len(oldEntries):
-			if err := s.emitSubtree(newEntries[j], prefix, "create", out); err != nil {
+			if err := onlyNew(newEntries[j]); err != nil {
 				return err
 			}
 			j++
 		default:
 			o, n := oldEntries[i], newEntries[j]
-			switch cmp := compareNames(o.Name, n.Name); {
+			switch cmp := bytes.Compare(o.Name, n.Name); {
 			case cmp < 0:
-				if err := s.emitSubtree(o, prefix, "delete", out); err != nil {
+				if err := onlyOld(o); err != nil {
 					return err
 				}
 				i++
 			case cmp > 0:
-				if err := s.emitSubtree(n, prefix, "create", out); err != nil {
+				if err := onlyNew(n); err != nil {
 					return err
 				}
 				j++
 			default:
-				if err := s.diffEntry(o, n, prefix, out); err != nil {
+				if err := both(o, n); err != nil {
 					return err
 				}
 				i++
@@ -191,19 +211,6 @@ func (s *Store) fileSize(id store.ID) (int64, error) {
 		return 0, fmt.Errorf("manifest %s: %w", id, err)
 	}
 	return m.FileSize, nil
-}
-
-func compareNames(a, b []byte) int {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
-		if a[i] != b[i] {
-			return int(a[i]) - int(b[i])
-		}
-	}
-	return len(a) - len(b)
 }
 
 // detectMoves pairs a delete and a create of the same object into one move.

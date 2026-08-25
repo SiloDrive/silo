@@ -45,12 +45,12 @@ func contentionBackoff(attempt int) time.Duration {
 // committing was stored before the loop began and is not rewritten. Five
 // passes is far past what contention on one library produces; beyond that the
 // honest answer is that the caller is losing a race it should be told about.
-const commitAttempts = 5
-
-// commitAttemptsForTest is the budget actually used. A var only so a test can
-// lower it to force exhaustion without racing a scheduler — nothing in the
-// server writes it.
-var commitAttemptsForTest = commitAttempts
+//
+// A var only so a test can lower it to force exhaustion without racing a
+// scheduler — nothing in the server writes it. One name rather than a const
+// and a shadowing var, so the loop and the message it ends with cannot report
+// different budgets.
+var commitAttempts = 5
 
 // errE2EEWriteByID is what a client is told when it asks the server to write
 // into an end-to-end encrypted library through a path. Spelled once because it
@@ -153,7 +153,7 @@ func mutateTree(library *libmgr.Library, author string, mutate func(st *objmgr.S
 	}
 
 	head := library
-	for attempt := 0; attempt < commitAttemptsForTest; attempt++ {
+	for attempt := 0; attempt < commitAttempts; attempt++ {
 		// Read before the mutation, so a GC that starts mid-write is caught by
 		// the generation check below rather than racing the objects this is
 		// about to publish.
@@ -195,12 +195,12 @@ func mutateTree(library *libmgr.Library, author string, mutate func(st *objmgr.S
 			return store.ID{}, store.ID{}, err
 		}
 
-		_, err = updateBranch(library.ID, head.StoreID, headMove{
+		err = updateBranch(library.ID, head.StoreID, headMove{
 			CommitID: commitID.String(),
 			RootID:   newRoot.String(),
 			Author:   author,
 			Ctime:    now,
-		}, head.HeadCommitID, "", true, gcID)
+		}, head.HeadCommitID, gcID)
 		if err == nil {
 			return newRoot, commitID, nil
 		}
@@ -230,10 +230,9 @@ func mutateTree(library *libmgr.Library, author string, mutate func(st *objmgr.S
 	return store.ID{}, store.ID{}, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", commitAttempts, library.ID, ErrRetriesExhausted)
 }
 
-// ErrConflict, ErrGCConflict and ErrRetriesExhausted are the three ways a
-// write can lose rather than break.
+// ErrGCConflict and ErrRetriesExhausted are the two ways a write can lose
+// rather than break.
 var (
-	ErrConflict   = errors.New("concurrent write conflict")
 	ErrGCConflict = errors.New("GC Conflict")
 	// ErrRetriesExhausted is a write that kept losing the race for the branch
 	// head until its retry budget ran out. It is contention, not breakage:
@@ -270,7 +269,7 @@ var (
 // "rename".
 func writeCommitErr(w http.ResponseWriter, r *http.Request, err error, what string) {
 	switch {
-	case errors.Is(err, ErrGCConflict), errors.Is(err, ErrRetriesExhausted), errors.Is(err, ErrConflict):
+	case errors.Is(err, ErrGCConflict), errors.Is(err, ErrRetriesExhausted):
 		// Logged below error level on purpose: contention is an expected
 		// outcome of concurrent writers, and errors go to Sentry. The 3000-file
 		// seeding run in docs/bugs/fixed/write-contention-returns-500.md would have
@@ -312,91 +311,69 @@ type headMove struct {
 // same call is where the catalog learns who moved the head and when, which are
 // the server's own observations rather than anything read back out of the
 // commit.
-func updateBranch(libraryID, originLibraryID string, move headMove, oldCommitID, secondParentID string, checkGC bool, lastGCID string) (gcConflict bool, err error) {
+func updateBranch(libraryID, storeID string, move headMove, oldCommitID, lastGCID string) error {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	trans, err := siloPair.Write.BeginTx(ctx, nil)
 	if err != nil {
-		err := fmt.Errorf("failed to start transaction: %v", err)
-		return false, err
+		return fmt.Errorf("failed to start transaction: %v", err)
 	}
 
-	var row *sql.Row
-	var sqlStr string
-	if checkGC {
-		sqlStr = "SELECT gc_id FROM GCID WHERE library_id = ?"
-		if originLibraryID == "" {
-			row = trans.QueryRowContext(ctx, sqlStr, libraryID)
-		} else {
-			row = trans.QueryRowContext(ctx, sqlStr, originLibraryID)
-		}
-		var gcID sql.NullString
-		if err := row.Scan(&gcID); err != nil {
-			if err != sql.ErrNoRows {
-				_ = trans.Rollback()
-				return false, err
-			}
-		}
-
-		if lastGCID != gcID.String {
-			err = fmt.Errorf("head branch update for library %s conflicts with GC", libraryID)
-			_ = trans.Rollback()
-			return true, ErrGCConflict
-		}
+	// The generation is the store's, not the library's: a virtual library is
+	// collected with the origin it shares objects with, which is what StoreID
+	// names.
+	var gcID sql.NullString
+	row := trans.QueryRowContext(ctx, "SELECT gc_id FROM GCID WHERE library_id = ?", storeID)
+	if err := row.Scan(&gcID); err != nil && err != sql.ErrNoRows {
+		_ = trans.Rollback()
+		return err
+	}
+	if lastGCID != gcID.String {
+		_ = trans.Rollback()
+		return fmt.Errorf("head branch update for library %s conflicts with GC: %w", libraryID, ErrGCConflict)
 	}
 
+	const name = "master"
 	var commitID string
-	name := "master"
-	sqlStr = "SELECT commit_id FROM Branch WHERE name = ? AND library_id = ?"
-
-	row = trans.QueryRowContext(ctx, sqlStr, name, libraryID)
-	if err := row.Scan(&commitID); err != nil {
-		if err != sql.ErrNoRows {
-			_ = trans.Rollback()
-			return false, err
-		}
+	row = trans.QueryRowContext(ctx, "SELECT commit_id FROM Branch WHERE name = ? AND library_id = ?", name, libraryID)
+	if err := row.Scan(&commitID); err != nil && err != sql.ErrNoRows {
+		_ = trans.Rollback()
+		return err
 	}
 	if oldCommitID != commitID {
 		_ = trans.Rollback()
-		err := fmt.Errorf("head commit id has changed")
-		return false, err
+		return fmt.Errorf("head commit id has changed")
 	}
 
-	sqlStr = "UPDATE Branch SET commit_id = ?, root_id = ? WHERE name = ? AND library_id = ?"
-	_, err = trans.ExecContext(ctx, sqlStr, move.CommitID, move.RootID, name, libraryID)
-	if err != nil {
+	if _, err := trans.ExecContext(ctx,
+		"UPDATE Branch SET commit_id = ?, root_id = ? WHERE name = ? AND library_id = ?",
+		move.CommitID, move.RootID, name, libraryID); err != nil {
 		_ = trans.Rollback()
-		return false, err
+		return err
 	}
 
 	// In the same transaction as the head it describes: see RecordHeadMove.
 	if err := libmgr.RecordHeadMove(ctx, trans, libraryID, move.Author, move.Ctime); err != nil {
 		_ = trans.Rollback()
-		return false, err
+		return err
 	}
 
 	if err := trans.Commit(); err != nil {
-		return false, fmt.Errorf("failed to commit branch update: %v", err)
+		return fmt.Errorf("failed to commit branch update: %v", err)
 	}
 
-	if secondParentID != "" {
-		if err := onBranchUpdated(libraryID, secondParentID); err != nil {
-			return false, err
-		}
-	}
-
-	if err := onBranchUpdated(libraryID, move.CommitID); err != nil {
-		return false, err
-	}
-
-	return false, nil
+	onBranchUpdated(libraryID, move.CommitID)
+	return nil
 }
 
 // onBranchUpdated tells whoever is listening that a library moved.
-func onBranchUpdated(libraryID string, commitID string) error {
+//
+// Announcement only, after the transaction has committed: a listener that is
+// not there is not a failed write, so there is nothing here for a caller to
+// handle.
+func onBranchUpdated(libraryID string, commitID string) {
 	if option.EnableNotification {
 		notif.NotifyLibraryUpdate(libraryID, commitID)
 	}
 	publishUpdateEvent(libraryID, commitID)
-	return nil
 }

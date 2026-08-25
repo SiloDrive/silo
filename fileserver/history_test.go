@@ -3,6 +3,7 @@ package silod
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
@@ -219,10 +220,10 @@ func TestEntriesAtAnOldCommitListsTheOldDirectory(t *testing.T) {
 		t.Fatalf("listing the root at %s = %d (%s), want 200", one, w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	if !contains(body, "a.txt") {
+	if !strings.Contains(body, "a.txt") {
 		t.Errorf("the root at the first commit = %s, want a.txt in it", body)
 	}
-	if contains(body, "b.txt") {
+	if strings.Contains(body, "b.txt") {
 		t.Errorf("the root at the first commit = %s, want b.txt absent -- it did not exist yet", body)
 	}
 }
@@ -276,30 +277,17 @@ func TestEntriesAtANonsenseCommitIsBadRequest(t *testing.T) {
 	}
 }
 
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0
-}
-
-func indexOf(h, n string) int {
-	for i := 0; i+len(n) <= len(h); i++ {
-		if h[i:i+len(n)] == n {
-			return i
-		}
-	}
-	return -1
-}
-
 // linkTarget pulls the query string out of an RFC 8288 next link, which is how
 // a client follows one: the header carries a relative reference, so the test
 // follows it rather than rebuilding the cursor parameter by hand.
 func linkTarget(t *testing.T, header string) string {
 	t.Helper()
-	open, close := indexOf(header, "<"), indexOf(header, ">")
+	open, close := strings.Index(header, "<"), strings.Index(header, ">")
 	if open < 0 || close < open {
 		t.Fatalf("Link header %q is not <uri>; rel=…", header)
 	}
 	ref := header[open+1 : close]
-	if q := indexOf(ref, "?"); q >= 0 {
+	if q := strings.Index(ref, "?"); q >= 0 {
 		return ref[q:]
 	}
 	return ""

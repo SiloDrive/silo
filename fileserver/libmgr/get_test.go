@@ -248,11 +248,6 @@ func TestALibrarysFormatSurvivesTheCatalog(t *testing.T) {
 	if library.Format != want {
 		t.Fatalf("loaded %+v, created %+v", library.Format, want)
 	}
-
-	// GetEx reads the same row through its own copy of the query.
-	if ex := GetEx(libraryID); ex == nil || ex.Format != want {
-		t.Fatalf("GetEx loaded %+v, created %+v", ex, want)
-	}
 }
 
 // An E2EE library's initial commit is sealed under a key the server does not

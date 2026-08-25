@@ -1,7 +1,6 @@
 package silod
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -27,9 +26,10 @@ import (
 
 // setUserQuota gives an account a ceiling, or removes the one it has.
 //
-// The write is an upsert because the table is keyed by account: a plain INSERT
-// works exactly once per account and fails afterwards, so an operator raising
-// somebody's quota would be told nothing and leave the old number in force.
+// The rows themselves are libmgr's: it is the only reader of the table, and
+// the convention that "no ceiling" is an absent row belongs with the code that
+// interprets it. What is left here is the operator's half — parsing the size,
+// and saying what the number means.
 func setUserQuota(email, size string) error {
 	acct, err := resolveAccount(email)
 	if err != nil {
@@ -41,12 +41,8 @@ func setUserQuota(email, size string) error {
 		return err
 	}
 
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-
 	if remove {
-		if _, err := siloPair.Write.ExecContext(ctx,
-			"DELETE FROM UserQuota WHERE account_id = ?", acct.ID); err != nil {
+		if err := libmgr.ClearAccountQuota(acct.ID); err != nil {
 			return fmt.Errorf("removing the quota of %s: %v", acct.Email, err)
 		}
 		fmt.Printf("Removed the quota on %s. Their writes are no longer capped", acct.Email)
@@ -58,10 +54,7 @@ func setUserQuota(email, size string) error {
 		return nil
 	}
 
-	if _, err := siloPair.Write.ExecContext(ctx,
-		"INSERT INTO UserQuota (account_id, quota) VALUES (?, ?) "+
-			"ON CONFLICT(account_id) DO UPDATE SET quota = excluded.quota",
-		acct.ID, quota); err != nil {
+	if err := libmgr.SetAccountQuota(acct.ID, quota); err != nil {
 		return fmt.Errorf("setting the quota of %s: %v", acct.Email, err)
 	}
 

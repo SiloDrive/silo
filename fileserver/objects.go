@@ -434,12 +434,12 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	acct := middleware.GetAccount(r)
-	_, err = updateBranch(library.ID, library.StoreID, headMove{
+	err = updateBranch(library.ID, library.StoreID, headMove{
 		CommitID: newHead.String(),
 		RootID:   commit.Root.String(),
 		Author:   acct.Email,
 		Ctime:    commit.CreatedAt,
-	}, expected, "", true, gcID)
+	}, expected, gcID)
 	if err != nil {
 		if errors.Is(err, ErrGCConflict) {
 			http.Error(w, "A collection is running; retry", http.StatusServiceUnavailable)

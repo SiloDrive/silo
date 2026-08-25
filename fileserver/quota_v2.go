@@ -10,15 +10,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// httpInsufficientStorage is what a library over its owner's quota answers.
+// errOverQuota is what a library over its owner's quota answers, alongside
+// http.StatusInsufficientStorage.
 //
 // A real status rather than the sync lane's 443, which was invented by a
 // protocol that owned both ends and dies with it. 507 says the server cannot
 // store the representation, which is exactly the refusal — distinguishable
 // from a 403, which would tell a client the request was not allowed and to
 // stop rather than to free some space and try again.
-const httpInsufficientStorage = 507
-
 const errOverQuota = "The owner of this library is out of quota"
 
 // checkQuotaV2 refuses a write that would put a library's owner over quota.
@@ -98,7 +97,7 @@ func checkQuotaLocked(library *libmgr.Library, owner account.ID, delta int64) *b
 		return &batchFailure{http.StatusInternalServerError, "Internal server error"}
 	}
 	if usage.Size+delta > quota {
-		return &batchFailure{httpInsufficientStorage, errOverQuota}
+		return &batchFailure{http.StatusInsufficientStorage, errOverQuota}
 	}
 	return nil
 }

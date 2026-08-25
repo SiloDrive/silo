@@ -6,9 +6,11 @@ import "fmt"
 // Bytes renders a byte count as a short human-readable string
 // (B / KB / MB / GB / TB / PB), scaling by 1024.
 //
-// This is the one byte formatter in the tree: the CLI listings, the TUI and
-// the gc and backup commands all report sizes through it, so a whole-store
-// total and a single file are always in the same units.
+// This is the binary formatter: the CLI listings, the TUI and the gc and
+// backup commands all report sizes through it, so a whole-store total and a
+// single file are always in the same units. The quota commands deliberately do
+// not use it — a ceiling typed as "100gb" has to read back as 100 GB, so they
+// scale by 1000 and say so where they do it.
 func Bytes(size int64) string {
 	const unit = 1024
 	if size < unit {
