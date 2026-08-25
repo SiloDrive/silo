@@ -224,9 +224,19 @@ measurement:
   rounded individually come to 8240 blocks, not 8238. Porter rounds the
   aggregate once. With one small file the two nearly agree; with a few thousand
   they do not.
-- It is **not** reliably a round *up*. It equals `ceil(usage/4096)` at some
-  quotas and `floor` at others, and roughly half of the quota values in any
-  small window give the other answer.
+- It is **not** reliably a round *up*, and the rule is exact rather than
+  statistical. Write `quota = q*4096 + r` and `usage = u*4096 + s`. Then the
+  used column is `u` when `r >= s` and `u + 1` when `r < s` — so it equals
+  `ceil(usage/4096)` exactly when **the quota's remainder is smaller than the
+  usage's**, and `floor` otherwise. The two measured cases above are that rule
+  and nothing else: at a 100 MB cap `r = 256 < s = 2181`, so 8238; at
+  100,001,925 the remainders are equal, so 8237.
+
+  Sample it instead of deriving it and you will get a different answer every
+  time — the fraction of caps that round down is `(4096 - s)/4096`, which is
+  46.75% for this usage, but a window that is not a whole number of 4096-byte
+  periods is biased and will report anything. Ten thousand consecutive caps
+  gives 38%. This is a place to do the algebra rather than count.
 
 The half worth noticing is that **the used column is real either way**. That is
 what makes an uncapped account's `df` useful rather than decorative: a backup

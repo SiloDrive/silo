@@ -250,8 +250,12 @@ Two ways to state that wrongly, both tempting:
   local filesystem does, and it does it *per file*. An account holding five
   files of 0, 33, 23,740,889, 5,000,000 and 5,000,011 bytes totals 8238 blocks
   as an aggregate and 8240 rounded file by file.
-- It is **not** reliably a round *up*. It equals `ceil(usage/blocksize)` at some
-  quotas and `floor` at others.
+- It is **not** reliably a round *up*. With `quota = q*B + r` and
+  `usage = u*B + s`, the used column is `u` when `r >= s` and `u + 1` when
+  `r < s` — it equals `ceil(usage/B)` exactly when the quota's remainder is
+  smaller than the usage's, and `floor` otherwise. Raising somebody's cap by a
+  few hundred bytes can move the used column by a block without a byte being
+  written.
 
 If you report a measurement, report it as "the aggregate divided by the block
 size", not as per-file occupancy.
