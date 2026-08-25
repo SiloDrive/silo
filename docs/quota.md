@@ -27,6 +27,7 @@ because answering any of them alone produces a number nobody can act on.
 | History enumerable and readable at a point in time | `GET …/commits`, `entries/{path}?at=` | built (`6943a16`) |
 | The three numbers: head, history, unreferenced | `objmgr.Census`, `silo df` | built (`fc6e846`) |
 | Collecting objects no commit reaches | `silo gc -orphans`, `objmgr.Unreferenced` | built (`e56a270`) |
+| Date-based history expiry | `silo gc -expire-history`, `expireHistory` | built (`c99b745`) |
 | Server-wide ceiling | — | not built |
 | Charging blocks rather than logical size | — | not built |
 | Date-based history expiry | — | not built |
@@ -473,9 +474,33 @@ deleted.
 
    Nothing had ever written `gc_id`. The read side has been in place since
    store-v2 and inert; this activates it.
-3. **Date-based expiry**, per library, with a server default. Now history-only
-   objects become collectable and the boundary becomes visible as `commits`
-   ending early.
+3. ~~**Date-based expiry.**~~ **Done** — `c99b745`.
+   `silo gc -expire-history 30d`, reporting by default.
+
+   It deletes **commit objects only**. The bulk of a library is chunks, and
+   those are the sweep's job, so expiry moves bytes from the history column to
+   the unreferenced column and stops. Two checkable steps instead of one large
+   irreversible one. On a live library: 1.5 MB with 1.2 MB of history became
+   300.2 KB.
+
+   Two rules decide the set:
+
+   - **The cut is a prefix from the head**, not a per-commit age test. History
+     is a linked list, so deleting a commit cuts everything behind it anyway —
+     and commit timestamps come from clients, so clock skew alone can put an
+     old commit between two new ones.
+   - **The head is never expired**, at any age. A library untouched for a year
+     is ordinary; dropping its head leaves `Branch` naming a commit the store
+     does not hold, which is corruption with no client-side recovery.
+
+   The boundary needed no new plumbing: `walkHistory` already ends a listing at
+   an unreadable commit and `changes?since=` already answers 410. Verified
+   against a running server — the commits listing went 6 → 1 with a 200, and an
+   expired id answered 410.
+
+   Still open: **the window is a flag, not a policy.** There is no per-library
+   `keep_days` column and no server default, so retention happens when an
+   operator runs the command. That is the next piece.
 4. **Switch the charge to `blocks-occupied`**, reporting both kinds, with every
    site in the table above moving together. This is fourth on purpose: it is the
    step users feel, and it should not land until the space it makes chargeable
