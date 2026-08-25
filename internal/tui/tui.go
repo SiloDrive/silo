@@ -151,17 +151,6 @@ func (m model) fetchServerInfo() tea.Msg {
 	return serverInfoMsg{version: info.Version}
 }
 
-// watch opens the notification socket and returns the command that waits on
-// it. A server that does not offer one is not an error: the watcher keeps
-// trying in the background, and 'r' still refreshes by hand meanwhile.
-func (m *model) watch() tea.Cmd {
-	if m.watcher != nil {
-		return nil
-	}
-	m.watcher = m.api.Watch()
-	return m.awaitUpdate()
-}
-
 // awaitUpdate waits for the next push. Bubble Tea runs commands off the update
 // loop, so one parked here blocks nothing — but a command fires once, which is
 // why every handler of a libraryUpdatedMsg arms another.
@@ -374,10 +363,11 @@ func (m model) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.view = viewLibraries
 		m.message = ""
-		// Evaluated before the batch is built, because watch() is what makes
-		// the command it returns non-nil.
-		watching := m.watch()
-		return m, tea.Batch(m.loadLibraries, m.fetchServerInfo, watching)
+		// The socket opens here and lasts the session. A server built without
+		// a notification endpoint is not an error: the watcher asks, finds
+		// none, and stops, leaving the views to load when they are entered.
+		m.watcher = m.api.Watch()
+		return m, tea.Batch(m.loadLibraries, m.fetchServerInfo, m.awaitUpdate())
 	}
 
 	var cmds []tea.Cmd

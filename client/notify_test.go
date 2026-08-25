@@ -155,3 +155,48 @@ func TestNotifyEndpoint(t *testing.T) {
 		t.Error("notifyEndpoint accepted an ftp:// server URL")
 	}
 }
+
+// The client restates the server's vocabulary rather than importing its
+// package, so nothing but this asserts the two still agree: rename an event
+// type on the server and both sides still compile, while no event ever lands.
+func TestMessageTypesMatchTheServers(t *testing.T) {
+	if msgLibraryUpdate != notif.EventTypeLibraryUpdate {
+		t.Errorf("client sends %q, server sends %q", msgLibraryUpdate, notif.EventTypeLibraryUpdate)
+	}
+	if msgJWTExpired != notif.EventTypeJWTExpired {
+		t.Errorf("client reads %q, server sends %q", msgJWTExpired, notif.EventTypeJWTExpired)
+	}
+}
+
+// A server built without the notification endpoint is worth asking about once,
+// rather than dialling for the life of the session.
+func TestWatcherStopsWhenTheServerOffersNoNotifications(t *testing.T) {
+	dials := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/silo/v1/server-info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"0.5.0","features":["batch","blocks"]}`))
+	})
+	mux.HandleFunc("/notification", func(w http.ResponseWriter, r *http.Request) {
+		dials++
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	w := NewClient(srv.URL).Watch()
+	defer w.Close()
+	w.Subscribe(watchLibraryID)
+
+	select {
+	case _, ok := <-w.Events():
+		if ok {
+			t.Error("an event arrived from a server that advertises no notifications")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the watcher is still going against a server that advertises no notifications")
+	}
+	if dials != 0 {
+		t.Errorf("dialled the notification endpoint %d times on a server that does not offer it", dials)
+	}
+}

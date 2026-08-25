@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -44,6 +45,15 @@ const (
 	watchFrameBuffer = 8
 )
 
+// The message types the protocol exchanges. The server's spelling of the two
+// it sends is asserted against these in the tests, because a rename on that
+// side would otherwise compile here and simply stop delivering events.
+const (
+	msgSubscribe     = "subscribe"
+	msgLibraryUpdate = "library-update"
+	msgJWTExpired    = "jwt-expired"
+)
+
 // wireMessage is the notification protocol's envelope, in both directions.
 type wireMessage struct {
 	Type    string          `json:"type"`
@@ -85,10 +95,16 @@ type Watcher struct {
 	// wake asks the live connection to re-assert subscriptions — a new
 	// library, or a token that has come due for another try.
 	wake chan struct{}
-	done chan struct{}
 
-	closeOnce sync.Once
-	wg        sync.WaitGroup
+	// cancel stops everything; done is what the loops select on. A context
+	// rather than a bare channel because the dial takes one, and a Close that
+	// had to wait out a 15s handshake would be a Close the TUI feels.
+	cancel context.CancelFunc
+	done   <-chan struct{}
+	wg     sync.WaitGroup
+
+	// ctx is held only to hand to the dialer.
+	ctx context.Context
 
 	mu   sync.Mutex
 	libs map[string]*watchedLibrary
@@ -99,21 +115,26 @@ type watchedLibrary struct {
 	expires int64 // unix seconds
 
 	// retryAt holds a library out of the next subscribe frame after the server
-	// refused its token, and backoff is how long the hold grows to.
+	// refused its token, backoff is how long the hold grows to, and retry is
+	// the timer that wakes the connection when the hold is up.
 	retryAt time.Time
 	backoff time.Duration
+	retry   *time.Timer
 }
 
 // Watch starts watching. Nothing is subscribed until Subscribe is called, and
 // the caller must Close the watcher when it is done with it.
 func (c *APIClient) Watch() *Watcher {
+	ctx, cancel := context.WithCancel(context.Background())
 	w := &Watcher{
 		api:    c,
 		events: make(chan LibraryUpdate, watchEventBuffer),
 		wake:   make(chan struct{}, 1),
-		done:   make(chan struct{}),
+		cancel: cancel,
+		done:   ctx.Done(),
 		libs:   make(map[string]*watchedLibrary),
 	}
+	w.ctx = ctx
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
@@ -134,17 +155,31 @@ func (w *Watcher) Subscribe(libraryID string) {
 		return
 	}
 	w.mu.Lock()
-	if _, ok := w.libs[libraryID]; !ok {
+	_, known := w.libs[libraryID]
+	if !known {
 		w.libs[libraryID] = &watchedLibrary{}
 	}
 	w.mu.Unlock()
-	w.nudge()
+	// Only a new library is worth waking the connection for. Re-entering a
+	// library already watched would otherwise re-send every subscription held,
+	// each one a JWT the server verifies under a lock its other clients are
+	// waiting on.
+	if !known {
+		w.nudge()
+	}
 }
 
 // Close stops the watcher and waits for it to finish. It is safe to call more
 // than once, and safe to call on a watcher whose socket never came up.
 func (w *Watcher) Close() {
-	w.closeOnce.Do(func() { close(w.done) })
+	w.cancel()
+	w.mu.Lock()
+	for _, lib := range w.libs {
+		if lib.retry != nil {
+			lib.retry.Stop()
+		}
+	}
+	w.mu.Unlock()
 	w.wg.Wait()
 }
 
@@ -152,15 +187,6 @@ func (w *Watcher) nudge() {
 	select {
 	case w.wake <- struct{}{}:
 	default: // a wake is already pending, and one is as good as two
-	}
-}
-
-func (w *Watcher) stopping() bool {
-	select {
-	case <-w.done:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -179,11 +205,12 @@ func (w *Watcher) sleep(d time.Duration) bool {
 func (w *Watcher) run() {
 	defer close(w.events)
 
+	if !w.serverOffers() {
+		return
+	}
+
 	backoff := watchDialMin
 	for {
-		if w.stopping() {
-			return
-		}
 		conn, err := w.dial()
 		if err == nil {
 			start := time.Now()
@@ -202,13 +229,25 @@ func (w *Watcher) run() {
 	}
 }
 
+// serverOffers asks whether this server has a notification endpoint at all,
+// so a build without one is not dialled every 30 seconds for the life of the
+// session. A server that will not answer gets the benefit of the doubt: an
+// unreachable /server-info says nothing about /notification.
+func (w *Watcher) serverOffers() bool {
+	info, err := w.api.GetServerInfo()
+	if err != nil {
+		return true
+	}
+	return info.Has("notifications")
+}
+
 func (w *Watcher) dial() (*websocket.Conn, error) {
 	endpoint, err := notifyEndpoint(w.api.BaseURL)
 	if err != nil {
 		return nil, err
 	}
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
-	conn, resp, err := dialer.Dial(endpoint, nil)
+	conn, resp, err := dialer.DialContext(w.ctx, endpoint, nil)
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
@@ -247,6 +286,12 @@ func (w *Watcher) serve(conn *websocket.Conn) {
 		defer close(frames)
 		w.readLoop(conn, frames, stop)
 	}()
+	// Subscribing has to mint tokens, which is an HTTP round trip. Off this
+	// goroutine, because a loop parked on that request is a loop not reading
+	// events -- and, since the request has no deadline of its own, a Close the
+	// user waits on for as long as the server feels like taking.
+	go w.assertLoop(conn, stop)
+
 	defer func() {
 		// In this order: stop releases a reader blocked on a full frames
 		// buffer, Close releases one blocked on the socket.
@@ -255,9 +300,6 @@ func (w *Watcher) serve(conn *websocket.Conn) {
 		reader.Wait()
 	}()
 
-	if err := w.resubscribe(conn); err != nil {
-		return
-	}
 	for {
 		select {
 		case <-w.done:
@@ -269,10 +311,25 @@ func (w *Watcher) serve(conn *websocket.Conn) {
 			if !w.handle(msg) {
 				return
 			}
+		}
+	}
+}
+
+// assertLoop keeps this connection's subscriptions up to date: everything
+// watched when it opens, and whatever a wake adds or releases from a retry
+// hold after that. A wake that arrives with no connection up is not lost --
+// the next connection asserts the whole set as it opens.
+func (w *Watcher) assertLoop(conn *websocket.Conn, stop <-chan struct{}) {
+	for {
+		if err := w.resubscribe(conn); err != nil {
+			return
+		}
+		select {
 		case <-w.wake:
-			if err := w.resubscribe(conn); err != nil {
-				return
-			}
+		case <-stop:
+			return
+		case <-w.done:
+			return
 		}
 	}
 }
@@ -309,18 +366,17 @@ func (w *Watcher) readLoop(conn *websocket.Conn, frames chan<- wireMessage, stop
 // stay up.
 func (w *Watcher) handle(msg wireMessage) bool {
 	switch msg.Type {
-	case "library-update":
+	case msgLibraryUpdate:
 		var ev LibraryUpdate
 		if err := json.Unmarshal(msg.Content, &ev); err != nil {
 			return true // a frame we cannot read is not a connection we must drop
 		}
-		w.subscriptionWorked(ev.LibraryID)
 		select {
 		case w.events <- ev:
 		case <-w.done:
 			return false
 		}
-	case "jwt-expired":
+	case msgJWTExpired:
 		var ev struct {
 			LibraryID string `json:"library_id"`
 		}
@@ -355,7 +411,7 @@ func (w *Watcher) resubscribe(conn *websocket.Conn) error {
 		return err
 	}
 	_ = conn.SetWriteDeadline(time.Now().Add(watchWriteWait))
-	return conn.WriteJSON(wireMessage{Type: "subscribe", Content: raw})
+	return conn.WriteJSON(wireMessage{Type: msgSubscribe, Content: raw})
 }
 
 // pending is the watched libraries whose retry hold, if any, has passed.
@@ -377,12 +433,7 @@ func (w *Watcher) pending() []string {
 // cached token is missing or close enough to expiry to be refused.
 func (w *Watcher) token(libraryID string) (string, error) {
 	w.mu.Lock()
-	lib, ok := w.libs[libraryID]
-	if !ok {
-		w.mu.Unlock()
-		return "", fmt.Errorf("library %s is not watched", libraryID)
-	}
-	if lib.token != "" && time.Until(time.Unix(lib.expires, 0)) > renewBefore {
+	if lib, ok := w.libs[libraryID]; ok && lib.token != "" && time.Until(time.Unix(lib.expires, 0)) > renewBefore {
 		token := lib.token
 		w.mu.Unlock()
 		return token, nil
@@ -395,7 +446,6 @@ func (w *Watcher) token(libraryID string) (string, error) {
 	}
 
 	w.mu.Lock()
-	// Still watched? Close or a future Unsubscribe may have landed meanwhile.
 	if lib, ok := w.libs[libraryID]; ok {
 		lib.token, lib.expires = token, expires
 	}
@@ -418,19 +468,12 @@ func (w *Watcher) deferRetry(libraryID string) {
 	} else {
 		lib.backoff = min(lib.backoff*2, watchRemintMax)
 	}
-	delay := lib.backoff
-	lib.retryAt = time.Now().Add(delay)
-	w.mu.Unlock()
-
-	time.AfterFunc(delay, w.nudge)
-}
-
-// subscriptionWorked clears a library's retry hold: an event arrived, so the
-// subscription behind it is live.
-func (w *Watcher) subscriptionWorked(libraryID string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if lib, ok := w.libs[libraryID]; ok {
-		lib.retryAt, lib.backoff = time.Time{}, 0
+	lib.retryAt = time.Now().Add(lib.backoff)
+	// One timer per library, not one per rejection: a library the server keeps
+	// refusing would otherwise stack a live timer for every refusal.
+	if lib.retry != nil {
+		lib.retry.Stop()
 	}
+	lib.retry = time.AfterFunc(lib.backoff, w.nudge)
+	w.mu.Unlock()
 }
