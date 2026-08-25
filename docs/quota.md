@@ -462,6 +462,33 @@ deleted.
    of the configured cap and free-space-minus-reserve.
 6. **Per-path history**, and the client's `.snapshot`.
 
+## Settled: the CLI sets, it does not increment
+
+`silo user quota <email> <size>` assigns a ceiling. An increment — `add
+<email> 5gb`, meaning "give them another five" — was considered and declined.
+
+It is the only operation in `silo user` that is not idempotent. Every other one
+can be run twice with no second effect: `add` on an existing account fails,
+`passwd` sets the same password again, `disable` on a disabled account is a
+no-op, and `quota … 100gb` is an upsert precisely so that raising a cap does not
+depend on whether a row already exists. An increment breaks that property, and
+it breaks it in the place it is least affordable — an operator command recalled
+from shell history, where the second run looks identical to the first and is
+not.
+
+Nothing has asked for it. If it is ever wanted it should be spelled so that it
+cannot be mistaken for an assignment at a glance — `-by 5gb` rather than a
+positional size — because the failure is silent: `quota alice 5gb` and
+`quota add alice 5gb` differ by one word and by four orders of magnitude on an
+account already holding 500 GB.
+
+The distinction between creating a cap and changing one is deliberately absent
+for the same reason. `5f5ed23` has a test for it: a plain `INSERT` worked
+exactly once, so raising somebody's quota failed silently and left the old
+number in force. The upsert erased the distinction on purpose, and a verb pair
+that reinstates it would make the operator know the current state before
+choosing how to change it.
+
 ## Open questions
 
 - **Is `[quota] default` still the right shape** once the charge is blocks? A
