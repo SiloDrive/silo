@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -250,8 +251,18 @@ func (w *Watcher) dial() (*websocket.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The session token, when there is one. The server accepts a socket
+	// without it -- the endpoint is older than the header -- but a connection
+	// that names an account may sit with nothing subscribed, which is exactly
+	// what this watcher does between opening and the caller's first Subscribe.
+	// Anonymous sockets have a deadline to subscribe by.
+	var headers http.Header
+	if token := w.api.getToken(); token != "" {
+		headers = http.Header{"Authorization": []string{"Bearer " + token}}
+	}
+
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
-	conn, resp, err := dialer.DialContext(w.ctx, endpoint, nil)
+	conn, resp, err := dialer.DialContext(w.ctx, endpoint, headers)
 	if resp != nil {
 		_ = resp.Body.Close()
 	}

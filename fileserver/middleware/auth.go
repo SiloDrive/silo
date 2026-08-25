@@ -50,9 +50,25 @@ type lookupFunc func(ctx context.Context, secret string) (*account.Account, erro
 // access URLs, the Silo proof-of-possession scheme credential.Resolve already
 // anticipates — would make it three.
 func requireCredential(next http.Handler, scheme string, lookup lookupFunc, carry contextKey) http.Handler {
+	return credential(next, scheme, lookup, carry, false)
+}
+
+// credential is requireCredential with a say in what an absent header means.
+//
+// optional changes exactly one branch: no header at all passes through
+// unauthenticated instead of answering 401. A header that is present and bad
+// still fails, in every lane and every mode -- a credential that was offered
+// and rejected must never be quietly downgraded to anonymous, because the
+// caller believes it is authenticated and would be told otherwise only by the
+// permissions it silently stops having.
+func credential(next http.Handler, scheme string, lookup lookupFunc, carry contextKey, optional bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
+			if optional {
+				next.ServeHTTP(w, r)
+				return
+			}
 			http.Error(w, "Authorization header required", http.StatusUnauthorized)
 			return
 		}
@@ -97,6 +113,20 @@ func requireCredential(next http.Handler, scheme string, lookup lookupFunc, carr
 // the authenticated account into the request context.
 func RequireAuth(next http.Handler) http.Handler {
 	return requireCredential(next, "bearer", sessionLookup, "")
+}
+
+// OptionalAuth validates a Bearer JWT when one is offered and lets the request
+// through either way.
+//
+// It exists for the notification socket, which has to accept clients that
+// predate the header while giving the ones that send it something for it. What
+// it buys the server is attribution: a connection that names an account can be
+// counted against that account and allowed to sit idle, where an anonymous one
+// has to earn its keep by subscribing. What it must not become is a softer
+// RequireAuth -- a bad token is still 401 here, and an absent one still reaches
+// the handler with no account, so a route that needs one has to ask.
+func OptionalAuth(next http.Handler) http.Handler {
+	return credential(next, "bearer", sessionLookup, "", true)
 }
 
 // sessionLookup treats a bad signature as a bad token: a JWT is verified from

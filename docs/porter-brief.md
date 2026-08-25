@@ -1253,11 +1253,16 @@ Getting subscribed takes one call, on the lane you are already on:
    through one `map[string]string` breaks here — see
    `docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md`. Decode
    into a typed struct.
-2. Connect to `WS /notification` and send one frame:
+2. Connect to `WS /notification`, sending your **session** Bearer on the
+   upgrade if you can, and send one frame:
 
 ```json
 {"type":"subscribe","content":{"libraries":[{"id":"<library-id>","jwt_token":"<jwt>"}]}}
 ```
+
+The header on the upgrade is optional and new — see *Authenticating the
+upgrade* below. If you subscribe promptly, which this recipe does, you need
+change nothing.
 
 `"unsubscribe"` takes the same shape. Events come back in the same envelope:
 
@@ -1283,6 +1288,43 @@ nothing.
 
 If notifications are disabled server-side, step 1 returns **404**. Treat that as
 "fall back to polling", not as an error.
+
+### An update you were too slow to take is not lost
+
+If your socket is behind — you have not read from it and the server's outbound
+queue for you is full — the server no longer discards the event. It remembers
+the newest commit id per library and delivers it as an ordinary
+`library-update` as soon as your queue moves. Several misses for one library
+collapse into one message carrying the latest, because the older ones are
+already wrong. There is nothing to implement: it is the same frame you already
+handle. Before this, such an update was dropped silently and you would have sat
+on a stale listing until the library happened to move again.
+
+### Authenticating the upgrade
+
+`GET /notification` now accepts your session `Authorization: Bearer <jwt>` on
+the upgrade. It is **optional** — the endpoint is older than the header — and
+here is the whole of what it changes:
+
+- **Authenticated**: you may hold the socket with nothing subscribed, for as
+  long as you like.
+- **Anonymous**: you have **30 seconds** to subscribe to something. After that
+  the server closes the connection.
+
+A socket with no subscriptions receives nothing, so an anonymous one that never
+subscribes costs the server four goroutines and a connection to deliver nothing
+to anybody. That is what the deadline is for, and subscribing is what lifts it
+— the subscribe frame carries a JWT the server verifies, so it is proof, not
+just activity.
+
+Porter subscribes immediately after connecting, so **Porter is unaffected
+either way**. Send the header anyway if it is free where you build the request:
+it is the difference between being a recognised client and being on a clock,
+and a future release may reverse the default.
+
+A token that is sent and is **bad** is a `401` on the upgrade, not a silent
+downgrade to anonymous. If you send the header, handle its expiry the way you
+handle it everywhere else.
 
 **Older servers.** `notify-token` landed after 0.4.3. Against a server without
 it the request 404s the same way a disabled notification server does. There is

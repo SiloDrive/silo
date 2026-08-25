@@ -338,7 +338,26 @@ not `403` — when notifications are disabled, so a client can tell "no such
 feature" from "not your library". Note `expires_at` is a **number** in a family
 of responses that are otherwise strings.
 
-Then connect to `/notification` and send one frame per batch of libraries:
+Then connect to `/notification`. The upgrade takes an **optional**
+`Authorization: Bearer <jwt>` — the same session token every other call uses:
+
+```
+GET /notification    Authorization: Bearer <jwt>      (optional)
+```
+
+Optional because the endpoint predates the header and existing clients dial it
+with nothing. What sending it buys is the right to hold a socket with nothing
+subscribed: a connection that authenticated may sit idle indefinitely, which is
+what a client that opens the socket at login and subscribes later needs. A
+connection that did **not** authenticate has 30 seconds to subscribe to
+something before the server closes it — a socket with no subscriptions receives
+nothing anyway, so an anonymous one that never subscribes is pure cost to the
+server and of no use to the client.
+
+A token that is sent and is bad is refused with `401` rather than treated as
+absent, in this lane as in every other.
+
+Send one frame per batch of libraries:
 
 ```json
 {"type": "subscribe", "content": {"libraries": [{"id": "<library>", "jwt_token": "<jwt>"}]}}
@@ -349,6 +368,12 @@ and `{"type": "jwt-expired", "content": …}`; unknown types are ignored rather
 than closing the socket. `unsubscribe` takes the same frame shape as
 `subscribe`. The server pings every 30s and drops a client that has not ponged
 within 90s; most WebSocket libraries answer pings for you.
+
+An update that cannot be delivered because a client is behind is **deferred,
+not dropped**: the server remembers the latest commit id per library and sends
+it as an ordinary `library-update` as soon as the client's queue moves.
+Repeated misses for one library collapse into the newest. Nothing extra is
+needed on the client side to receive this — it is the same frame.
 
 ### Debug middleware
 

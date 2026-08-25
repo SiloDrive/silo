@@ -514,8 +514,16 @@ func newHTTPRouter() *mux.Router {
 		r.Use(middleware.NameTransaction)
 	}
 	// in-process notification-server WebSocket endpoint
+	//
+	// OptionalAuth rather than RequireAuth: the endpoint predates the header
+	// and porter, porter-fuse and every older TUI dial it with no credential,
+	// so requiring one here would break them all on the day it shipped. What
+	// authenticating buys a client is the right to hold an idle socket; one
+	// that offers nothing has to subscribe -- with a token the server verifies
+	// -- inside provisionalGrace or be dropped. A credential that is offered
+	// and bad is still refused, in either mode.
 	if option.EnableNotification {
-		r.HandleFunc("/notification", notif.Handler)
+		r.Handle("/notification", middleware.OptionalAuth(http.HandlerFunc(notif.Handler)))
 	}
 
 	// pprof
