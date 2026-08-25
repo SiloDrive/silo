@@ -498,9 +498,25 @@ deleted.
    against a running server — the commits listing went 6 → 1 with a 200, and an
    expired id answered 410.
 
-   Still open: **the window is a flag, not a policy.** There is no per-library
-   `keep_days` column and no server default, so retention happens when an
-   operator runs the command. That is the next piece.
+   **The policy landed after it** (`silo retention`): a `LibraryRetention` row
+   per library, `[history] keep_days` in `silo.conf` as the fallback, and the
+   row winning where it exists — the same precedence `UserQuota` uses, for the
+   same reason. `silo gc -expire-history` follows each library's policy;
+   `-expire-window` overrides every policy at once and is a separate flag
+   because it is the dangerous reading.
+
+   Two defaults chosen to make an upgrade safe: `DefaultKeepDays` is 0 and 0
+   means *keep everything*, so installing a new binary never starts deleting.
+   And `silo retention <id> 0` is refused rather than treated as keep-all,
+   because an operator typing 0 could as easily mean "keep nothing" and the two
+   are opposites — `keep-all` says which one out loud.
+
+   Still open: **nothing runs it unattended.** `expireHistoryByPolicy` takes no
+   window precisely so a scheduler can call it, but today an operator runs the
+   command or schedules it with cron. An in-process timer is wanted eventually
+   and is deliberately not here yet — it would be the first thing in Silo that
+   deletes user data with nobody watching, and it wants a kill switch and an
+   interval before it wants code.
 4. **Switch the charge to `blocks-occupied`**, reporting both kinds, with every
    site in the table above moving together. This is fourth on purpose: it is the
    step users feel, and it should not land until the space it makes chargeable

@@ -252,6 +252,19 @@ CREATE INDEX IF NOT EXISTS LibraryIdIndex on SharedLibrary (library_id);
 CREATE INDEX IF NOT EXISTS FromAccountIndex on SharedLibrary (from_account_id);
 CREATE INDEX IF NOT EXISTS ToAccountIndex on SharedLibrary (to_account_id);
 
+-- How long a library keeps history, in days.
+--
+-- A row is the library's own policy; no row means the server default in
+-- [history] keep_days applies. Absent rather than a stored sentinel for the
+-- same reason UserQuota uses an absent row: "never configured" and "configured
+-- to the value the default happens to hold today" are different states, and
+-- only one of them follows the default when an operator changes it.
+--
+-- 0 means keep everything. It is a real setting and not "unset" -- a library
+-- that must retain every commit is a thing somebody chooses, and it has to
+-- survive a server default that says otherwise.
+CREATE TABLE IF NOT EXISTS LibraryRetention (library_id CHAR(37) PRIMARY KEY, keep_days INTEGER NOT NULL);
+
 CREATE TABLE IF NOT EXISTS GCID (library_id CHAR(36) PRIMARY KEY, gc_id VARCHAR(10));
 CREATE TABLE IF NOT EXISTS LastGCID (id INTEGER PRIMARY KEY AUTOINCREMENT, library_id CHAR(36) NOT NULL, client_id VARCHAR(128) NOT NULL, gc_id VARCHAR(10) NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS lastgcid_libraryid_clientid_idx ON LastGCID (library_id, client_id);

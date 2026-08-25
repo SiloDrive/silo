@@ -70,6 +70,12 @@ var (
 	// quota options
 	DefaultQuota int64
 
+	// DefaultKeepDays is how long a library keeps history when it has no
+	// LibraryRetention row of its own. Zero means keep everything, which is
+	// the default: a server that started expiring history because somebody
+	// upgraded it would be deleting data nobody asked it to.
+	DefaultKeepDays int
+
 	// redis options
 	HasRedisOptions bool
 	RedisHost       string
@@ -338,6 +344,16 @@ func LoadFileServerOptions(configFile string) {
 	if envPort := os.Getenv("SILO_PORT"); envPort != "" {
 		if port, err := strconv.ParseUint(envPort, 10, 32); err == nil {
 			Port = uint32(port)
+		}
+	}
+
+	if section, err := config.GetSection("history"); err == nil {
+		if key, err := section.GetKey("keep_days"); err == nil {
+			if days, err := key.Int(); err == nil && days >= 0 {
+				DefaultKeepDays = days
+			} else {
+				log.Warnf("[history] keep_days = %q is not a whole number of days; keeping all history", key.String())
+			}
 		}
 	}
 

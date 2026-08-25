@@ -8,6 +8,7 @@ import (
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/objstore"
+	"github.com/dkam/silo/fileserver/option"
 	storefmt "github.com/dkam/silo/store"
 )
 
@@ -234,5 +235,121 @@ func TestExpireMakesItsBytesCollectableBySweep(t *testing.T) {
 	}
 	if after.Head != before.Head {
 		t.Errorf("head = %+v, want it untouched at %+v", after.Head, before.Head)
+	}
+}
+
+// A library's own retention wins over the server default, and no row means the
+// default applies.
+//
+// The precedence has to run this way round for the same reason UserQuota's
+// does: the config sets the floor for everybody and the per-library setting is
+// the exception. A default that overrode the exceptions would make the
+// exceptions unsettable, and one that only applied to libraries created after
+// it was set would make it unpredictable.
+func TestRetentionPrefersTheLibrarysOwnSettingOverTheDefault(t *testing.T) {
+	sqliteTestDB(t)
+	libraryID, _ := historyFixture(t, 1*time.Hour)
+
+	restore := option.DefaultKeepDays
+	defer func() { option.DefaultKeepDays = restore }()
+
+	option.DefaultKeepDays = 30
+	if got, err := libmgr.RetentionDays(libraryID); err != nil || got != 30 {
+		t.Errorf("RetentionDays with no row = %d (%v), want the default 30", got, err)
+	}
+
+	if err := libmgr.SetRetentionDays(libraryID, 7); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := libmgr.RetentionDays(libraryID); err != nil || got != 7 {
+		t.Errorf("RetentionDays after setting 7 = %d (%v), want 7", got, err)
+	}
+
+	// Zero is a real setting: keep everything, even where the server says not
+	// to. A library that must retain every commit is a choice somebody makes,
+	// and it has to survive a default that disagrees.
+	if err := libmgr.SetRetentionDays(libraryID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := libmgr.RetentionDays(libraryID); err != nil || got != 0 {
+		t.Errorf("RetentionDays after setting 0 = %d (%v), want 0 -- keep everything", got, err)
+	}
+
+	// And clearing it goes back to following the default.
+	if err := libmgr.ClearRetentionDays(libraryID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := libmgr.RetentionDays(libraryID); err != nil || got != 30 {
+		t.Errorf("RetentionDays after clearing = %d (%v), want the default 30 again", got, err)
+	}
+}
+
+// A library set to keep everything is never expired, whatever the pass was
+// asked for.
+func TestExpireSkipsALibraryThatKeepsEverything(t *testing.T) {
+	sqliteTestDB(t)
+	libraryID, ids := historyFixture(t, 400*24*time.Hour, 1*time.Hour)
+
+	restore := option.DefaultKeepDays
+	defer func() { option.DefaultKeepDays = restore }()
+	option.DefaultKeepDays = 1
+
+	if err := libmgr.SetRetentionDays(libraryID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := expireHistoryByPolicy(libraryID, true)
+	if err != nil {
+		t.Fatalf("expireHistoryByPolicy: %v", err)
+	}
+	if got.expired != 0 {
+		t.Errorf("expired %d commits from a library set to keep everything", got.expired)
+	}
+	if !commitExists(t, libraryID, ids[0]) {
+		t.Error("the old commit was deleted despite keep-everything")
+	}
+}
+
+// With the default set and no per-library row, the policy pass expires.
+func TestExpireByPolicyUsesTheServerDefault(t *testing.T) {
+	sqliteTestDB(t)
+	libraryID, ids := historyFixture(t, 400*24*time.Hour, 1*time.Hour)
+
+	restore := option.DefaultKeepDays
+	defer func() { option.DefaultKeepDays = restore }()
+	option.DefaultKeepDays = 14
+
+	got, err := expireHistoryByPolicy(libraryID, true)
+	if err != nil {
+		t.Fatalf("expireHistoryByPolicy: %v", err)
+	}
+	if got.expired != 1 {
+		t.Errorf("expired %d commits, want the 1 outside the 14-day default", got.expired)
+	}
+	if commitExists(t, libraryID, ids[0]) {
+		t.Error("the 400-day-old commit survived a 14-day default")
+	}
+}
+
+// The default of zero means a server that was upgraded does not start deleting.
+func TestExpireByPolicyDoesNothingWhenNothingIsConfigured(t *testing.T) {
+	sqliteTestDB(t)
+	libraryID, ids := historyFixture(t, 400*24*time.Hour, 1*time.Hour)
+
+	restore := option.DefaultKeepDays
+	defer func() { option.DefaultKeepDays = restore }()
+	option.DefaultKeepDays = 0
+
+	got, err := expireHistoryByPolicy(libraryID, true)
+	if err != nil {
+		t.Fatalf("expireHistoryByPolicy: %v", err)
+	}
+	if got.expired != 0 {
+		t.Errorf("expired %d commits with no retention configured anywhere", got.expired)
+	}
+	for i, id := range ids {
+		if !commitExists(t, libraryID, id) {
+			t.Errorf("commit %d was deleted with no policy set", i)
+		}
 	}
 }

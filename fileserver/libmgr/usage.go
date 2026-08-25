@@ -244,3 +244,62 @@ func ClearAccountQuota(id account.ID) error {
 	}
 	return nil
 }
+
+// RetentionDays is how many days of history a library keeps.
+//
+// Zero means keep everything, and it is a real answer rather than "unset" — a
+// library that must retain every commit is something an operator chooses, and
+// it has to survive a server default that says otherwise.
+//
+// Two sources, and the precedence matches AccountQuota's for the same reason.
+// A LibraryRetention row is the library's own policy; option.DefaultKeepDays
+// is the fallback for a library without one. The row wins where it exists, so
+// the config sets the floor for everybody and the setting names the
+// exceptions. Absent rather than a stored sentinel because "never configured"
+// and "configured to whatever the default happens to be today" are different
+// states, and only one of them should follow the default when it changes.
+func RetentionDays(libraryID string) (int, error) {
+	var days int
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	row := readDB.QueryRowContext(ctx, "SELECT keep_days FROM LibraryRetention WHERE library_id = ?", libraryID)
+	switch err := row.Scan(&days); {
+	case err == sql.ErrNoRows:
+		return option.DefaultKeepDays, nil
+	case err != nil:
+		return 0, fmt.Errorf("failed to read retention: %w", err)
+	}
+	return days, nil
+}
+
+// SetRetentionDays gives a library its own retention policy. Zero means keep
+// everything.
+//
+// An upsert for the reason SetAccountQuota is one: the table is keyed by
+// library, so a plain INSERT works exactly once and changing a policy would
+// fail silently with the old one left in force.
+func SetRetentionDays(libraryID string, days int) error {
+	if days < 0 {
+		return fmt.Errorf("retention cannot be negative, got %d days", days)
+	}
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	_, err := writeDB.ExecContext(ctx,
+		"INSERT INTO LibraryRetention (library_id, keep_days) VALUES (?, ?) "+
+			"ON CONFLICT(library_id) DO UPDATE SET keep_days = excluded.keep_days", libraryID, days)
+	if err != nil {
+		return fmt.Errorf("failed to set retention: %w", err)
+	}
+	return nil
+}
+
+// ClearRetentionDays drops a library back to the server default. See
+// SetRetentionDays for why the absent row is the encoding.
+func ClearRetentionDays(libraryID string) error {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	if _, err := writeDB.ExecContext(ctx, "DELETE FROM LibraryRetention WHERE library_id = ?", libraryID); err != nil {
+		return fmt.Errorf("failed to clear retention: %w", err)
+	}
+	return nil
+}

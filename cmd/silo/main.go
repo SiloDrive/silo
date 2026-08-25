@@ -64,6 +64,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "retention":
+		if err := silod.RunRetention(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "gc":
 		if err := silod.RunGC(rest); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -131,6 +136,7 @@ func printUsage(w io.Writer) {
 Usage:
   silo serve [-b addr] [flags]    Run the file server daemon
   silo df [-q] [library-id]       Where the disk went: head, history, unreferenced
+  silo retention [lib [days]]     Show or set how long a library keeps history
   silo gc [-orphans] [-delete]    Reclaim disk: dead libraries, orphans, old history
   silo backup-db <dir>            Snapshot the databases (server may be running)
   silo sentry-test                Send a test event to $SILO_SENTRY_DSN and report

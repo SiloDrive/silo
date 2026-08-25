@@ -165,6 +165,12 @@ func commitsBehindTheWindow(st *objmgr.Store, head storefmt.ID, cutoff time.Time
 }
 
 // runHistoryExpiry expires every live library and prints what it found.
+//
+// A zero window means follow each library's own retention policy, which is the
+// ordinary case and the one a scheduler would use. A non-zero window overrides
+// every policy at once: useful for a one-off reclaim on a full disk, and
+// dangerous enough that it is a separate flag rather than the default reading
+// of a number.
 func runHistoryExpiry(keep time.Duration, del bool, quiet bool) error {
 	ids, err := liveLibraryIDs()
 	if err != nil {
@@ -174,7 +180,13 @@ func runHistoryExpiry(keep time.Duration, del bool, quiet bool) error {
 	var expired, kept int
 	var freed int64
 	for _, id := range ids {
-		e, err := expireHistory(id, keep, del)
+		var e historyExpiry
+		var err error
+		if keep > 0 {
+			e, err = expireHistory(id, keep, del)
+		} else {
+			e, err = expireHistoryByPolicy(id, del)
+		}
 		if err != nil {
 			log.Errorf("Failed to expire the history of %s: %v", id, err)
 			continue
@@ -187,8 +199,7 @@ func runHistoryExpiry(keep time.Duration, del bool, quiet bool) error {
 			if del {
 				verb = "expired"
 			}
-			fmt.Printf("%s %s: %d commits older than %s, %s\n",
-				verb, id, e.expired, keep, format.Bytes(e.freed))
+			fmt.Printf("%s %s: %d commits, %s\n", verb, id, e.expired, format.Bytes(e.freed))
 		}
 	}
 
@@ -196,8 +207,28 @@ func runHistoryExpiry(keep time.Duration, del bool, quiet bool) error {
 		fmt.Printf("Expired %d commits, %s now collectable. Run gc -orphans -delete to reclaim it.\n",
 			expired, format.Bytes(freed))
 	} else {
-		fmt.Printf("%d commits older than %s, holding %s. Re-run with -delete to expire them.\n",
-			expired, keep, format.Bytes(freed))
+		fmt.Printf("%d commits past retention, holding %s. Re-run with -delete to expire them.\n",
+			expired, format.Bytes(freed))
 	}
 	return nil
+}
+
+// expireHistoryByPolicy expires one library according to its stored retention,
+// falling back to the server default.
+//
+// This is the entry point a scheduler would call. It takes no window, so
+// whatever runs it — an operator, a cron, or one day a timer inside the
+// server — cannot accidentally impose one the library never agreed to. A
+// library with no policy anywhere keeps everything, which is what makes
+// upgrading a server safe: nothing starts deleting because somebody installed
+// a new binary.
+func expireHistoryByPolicy(libraryID string, del bool) (historyExpiry, error) {
+	days, err := libmgr.RetentionDays(libraryID)
+	if err != nil {
+		return historyExpiry{libraryID: libraryID}, err
+	}
+	if days <= 0 {
+		return historyExpiry{libraryID: libraryID}, nil
+	}
+	return expireHistory(libraryID, time.Duration(days)*24*time.Hour, del)
 }
