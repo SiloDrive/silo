@@ -206,6 +206,56 @@ against the figure before it, so the last one through can cross the line. The
 next one is refused. Do not build a client that depends on `usage <= quota`
 always holding.
 
+### `kind` is going to change, which is why it is there
+
+`logical-at-head` is not the last word on what quota counts. The plan on the
+table — [`quota.md`](quota.md) — is to charge the **blocks an account actually
+occupies** instead: dedup and compression mean two identical 5 MB files are
+billed as 10 MB today while costing 5 MB of disk, and the number the user is
+charged for and the number the operator buys disk for should be the same
+number.
+
+Nothing about the request or the response shape changes. What changes is the
+value of `kind`, which is on the wire for exactly this reason.
+
+**So: branch on `kind`, or display it. Never hard-code the string, and never
+assume the number means what it meant last release.** A client that ignores it
+shows an account halving overnight and calls it a bug in the server. Concretely,
+when `blocks-occupied` arrives:
+
+- **The figure becomes what the account is billed for**, not what its files add
+  up to. Those coincide only when nothing is deduplicated or compressed.
+- **You cannot estimate it locally by summing listing sizes.** Any optimistic
+  "will this fit" check computed client-side has to become a request instead.
+- **Deleting a file stops freeing space immediately.** The blocks stay reachable
+  from older commits until history retention expires them — ZFS and NetApp
+  semantics. A UI that re-reads usage after a delete to show the space coming
+  back needs to stop promising that.
+
+Both kinds may be reported together, and a client that shows both can explain
+itself: `logical-at-head` is what a file manager would total, `blocks-occupied`
+is the bill, and the gap between them is dedup and compression doing their job.
+
+### If you are filling in `df`
+
+`statfs(2)` reports block *counts*, so a `df` row will not match
+`account/usage` to the byte and is not meant to. Dividing the account figures by
+the block size truncates twice — once for the total, once for what is free — so
+the used column lands within one block of the real number, on whichever side
+depends on where the quota falls relative to a block boundary.
+
+Two ways to state that wrongly, both tempting:
+
+- It is **not** "the partial last block counted as occupied". That is what a
+  local filesystem does, and it does it *per file*. An account holding five
+  files of 0, 33, 23,740,889, 5,000,000 and 5,000,011 bytes totals 8238 blocks
+  as an aggregate and 8240 rounded file by file.
+- It is **not** reliably a round *up*. It equals `ceil(usage/blocksize)` at some
+  quotas and `floor` at others.
+
+If you report a measurement, report it as "the aggregate divided by the block
+size", not as per-file occupancy.
+
 ## The entries endpoint
 
 ```
@@ -1119,8 +1169,12 @@ content.
 
 Two properties fall out of that, both useful:
 
-- **It costs nothing against quota.** Usage is logical size at head; history is
-  by definition not at head. Nothing was special-cased to make this true.
+- **It costs nothing against quota**, today. Usage is logical size at head;
+  history is by definition not at head, and nothing was special-cased to make
+  that true. Note the "today": under the `blocks-occupied` charge described
+  above, *reading* history still costs nothing, but the history being read is
+  part of what its owner is billed for — which is what makes retention a lever
+  rather than a preference.
 - **It documents its own retention.** Once a retention limit exists, what the
   commits list returns *is* the window. The user can see how far back they can
   go rather than being told.

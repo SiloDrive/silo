@@ -207,6 +207,27 @@ The columns:
 | total | `quota` | invented, but *above* what is stored |
 | free | `quota - usage`, clamped | invented |
 
+**`df` will not match `account/usage` to the byte, and that is not a bug.**
+`statfs(2)` reports block *counts*, not bytes, so every column is divided by
+4096 on the way out. Used comes back as
+`floor(quota/4096) - floor((quota-usage)/4096)` — two independent truncations —
+which lands within one block of the real figure, on whichever side depends on
+where the quota falls relative to a block boundary. A measured example: an
+account holding exactly 33,740,933 bytes under a 100 MB cap reports 8238 blocks,
+33,742,848 bytes; the same account under a cap of 100,001,925 reports 8237.
+
+Two things follow, both easy to get wrong in a document that reports a
+measurement:
+
+- It is **not** "the partial last block counted as occupied". That is what a
+  local filesystem does, and it does it *per file* — those same five files
+  rounded individually come to 8240 blocks, not 8238. Porter rounds the
+  aggregate once. With one small file the two nearly agree; with a few thousand
+  they do not.
+- It is **not** reliably a round *up*. It equals `ceil(usage/4096)` at some
+  quotas and `floor` at others, and roughly half of the quota values in any
+  small window give the other answer.
+
 The half worth noticing is that **the used column is real either way**. That is
 what makes an uncapped account's `df` useful rather than decorative: a backup
 tool deciding whether a copy will fit is reading used, and before this it was
