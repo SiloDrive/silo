@@ -541,6 +541,7 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/libraries/{libraryid}", api.DeleteLibraryHandler).Methods("DELETE")
 	apiRouter.HandleFunc("/libraries/{libraryid}", patchLibraryHandler).Methods("PATCH")
 	apiRouter.HandleFunc("/libraries/{libraryid}/changes", api.ChangesHandler).Methods("GET")
+	apiRouter.HandleFunc("/libraries/{libraryid}/commits", api.CommitsHandler).Methods("GET")
 	// The chunk surface. "missing" cannot collide with a chunk id — the id
 	// route only matches 64 hex characters — but it is listed first anyway,
 	// because relying on a regex to keep two routes apart is the kind of thing

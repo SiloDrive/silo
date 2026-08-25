@@ -71,6 +71,17 @@ const etagPrefix = "v1-"
 // unsupported method gets a 405 naming what is allowed, rather than a 404
 // suggesting the path is wrong.
 func entriesHandler(w http.ResponseWriter, r *http.Request) {
+	// History is readable, never writable. Refused rather than ignored: a
+	// client that believes it is editing the past while it is silently editing
+	// the present is the worst outcome available here, and it is exactly what
+	// dropping an unrecognised parameter would produce.
+	if r.URL.Query().Get("at") != "" {
+		switch r.Method {
+		case http.MethodPut, http.MethodDelete, http.MethodPost:
+			http.Error(w, "at is read-only: history cannot be written to", http.StatusBadRequest)
+			return
+		}
+	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		getEntry(w, r)
@@ -147,14 +158,24 @@ type resolved struct {
 // to the reason instead of surfacing as "not found", which would be a lie
 // about whether the file exists.
 func resolve(library *libmgr.Library, path string) (*resolved, error) {
+	return resolveUnder(library, library.RootID, path)
+}
+
+// resolveUnder is resolve against a named root rather than the head's.
+//
+// The two are the same walk — a root id is a root id, and an old one names a
+// tree just as immutable as the current one. That is what makes a
+// point-in-time read cost nothing extra: there is no snapshot machinery here,
+// only the ordinary resolution pointed at a different starting id.
+func resolveUnder(library *libmgr.Library, rootID, path string) (*resolved, error) {
 	if path == "/" {
-		return &resolved{id: library.RootID, isDir: true}, nil
+		return &resolved{id: rootID, isDir: true}, nil
 	}
 	st, err := library.Store()
 	if err != nil {
 		return nil, err
 	}
-	root, err := store.ParseID(library.RootID)
+	root, err := store.ParseID(rootID)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +207,12 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry, err := resolve(library, path)
+	root, ok := rootFor(w, r, library)
+	if !ok {
+		return
+	}
+
+	entry, err := resolveUnder(library, root, path)
 	if err != nil {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
@@ -213,6 +239,45 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serveFile(w, r, library, entry.id, upath.Base(path))
+}
+
+// rootFor is the tree this read resolves against: the head's root, or the one a
+// commit named by ?at= had. It has answered the request and returns false when
+// it refuses.
+//
+// The three answers are deliberately distinct. An ?at= that is not an id at all
+// is the caller's mistake and 400. One that is a well-formed id the library
+// cannot resolve is 410 Gone — the same status and the same reasoning as
+// changes?since= uses, because the commit is not wrong, it is merely no longer
+// there, and the recovery is to look at what history does exist rather than to
+// retry. Flattening either into 404 would say the path does not exist, which is
+// a claim about the file and not about the commit.
+func rootFor(w http.ResponseWriter, r *http.Request, library *libmgr.Library) (string, bool) {
+	at := r.URL.Query().Get("at")
+	if at == "" {
+		return library.RootID, true
+	}
+
+	id, err := store.ParseID(at)
+	if err != nil {
+		http.Error(w, "at is not a commit id", http.StatusBadRequest)
+		return "", false
+	}
+	st, err := library.Store()
+	if err != nil {
+		log.Errorf("Failed to open the store of %s for a read at %s: %v", library.ID, at, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return "", false
+	}
+	// The public decoder, so this works on an E2EE library too: a commit gives
+	// up its root without a content key by design, which is what lets the
+	// server point a read at an old tree in a library it cannot read.
+	commit, err := st.GetCommitPublic(id)
+	if err != nil {
+		http.Error(w, "at is no longer reachable; list the history to see what is", http.StatusGone)
+		return "", false
+	}
+	return commit.Root.String(), true
 }
 
 // isPaged reports whether a request is asking for a window of a listing rather

@@ -48,6 +48,11 @@ type pageCursor struct {
 	Target string `json:"target,omitempty"`
 	// Dir pins a directory listing to one directory object.
 	Dir string `json:"dir,omitempty"`
+	// From resumes a history walk at one commit. History is a linked list, so
+	// the cursor names where to carry on rather than how far in to skip — an
+	// offset would make each page re-walk everything before it, and the last
+	// page of a long history would cost the whole of it.
+	From string `json:"from,omitempty"`
 	// Offset is how far into the pinned thing the next page starts.
 	Offset int `json:"off"`
 }

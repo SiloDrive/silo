@@ -1057,6 +1057,78 @@ reachable, and the recovery is to enumerate from scratch — a different
 instruction from "retry", so it gets a different status. It is the natural
 source for `NSFileProviderError.syncAnchorExpired`.
 
+## Reading history
+
+Two calls, and between them everything a `.history/` view needs.
+
+**`GET /api/silo/v1/libraries/{id}/commits`** lists the library's history,
+newest first:
+
+```json
+{"commits": [
+  {"id": "9f2c…", "created_at": 1756142400, "author": "d@nmilne.com", "message": "…"},
+  {"id": "4b71…", "created_at": 1756138800, "author": "d@nmilne.com", "message": "…"}
+]}
+```
+
+`author` and `message` are **absent under E2EE**, not empty. The server does
+not have them — they are sealed under a content key it never holds — while
+`id` and `created_at` stay public because the walk needs them. Decode them
+yourself from the commit object if you hold the key.
+
+It pages like everything else: `?limit=N` and follow `Link: …; rel="next"`.
+The cursor resumes the walk rather than indexing into it, so page ten costs
+what page one did.
+
+**The listing ends where history ends.** When a retention limit starts
+collecting old commits, the walk meeting a commit that is gone is reported by
+the list simply stopping — not by an error. That is the difference from
+`changes?since=`, where *you* named a commit and are owed a 410. Here you asked
+what history exists, and running out of it is the answer.
+
+**`?at={commit}` on the entries endpoint** resolves a path against that
+commit's tree instead of the head's:
+
+```
+GET /api/silo/v1/libraries/{id}/entries/notes.txt?at=4b71…
+```
+
+It is the ordinary read with a different starting id — files, directory
+listings, `Range`, `If-None-Match`, all unchanged. A file deleted three commits
+ago is still there in the commit that had it, which is the main thing anybody
+wants this for.
+
+| Status | Meaning |
+|---|---|
+| **400** | `at` is not a commit id — or you sent it on a PUT, POST or DELETE |
+| **410** | `at` is a well-formed id this library can no longer resolve |
+| **404** | the *path* does not exist in that commit |
+
+**Writes carrying `at` are refused, never ignored.** A client that believes it
+is editing the past while it is silently editing the present is the worst
+outcome available, and that is exactly what dropping an unrecognised parameter
+would produce.
+
+### Building `.history/` on top
+
+The directory is yours to synthesize; the server will not invent one. That is
+deliberate — a synthetic entry has no id and appears in no manifest, so it
+would have to be excluded from GC's mark, from `changes?since=`, from size
+accounting and from every other walk. The whole store rests on an id naming
+content.
+
+Two properties fall out of that, both useful:
+
+- **It costs nothing against quota.** Usage is logical size at head; history is
+  by definition not at head. Nothing was special-cased to make this true.
+- **It documents its own retention.** Once a retention limit exists, what the
+  commits list returns *is* the window. The user can see how far back they can
+  go rather than being told.
+
+ETags still work across time: an id is a content hash, so an unchanged file has
+the same ETag at an old commit as at the head, and a `.history/` copy of a file
+you already hold revalidates to 304 without transferring anything.
+
 ## Updated request inventory
 
 Supersedes the table in `macos-fileprovider-plan.md`. Every row here has been
@@ -1085,6 +1157,8 @@ exercised against a running server.
 | enumerate a huge directory | `GET entries/{path}?limit=1000`, then follow `Link: …; rel="next"` |
 | write many things at once | `POST /api/silo/v1/libraries/{id}/batch` — one commit, all or nothing |
 | `deleteItem` | `DELETE /api/silo/v1/libraries/{id}/entries/{path}` |
+| list history | `GET /api/silo/v1/libraries/{id}/commits` |
+| read at a past commit | `GET /api/silo/v1/libraries/{id}/entries/{path}?at={commit}` |
 | push invalidation | `WS /notification` |
 
 Identifiers never cross the wire: every request is `(library_id, path)`, resolved
