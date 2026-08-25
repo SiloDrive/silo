@@ -396,3 +396,82 @@ func TestCensusFailsOnAMissingDirectory(t *testing.T) {
 		t.Error("Census succeeded with the root directory missing; damage must not read as a smaller store")
 	}
 }
+
+// A file small enough to live inside its manifest is counted once, in the
+// manifest's own size, and contributes no chunk.
+//
+// Every other test here uses 200 KB files specifically to get past
+// store.InlineThreshold and exercise the chunk path. That makes the common
+// case -- most files in most libraries are under 64 KiB -- the one nothing
+// covered. An inlined manifest that was also credited with a chunk would
+// double-count, and a walk that expected chunks and found none could as easily
+// have skipped the object.
+func TestCensusCountsAnInlinedFileWithoutAChunk(t *testing.T) {
+	s := plainStore(t)
+	root := put(t, s, mustEmpty(t, s), "/small.txt", bytes.Repeat([]byte("s"), 100))
+	head := commitOn(t, s, root)
+
+	if n := chunkCount(t, s); n != 0 {
+		t.Fatalf("%d chunks written for a 100-byte file; it should be inlined", n)
+	}
+
+	c := mustCensus(t, s, head)
+	if c.Head.Bytes == 0 || c.Head.Objects == 0 {
+		t.Errorf("head = %+v, want the commit, the root and the inlined manifest", c.Head)
+	}
+	// The partition still has to hold with one of the two stores empty.
+	var disk int64
+	for _, st := range s.stores() {
+		if err := st.List(s.storeID, func(_ string, size int64) error { disk += size; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sum := c.Head.Bytes + c.History.Bytes + c.Unreferenced.Bytes; sum != disk {
+		t.Errorf("columns sum to %d, disk holds %d", sum, disk)
+	}
+}
+
+// A merge commit's second parent is reached by the mark, which is what keeps
+// the collector honest if merges ever arrive.
+//
+// Nothing in this server writes a commit with more than one parent today, and
+// the history walks take the first parent by design. This walk does not: it
+// follows every parent, because the question it answers is "what is still
+// referenced", and a second-parent branch that the mark could not see would be
+// offered to the sweep for deletion while a commit still pointed at it. The
+// asymmetry between the two walks is deliberate, and this is the test that
+// says so out loud.
+func TestReachableFollowsEveryParentOfAMerge(t *testing.T) {
+	s := plainStore(t)
+	const size = 200000
+
+	base := mustEmpty(t, s)
+	left := put(t, s, base, "/left.bin", bytes.Repeat([]byte("l"), size))
+	leftCommit := commitOn(t, s, left)
+	right := put(t, s, base, "/right.bin", bytes.Repeat([]byte("r"), size))
+	rightCommit := commitOn(t, s, right)
+
+	merged := put(t, s, left, "/right.bin", bytes.Repeat([]byte("r"), size))
+	head := commitOn(t, s, merged, leftCommit, rightCommit)
+
+	m, err := s.reachable([]store.ID{head}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.has(rightCommit.String(), false) {
+		t.Error("the second parent was not reached; the sweep would offer it for deletion")
+	}
+	if !m.has(leftCommit.String(), false) {
+		t.Error("the first parent was not reached")
+	}
+
+	// Which means nothing in a merged history is ever a sweep candidate.
+	if err := s.Unreferenced(head, func(o Orphan) error {
+		if o.ID == rightCommit.String() || o.ID == leftCommit.String() {
+			t.Errorf("%s was offered for deletion but a merge still reaches it", o.ID[:12])
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
