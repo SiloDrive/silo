@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/dkam/silo/fileserver" // package silod
@@ -119,7 +120,7 @@ func password() string {
 	return os.Getenv("SILO_PASSWORD")
 }
 
-func printUsage(w *os.File) {
+func printUsage(w io.Writer) {
 	_, _ = fmt.Fprint(w, `silo — file sync server and client in one binary
 
 Usage:
@@ -132,6 +133,7 @@ Usage:
   silo user passwd <email>        Set a password
   silo user disable <email>       Stop every credential the account holds
   silo user enable <email>        Undo a disable
+  silo user quota <email> [size]  Show the storage cap and usage, or set it
   silo token list <email>         Show a user's sync and API tokens
   silo token revoke <email> [tok] Revoke every token a user holds, or just one
   silo tui [url]                  Launch the interactive terminal UI

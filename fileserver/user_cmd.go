@@ -41,7 +41,7 @@ func RunUser(args []string) error {
 	// Without this, "silo user -h" prints the flags and never names a
 	// subcommand — which is the one thing somebody typing it wants.
 	flags.Usage = func() {
-		fmt.Fprintln(os.Stderr, userUsage)
+		fmt.Fprintln(os.Stderr, UserUsage)
 		fmt.Fprintln(os.Stderr, "\nflags:")
 		flags.PrintDefaults()
 	}
@@ -53,7 +53,7 @@ func RunUser(args []string) error {
 		return err
 	}
 	if len(rest) == 0 {
-		return errors.New(userUsage)
+		return errors.New(UserUsage)
 	}
 	action := rest[0]
 
@@ -75,10 +75,10 @@ func RunUser(args []string) error {
 		// into quota and set-quota would mean an operator who typed the
 		// reading form with a size got the usage text instead of the change.
 		if len(rest) < 2 {
-			return fmt.Errorf("silo user quota needs an email address\n\n%s", userUsage)
+			return fmt.Errorf("silo user quota needs an email address\n\n%s", UserUsage)
 		}
 		if len(rest) > 3 {
-			return fmt.Errorf("silo user quota takes an email address and at most one size\n\n%s", userUsage)
+			return fmt.Errorf("silo user quota takes an email address and at most one size\n\n%s", UserUsage)
 		}
 		email := rest[1]
 		if len(rest) == 2 {
@@ -91,7 +91,7 @@ func RunUser(args []string) error {
 		// Every one of these names one person, and names them by the address
 		// the operator knows rather than the id the tables hold.
 		if len(rest) < 2 {
-			return fmt.Errorf("silo user %s needs an email address\n\n%s", action, userUsage)
+			return fmt.Errorf("silo user %s needs an email address\n\n%s", action, UserUsage)
 		}
 		email := rest[1]
 		switch action {
@@ -105,7 +105,7 @@ func RunUser(args []string) error {
 			run = func() error { return setUserActive(email, true) }
 		}
 	default:
-		return fmt.Errorf("unknown user subcommand %q\n\n%s", action, userUsage)
+		return fmt.Errorf("unknown user subcommand %q\n\n%s", action, UserUsage)
 	}
 
 	if err := openStores(); err != nil {
@@ -116,12 +116,12 @@ func RunUser(args []string) error {
 	return run()
 }
 
-// userUsage spells the flags before the subcommand because that is where
+// UserUsage spells the flags before the subcommand because that is where
 // parseCommandArgs insists they go, for the reason its own comment gives: a
 // flag written after the positionals is not a parse error, it is ignored, and
 // a command that changes a password against the wrong data directory without
 // saying so is worse than one that refuses.
-const userUsage = `usage:
+const UserUsage = `usage:
   silo user [-json] list                      Show every account
   silo user [-staff] [-generate] add <email>  Create an account
   silo user [-generate] passwd <email>        Set a password
