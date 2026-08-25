@@ -41,6 +41,8 @@ func RunGC(args []string) error {
 	flags := commandFlags("gc")
 	del := flags.Bool("delete", false, "remove the objects (default: report what would be removed)")
 	quiet := flags.Bool("q", false, "only print the summary")
+	orphans := flags.Bool("orphans", false, "sweep unreferenced objects inside live libraries too")
+	minAge := flags.Duration("min-age", DefaultOrphanAge, "with -orphans, how long an object must have sat unreferenced before it is a candidate")
 	rest, done, err := parseCommandArgs("gc", flags, args)
 	if err != nil || done {
 		return err
@@ -59,6 +61,13 @@ func RunGC(args []string) error {
 
 	if err := openStores(); err != nil {
 		return err
+	}
+
+	if *orphans {
+		if err := runOrphanSweep(*minAge, *del, *quiet); err != nil {
+			return err
+		}
+		fmt.Println()
 	}
 
 	libraries, err := collectGarbageLibraries()

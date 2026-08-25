@@ -18,6 +18,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"time"
 )
 
 type fsBackend struct {
@@ -310,6 +311,19 @@ func (b *fsBackend) stat(libraryID string, packID string) (int64, error) {
 		return -1, notFound(err, libraryID, packID)
 	}
 	return fileInfo.Size(), nil
+}
+
+// modTime is the mtime of an object's file.
+func (b *fsBackend) modTime(libraryID string, packID string) (time.Time, error) {
+	p, err := b.packPath(libraryID, packID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	fileInfo, err := os.Stat(p)
+	if err != nil {
+		return time.Time{}, notFound(err, libraryID, packID)
+	}
+	return fileInfo.ModTime(), nil
 }
 
 // list walks a library's packs.

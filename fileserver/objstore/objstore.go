@@ -20,6 +20,7 @@ import (
 	"hash"
 	"io"
 	"path/filepath"
+	"time"
 )
 
 // ErrContentMismatch is returned by a verified write whose bytes do not hash
@@ -141,6 +142,9 @@ type storageBackend interface {
 	read(libraryID, packID string, w io.Writer) error
 	// stat returns a pack's size, or ErrNotFound.
 	stat(libraryID, packID string) (int64, error)
+	// modTime returns when a pack was last written, or ErrNotFound. The
+	// collector's age guard is the only caller.
+	modTime(libraryID, packID string) (time.Time, error)
 	// list calls fn for every pack the library holds. fn's error stops the walk
 	// and is returned.
 	list(libraryID string, fn func(packID string, size int64) error) error
@@ -249,6 +253,20 @@ func (s *ObjectStore) Stat(libraryID string, objID string) (int64, error) {
 		return -1, err
 	}
 	return s.backend.stat(libraryID, objID)
+}
+
+// ModTime is when an object was last written.
+//
+// It exists for the collector and for nothing else. An object nothing points
+// at is indistinguishable from one that is about to be pointed at -- an upload
+// in flight is unreferenced right up until the commit that names it -- and the
+// only thing that separates them is how long it has been sitting there. That
+// makes the file's own timestamp a safety input, not a statistic.
+func (s *ObjectStore) ModTime(libraryID string, objID string) (time.Time, error) {
+	if err := s.ready(); err != nil {
+		return time.Time{}, err
+	}
+	return s.backend.modTime(libraryID, objID)
 }
 
 // List calls fn for every object a library holds, with its size. fn's error stops

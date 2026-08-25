@@ -257,3 +257,77 @@ func TestCensusColumnsPartitionTheStore(t *testing.T) {
 		t.Errorf("head+history+unreferenced = %d objects, disk holds %d", sumObjects, diskObjects)
 	}
 }
+
+// Unreferenced yields exactly what the census counts in its third column, and
+// yields it as objects a caller can act on rather than as a total.
+//
+// The two have to agree or the report and the collector are describing
+// different stores -- the failure where somebody reads a number, runs the
+// thing that acts on it, and gets a different set.
+func TestUnreferencedYieldsWhatTheCensusCounts(t *testing.T) {
+	s := plainStore(t)
+
+	root := put(t, s, mustEmpty(t, s), "/a.bin", bytes.Repeat([]byte("a"), 200000))
+	head := commitOn(t, s, root)
+	if _, err := s.WriteFile(bytes.NewReader(bytes.Repeat([]byte("x"), 200000))); err != nil {
+		t.Fatal(err)
+	}
+
+	c := mustCensus(t, s, head)
+
+	var got Extent
+	if err := s.Unreferenced(head, func(o Orphan) error {
+		got = got.add(o.Size)
+		return nil
+	}); err != nil {
+		t.Fatalf("Unreferenced: %v", err)
+	}
+
+	if got != c.Unreferenced {
+		t.Errorf("Unreferenced yielded %+v, census counted %+v", got, c.Unreferenced)
+	}
+	if got.Objects == 0 {
+		t.Fatal("nothing was yielded; the test is asserting two zeros are equal")
+	}
+}
+
+// Nothing reachable is ever yielded, including from an older commit.
+//
+// The property the collector's safety rests on. A chunk that only the previous
+// commit reaches is history, not garbage: it is reclaimed by a retention
+// policy somebody chose, never by a sweep that could not tell the difference.
+func TestUnreferencedNeverYieldsSomethingACommitReaches(t *testing.T) {
+	s := plainStore(t)
+	const size = 200000
+
+	root := put(t, s, mustEmpty(t, s), "/a.bin", bytes.Repeat([]byte("a"), size))
+	first := commitOn(t, s, root)
+	root = put(t, s, root, "/a.bin", bytes.Repeat([]byte("b"), size))
+	head := commitOn(t, s, root, first)
+
+	reachable, err := s.reachable([]store.ID{head}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var yielded int
+	if err := s.Unreferenced(head, func(o Orphan) error {
+		if reachable.has(o.ID, o.IsChunk) {
+			t.Errorf("Unreferenced yielded %s, which a commit reaches", o.ID[:12])
+		}
+		yielded++
+		return nil
+	}); err != nil {
+		t.Fatalf("Unreferenced: %v", err)
+	}
+
+	// The superseded chunk from the first commit must NOT be in there: it is
+	// history. Only the empty root that was never committed should be.
+	c := mustCensus(t, s, head)
+	if c.History.Bytes < size {
+		t.Fatalf("history = %d, want the superseded %d bytes; the fixture is wrong", c.History.Bytes, size)
+	}
+	if yielded != int(c.Unreferenced.Objects) {
+		t.Errorf("yielded %d objects, census counted %d", yielded, c.Unreferenced.Objects)
+	}
+}

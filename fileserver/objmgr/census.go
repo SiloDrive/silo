@@ -2,6 +2,7 @@ package objmgr
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/store"
@@ -107,6 +108,75 @@ func (s *Store) Census(head store.ID) (Census, error) {
 		return Census{}, fmt.Errorf("listing chunks: %w", err)
 	}
 	return c, nil
+}
+
+// Orphan is one stored object that no commit reaches.
+//
+// The id is as objstore spells it -- hex -- because what a caller does with
+// one is hand it back to objstore, and IsChunk says which of the two stores to
+// hand it to. There is no store.ID here on purpose: an id on disk that will
+// not parse is still an object taking up space, and forcing it through
+// ParseID first would drop exactly the debris most worth reporting.
+type Orphan struct {
+	ID      string
+	IsChunk bool
+	Size    int64
+}
+
+// Unreferenced calls fn for every stored object no commit reaches.
+//
+// It is the third column of Census as a stream rather than a total, and it is
+// deliberately the same walk: a report and a collector that computed their
+// candidate sets separately would eventually disagree, and the way that shows
+// up is somebody reading a number, running the thing that acts on it, and
+// getting a different set.
+//
+// What this yields is safe to reclaim in the sense that nothing in the store
+// points at it. That is not the same as safe to delete, and a caller must not
+// treat it as such: an object uploaded a moment ago and not yet committed is
+// unreferenced and is about to be referenced. Deciding that is the caller's,
+// and the guards are age and the GCID generation -- see RunGC.
+func (s *Store) Unreferenced(head store.ID, fn func(Orphan) error) error {
+	all, err := s.reachable([]store.ID{head}, true)
+	if err != nil {
+		return fmt.Errorf("walking the history: %w", err)
+	}
+	for _, st := range []struct {
+		store   *objstore.ObjectStore
+		isChunk bool
+	}{{s.objects, false}, {s.chunks, true}} {
+		if err := st.store.List(s.storeID, func(id string, size int64) error {
+			if all.has(id, st.isChunk) {
+				return nil
+			}
+			return fn(Orphan{ID: id, IsChunk: st.isChunk, Size: size})
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RemoveOrphan deletes one orphan. It is here rather than on objstore so that
+// a caller holding an Orphan cannot send a chunk id to the object store, which
+// would silently do nothing and report success. The name is not Remove because
+// that one removes a path from a tree, and the two must never be confused.
+func (s *Store) RemoveOrphan(o Orphan) error {
+	if o.IsChunk {
+		return s.chunks.Remove(s.storeID, o.ID)
+	}
+	return s.objects.Remove(s.storeID, o.ID)
+}
+
+// OrphanModTime is when an orphan was last written -- the input to a
+// collector's age guard. It is on Store for the same reason RemoveOrphan is:
+// the caller holds an Orphan and should not have to know which of the two
+// object stores it came from.
+func (s *Store) OrphanModTime(o Orphan) (time.Time, error) {
+	if o.IsChunk {
+		return s.chunks.ModTime(s.storeID, o.ID)
+	}
+	return s.objects.ModTime(s.storeID, o.ID)
 }
 
 // marks is the set of ids a walk has reached.
