@@ -26,6 +26,7 @@ because answering any of them alone produces a number nobody can act on.
 | Quota answering `df` on a porter-fuse mount | `internal/vfs/statfs.go` (porter-fuse) | built |
 | History enumerable and readable at a point in time | `GET …/commits`, `entries/{path}?at=` | built (`6943a16`) |
 | The three numbers: head, history, unreferenced | `objmgr.Census`, `silo df` | built (`fc6e846`) |
+| Collecting objects no commit reaches | `silo gc -orphans`, `objmgr.Unreferenced` | built (`e56a270`) |
 | Server-wide ceiling | — | not built |
 | Charging blocks rather than logical size | — | not built |
 | Date-based history expiry | — | not built |
@@ -454,9 +455,24 @@ deleted.
    300,000 bytes over a store holding 1,500,980, with history at 80% of the
    disk. That is the case this was built to make visible, and it is worse than
    expected — which settles whether the retention work below is worth doing.
-2. **Collect the unreferenced.** No policy decision attached — objects reachable
-   from nothing are nobody's history. Coordinate with in-flight uploads via the
-   `GCID` generation stamp the schema already carries for it.
+2. ~~**Collect the unreferenced.**~~ **Done** — `e56a270`. `silo gc -orphans`,
+   reporting by default and `-delete` to act.
+
+   Two guards, because the hard part is not finding the garbage but not
+   deleting an upload that is still in progress — the two are
+   indistinguishable from the store, since an object is unreferenced right up
+   until the commit that names it lands.
+
+   - **Age** (`-min-age`, default 24h) is the primary guard and needs no
+     coordination: nothing recent enough to be in flight is a candidate.
+   - **The `GCID` generation** is the backstop, for a client that uploaded and
+     then stalled past the threshold. The bump happens *before* the mark, so
+     `updateBranch` refuses that head move with `ErrGCConflict` and the client
+     re-uploads. Bumping after would leave open precisely the window it exists
+     to close.
+
+   Nothing had ever written `gc_id`. The read side has been in place since
+   store-v2 and inert; this activates it.
 3. **Date-based expiry**, per library, with a server default. Now history-only
    objects become collectable and the boundary becomes visible as `commits`
    ending early.
