@@ -81,6 +81,7 @@ because a client author has to grep for it.
 | [`target.md`](target.md) | **plan.** The end state Silo is aiming at — no steps, no dates. Where `future-features.md` is the route, this is the destination |
 | [`plans/events.md`](plans/events.md) | **plan.** An append-only log for the control plane and access, for the questions the schema forgets |
 | [`plans/admin-check.md`](plans/admin-check.md) | **plan.** The `is_staff` gate, which nothing yet consumes |
+| [`quota.md`](quota.md) | **plan, partly landed.** Whose ceiling, what it counts, and when the things it counts stop counting. Enforcement and the CLI are built; charging blocks rather than logical size, date-based history expiry and a server-wide ceiling are argued here and not written |
 
 ## Records — decided, done, or superseded
 

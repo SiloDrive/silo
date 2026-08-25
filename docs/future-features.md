@@ -190,6 +190,13 @@ assigns to that job; they are the same mark phase.
 
 ## Quota — enforcement and the CLI landed; the API around it has not
 
+> The design discussion now lives in [`quota.md`](quota.md): whose ceiling
+> (account, and a server-wide one that does not exist yet), what it counts
+> (the proposal to charge occupied blocks rather than logical size at head),
+> when the things it counts stop counting (date-based history expiry), and the
+> `.snapshot` directory the client synthesizes from the history endpoints. What
+> follows here is the summary; read that file before changing any of it.
+
 Quota is **per user**, not per library — a user's cap applies to the total
 size of every library they own. Enforcement is real now: `checkQuotaV2` /
 `refuseOverQuota` (`fileserver/quota_v2.go`) gate the write path, and
