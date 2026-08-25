@@ -209,31 +209,34 @@ The columns:
 
 **`df` will not match `account/usage` to the byte, and that is not a bug.**
 `statfs(2)` reports block *counts*, not bytes, so every column is divided by a
-block size on the way out. **That block size is the client's choice, not
-something `statfs` imposes** — porter picks 4096 because it is what every local
-filesystem on the machine reports, so its `df` row lines up with the others.
-The rounding is therefore porter's arithmetic expressed in a unit `statfs`
-mandates, and its size is set by the constant: a client reporting `Bsize = 512`
-would have an eighth of the worst case, and one reporting `1` would have none
-of it and an unrecognisable `df` row.
+block size on the way out. Used comes back as
+`floor(quota/B) - floor((quota-usage)/B)` — two independent truncations — which
+lands within one block of the real figure, on whichever side depends on where
+the quota falls relative to a block boundary. A measured example: an account
+holding exactly 33,740,933 bytes under a 100 MB cap reports 8238 blocks,
+33,742,848 bytes; the same account under a cap of 100,001,925 reports 8237.
+
+**That block size is the client's choice, not something `statfs` imposes.**
+Porter picks 4096 because it is what every local filesystem on the machine
+reports, so its `df` row lines up with the others. The rounding is therefore
+porter's arithmetic expressed in a unit `statfs` mandates, and its size is set
+by that constant: a client reporting `Bsize = 512` would have an eighth of the
+worst case, and one reporting `1` would have none of it and an unrecognisable
+`df` row. Attributing the rounding to the kernel reads as immovable and sends
+the next reader looking in the wrong place.
 
 Only the *magnitude* scales with the divisor, though. How **often** the used
-column differs from `ceil` is `(B - usage mod B)/B`, which depends on the
-usage and not systematically on `B` at all — it averages about half whatever
-the block size. For this usage a 512-byte block would be off by less and more
-frequently: 379/512 = 74.0% of caps against 1915/4096 = 46.8%. That is a fact
-about 33,740,933, not a rule about small blocks; other usages invert it. Do not
-read "an eighth as large" as "an eighth as often".
+column differs from `ceil(usage/B)` is `(B - usage mod B)/B`, which depends on
+the usage and not systematically on `B` at all — it averages about half
+whatever the block size. For this usage a 512-byte block would be off by less
+and more frequently: 379/512 = 74.0% of caps against 1915/4096 = 46.8%. That is
+a fact about 33,740,933, not a rule about small blocks; other usages invert it.
+Do not read "an eighth as large" as "an eighth as often".
 
 None of which changes the choice. A discrepancy bounded by 512 bytes beats one
 bounded by 4096 however often it shows — and lining up with every other `df`
 row on the machine is still worth more than the last 4 KiB, which is why the
-constant is what it is. Used comes back as
-`floor(quota/4096) - floor((quota-usage)/4096)` — two independent truncations —
-which lands within one block of the real figure, on whichever side depends on
-where the quota falls relative to a block boundary. A measured example: an
-account holding exactly 33,740,933 bytes under a 100 MB cap reports 8238 blocks,
-33,742,848 bytes; the same account under a cap of 100,001,925 reports 8237.
+constant is what it is.
 
 Two things follow, both easy to get wrong in a document that reports a
 measurement:

@@ -257,6 +257,18 @@ Two ways to state that wrongly, both tempting:
   few hundred bytes can move the used column by a block without a byte being
   written.
 
+**The block size is yours, not `statfs`'s.** The kernel rounds nothing — it is
+handed `Bsize`, `Blocks` and `Bfree` and reports them. You pick the divisor and
+you do both divisions, so the size of the discrepancy is set by the constant you
+chose. Porter picks 4096 because it is what every local filesystem on the
+machine reports and its `df` row then lines up with the others; that is a
+tradeoff worth making, not a property of the interface.
+
+Only the magnitude scales with it, though. How *often* the used column differs
+from `ceil` is `(B - usage mod B)/B` — a fact about the usage, not about the
+block size, averaging about half whichever divisor you pick. A smaller block is
+not a rarer discrepancy, only a smaller one.
+
 If you report a measurement, report it as "the aggregate divided by the block
 size", not as per-file occupancy.
 
