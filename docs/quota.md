@@ -208,8 +208,15 @@ The columns:
 | free | `quota - usage`, clamped | invented |
 
 **`df` will not match `account/usage` to the byte, and that is not a bug.**
-`statfs(2)` reports block *counts*, not bytes, so every column is divided by
-4096 on the way out. Used comes back as
+`statfs(2)` reports block *counts*, not bytes, so every column is divided by a
+block size on the way out. **That block size is the client's choice, not
+something `statfs` imposes** — porter picks 4096 because it is what every local
+filesystem on the machine reports, so its `df` row lines up with the others.
+The rounding is therefore porter's arithmetic expressed in a unit `statfs`
+mandates, and its size is set by the constant: a client reporting `Bsize = 512`
+would have an eighth of the artifact, and one reporting `1` would have none of
+it and an unrecognisable `df` row. Lining up with the other rows is worth more
+than the last 4 KiB, which is why the constant is what it is. Used comes back as
 `floor(quota/4096) - floor((quota-usage)/4096)` — two independent truncations —
 which lands within one block of the real figure, on whichever side depends on
 where the quota falls relative to a block boundary. A measured example: an
