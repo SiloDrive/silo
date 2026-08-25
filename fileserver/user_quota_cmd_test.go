@@ -144,3 +144,106 @@ func TestUserQuotaRefusesAnUnknownAccount(t *testing.T) {
 		t.Error("reportUserQuota against an unknown address was accepted, want an error")
 	}
 }
+
+// Every unit the error message advertises has to work, and has to scale by the
+// decimal multiplier formatBytes reads back with.
+//
+// Only gb was exercised before this, so a wrong scale on kb, mb or tb would
+// have shipped: nothing in the round trip would look odd, because the command
+// reports the cap in the same unit it was typed in and would agree with itself
+// while disagreeing with the write path. The case and whitespace forms are here
+// for the same reason -- they are accepted by parseQuotaSize today, and an
+// operator who types 100GB has to get the cap they meant rather than a
+// refusal.
+func TestUserQuotaAcceptsEveryUnitItAdvertises(t *testing.T) {
+	userTestStore(t)
+
+	for _, c := range []struct {
+		size string
+		want int64
+	}{
+		{"1kb", option.KB},
+		{"1mb", option.MB},
+		{"1gb", option.GB},
+		{"1tb", option.TB},
+		{"250mb", 250 * option.MB},
+		{"100GB", 100 * option.GB},
+		{"1Gb", option.GB},
+		{" 1gb", option.GB},
+		{"1 gb", option.GB},
+	} {
+		if err := setUserQuota(victim, c.size); err != nil {
+			t.Errorf("setUserQuota(%q): %v", c.size, err)
+			continue
+		}
+		quota, err := libmgr.AccountQuota(acctFor(t, victim).ID)
+		if err != nil {
+			t.Fatalf("AccountQuota: %v", err)
+		}
+		if quota != c.want {
+			t.Errorf("setUserQuota(%q) stored %d, want %d", c.size, quota, c.want)
+		}
+	}
+}
+
+// A quota too large for int64 is refused, and this is the refusal that matters
+// most in the file.
+//
+// The others fail safe: a size the parser cannot read leaves the account
+// uncapped, which is where it already was. This one does not. n*scale
+// overflowing int64 does not produce a huge number, it produces a negative
+// one, and AccountQuota reads anything <= 0 as no ceiling at all -- so without
+// the guard, the operator typing the largest quota they can think of gets the
+// smallest possible enforcement, reported as success. An unlimited account is
+// exactly what they were trying not to have.
+//
+// 9223372037tb is the first whole terabyte over the limit: (1<<63-1)/TB is
+// 9223372036 with the division truncating, so one more overflows.
+func TestUserQuotaRefusesASizeThatWouldOverflowInt64(t *testing.T) {
+	userTestStore(t)
+
+	if err := setUserQuota(victim, "500gb"); err != nil {
+		t.Fatalf("set a cap to overwrite: %v", err)
+	}
+
+	for _, size := range []string{"9223372037tb", "9999999tb", "99999999999999999999gb"} {
+		err := setUserQuota(victim, size)
+		if err == nil {
+			t.Errorf("setUserQuota(%q) was accepted, want an error", size)
+		}
+	}
+
+	// The cap it was called over must still stand. A refusal that cleared the
+	// row would be the same failure by a longer road.
+	quota, err := libmgr.AccountQuota(acctFor(t, victim).ID)
+	if err != nil {
+		t.Fatalf("AccountQuota: %v", err)
+	}
+	if want := int64(500 * option.GB); quota != want {
+		t.Errorf("quota = %d after the refusals, want the 500 GB cap to stand at %d", quota, want)
+	}
+}
+
+// Zero is refused, and it is refused by a different branch than a size with no
+// unit: it parses as a number and fails the positive check. It is worth its own
+// case because zero is the value an operator reaches for when they mean "let
+// them hold nothing", and the internal encoding reads <= 0 as no ceiling at
+// all -- so accepting it would uncap the account the command was called to
+// clamp down.
+func TestUserQuotaRefusesZero(t *testing.T) {
+	userTestStore(t)
+
+	for _, size := range []string{"0gb", "0kb", "0mb", "0tb", "0"} {
+		if err := setUserQuota(victim, size); err == nil {
+			t.Errorf("setUserQuota(%q) was accepted, want an error", size)
+		}
+	}
+
+	quota, err := libmgr.AccountQuota(acctFor(t, victim).ID)
+	if err != nil {
+		t.Fatalf("AccountQuota: %v", err)
+	}
+	if quota != option.InfiniteQuota {
+		t.Errorf("quota = %d after refusing zero, want it still unset", quota)
+	}
+}
