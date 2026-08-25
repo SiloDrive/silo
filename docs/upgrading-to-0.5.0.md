@@ -1,8 +1,8 @@
 # Upgrading a client to 0.5.0
 
-**record.** This is the only document in `docs/` that writes out the vocabulary
-0.5.0 retired, which is why the lexicon guard exempts it by name. Everything
-else says library, because that is now the only word.
+**record.** This document writes out the vocabulary 0.5.0 retired, because a
+client author has to grep for it. Everything else says library, because that is
+now the only word.
 
 0.5.0 is the first release that breaks the wire. v1 had never been tagged, so
 there is no shim and no alias — the old spellings answer **404**, immediately

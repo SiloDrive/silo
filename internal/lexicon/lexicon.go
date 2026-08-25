@@ -1,33 +1,31 @@
-// Package lexicon holds the one word this project had two of, and the guard
-// that keeps it to one.
+// Package lexicon holds the one word this project had two of, so that the
+// tests asserting it is gone can name it without saying it.
 //
 // Silo calls the thing an account owns a library. It called it a repo for as
 // long as it was Seafile-derived, and for a while it called it both: the prose
 // in fileserver/api/api.go said "library" in every sentence while the struct
-// beside the sentence said Repo and the route under it said /repos. That is
-// the same drift the Seafile deletion was about, and it comes back the moment
-// somebody adds a handler by copying the one above it.
+// beside the sentence said Repo and the route under it said /repos.
 //
-// So the word is pinned by a test rather than by intention. A guard like this
-// earns its keep because what it protects is not a behaviour — nothing breaks
-// when a variable is called repoID, which is exactly why nothing else catches
-// it.
+// There used to be a guard here that scanned the whole tree for the old word,
+// and it did its job: the rename it was written for is finished and the word
+// is not coming back. What it turned into afterwards was a tax. Every hit was
+// a false one — "not from this repo" in the git sense, a bug report naming the
+// route by the spelling it had when it broke — and each cost an allowlist
+// entry arguing why a true sentence was allowed to stay true. A guard whose
+// every remaining failure is a false positive is one people learn to route
+// around, and that habit outlives the guard.
 //
-// This package is deliberately the only place in the tree allowed to say the
-// old word, which is why the guard skips its own directory.
+// What is left is narrow and permanent: the wire and the CLI still assert that
+// the old spellings answer 404 and that the old verbs are refused, and those
+// assertions need the old word spelled somewhere. Here, once.
 package lexicon
 
 import "strings"
 
 // foreign are another product's names, which this project quotes and must not
 // rewrite. Seafile called the thing a repo and shipped that word in a header
-// and a URL lane; a sweep that renamed those would leave the documentation
-// describing a header that never existed.
-//
-// Written as tokens rather than as a list of exempt files, because a file-wide
-// exemption pardons the next real slip that lands in the same file. The Seafile
-// lanes themselves were deleted from the server; what remains is documentation
-// of what a Seafile-family client sends, which is still true of those clients.
+// and a URL lane, and a client-facing string naming one of those is not this
+// project saying the old word.
 var foreign = []string{
 	"Seafile-Repo-Token",
 	"/api2/repos",
@@ -98,12 +96,11 @@ func stripForeign(s string) string {
 // RetiredNoun and RetiredSegment are the old word itself, published so that the
 // tests asserting it is gone can say what they are asserting without saying it.
 //
-// Without these, a test that hits "/api/silo/v1/repos" to prove the route 404s
-// is a test the guard has to flag — and the sweep that introduced the guard
-// rewrote exactly those assertions into nonsense, each one checking that the
-// new spelling was absent from the server that serves it. Naming the old word
-// once, here, in the only package allowed to hold it, is what keeps the two
-// from fighting.
+// They outlived the tree-wide guard on purpose. A test that hits
+// "/api/silo/v1/repos" to prove the route 404s has to write the route out, and
+// building it from these is what stopped the original sweep rewriting those
+// assertions into nonsense — each one checking that the new spelling was
+// absent from the server that serves it.
 const (
 	RetiredNoun    = "repo"
 	RetiredSegment = "repos"

@@ -27,16 +27,18 @@ Two consequences worth knowing before you name something:
 - **The manager package is `libmgr`**, not `librarymgr`, matching `objmgr` and
   `authmgr`. The abbreviation is house style for a manager package and is
   deliberate rather than an oversight.
-- **`internal/lexicon` enforces this with a test.** Nothing breaks when a
-  variable is called `repoID`, which is exactly why nothing else catches it. If
-  the guard fails, the fix is the name, not the guard — except for another
-  product's names, which are exempt by token: Seafile shipped
-  `Seafile-Repo-Token` and an `/api2/repos` lane, and rewriting those would
-  document a header that never existed.
+- **The rename is finished, and the guard that enforced it is gone.**
+  `internal/lexicon` used to scan the whole tree for the old word. It did its
+  job; what it became afterwards was a tax, because every remaining hit was a
+  false one — the git sense of the word, or a bug report naming a route by the
+  spelling it had when it broke — and each cost an allowlist entry arguing why
+  a true sentence was allowed to stay true. What survives is the word itself,
+  named once, so the wire and CLI tests can assert the old spellings answer 404
+  without writing them out by hand.
 
 The migration note for the rename is
-[`upgrading-to-0.5.0.md`](upgrading-to-0.5.0.md) — the only other document here
-allowed to write the old word out, because a client author has to grep for it.
+[`upgrading-to-0.5.0.md`](upgrading-to-0.5.0.md), which writes the old word out
+because a client author has to grep for it.
 
 ## Start here
 
