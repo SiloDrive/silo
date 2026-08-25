@@ -210,11 +210,15 @@ func (w *Watcher) run() {
 	}
 
 	backoff := watchDialMin
+	served := false
 	for {
 		conn, err := w.dial()
 		if err == nil {
 			start := time.Now()
-			w.serve(conn)
+			// Every connection but the first is a reconnection, and a
+			// reconnection has a gap behind it.
+			w.serve(conn, served)
+			served = true
 			if time.Since(start) >= watchDialMin {
 				backoff = watchDialMin
 			}
@@ -274,8 +278,10 @@ func notifyEndpoint(baseURL string) (string, error) {
 	return u.String(), nil
 }
 
-// serve runs one connection until it fails or the watcher closes.
-func (w *Watcher) serve(conn *websocket.Conn) {
+// serve runs one connection until it fails or the watcher closes. resync says
+// this connection follows a gap, and the libraries it re-subscribes should be
+// announced as possibly-changed once they are back in place.
+func (w *Watcher) serve(conn *websocket.Conn, resync bool) {
 	frames := make(chan wireMessage, watchFrameBuffer)
 	stop := make(chan struct{})
 	var reader sync.WaitGroup
@@ -290,7 +296,7 @@ func (w *Watcher) serve(conn *websocket.Conn) {
 	// goroutine, because a loop parked on that request is a loop not reading
 	// events -- and, since the request has no deadline of its own, a Close the
 	// user waits on for as long as the server feels like taking.
-	go w.assertLoop(conn, stop)
+	go w.assertLoop(conn, stop, resync)
 
 	defer func() {
 		// In this order: stop releases a reader blocked on a full frames
@@ -319,10 +325,15 @@ func (w *Watcher) serve(conn *websocket.Conn) {
 // watched when it opens, and whatever a wake adds or releases from a retry
 // hold after that. A wake that arrives with no connection up is not lost --
 // the next connection asserts the whole set as it opens.
-func (w *Watcher) assertLoop(conn *websocket.Conn, stop <-chan struct{}) {
+func (w *Watcher) assertLoop(conn *websocket.Conn, stop <-chan struct{}, resync bool) {
 	for {
-		if err := w.resubscribe(conn); err != nil {
+		asserted, err := w.resubscribe(conn)
+		if err != nil {
 			return
+		}
+		if resync {
+			resync = false
+			w.announceResync(asserted)
 		}
 		select {
 		case <-w.wake:
@@ -388,11 +399,12 @@ func (w *Watcher) handle(msg wireMessage) bool {
 	return true
 }
 
-// resubscribe asserts every watched library that is not in a retry hold. The
-// server treats a repeated subscribe as the same subscription, so re-sending
-// one already in place costs nothing.
-func (w *Watcher) resubscribe(conn *websocket.Conn) error {
+// resubscribe asserts every watched library that is not in a retry hold, and
+// returns the ones it asserted. The server treats a repeated subscribe as the
+// same subscription, so re-sending one already in place costs nothing.
+func (w *Watcher) resubscribe(conn *websocket.Conn) ([]string, error) {
 	var frame wireSubscribe
+	var sent []string
 	for _, id := range w.pending() {
 		token, err := w.token(id)
 		if err != nil {
@@ -402,16 +414,35 @@ func (w *Watcher) resubscribe(conn *websocket.Conn) error {
 			continue
 		}
 		frame.Libraries = append(frame.Libraries, wireSubscribeLibrary{LibraryID: id, Token: token})
+		sent = append(sent, id)
 	}
 	if len(frame.Libraries) == 0 {
-		return nil
+		return nil, nil
 	}
 	raw, err := json.Marshal(frame)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	_ = conn.SetWriteDeadline(time.Now().Add(watchWriteWait))
-	return conn.WriteJSON(wireMessage{Type: msgSubscribe, Content: raw})
+	if err := conn.WriteJSON(wireMessage{Type: msgSubscribe, Content: raw}); err != nil {
+		return nil, err
+	}
+	return sent, nil
+}
+
+// announceResync tells the caller that these libraries may have moved while
+// the socket was down. Nothing replays the events missed during a gap, so the
+// gap itself is the news, and the caller reloads rather than trusting a
+// listing taken before it. The commit is left empty: what it should be is
+// exactly what the watcher does not know.
+func (w *Watcher) announceResync(libraryIDs []string) {
+	for _, id := range libraryIDs {
+		select {
+		case w.events <- LibraryUpdate{LibraryID: id}:
+		case <-w.done:
+			return
+		}
+	}
 }
 
 // pending is the watched libraries whose retry hold, if any, has passed.

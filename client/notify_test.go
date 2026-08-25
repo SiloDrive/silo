@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/option"
@@ -198,5 +201,108 @@ func TestWatcherStopsWhenTheServerOffersNoNotifications(t *testing.T) {
 	}
 	if dials != 0 {
 		t.Errorf("dialled the notification endpoint %d times on a server that does not offer it", dials)
+	}
+}
+
+// stubNotifSocket stands up a notification endpoint that hands each connection
+// to onConn, numbered from one, along with the subscribe frame that connection
+// carried. It exists because the real handler has no seam for dropping a
+// connection out from under a client, which is the thing under test here.
+func stubNotifSocket(t *testing.T, onConn func(n int, conn *websocket.Conn)) *APIClient {
+	t.Helper()
+	var mu sync.Mutex
+	n := 0
+	up := websocket.Upgrader{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/silo/v1/libraries/"+watchLibraryID+"/notify-token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jwt_token":  "any-token-this-server-does-not-check",
+			"expires_at": time.Now().Add(72 * time.Hour).Unix(),
+		})
+	})
+	mux.HandleFunc("/notification", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		mu.Lock()
+		n++
+		which := n
+		mu.Unlock()
+		// Wait for the subscription before doing anything: a connection dropped
+		// before the client has said what it wants proves nothing.
+		var msg wireMessage
+		if err := conn.ReadJSON(&msg); err != nil {
+			return
+		}
+		onConn(which, conn)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return NewClient(srv.URL)
+}
+
+// A connection that drops takes with it every event the server sent while it
+// was down, and the caller has no way to ask for them again. So the socket
+// coming back is itself the news: every watched library may have moved, and
+// the watcher says so rather than leaving a stale listing on screen.
+func TestWatcherResyncsAfterAReconnect(t *testing.T) {
+	subscribed := make(chan int, 4)
+	c := stubNotifSocket(t, func(n int, conn *websocket.Conn) {
+		subscribed <- n
+		if n == 1 {
+			return // drop it, and let the watcher find its way back
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+
+	w := c.Watch()
+	defer w.Close()
+	w.Subscribe(watchLibraryID)
+
+	if got := <-subscribed; got != 1 {
+		t.Fatalf("first connection numbered %d", got)
+	}
+
+	select {
+	case ev := <-w.Events():
+		if ev.LibraryID != watchLibraryID {
+			t.Errorf("resynced %q, want %q", ev.LibraryID, watchLibraryID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the socket came back and nothing told the caller its listing might be stale")
+	}
+}
+
+// The first connection of a watcher's life has missed nothing: the caller is
+// about to load the library for the first time anyway, and a resync there is a
+// second load of what it already has.
+func TestWatcherDoesNotResyncOnItsFirstConnection(t *testing.T) {
+	subscribed := make(chan int, 4)
+	c := stubNotifSocket(t, func(n int, conn *websocket.Conn) {
+		subscribed <- n
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+
+	w := c.Watch()
+	defer w.Close()
+	w.Subscribe(watchLibraryID)
+	<-subscribed
+
+	select {
+	case ev := <-w.Events():
+		t.Errorf("the first connection resynced %+v", ev)
+	case <-time.After(500 * time.Millisecond):
 	}
 }
