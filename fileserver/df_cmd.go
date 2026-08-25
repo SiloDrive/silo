@@ -1,17 +1,12 @@
 package silod
 
 import (
-	"context"
 	"fmt"
-	"sort"
 	"text/tabwriter"
 
 	"os"
 
-	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/option"
-	storefmt "github.com/dkam/silo/store"
 )
 
 // RunDF reports where a server's disk has gone, per library.
@@ -121,46 +116,29 @@ func censusTotal(c objmgr.Census) int64 {
 
 // censusOf measures one library by id.
 func censusOf(id string) (objmgr.Census, error) {
-	library, err := libmgr.GetWithReason(id)
+	_, st, head, err := openLibraryAtHead(id)
 	if err != nil {
 		return objmgr.Census{}, err
-	}
-	st, err := library.Store()
-	if err != nil {
-		return objmgr.Census{}, err
-	}
-	head, err := storefmt.ParseID(library.HeadCommitID)
-	if err != nil {
-		return objmgr.Census{}, fmt.Errorf("head commit %q: %w", library.HeadCommitID, err)
 	}
 	return st.Census(head)
 }
 
-// libraryIDsForDF is every library the server owns, or the one that was named.
+// libraryIDsForDF is every library that exists, or the one that was named.
+//
+// A named library is taken as given rather than looked up, because naming one
+// is how an operator measures a library the catalog has lost track of, and a
+// lookup would refuse exactly that case.
+//
+// Everything else defers to liveLibraryIDs, which is the collector's list. It
+// used to be its own query over LibraryOwner, which agrees with Library on any
+// healthy server -- the two rows are written in one transaction and deleted in
+// another -- and that agreement is what made the duplication safe to keep and
+// impossible to notice. It is not worth keeping: df and gc reporting on
+// different sets of libraries is the one thing an operator reading both
+// outputs cannot be expected to catch.
 func libraryIDsForDF(rest []string) ([]string, error) {
 	if len(rest) == 1 {
 		return rest, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), option.DBOpTimeout*2)
-	defer cancel()
-
-	rows, err := siloPair.Read.QueryContext(ctx, "SELECT library_id FROM LibraryOwner")
-	if err != nil {
-		return nil, fmt.Errorf("failed to list libraries: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("failed to scan a library row: %v", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list libraries: %v", err)
-	}
-	sort.Strings(ids)
-	return ids, nil
+	return liveLibraryIDs()
 }

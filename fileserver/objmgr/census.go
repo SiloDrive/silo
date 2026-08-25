@@ -98,13 +98,13 @@ func (s *Store) Census(head store.ID) (Census, error) {
 		return nil
 	}
 
-	if err := s.objects.List(s.storeID, func(id string, size int64) error {
-		return assign(id, size, false)
+	if err := s.objects.List(s.storeID, func(o objstore.ObjectInfo) error {
+		return assign(o.ID, o.Size, false)
 	}); err != nil {
 		return Census{}, fmt.Errorf("listing objects: %w", err)
 	}
-	if err := s.chunks.List(s.storeID, func(id string, size int64) error {
-		return assign(id, size, true)
+	if err := s.chunks.List(s.storeID, func(o objstore.ObjectInfo) error {
+		return assign(o.ID, o.Size, true)
 	}); err != nil {
 		return Census{}, fmt.Errorf("listing chunks: %w", err)
 	}
@@ -122,6 +122,12 @@ type Orphan struct {
 	ID      string
 	IsChunk bool
 	Size    int64
+	// ModTime is when the object was last written, carried from the listing
+	// that found it. It is the collector's age guard, and it is a field rather
+	// than a lookup because the listing had already read it: asking for it
+	// separately cost a second stat per orphan for a value the walk was
+	// throwing away.
+	ModTime time.Time
 }
 
 // Unreferenced calls fn for every stored object no commit reaches.
@@ -146,11 +152,11 @@ func (s *Store) Unreferenced(head store.ID, fn func(Orphan) error) error {
 		store   *objstore.ObjectStore
 		isChunk bool
 	}{{s.objects, false}, {s.chunks, true}} {
-		if err := st.store.List(s.storeID, func(id string, size int64) error {
-			if all.has(id, st.isChunk) {
+		if err := st.store.List(s.storeID, func(o objstore.ObjectInfo) error {
+			if all.has(o.ID, st.isChunk) {
 				return nil
 			}
-			return fn(Orphan{ID: id, IsChunk: st.isChunk, Size: size})
+			return fn(Orphan{ID: o.ID, IsChunk: st.isChunk, Size: o.Size, ModTime: o.ModTime})
 		}); err != nil {
 			return err
 		}
@@ -167,17 +173,6 @@ func (s *Store) RemoveOrphan(o Orphan) error {
 		return s.chunks.Remove(s.storeID, o.ID)
 	}
 	return s.objects.Remove(s.storeID, o.ID)
-}
-
-// OrphanModTime is when an orphan was last written -- the input to a
-// collector's age guard. It is on Store for the same reason RemoveOrphan is:
-// the caller holds an Orphan and should not have to know which of the two
-// object stores it came from.
-func (s *Store) OrphanModTime(o Orphan) (time.Time, error) {
-	if o.IsChunk {
-		return s.chunks.ModTime(s.storeID, o.ID)
-	}
-	return s.objects.ModTime(s.storeID, o.ID)
 }
 
 // marks is the set of ids a walk has reached.

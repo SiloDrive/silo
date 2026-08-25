@@ -18,7 +18,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"time"
 )
 
 type fsBackend struct {
@@ -314,18 +313,6 @@ func (b *fsBackend) stat(libraryID string, packID string) (int64, error) {
 }
 
 // modTime is the mtime of an object's file.
-func (b *fsBackend) modTime(libraryID string, packID string) (time.Time, error) {
-	p, err := b.packPath(libraryID, packID)
-	if err != nil {
-		return time.Time{}, err
-	}
-	fileInfo, err := os.Stat(p)
-	if err != nil {
-		return time.Time{}, notFound(err, libraryID, packID)
-	}
-	return fileInfo.ModTime(), nil
-}
-
 // list walks a library's packs.
 //
 // A library directory that does not exist holds no packs, which is not an error:
@@ -337,7 +324,7 @@ func (b *fsBackend) modTime(libraryID string, packID string) (time.Time, error) 
 // fan-out directory can hold for fs and commit objects. Those are not packs:
 // nothing references them, and reporting them as packs would have the caller
 // asking a pack index about an id that was never in it.
-func (b *fsBackend) list(libraryID string, fn func(packID string, size int64) error) error {
+func (b *fsBackend) list(libraryID string, fn func(packInfo) error) error {
 	libraryDir := b.libraryPath(libraryID)
 	entries, err := os.ReadDir(libraryDir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -372,7 +359,7 @@ func (b *fsBackend) list(libraryID string, fn func(packID string, size int64) er
 			if err != nil {
 				return err
 			}
-			if err := fn(packID, info.Size()); err != nil {
+			if err := fn(packInfo{id: packID, size: info.Size(), modTime: info.ModTime()}); err != nil {
 				return err
 			}
 		}

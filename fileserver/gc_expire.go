@@ -58,17 +58,9 @@ type historyExpiry struct {
 func expireHistory(libraryID string, keep time.Duration, del bool) (historyExpiry, error) {
 	out := historyExpiry{libraryID: libraryID}
 
-	library, err := libmgr.GetWithReason(libraryID)
+	library, st, head, err := openLibraryAtHead(libraryID)
 	if err != nil {
 		return out, err
-	}
-	st, err := library.Store()
-	if err != nil {
-		return out, err
-	}
-	head, err := storefmt.ParseID(library.HeadCommitID)
-	if err != nil {
-		return out, fmt.Errorf("head commit %q: %w", library.HeadCommitID, err)
 	}
 
 	// Measured before, because after the commits are gone there is nothing

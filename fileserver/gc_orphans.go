@@ -69,17 +69,9 @@ type orphanSweep struct {
 func sweepOrphans(libraryID string, minAge time.Duration, del bool) (orphanSweep, error) {
 	sweep := orphanSweep{libraryID: libraryID}
 
-	library, err := libmgr.GetWithReason(libraryID)
+	library, st, head, err := openLibraryAtHead(libraryID)
 	if err != nil {
 		return sweep, err
-	}
-	st, err := library.Store()
-	if err != nil {
-		return sweep, err
-	}
-	head, err := storefmt.ParseID(library.HeadCommitID)
-	if err != nil {
-		return sweep, fmt.Errorf("head commit %q: %w", library.HeadCommitID, err)
 	}
 
 	// Before the mark, never after. See above.
@@ -90,14 +82,12 @@ func sweepOrphans(libraryID string, minAge time.Duration, del bool) (orphanSweep
 	cutoff := time.Now().Add(-minAge)
 	var doomed []objmgr.Orphan
 	err = st.Unreferenced(head, func(o objmgr.Orphan) error {
-		mt, err := st.OrphanModTime(o)
-		if err != nil {
-			// An object that vanished between the listing and the stat is one
-			// somebody else already dealt with. Nothing to collect and nothing
-			// to report.
-			return nil
-		}
-		if mt.After(cutoff) {
+		// The time comes from the listing that found it rather than from a
+		// lookup of its own. An object that vanishes between the listing and
+		// the removal needs no special handling here: RemoveOrphan treats a
+		// missing object as success, because it has to -- deletion has always
+		// had to be idempotent for compaction's sake.
+		if o.ModTime.After(cutoff) {
 			sweep.tooYoung++
 			return nil
 		}
@@ -210,6 +200,29 @@ func runOrphanSweep(minAge time.Duration, del bool, quiet bool) error {
 			"they may be uploads in progress.\n", tooYoung, minAge)
 	}
 	return nil
+}
+
+// openLibraryAtHead loads a library, opens its store, and parses its head.
+//
+// The three commands that walk a library -- df's census, the orphan sweep and
+// history expiry -- all need exactly these three things before they can do
+// anything, and all three had their own copy of getting them. Each copy also
+// had to spell the error for an unreadable head commit, and three spellings of
+// one error is how they come to disagree about it.
+func openLibraryAtHead(libraryID string) (*libmgr.Library, *objmgr.Store, storefmt.ID, error) {
+	library, err := libmgr.GetWithReason(libraryID)
+	if err != nil {
+		return nil, nil, storefmt.ID{}, err
+	}
+	st, err := library.Store()
+	if err != nil {
+		return nil, nil, storefmt.ID{}, err
+	}
+	head, err := storefmt.ParseID(library.HeadCommitID)
+	if err != nil {
+		return nil, nil, storefmt.ID{}, fmt.Errorf("head commit %q: %w", library.HeadCommitID, err)
+	}
+	return library, st, head, nil
 }
 
 // liveLibraryIDs is every library that still exists, by store id.

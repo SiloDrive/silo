@@ -340,8 +340,8 @@ func TestListYieldsEveryObjectWithItsSize(t *testing.T) {
 	}
 
 	got := map[string]int64{}
-	if err := s.List(libraryID, func(id string, size int64) error {
-		got[id] = size
+	if err := s.List(libraryID, func(o ObjectInfo) error {
+		got[o.ID] = o.Size
 		return nil
 	}); err != nil {
 		t.Fatalf("List: %v", err)
@@ -361,7 +361,7 @@ func TestListYieldsEveryObjectWithItsSize(t *testing.T) {
 func TestListOfAnEmptyLibraryIsEmptyNotAnError(t *testing.T) {
 	s := New(confPath, dataDir, "list-empty")
 	n := 0
-	if err := s.List("00000000-0000-0000-0000-000000000000", func(string, int64) error {
+	if err := s.List("00000000-0000-0000-0000-000000000000", func(ObjectInfo) error {
 		n++
 		return nil
 	}); err != nil {
@@ -385,8 +385,8 @@ func TestListSkipsTheDebrisOfAnInterruptedWrite(t *testing.T) {
 	}
 
 	var ids []string
-	if err := s.List(libraryID, func(id string, _ int64) error {
-		ids = append(ids, id)
+	if err := s.List(libraryID, func(o ObjectInfo) error {
+		ids = append(ids, o.ID)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -403,7 +403,7 @@ func TestListStopsOnTheCallbacksError(t *testing.T) {
 
 	sentinel := errors.New("stop")
 	seen := 0
-	err := s.List(libraryID, func(string, int64) error {
+	err := s.List(libraryID, func(ObjectInfo) error {
 		seen++
 		return sentinel
 	})
@@ -445,7 +445,7 @@ func TestRemoveLibraryTakesEverythingAndIsIdempotent(t *testing.T) {
 		}
 	}
 	n := 0
-	if err := s.List(libraryID, func(string, int64) error { n++; return nil }); err != nil {
+	if err := s.List(libraryID, func(ObjectInfo) error { n++; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
@@ -475,7 +475,7 @@ func TestAStoreWithNoBackendReportsWhy(t *testing.T) {
 	if _, err := s.Exists(libraryID, objID); err == nil {
 		t.Error("Exists on a store with no backend returned nil")
 	}
-	if err := s.List(libraryID, func(string, int64) error { return nil }); err == nil {
+	if err := s.List(libraryID, func(ObjectInfo) error { return nil }); err == nil {
 		t.Error("List on a store with no backend returned nil")
 	}
 	if err := s.Remove(libraryID, objID); err == nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/store"
 )
 
@@ -25,7 +26,7 @@ func commitOn(t *testing.T, s *Store, root store.ID, parents ...store.ID) store.
 func chunkCount(t *testing.T, s *Store) int {
 	t.Helper()
 	n := 0
-	if err := s.chunks.List(s.storeID, func(string, int64) error { n++; return nil }); err != nil {
+	if err := s.chunks.List(s.storeID, func(objstore.ObjectInfo) error { n++; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -239,8 +240,8 @@ func TestCensusColumnsPartitionTheStore(t *testing.T) {
 
 	var diskBytes, diskObjects int64
 	for _, st := range s.stores() {
-		if err := st.List(s.storeID, func(_ string, size int64) error {
-			diskBytes += size
+		if err := st.List(s.storeID, func(o objstore.ObjectInfo) error {
+			diskBytes += o.Size
 			diskObjects++
 			return nil
 		}); err != nil {
@@ -422,7 +423,7 @@ func TestCensusCountsAnInlinedFileWithoutAChunk(t *testing.T) {
 	// The partition still has to hold with one of the two stores empty.
 	var disk int64
 	for _, st := range s.stores() {
-		if err := st.List(s.storeID, func(_ string, size int64) error { disk += size; return nil }); err != nil {
+		if err := st.List(s.storeID, func(o objstore.ObjectInfo) error { disk += o.Size; return nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -130,6 +130,15 @@ type writeOpts struct {
 // Not in this interface, deliberately: anything that requires more of a
 // backend than PUT, ranged GET, DELETE and LIST. Every extra verb assumed here
 // is an object-storage clone this cannot run on.
+// packInfo is one pack as a listing sees it. Lowercase because it is the
+// backend's word; ObjectInfo is the same three fields in the vocabulary a
+// caller of this package speaks.
+type packInfo struct {
+	id      string
+	size    int64
+	modTime time.Time
+}
+
 type storageBackend interface {
 	// write stores r under packID and publishes it atomically. A reader
 	// never sees a partial pack, and with opts.sync the pack is durable
@@ -142,12 +151,9 @@ type storageBackend interface {
 	read(libraryID, packID string, w io.Writer) error
 	// stat returns a pack's size, or ErrNotFound.
 	stat(libraryID, packID string) (int64, error)
-	// modTime returns when a pack was last written, or ErrNotFound. The
-	// collector's age guard is the only caller.
-	modTime(libraryID, packID string) (time.Time, error)
 	// list calls fn for every pack the library holds. fn's error stops the walk
 	// and is returned.
-	list(libraryID string, fn func(packID string, size int64) error) error
+	list(libraryID string, fn func(packInfo) error) error
 	// remove deletes one pack. Removing a pack that is not there is not an
 	// error: deletion is idempotent because compaction has to be
 	// interruptible at every step.
@@ -255,27 +261,35 @@ func (s *ObjectStore) Stat(libraryID string, objID string) (int64, error) {
 	return s.backend.stat(libraryID, objID)
 }
 
-// ModTime is when an object was last written.
+// ObjectInfo is what a listing already knows about one object without opening
+// it: what it is called, how big it is, and when it was last written.
 //
-// It exists for the collector and for nothing else. An object nothing points
-// at is indistinguishable from one that is about to be pointed at -- an upload
-// in flight is unreferenced right up until the commit that names it -- and the
-// only thing that separates them is how long it has been sitting there. That
-// makes the file's own timestamp a safety input, not a statistic.
-func (s *ObjectStore) ModTime(libraryID string, objID string) (time.Time, error) {
-	if err := s.ready(); err != nil {
-		return time.Time{}, err
-	}
-	return s.backend.modTime(libraryID, objID)
+// The modification time is here because the collector needs it and a listing
+// has it in hand. An object nothing points at is indistinguishable from one
+// that is about to be pointed at -- an upload in flight is unreferenced right
+// up until the commit that names it -- and the only thing separating them is
+// how long it has been sitting there. That makes the timestamp a safety input
+// rather than a statistic, and asking for it separately meant a second lookup
+// per object for something the first one had already read and discarded.
+//
+// A struct rather than an fs.FileInfo, because a backend that is not a
+// filesystem still knows these three things and should not have to invent the
+// rest of an fs.FileInfo to say so.
+type ObjectInfo struct {
+	ID      string
+	Size    int64
+	ModTime time.Time
 }
 
-// List calls fn for every object a library holds, with its size. fn's error stops
-// the walk and is returned.
-func (s *ObjectStore) List(libraryID string, fn func(objID string, size int64) error) error {
+// List calls fn for every object a library holds. fn's error stops the walk and
+// is returned.
+func (s *ObjectStore) List(libraryID string, fn func(ObjectInfo) error) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.list(libraryID, fn)
+	return s.backend.list(libraryID, func(p packInfo) error {
+		return fn(ObjectInfo{ID: p.id, Size: p.size, ModTime: p.modTime})
+	})
 }
 
 // Remove deletes one object. Removing an object that is not there is not an
