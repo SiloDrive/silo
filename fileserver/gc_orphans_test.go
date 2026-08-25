@@ -235,14 +235,20 @@ func TestSweepBumpsTheGCGenerationBeforeMarking(t *testing.T) {
 	}
 }
 
-func assertObjectExists(t *testing.T, objType, libraryID, objID string, want bool) {
+func objectOnDisk(t *testing.T, objType, libraryID, objID string) bool {
 	t.Helper()
 	p := filepath.Join(objstore.LibraryDir(absDataDir, objType, libraryID), objID[:2], objID[2:])
 	_, err := os.Stat(p)
-	if want && err != nil {
-		t.Errorf("%s should still be there: %v", objID[:12], err)
-	}
-	if !want && err == nil {
-		t.Errorf("%s should have been removed", objID[:12])
+	return err == nil
+}
+
+func assertObjectExists(t *testing.T, objType, libraryID, objID string, want bool) {
+	t.Helper()
+	if got := objectOnDisk(t, objType, libraryID, objID); got != want {
+		if want {
+			t.Errorf("%s should still be there", objID[:12])
+		} else {
+			t.Errorf("%s should have been removed", objID[:12])
+		}
 	}
 }

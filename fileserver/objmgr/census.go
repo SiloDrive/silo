@@ -1,6 +1,7 @@
 package objmgr
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -224,8 +225,27 @@ func (m *marks) seen(set map[store.ID]struct{}, id store.ID) bool {
 // reachable marks everything the given commits reach. withParents follows
 // commit history; without it the walk stops at the commits it was handed,
 // which is what makes "reachable from head alone" askable.
+//
+// A parent commit the store no longer holds ends that branch instead of
+// failing the walk. That is the retention boundary, not damage: expiring
+// history is exactly "delete the oldest commit objects", and walkHistory and
+// changes?since= already read a missing commit the same way. A census that
+// failed on one would start erroring the day retention first ran.
+//
+// The head is the exception. It is the commit the caller named, and a store
+// that cannot produce it is not a library with short history -- it is a
+// library whose head is gone, which is the corruption libmgr has a whole error
+// for. Silently reporting an empty store would be the worst available answer.
+//
+// Missing directories and manifests are always errors, wherever they are
+// found. Nothing collects those without first collecting the commit that
+// reaches them, so one that has gone missing is damage.
 func (s *Store) reachable(commits []store.ID, withParents bool) (*marks, error) {
 	m := newMarks()
+	isHead := make(map[store.ID]bool, len(commits))
+	for _, id := range commits {
+		isHead[id] = true
+	}
 	pending := append([]store.ID(nil), commits...)
 	for len(pending) > 0 {
 		id := pending[len(pending)-1]
@@ -235,7 +255,11 @@ func (s *Store) reachable(commits []store.ID, withParents bool) (*marks, error) 
 		}
 		c, err := s.GetCommitPublic(id)
 		if err != nil {
-			return nil, fmt.Errorf("commit %s: %w", id, err)
+			if isHead[id] || !errors.Is(err, objstore.ErrNotFound) {
+				return nil, fmt.Errorf("commit %s: %w", id, err)
+			}
+			// Expired. This branch of history ends here.
+			continue
 		}
 		if err := s.markTree(m, c.Root); err != nil {
 			return nil, err

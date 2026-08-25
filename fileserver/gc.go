@@ -42,6 +42,7 @@ func RunGC(args []string) error {
 	del := flags.Bool("delete", false, "remove the objects (default: report what would be removed)")
 	quiet := flags.Bool("q", false, "only print the summary")
 	orphans := flags.Bool("orphans", false, "sweep unreferenced objects inside live libraries too")
+	expire := flags.Duration("expire-history", 0, "expire commits older than this, keeping the head (0: keep all history)")
 	minAge := flags.Duration("min-age", DefaultOrphanAge, "with -orphans, how long an object must have sat unreferenced before it is a candidate")
 	rest, done, err := parseCommandArgs("gc", flags, args)
 	if err != nil || done {
@@ -61,6 +62,16 @@ func RunGC(args []string) error {
 
 	if err := openStores(); err != nil {
 		return err
+	}
+
+	// Expiry runs first so that what it releases is collectable by the sweep
+	// in the same invocation: an operator who asked for both meant "reclaim
+	// what retention allows", not "reclaim it next time".
+	if *expire > 0 {
+		if err := runHistoryExpiry(*expire, *del, *quiet); err != nil {
+			return err
+		}
+		fmt.Println()
 	}
 
 	if *orphans {

@@ -331,3 +331,68 @@ func TestUnreferencedNeverYieldsSomethingACommitReaches(t *testing.T) {
 		t.Errorf("yielded %d objects, census counted %d", yielded, c.Unreferenced.Objects)
 	}
 }
+
+// A commit object that is gone ends that branch of the walk instead of failing
+// it, because that is what a retention boundary looks like from here.
+//
+// The distinction this pins is which missing object is an error. A commit the
+// store no longer holds is the ordinary result of history being expired --
+// walkHistory and changes?since= already treat it that way -- so a census that
+// failed on it would start erroring the day retention first ran, on every
+// library it had touched. A missing *directory or manifest* is the opposite:
+// nothing collects those without collecting the commit that reaches them
+// first, so one that has gone missing is damage and must not be reported as a
+// smaller store.
+func TestCensusTreatsAMissingCommitAsTheEndOfHistory(t *testing.T) {
+	s := plainStore(t)
+	const size = 200000
+
+	root := put(t, s, mustEmpty(t, s), "/a.bin", bytes.Repeat([]byte("a"), size))
+	first := commitOn(t, s, root)
+	root = put(t, s, root, "/a.bin", bytes.Repeat([]byte("b"), size))
+	head := commitOn(t, s, root, first)
+
+	before := mustCensus(t, s, head)
+	if before.History.Bytes < size {
+		t.Fatalf("history = %d, want the superseded %d; the fixture is wrong", before.History.Bytes, size)
+	}
+
+	// Expire the first commit, which is what retention does.
+	if err := s.RemoveOrphan(Orphan{ID: first.String()}); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := s.Census(head)
+	if err != nil {
+		t.Fatalf("Census after the oldest commit was expired: %v", err)
+	}
+	if after.Head != before.Head {
+		t.Errorf("head = %+v, want it unchanged at %+v", after.Head, before.Head)
+	}
+	// What the expired commit exclusively reached is now reachable from
+	// nothing, so it moves from history to unreferenced -- where the sweep
+	// will collect it.
+	if after.History.Bytes != 0 {
+		t.Errorf("history = %+v, want zero: the only old commit is gone", after.History)
+	}
+	if after.Unreferenced.Bytes < size {
+		t.Errorf("unreferenced = %d, want at least the %d bytes the expired commit held",
+			after.Unreferenced.Bytes, size)
+	}
+}
+
+// A missing directory is damage and is reported as an error, not as a store
+// that got smaller.
+func TestCensusFailsOnAMissingDirectory(t *testing.T) {
+	s := plainStore(t)
+	root := put(t, s, mustEmpty(t, s), "/a.bin", bytes.Repeat([]byte("a"), 200000))
+	head := commitOn(t, s, root)
+
+	if err := s.RemoveOrphan(Orphan{ID: root.String()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Census(head); err == nil {
+		t.Error("Census succeeded with the root directory missing; damage must not read as a smaller store")
+	}
+}

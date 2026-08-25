@@ -131,7 +131,7 @@ func printUsage(w io.Writer) {
 Usage:
   silo serve [-b addr] [flags]    Run the file server daemon
   silo df [-q] [library-id]       Where the disk went: head, history, unreferenced
-  silo gc [-orphans] [-delete]    Reclaim disk: deleted libraries, and uncommitted objects
+  silo gc [-orphans] [-delete]    Reclaim disk: dead libraries, orphans, old history
   silo backup-db <dir>            Snapshot the databases (server may be running)
   silo sentry-test                Send a test event to $SILO_SENTRY_DSN and report
   silo user list [-json]          Show every account (see "silo user -h")
