@@ -188,17 +188,25 @@ but not yet committed isn't reaped — the unused `GCID` generation stamp in the
 schema is the mechanism [`chunking.md`](chunking.md)'s compaction design
 assigns to that job; they are the same mark phase.
 
-## Quota — enforcement landed; the API around it has not
+## Quota — enforcement and the CLI landed; the API around it has not
 
 Quota is **per user**, not per library — a user's cap applies to the total
 size of every library they own. Enforcement is real now: `checkQuotaV2` /
-`refuseOverQuota` (`fileserver/quota_v2.go`) gate the write path.
+`refuseOverQuota` (`fileserver/quota_v2.go`) gate the write path, and
+`silo user quota` (`fileserver/user_quota_cmd.go`) sets one.
 
 ### How it works
 
 - The cap lives per account (`libmgr.AccountQuota`); `quota <= 0` means no
   ceiling was ever set (`option.InfiniteQuota` is `-2`, and
   `option.DefaultQuota` defaults to it).
+- There are two places a cap can come from and they are not rivals. A
+  `UserQuota` row is the account's own ceiling; `[quota] default` in
+  `silo.conf` is the fallback for an account without one. The row wins where
+  it exists, so the config sets the floor for everybody and the CLI sets the
+  exceptions. Neither is per library — a library shared with somebody is
+  charged to its owner, which is why per-library sizes live on the libraries
+  listing and not under an account total they must not sum to.
 - The charge is **logical size at head** (`libmgr.AccountUsage`), not stored
   bytes — dedup and compaction move stored bytes under the user's feet, and a
   number that changes because the server ran a background job is not one
@@ -215,6 +223,22 @@ size of every library they own. Enforcement is real now: `checkQuotaV2` /
 - A quota the server cannot read is a refusal, not a shrug — admitting writes
   because the lookup failed is how a quota comes to be unenforced without
   anybody noticing.
+
+### Setting one
+
+`silo user quota <email>` reports the cap and the usage; `silo user quota
+<email> <size>` sets it, and `none` removes it. It is a CLI rather than an API
+for the reasons `RunUser` gives, and it is meant to be what the admin API below
+is eventually built on rather than built beside.
+
+The size argument requires a unit — `100gb`, `500mb` — and refuses anything it
+cannot read. That is deliberately *not* `option.parseQuota`, which answers
+`InfiniteQuota` for anything it fails to parse: right for a config file nobody
+is watching, and wrong for a command an operator is typing, where
+`silo user quota alice 100gigs` would report success while removing the
+ceiling it was called to impose. The required unit closes the other half of
+the same trap — a bare `100` means 100 GB in `silo.conf`, and an operator who
+reads it as 100 bytes has set a cap four orders of magnitude out.
 
 ### What's missing
 

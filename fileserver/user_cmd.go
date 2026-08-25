@@ -69,6 +69,24 @@ func RunUser(args []string) error {
 	switch action {
 	case "list":
 		run = func() error { return listUsers(*jsonOut) }
+	case "quota":
+		// One name, two operations, because "what is it" and "set it to" are
+		// the same question asked with and without an answer. Splitting them
+		// into quota and set-quota would mean an operator who typed the
+		// reading form with a size got the usage text instead of the change.
+		if len(rest) < 2 {
+			return fmt.Errorf("silo user quota needs an email address\n\n%s", userUsage)
+		}
+		if len(rest) > 3 {
+			return fmt.Errorf("silo user quota takes an email address and at most one size\n\n%s", userUsage)
+		}
+		email := rest[1]
+		if len(rest) == 2 {
+			run = func() error { return reportUserQuota(email) }
+			break
+		}
+		size := rest[2]
+		run = func() error { return setUserQuota(email, size) }
 	case "add", "passwd", "disable", "enable":
 		// Every one of these names one person, and names them by the address
 		// the operator knows rather than the id the tables hold.
@@ -109,6 +127,8 @@ const userUsage = `usage:
   silo user [-generate] passwd <email>        Set a password
   silo user disable <email>                   Stop every credential it holds
   silo user enable <email>                    Undo a disable
+  silo user quota <email>                     Show the cap and what is used
+  silo user quota <email> <size|none>         Set the cap: 100gb, 500mb, none
 
 Flags come first: silo user -generate add alice@example.com`
 
