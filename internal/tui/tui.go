@@ -72,9 +72,21 @@ type serverInfoMsg struct {
 	version string
 }
 
+// libraryUpdatedMsg is a push from the notification socket: a library's head
+// has moved, whoever moved it. It is what keeps two TUIs open on one library in
+// step, rather than each waiting for its own user to press 'r'.
+type libraryUpdatedMsg struct{ client.LibraryUpdate }
+
+// watchClosedMsg says the socket is finished for good, so nothing re-arms the
+// wait for the next event.
+type watchClosedMsg struct{}
+
 type model struct {
-	api  *client.APIClient
-	view string
+	api *client.APIClient
+	// watcher is the notification socket. Nil until login, and nil again if it
+	// closes for good; both cases fall back to refreshing by hand.
+	watcher *client.Watcher
+	view    string
 
 	// Login
 	emailInput    textinput.Model
@@ -137,6 +149,50 @@ type model struct {
 func (m model) fetchServerInfo() tea.Msg {
 	info, _ := m.api.GetServerInfo()
 	return serverInfoMsg{version: info.Version}
+}
+
+// watch opens the notification socket and returns the command that waits on
+// it. A server that does not offer one is not an error: the watcher keeps
+// trying in the background, and 'r' still refreshes by hand meanwhile.
+func (m *model) watch() tea.Cmd {
+	if m.watcher != nil {
+		return nil
+	}
+	m.watcher = m.api.Watch()
+	return m.awaitUpdate()
+}
+
+// awaitUpdate waits for the next push. Bubble Tea runs commands off the update
+// loop, so one parked here blocks nothing — but a command fires once, which is
+// why every handler of a libraryUpdatedMsg arms another.
+func (m model) awaitUpdate() tea.Cmd {
+	if m.watcher == nil {
+		return nil
+	}
+	events := m.watcher.Events()
+	return func() tea.Msg {
+		ev, ok := <-events
+		if !ok {
+			return watchClosedMsg{}
+		}
+		return libraryUpdatedMsg{LibraryUpdate: ev}
+	}
+}
+
+// refreshFor is the reload an update calls for, or nil when the update is about
+// something this screen is not showing. The form views reload nothing on
+// purpose: they are holding half-typed input, and re-fetching underneath would
+// move the ground it was typed against.
+func (m model) refreshFor(libraryID string) tea.Cmd {
+	switch m.view {
+	case viewLibraries:
+		return m.loadLibraries
+	case viewBrowse:
+		if libraryID == m.browseLibraryID {
+			return m.loadDir
+		}
+	}
+	return nil
 }
 
 // entryPath builds a full library path from the current browse path and an entry name.
@@ -229,6 +285,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// library list, so this cannot live in the login view's update.
 	case serverInfoMsg:
 		m.serverVersion = msg.version
+
+	// A library moved. Handled here rather than in a view's update because it
+	// arrives whatever is on screen, and because the wait for the next one has
+	// to be re-armed either way.
+	case libraryUpdatedMsg:
+		return m, tea.Batch(m.refreshFor(msg.LibraryID), m.awaitUpdate())
+
+	case watchClosedMsg:
+		m.watcher = nil
+		return m, nil
 	}
 
 	var (
@@ -308,7 +374,10 @@ func (m model) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.view = viewLibraries
 		m.message = ""
-		return m, tea.Batch(m.loadLibraries, m.fetchServerInfo)
+		// Evaluated before the batch is built, because watch() is what makes
+		// the command it returns non-nil.
+		watching := m.watch()
+		return m, tea.Batch(m.loadLibraries, m.fetchServerInfo, watching)
 	}
 
 	var cmds []tea.Cmd
@@ -370,6 +439,13 @@ func (m model) updateLibraries(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.browseCursor = 0
 				m.view = viewBrowse
 				m.message = ""
+				// Subscribed on the way in, and left subscribed on the way
+				// out: the set is one library per library visited this
+				// session, and an event for a library not on screen is
+				// discarded by refreshFor for the price of one comparison.
+				if m.watcher != nil {
+					m.watcher.Subscribe(library.ID)
+				}
 				return m, m.loadDir
 			}
 		}
@@ -1290,6 +1366,9 @@ func (m model) View() string {
 // the TUI skips the login view and signs in on startup.
 func Run(serverURL, autoEmail, autoPassword string) error {
 	p := tea.NewProgram(initialModel(serverURL, autoEmail, autoPassword), tea.WithAltScreen())
-	_, err := p.Run()
+	final, err := p.Run()
+	if m, ok := final.(model); ok && m.watcher != nil {
+		m.watcher.Close()
+	}
 	return err
 }
