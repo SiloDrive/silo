@@ -1,0 +1,230 @@
+package objmgr
+
+import (
+	"fmt"
+
+	"github.com/dkam/silo/fileserver/objstore"
+	"github.com/dkam/silo/store"
+)
+
+// Extent is a number of stored objects and the bytes they occupy on disk.
+//
+// Bytes here is what the filesystem holds — the stored form, after compression
+// and after E2EE framing — and not the logical size of anything. That is the
+// whole point of the census: quota answers "what do this account's files add
+// up to", and this answers "what is that costing", which are different
+// questions with different answers and only one of them can be acted on by
+// deleting history.
+type Extent struct {
+	Bytes   int64
+	Objects int64
+}
+
+func (e Extent) add(size int64) Extent {
+	return Extent{Bytes: e.Bytes + size, Objects: e.Objects + 1}
+}
+
+// Census is a library's store divided into three, by what reaches each object.
+//
+// The three want three different actions, which is why they are three numbers
+// and not one:
+//
+//   - Head is reachable from the head commit. It is what the library holds
+//     now, and nothing reclaims it short of deleting files.
+//   - History is reachable from some older commit but not from head. It is
+//     what a retention policy would reclaim, and it is the number nobody could
+//     see before this: quota charges the head, so an account that rewrites one
+//     file every day reports a flat usage while the disk grows daily.
+//   - Unreferenced is reachable from no commit at all — an upload that stopped
+//     halfway, a commit that lost its race and was never published. It is
+//     reclaimable now, with no policy decision attached, which is why it is
+//     counted apart from history rather than folded into it.
+//
+// The three partition the store: every object on disk lands in exactly one,
+// and the totals add up to what the filesystem holds. That is asserted by a
+// test rather than assumed, because three overlapping estimates would look the
+// same as three correct ones from the outside.
+type Census struct {
+	Head         Extent
+	History      Extent
+	Unreferenced Extent
+}
+
+// Census divides a library's stored objects by what reaches them.
+//
+// It is a set union over ids and deliberately not a sum of per-commit
+// measurements. Successive commits share nearly all of their objects — that is
+// what makes the store affordable — so adding up what each commit reaches
+// would report a history several times the size of the disk, and would grow
+// every time somebody touched an unrelated file. An object is counted once,
+// against the earliest column that reaches it.
+//
+// The walk is key-free. A commit publishes its root and parents, a directory
+// its entries, and a manifest its chunk list, in both library types — so a
+// server holding an E2EE library it cannot read can still say what that
+// library is costing it. A census that needed the content key would be a
+// census that never ran on the libraries most likely to be large.
+//
+// Cost is one pass over the store's directory listing plus one walk per
+// distinct tree in history, with every already-seen id short-circuiting. That
+// is affordable for a report and is not something to put on the write path.
+//
+// An object the walk cannot read is an error and not a smaller number. A
+// census is the tool somebody reaches for when they suspect a store is wrong,
+// and one that silently reported the readable fraction as the total would
+// answer the question it was asked with a number that means something else.
+func (s *Store) Census(head store.ID) (Census, error) {
+	live, err := s.reachable([]store.ID{head}, false)
+	if err != nil {
+		return Census{}, fmt.Errorf("walking the head commit: %w", err)
+	}
+	all, err := s.reachable([]store.ID{head}, true)
+	if err != nil {
+		return Census{}, fmt.Errorf("walking the history: %w", err)
+	}
+
+	var c Census
+	assign := func(id string, size int64, isChunk bool) error {
+		switch {
+		case live.has(id, isChunk):
+			c.Head = c.Head.add(size)
+		case all.has(id, isChunk):
+			c.History = c.History.add(size)
+		default:
+			c.Unreferenced = c.Unreferenced.add(size)
+		}
+		return nil
+	}
+
+	if err := s.objects.List(s.storeID, func(id string, size int64) error {
+		return assign(id, size, false)
+	}); err != nil {
+		return Census{}, fmt.Errorf("listing objects: %w", err)
+	}
+	if err := s.chunks.List(s.storeID, func(id string, size int64) error {
+		return assign(id, size, true)
+	}); err != nil {
+		return Census{}, fmt.Errorf("listing chunks: %w", err)
+	}
+	return c, nil
+}
+
+// marks is the set of ids a walk has reached.
+//
+// Two sets rather than one, because chunks and objects are separate stores and
+// an id is only unique within one of them. Collapsing them would be correct
+// today — both are content hashes and a collision across them would mean the
+// same bytes — but it would make the census silently wrong the first time the
+// two stores held different framings of one payload.
+type marks struct {
+	objects map[store.ID]struct{}
+	chunks  map[store.ID]struct{}
+}
+
+func newMarks() *marks {
+	return &marks{objects: map[store.ID]struct{}{}, chunks: map[store.ID]struct{}{}}
+}
+
+// has reports whether an id — as spelled by objstore.List, in hex — was
+// reached. An id the walk never produced cannot be parsed into the set, so an
+// unparseable name on disk is unreferenced, which is what it is.
+func (m *marks) has(id string, isChunk bool) bool {
+	parsed, err := store.ParseID(id)
+	if err != nil {
+		return false
+	}
+	set := m.objects
+	if isChunk {
+		set = m.chunks
+	}
+	_, ok := set[parsed]
+	return ok
+}
+
+// seen adds an id and reports whether it was already there, which is what
+// stops the walk revisiting a subtree every commit that shares it.
+func (m *marks) seen(set map[store.ID]struct{}, id store.ID) bool {
+	if _, ok := set[id]; ok {
+		return true
+	}
+	set[id] = struct{}{}
+	return false
+}
+
+// reachable marks everything the given commits reach. withParents follows
+// commit history; without it the walk stops at the commits it was handed,
+// which is what makes "reachable from head alone" askable.
+func (s *Store) reachable(commits []store.ID, withParents bool) (*marks, error) {
+	m := newMarks()
+	pending := append([]store.ID(nil), commits...)
+	for len(pending) > 0 {
+		id := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if m.seen(m.objects, id) {
+			continue
+		}
+		c, err := s.GetCommitPublic(id)
+		if err != nil {
+			return nil, fmt.Errorf("commit %s: %w", id, err)
+		}
+		if err := s.markTree(m, c.Root); err != nil {
+			return nil, err
+		}
+		if withParents {
+			pending = append(pending, c.Parents...)
+		}
+	}
+	return m, nil
+}
+
+// markTree marks a directory object and everything below it.
+//
+// A subtree whose id was already reached is skipped unread — the same Merkle
+// short-circuit MeasureDelta relies on, and the reason a hundred commits of a
+// large library cost little more than one.
+func (s *Store) markTree(m *marks, dirID store.ID) error {
+	if m.seen(m.objects, dirID) {
+		return nil
+	}
+	d, err := s.GetDirectoryPublic(dirID)
+	if err != nil {
+		return fmt.Errorf("directory %s: %w", dirID, err)
+	}
+	for _, e := range d.Entries {
+		if e.Type == store.NodeDir {
+			if err := s.markTree(m, e.ChildID); err != nil {
+				return err
+			}
+			continue
+		}
+		// NodeFile and NodeSymlink both name a manifest; a symlink's target is
+		// its content, so it is stored and counted like any other small file.
+		if err := s.markManifest(m, e.ChildID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// markManifest marks a manifest and the chunks it names.
+//
+// An inlined manifest names none: its bytes are in the object itself, already
+// counted by the object's own size, and adding a chunk for it would be
+// counting a chunk that does not exist.
+func (s *Store) markManifest(m *marks, id store.ID) error {
+	if m.seen(m.objects, id) {
+		return nil
+	}
+	man, err := s.GetManifestPublic(id)
+	if err != nil {
+		return fmt.Errorf("manifest %s: %w", id, err)
+	}
+	for _, ch := range man.Chunks {
+		m.seen(m.chunks, ch.ID)
+	}
+	return nil
+}
+
+// storeFor names the two object stores a census walks, so a caller totalling
+// the disk for itself reads the same two this does.
+func (s *Store) stores() []*objstore.ObjectStore { return []*objstore.ObjectStore{s.objects, s.chunks} }

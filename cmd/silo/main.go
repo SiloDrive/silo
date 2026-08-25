@@ -59,6 +59,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "df":
+		if err := silod.RunDF(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "gc":
 		if err := silod.RunGC(rest); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -125,6 +130,7 @@ func printUsage(w io.Writer) {
 
 Usage:
   silo serve [-b addr] [flags]    Run the file server daemon
+  silo df [-q] [library-id]       Where the disk went: head, history, unreferenced
   silo gc [-delete]               Reclaim disk from deleted libraries
   silo backup-db <dir>            Snapshot the databases (server may be running)
   silo sentry-test                Send a test event to $SILO_SENTRY_DSN and report
