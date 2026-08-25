@@ -49,6 +49,15 @@ type Client struct {
 	connMu sync.Mutex // serializes writes to conn
 	wch    chan *Message
 
+	// missed is the debt this client is owed: library id -> the commit id of
+	// the most recent update that could not be handed to wch. resyncCh wakes
+	// the writer to pay it, and is buffered by one because the writer takes
+	// the whole set at once -- a second nudge for a set already pending is
+	// nothing to remember.
+	missedMu sync.Mutex
+	missed   map[string]string
+	resyncCh chan struct{}
+
 	// lastPongUnix is read and written atomically.
 	lastPongUnix atomic.Int64
 
@@ -77,6 +86,8 @@ func NewClient(conn *websocket.Conn) {
 		ID:        nextID(),
 		conn:      conn,
 		wch:       make(chan *Message, wchBuffer),
+		missed:    make(map[string]string),
+		resyncCh:  make(chan struct{}, 1),
 		libraries: make(map[string]int64),
 		closeCh:   make(chan struct{}),
 	}
@@ -103,6 +114,12 @@ func NewClient(conn *websocket.Conn) {
 	}
 	c.libraries = nil
 	c.librariesMu.Unlock()
+
+	// nil rather than empty, so a fanout still holding a pointer to this
+	// client notes nothing rather than growing a debt nobody will ever pay.
+	c.missedMu.Lock()
+	c.missed = nil
+	c.missedMu.Unlock()
 	for _, id := range ids {
 		removeSubscription(id, c)
 	}
@@ -143,18 +160,99 @@ func (c *Client) writeLoop() {
 	for {
 		select {
 		case msg := <-c.wch:
-			c.connMu.Lock()
-			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			err := c.conn.WriteJSON(msg)
-			c.connMu.Unlock()
-			if err != nil {
+			if err := c.writeMessage(msg); err != nil {
 				log.Debugf("notif: client %d write error: %v", c.ID, err)
+				return
+			}
+		case <-c.resyncCh:
+			// Woken by the drop itself rather than by the next successful
+			// write. Flushing after a write would be the obvious place -- a
+			// slot has just come free -- but it races: a flush that runs
+			// between a failed send and the note it leaves behind finds an
+			// empty set, and the debt then waits for an unrelated event that
+			// may never come.
+			if err := c.writeMissed(); err != nil {
+				log.Debugf("notif: client %d resync write error: %v", c.ID, err)
 				return
 			}
 		case <-c.closeCh:
 			return
 		}
 	}
+}
+
+// writeMessage sends one frame. The lock is what makes the three writers --
+// this loop, the resync flush and the pinger -- one writer as far as the
+// connection is concerned.
+func (c *Client) writeMessage(msg *Message) error {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return c.conn.WriteJSON(msg)
+}
+
+// noteMissed records that an update could not be delivered, and wakes the
+// writer to deliver it when it can.
+//
+// A later drop for the same library overwrites an earlier one, because they do
+// not accumulate into anything. Every one of them says "this library moved",
+// and only the newest says where to -- replaying the older ones would send a
+// burst whose leading messages are already wrong.
+func (c *Client) noteMissed(libraryID, commitID string) {
+	c.missedMu.Lock()
+	if c.missed == nil {
+		// Closed. Nothing to deliver it over.
+		c.missedMu.Unlock()
+		return
+	}
+	c.missed[libraryID] = commitID
+	c.missedMu.Unlock()
+
+	select {
+	case c.resyncCh <- struct{}{}:
+	default:
+		// Already nudged, and the flush takes whatever the set holds when it
+		// runs -- including what was just added.
+	}
+}
+
+// takeMissed removes and returns the whole debt.
+//
+// Taken rather than read, so that a drop arriving during the write that
+// follows re-notes and re-nudges instead of being lost in the handover.
+func (c *Client) takeMissed() map[string]string {
+	c.missedMu.Lock()
+	defer c.missedMu.Unlock()
+	if len(c.missed) == 0 {
+		return nil
+	}
+	out := c.missed
+	c.missed = make(map[string]string)
+	return out
+}
+
+// writeMissed delivers what a slow client missed.
+//
+// Written straight to the connection rather than queued, because the queue
+// being full is the whole reason there is anything to deliver -- a resync that
+// could itself be dropped would leave the client exactly where it started.
+//
+// A failure part way through abandons the rest, and does not put them back.
+// The connection is ending, and the socket that replaces it announces every
+// library it re-subscribes as possibly-changed, which covers strictly more
+// than what is being abandoned here.
+func (c *Client) writeMissed() error {
+	for libraryID, commitID := range c.takeMissed() {
+		content, err := json.Marshal(&LibraryUpdateEvent{LibraryID: libraryID, CommitID: commitID})
+		if err != nil {
+			log.Warnf("notif: failed to encode a missed library-update: %v", err)
+			continue
+		}
+		if err := c.writeMessage(&Message{Type: EventTypeLibraryUpdate, Content: content}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Client) pingLoop() {
@@ -259,6 +357,13 @@ func (c *Client) unsubscribe(libraryID string) {
 	delete(c.libraries, libraryID)
 	c.librariesMu.Unlock()
 	removeSubscription(libraryID, c)
+
+	// A library the client no longer follows is not owed a resync. Leaving the
+	// debt would send an update for something it has said it is not watching,
+	// which is at best ignored and at worst a reload of a library it just left.
+	c.missedMu.Lock()
+	delete(c.missed, libraryID)
+	c.missedMu.Unlock()
 }
 
 func (c *Client) sendJWTExpired(libraryID string) {

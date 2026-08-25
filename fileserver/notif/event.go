@@ -47,7 +47,12 @@ func NotifyLibraryUpdate(libraryID, commitID string) {
 		select {
 		case c.wch <- msg:
 		default:
-			log.Debugf("notif: dropping library-update for slow client %d", c.ID)
+			// Not dropped -- deferred. The send stays non-blocking because
+			// this runs on the commit path and one stuck socket must not hold
+			// up a write, but a client that is merely behind is owed the news
+			// rather than denied it, and it gets it as soon as its queue moves.
+			log.Debugf("notif: deferring library-update for slow client %d", c.ID)
+			c.noteMissed(libraryID, commitID)
 		}
 	}
 }
