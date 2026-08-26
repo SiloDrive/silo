@@ -8,7 +8,6 @@ import (
 
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -78,8 +77,19 @@ type change struct {
 // client that wants the server to do less should ask more often, not for
 // smaller pages.
 func ChangesHandler(w http.ResponseWriter, r *http.Request) {
-	id := middleware.GetAccountID(r)
 	libraryID := mux.Vars(r)["libraryid"]
+
+	// Authorization comes before the arguments are validated, not after. A
+	// caller who may not see this library must not learn from a 400 or a 410
+	// whether the anchor they guessed was a real one -- that is the same
+	// enumeration oracle the 403-not-404 rule closes, one level down.
+	//
+	// "" for the path: the feed covers the whole library, so a credential
+	// scoped to a folder is refused rather than answered partially.
+	if middleware.Perm(r, libraryID, "") == "" {
+		http.Error(w, "Permission denied", http.StatusForbidden)
+		return
+	}
 
 	limit, ok := parseLimit(w, r)
 	if !ok {
@@ -104,11 +114,6 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 		since, pinned, offset = c.Since, c.Target, c.Offset
 	} else if since == "" {
 		http.Error(w, "since is required: pass the anchor from a previous call, or enumerate instead", http.StatusBadRequest)
-		return
-	}
-
-	if perm := share.CheckPerm(libraryID, id); perm == "" {
-		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}
 

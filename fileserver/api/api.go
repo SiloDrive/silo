@@ -12,7 +12,6 @@ import (
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/tokenstore"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
@@ -249,7 +248,10 @@ func CreateAccessTokenHandler(w http.ResponseWriter, r *http.Request) {
 	// CheckPerm returns "" for a library the user can't see and for one that
 	// doesn't exist, so a 403 here also avoids confirming which library IDs are
 	// real.
-	perm := share.CheckPerm(req.LibraryID, acct.ID)
+	// The ceiling, not the account's permission: a read-only credential must
+	// not be able to mint an upload token and write through the capability URL
+	// it produces.
+	perm := middleware.Perm(r, req.LibraryID, "")
 	if perm == "" || (needed == "rw" && perm != "rw") {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return

@@ -649,6 +649,23 @@ func DeleteLibrary(libraryID string) error {
 		}
 	}
 
+	// A credential names its library inside `scope`, as text, in one of two
+	// forms: the id alone, or the id and a path separated by a colon. Both go.
+	// An unscoped credential ('' — every library) and one scoped elsewhere are
+	// untouched, because deleting one library must not sign the account out of
+	// the rest.
+	//
+	// Matched by exact prefix rather than LIKE. A library id is a UUID and
+	// carries no wildcard, but a pattern match whose safety rests on what the
+	// data happens to look like stops being safe the day the id format changes.
+	// It is here rather than in the list above because that loop binds one
+	// parameter and this needs three.
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM Credential WHERE scope = ? OR substr(scope, 1, length(?) + 1) = ? || ':'",
+		libraryID, libraryID, libraryID); err != nil {
+		return fmt.Errorf("failed to revoke credentials scoped to the library: %v", err)
+	}
+
 	// Clean up virtual libraries referencing this library
 	if _, err := tx.ExecContext(ctx, "DELETE FROM VirtualLibrary WHERE library_id = ? OR origin_library = ?", libraryID, libraryID); err != nil {
 		return fmt.Errorf("failed to delete virtual library records: %v", err)

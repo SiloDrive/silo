@@ -21,7 +21,7 @@ func postNotifyToken(t *testing.T, user, libraryID string) *httptest.ResponseRec
 	t.Helper()
 
 	req := httptest.NewRequest("POST", "/api/silo/v1/libraries/"+libraryID+"/notify-token", nil)
-	req = middleware.WithAccount(req, accountOf(t, user))
+	req = middleware.WithCredential(req, testCredential(accountOf(t, user)), accountOf(t, user))
 	req = mux.SetURLVars(req, map[string]string{"libraryid": libraryID})
 
 	rr := httptest.NewRecorder()

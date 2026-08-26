@@ -6,7 +6,6 @@ import (
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -58,8 +57,19 @@ type commitsResponse struct {
 // re-walk from the head on every page, so the last page of a long history would
 // cost the whole of it.
 func CommitsHandler(w http.ResponseWriter, r *http.Request) {
-	id := middleware.GetAccountID(r)
 	libraryID := mux.Vars(r)["libraryid"]
+
+	// Authorization comes before the arguments are validated, not after. A
+	// caller who may not see this library must not learn from a 400 or a 410
+	// whether the anchor they guessed was a real one -- that is the same
+	// enumeration oracle the 403-not-404 rule closes, one level down.
+	//
+	// "" for the path: the feed covers the whole library, so a credential
+	// scoped to a folder is refused rather than answered partially.
+	if middleware.Perm(r, libraryID, "") == "" {
+		http.Error(w, "Permission denied", http.StatusForbidden)
+		return
+	}
 
 	limit, ok := parseLimit(w, r)
 	if !ok {
@@ -78,11 +88,6 @@ func CommitsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		from = c.From
-	}
-
-	if perm := share.CheckPerm(libraryID, id); perm == "" {
-		http.Error(w, "Permission denied", http.StatusForbidden)
-		return
 	}
 
 	library, err := libmgr.GetWithReason(libraryID)

@@ -20,7 +20,7 @@ func idReq(t *testing.T, h http.HandlerFunc, acct *account.Account, method, targ
 	t.Helper()
 	r := httptest.NewRequest(method, target, bytes.NewReader(body))
 	r = mux.SetURLVars(r, vars)
-	r = middleware.WithAccount(r, acct)
+	r = middleware.WithCredential(r, testCredential(acct), acct)
 	for k, v := range headers {
 		r.Header.Set(k, v)
 	}

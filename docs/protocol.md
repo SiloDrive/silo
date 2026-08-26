@@ -64,7 +64,19 @@ RFC 9421 verifier exists. `Authorization: Token` (the forty-hex legacy form)
 parses but is mounted on no route.
 
 The notification socket takes the same credential and accepts requests without
-one — see `/notification` below. See [`docs/auth.md`](auth.md) for the model.
+one — see `/notification` below.
+
+A credential can carry a **ceiling**: a permission (`r` or `rw`) and a scope
+(every library, one library, or one folder and everything beneath it). What a
+caller may do is the account's permission intersected with that ceiling, never
+the account's alone, so a narrowed credential answers `403` where the account
+behind it would have been allowed. Library-wide operations — `changes`,
+`commits`, `notify-token` — and the id-addressed chunk and object surfaces are
+refused to a folder-scoped credential outright, since neither can be answered
+partially. No route mints a narrowed credential yet; login mints one unscoped
+`rw` session.
+
+See [`docs/auth.md`](auth.md) for the model.
 
 ## Endpoints
 

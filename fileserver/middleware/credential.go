@@ -14,7 +14,9 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/credential"
+	"github.com/dkam/silo/fileserver/share"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -113,11 +115,62 @@ func credentialRefused(w http.ResponseWriter, r *http.Request, err error) {
 // GetCredential returns the credential that authenticated the request, or nil
 // when the request came through an unauthenticated lane.
 //
-// Handlers need it for the permission ceiling: what a caller may do is
-// credential.EffectivePerm(share.CheckPerm(...), library, path), never
-// CheckPerm alone. A handler that reads only the account is asking what the
-// user may do rather than what this credential may do.
+// Handlers should reach for Perm rather than this. What a caller may do is the
+// account's permission intersected with the credential's ceiling, and a
+// handler that reads only the account is asking what the *user* may do rather
+// than what *this credential* may do.
 func GetCredential(r *http.Request) *credential.Credential {
 	cred, _ := r.Context().Value(CredentialKey).(*credential.Credential)
 	return cred
+}
+
+// WithCredential returns a request carrying a credential, for the lanes that
+// authenticate some other way and for tests. It sets the account too, since a
+// credential that named no account would pass Perm and fail everywhere after.
+func WithCredential(r *http.Request, cred *credential.Credential, acct *account.Account) *http.Request {
+	ctx := context.WithValue(r.Context(), CredentialKey, cred)
+	ctx = context.WithValue(ctx, AccountKey, acct)
+	return r.WithContext(ctx)
+}
+
+// Perm is what the caller may do to path inside libraryID: "" for nothing,
+// "r" for read, "rw" for read and write.
+//
+// It is the only place docs/auth.md's ceiling rule is applied --
+//
+//	effective = min(CheckPerm(library, account), cred.perm within cred.scope)
+//
+// -- and it is one function rather than two calls at each site because the
+// failure it prevents is precisely a handler that remembers CheckPerm and
+// forgets the narrowing. A credential can only ever narrow: it cannot exceed
+// the account behind it, and if the account's own permission is withdrawn the
+// credential follows immediately.
+//
+// path is the entry being reached, or "" for an operation that is about the
+// library as a whole -- listing its commits, reading its delta feed, minting a
+// notification token for it. A credential scoped to a folder is refused those,
+// deliberately: there is no way to answer "what changed in this library"
+// partially without telling the holder about paths it may not reach.
+//
+// **No credential means no access.** Every route that reaches a handler is
+// mounted under RequireCredential, so a nil credential is a route registered
+// outside the authenticated subrouter -- a mistake, and one that must fail
+// closed rather than quietly granting whatever the account may do.
+func Perm(r *http.Request, libraryID, path string) string {
+	cred := GetCredential(r)
+	if cred == nil {
+		log.Errorf("Permission asked on %s with no credential in context; denying", r.URL.Path)
+		return ""
+	}
+	return cred.EffectivePerm(share.CheckPerm(libraryID, cred.AccountID), libraryID, path)
+}
+
+// CanWrite and CanRead are Perm read as a yes or no, for the many call sites
+// that want one.
+func CanWrite(r *http.Request, libraryID, path string) bool {
+	return Perm(r, libraryID, path) == "rw"
+}
+
+func CanRead(r *http.Request, libraryID, path string) bool {
+	return Perm(r, libraryID, path) != ""
 }

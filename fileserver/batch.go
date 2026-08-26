@@ -66,7 +66,13 @@ func batchHandler(w http.ResponseWriter, r *http.Request) {
 	user := acct.Email
 	libraryID := mux.Vars(r)["libraryid"]
 
-	library := entryLibrary(w, libraryID, acct.ID, true)
+	// Library-level, so a path-scoped credential cannot batch. A batch is
+	// ordered and all-or-nothing over a working tree that exists only for this
+	// request, and a move or a copy names two paths -- so "does this batch stay
+	// inside the scope" is a question about the resulting tree rather than
+	// about each path in isolation. Refusing is the honest answer until that is
+	// worked out; nothing mints a path-scoped credential yet.
+	library := entryLibrary(w, r, libraryID, "", true)
 	if library == nil {
 		return
 	}

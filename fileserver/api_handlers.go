@@ -85,7 +85,6 @@ func movesIntoOwnSubtree(srcPath, dstDir string) bool {
 // rename a library it can already create and delete. That is the crossing this
 // lane exists to remove.
 func patchLibraryHandler(w http.ResponseWriter, r *http.Request) {
-	acct := middleware.GetAccount(r)
 	libraryID := mux.Vars(r)["libraryid"]
 
 	var body struct {
@@ -106,7 +105,8 @@ func patchLibraryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	library := entryLibrary(w, libraryID, acct.ID, true)
+	// Renaming a library is about the library, not a path inside it.
+	library := entryLibrary(w, r, libraryID, "", true)
 	if library == nil {
 		return
 	}
@@ -157,7 +157,7 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	library := entryLibrary(w, libraryID, acct.ID, true)
+	library := entryLibrary(w, r, libraryID, path, true)
 	if library == nil {
 		return
 	}
@@ -183,7 +183,7 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	library := entryLibrary(w, libraryID, acct.ID, true)
+	library := entryLibrary(w, r, libraryID, path, true)
 	if library == nil {
 		return
 	}
@@ -238,7 +238,13 @@ func moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
 		return
 	}
 
-	library := entryLibrary(w, libraryID, acct.ID, true)
+	// Both ends. A credential that may write the destination but not read the
+	// source would otherwise pull content out of a subtree it cannot reach.
+	if middleware.Perm(r, libraryID, srcPath) == "" {
+		http.Error(w, "Permission denied", http.StatusForbidden)
+		return
+	}
+	library := entryLibrary(w, r, libraryID, dstPath, true)
 	if library == nil {
 		return
 	}

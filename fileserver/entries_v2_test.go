@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
@@ -52,7 +53,7 @@ func do(t *testing.T, h http.HandlerFunc, acct *account.Account, method, target 
 	}
 	r := httptest.NewRequest(method, target, rdr)
 	r = mux.SetURLVars(r, vars)
-	r = middleware.WithAccount(r, acct)
+	r = middleware.WithCredential(r, testCredential(acct), acct)
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -240,5 +241,16 @@ func TestWritingAFileOverADirectoryIsAConflictNotAServerError(t *testing.T) {
 	w = do(t, putEntry, acct, http.MethodPut, "/entries/d", vars, []byte("nope"))
 	if w.Code != http.StatusConflict {
 		t.Errorf("PUT over a directory = %d (%s), want 409", w.Code, w.Body.String())
+	}
+}
+
+// testCredential is the unnarrowed credential a handler now reads its
+// permission from. These tests authenticate directly rather than through the
+// router, so they have to supply what RequireCredential would have: unscoped
+// and rw, so what they measure is the account's own permission and not the
+// ceiling, which has its own tests in ceiling_test.go.
+func testCredential(acct *account.Account) *credential.Credential {
+	return &credential.Credential{
+		Kind: credential.KindSession, AccountID: acct.ID, Label: "test", Perm: "rw",
 	}
 }

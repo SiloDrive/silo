@@ -133,21 +133,39 @@ part of this finding that pushed **the account password into the Keychain** as
 the documented workaround is gone with it: a device holds a revocable
 credential, and the password is needed once, at enrolment.
 
-### 5. Nothing has a scope — *expressible; not yet enforced*
+### 5. Nothing has a scope — *closed on the server; nothing mints one yet*
 
-The row carries `scope` and `perm`, `ParseScope` owns the encoding,
-`Credential.EffectivePerm` intersects them with what the account may do, and
-`Resolve` hands the credential to the handler through
-`middleware.GetCredential`. Everything needed to cut a read-only,
-single-library credential exists and is reachable.
+`middleware.Perm(r, libraryID, path)` is the one place the ceiling is applied,
+and every handler that used to call `share.CheckPerm` now calls it instead. A
+read-only credential cannot write, a library-scoped one 403s on every other
+library, and a path-scoped one reaches its subtree and nothing else — measured
+through the real router in `fileserver/ceiling_test.go`.
 
-What is missing is the last link: **no handler calls `EffectivePerm` yet**.
-They still ask `share.CheckPerm(library, account)`, which is what the *user*
-may do rather than what *this credential* may do, so a scoped row would
-authenticate correctly and then be ignored. That is
-[step 6](#order-of-work), and until it lands nothing mints a scoped credential
-either — a narrowing nothing honours is worse than no narrowing, because it
-reads as a guarantee.
+Three consequences worth stating, because each is a deliberate refusal rather
+than an oversight:
+
+- **Library-wide operations pass `""` for the path**, so a path-scoped
+  credential is refused `changes`, `commits` and `notify-token`. There is no
+  way to answer "what changed in this library" partially without telling the
+  holder about paths it may not reach.
+- **The chunk and object surfaces are library-level** for the same reason from
+  the other end: they are addressed by content hash, and an id says nothing
+  about where it will be linked.
+- **A batch is library-level**, so a path-scoped credential cannot use it. A
+  batch is ordered and all-or-nothing over a working tree, and a move or copy
+  names two paths, so "does this stay inside the scope" is a question about the
+  resulting tree rather than about each path in isolation. Refusing is the
+  honest answer until that is worked out.
+
+`Perm` **fails closed on a nil credential** and logs it: every route is mounted
+under `RequireCredential`, so no credential means a route registered outside
+the authenticated subrouter, which is a mistake rather than an anonymous
+caller.
+
+What remains is the enrolment half — **no route mints a scoped or read-only
+credential**. Login mints one unscoped `rw` session; anything narrower has to
+come from `credential.Issue` in a test or a future device-enrolment endpoint.
+The mechanism is done and honoured; what is missing is a way to ask for it.
 
 ### 6. Nothing has a name — *closed*
 
@@ -611,7 +629,7 @@ CLI, and any future SFTP frontend by way of SSH keys. The one exception left
 is S3, whose SigV4 needs a shared secret the server can recompute with;
 capability URLs also stay bearer, because a URL cannot sign anything.
 
-### Permission ceilings
+### Permission ceilings — *landed*
 
 `share.CheckPerm(libraryID, user)` keeps answering what the *user* may do.
 `Credential.scope` and `Credential.perm` intersect with it:
@@ -625,6 +643,18 @@ A credential can only ever narrow. That is what makes a read-only,
 single-library credential safe to hand out: it cannot outlive or exceed the
 account behind it, and if the account's own permission is withdrawn the
 credential follows immediately.
+
+It is applied in one function, `middleware.Perm(r, libraryID, path)`, and not
+as two calls at each site, because the failure it prevents is precisely a
+handler that remembers `CheckPerm` and forgets the narrowing. `share.CheckPerm`
+takes an account and knows nothing about credentials, which is why the
+intersection lives beside the request rather than inside it.
+
+The encoding is a superset of what the table comment describes — `ParseScope`
+also reads `<library-id>:<path>`, one folder and everything beneath it, which
+is the case a scoped mount actually wants. See
+[finding 5](#5-nothing-has-a-scope--closed-on-the-server-nothing-mints-one-yet)
+for which operations a path scope is refused, and why.
 
 ### JWTs keep exactly one job
 
@@ -1328,10 +1358,14 @@ decrypt.
    [`plans/store-v2.md`](plans/store-v2.md) phase 2, which needs it.
 5. **Persistent JWT keyfile.** Closes finding 4 for notification tokens; login
    no longer depends on it.
-6. **Permission ceilings in `CheckPerm`.** Read-only, single-library
-   credentials — the narrowing every other kind of credential is defined in
-   terms of. `SILO_AUTH=none:r` used to be the argument for this step and is
-   now [deferred](#running-with-no-authentication); the ceilings outlived it,
+6. **Permission ceilings.** Landed 2026-08-26, as `middleware.Perm` rather
+   than as a change to `CheckPerm` — the ceiling is a property of the request,
+   and `share.CheckPerm` answers about a user, so intersecting them belongs
+   where the credential is rather than inside the function that knows nothing
+   about one. Read-only and single-library credentials are honoured; the
+   enrolment route that would hand one out is step 2's remaining half.
+   `SILO_AUTH=none:r` used to be the argument for this step and is now
+   [deferred](#running-with-no-authentication); the ceilings outlived it,
    because step 2's device credentials are what a client is handed and a
    credential that cannot be narrowed is one that can only be revoked.
 7. **Proof of possession** — public keys registered at enrolment, RFC 9421
@@ -1343,19 +1377,23 @@ decrypt.
    surface, and step 2's `Credential` is the artefact it produces.
 9. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
-Where the list stands: **steps 1, 2 and 3 are done.** `Resolve` is mounted, the
-three token stores it replaced are deleted, and a credential can be listed,
+Where the list stands: **steps 1, 2, 3 and 6 are done.** `Resolve` is mounted,
+the three token stores it replaced are deleted, a credential can be listed,
 named and revoked — with the revocation taking effect on the next request
-rather than whenever a cache ages out.
+rather than whenever a cache ages out — and a narrowed credential is now
+honoured on every route.
 
-Two things are left over from step 2 and belong to the steps that follow.
-**Nothing mints a scoped or read-only credential**, deliberately: `perm` and
-`scope` are honoured by `EffectivePerm` and no handler calls it yet, so a
-narrowing would read as a guarantee the server does not keep. That is step 6,
-and it now gates step 2's device credentials rather than the other way round.
-And **there is no logout endpoint** — a client cannot discard its own
-credential over HTTP, only an operator can at the CLI. It waits for the route
-table to grow a way to mint before it grows a way to discard.
+What is left of step 2 is the **enrolment half**: no route mints a scoped,
+read-only or device credential, so the ceilings are enforced on credentials
+nothing yet asks for. That is deliberate ordering — a narrowing the server
+ignored would have read as a guarantee it did not keep — and it makes the next
+step the one that hands a device its credential. Step 4 is where that lands,
+because what a device is handed at enrolment and what a password buys are the
+same question.
+
+Also outstanding: **there is no logout endpoint** — a client cannot discard its
+own credential over HTTP, only an operator can at the CLI. It waits for the
+route table to grow a way to mint before it grows a way to discard.
 
 One thing step 3 surfaced and step 2 has now fixed: a password change still
 does not revoke anything, but it *can* — `credential.RevokeAll` is the call,

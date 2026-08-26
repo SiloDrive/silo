@@ -6,7 +6,6 @@ import (
 
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/utils"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -24,9 +23,9 @@ type notifyTokenResponse struct {
 
 // CreateNotifyTokenHandler handles POST /api/silo/v1/libraries/{libraryid}/notify-token.
 // It mints the same notification JWT the deleted /repo/{id}/jwt-token
-// route, but authorizes the session user against share.CheckPerm instead of
-// requiring a library token — so a Silo-lane client never has to touch the
-// compatibility surface to get onto the notification socket.
+// route, but authorizes the caller's own credential instead of requiring a
+// library token — so a Silo-lane client never has to touch the compatibility
+// surface to get onto the notification socket.
 func CreateNotifyTokenHandler(w http.ResponseWriter, r *http.Request) {
 	// Checked before permission, so a server without the notification endpoint
 	// says so plainly rather than answering 403 about a library the caller can
@@ -39,7 +38,10 @@ func CreateNotifyTokenHandler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
 	libraryID := mux.Vars(r)["libraryid"]
 
-	if share.CheckPerm(libraryID, acct.ID) == "" {
+	// "" for the path: a notification names a library and a commit, so a
+	// credential scoped to a folder inside it would learn about writes it
+	// cannot read.
+	if middleware.Perm(r, libraryID, "") == "" {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return
 	}

@@ -1,10 +1,13 @@
 package silod
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/libmgr"
+	"github.com/dkam/silo/fileserver/option"
 )
 
 const (
@@ -89,5 +92,54 @@ func TestDeleteLibrarySurvivesSelfReferencingVirtualLibrary(t *testing.T) {
 
 	if n := countRows(t, "SELECT COUNT(*) FROM Library WHERE library_id = ?", originLibrary); n != 0 {
 		t.Error("the library was not deleted")
+	}
+}
+
+// A credential cut to a library that no longer exists is a row nothing can
+// ever use and nothing would ever collect. The precedent is 6d50b1b -- three
+// per-library tables that kept rows for deleted libraries -- but the test it
+// added cannot catch this one: it asks the schema for tables with a
+// library_id column, and a credential names its library inside `scope`, as
+// text.
+func TestDeleteLibraryRevokesCredentialsScopedToIt(t *testing.T) {
+	sqliteTestDB(t)
+	seedLibrary(t, originLibrary, "owner@example.com")
+	seedLibrary(t, otherLibrary, "owner@example.com")
+
+	owner := acctFor(t, "owner@example.com")
+	issue := func(scope credential.Scope) string {
+		t.Helper()
+		ctx, cancel := option.WithDBTimeout(context.Background())
+		defer cancel()
+		c, _, err := credential.Issue(ctx, credential.IssueOpts{
+			Kind: credential.KindDevice, AccountID: owner.ID,
+			Label: "scoped " + scope.String(), Scope: scope, Perm: "rw",
+		})
+		if err != nil {
+			t.Fatalf("issuing a credential scoped to %q: %v", scope.String(), err)
+		}
+		return c.ID
+	}
+
+	wholeLibrary := issue(credential.Scope{LibraryID: originLibrary})
+	oneFolder := issue(credential.Scope{LibraryID: originLibrary, Path: "/photos"})
+	unscoped := issue(credential.Scope{})
+	elsewhere := issue(credential.Scope{LibraryID: otherLibrary})
+
+	if err := libmgr.DeleteLibrary(originLibrary); err != nil {
+		t.Fatalf("DeleteLibrary returned %v", err)
+	}
+
+	for _, id := range []string{wholeLibrary, oneFolder} {
+		if n := countRows(t, "SELECT COUNT(*) FROM Credential WHERE id = ?", id); n != 0 {
+			t.Errorf("credential %s survived the deletion of the library it names", id)
+		}
+	}
+	// An unscoped credential reaches every library the account may reach, and
+	// deleting one of them must not sign the account out of the rest.
+	for _, id := range []string{unscoped, elsewhere} {
+		if n := countRows(t, "SELECT COUNT(*) FROM Credential WHERE id = ?", id); n != 1 {
+			t.Errorf("credential %s was revoked by an unrelated library deletion", id)
+		}
 	}
 }

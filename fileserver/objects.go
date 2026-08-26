@@ -55,7 +55,9 @@ const maxObjectBody = store.MaxManifestBytes + (1 << 20)
 
 // idAddressedLibrary loads a library and its store for the id-addressed surface.
 func idAddressedLibrary(w http.ResponseWriter, r *http.Request, write bool) (*libmgr.Library, *objmgr.Store, bool) {
-	library := entryLibrary(w, mux.Vars(r)["libraryid"], middleware.GetAccountID(r), write)
+	// Addressed by object id rather than by path, so library-level -- see the
+	// note in blocks.go.
+	library := entryLibrary(w, r, mux.Vars(r)["libraryid"], "", write)
 	if library == nil {
 		return nil, nil, false
 	}

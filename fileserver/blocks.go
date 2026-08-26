@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/store"
@@ -51,7 +50,10 @@ const maxBlockListBody = 16 << 20
 // "yes, I have that one" to anyone with read access to any library turns this
 // into an oracle for whether a given file exists somewhere on the server.
 func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
-	library := entryLibrary(w, mux.Vars(r)["libraryid"], middleware.GetAccountID(r), true)
+	// A chunk is addressed by its content hash, not by a path, so this is a
+	// library-level check: a path-scoped credential cannot use the chunk
+	// surface, because a chunk id says nothing about where it will be linked.
+	library := entryLibrary(w, r, mux.Vars(r)["libraryid"], "", true)
 	if library == nil {
 		return
 	}

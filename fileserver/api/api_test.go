@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
@@ -102,7 +103,7 @@ func postAccessToken(t *testing.T, user, libraryID, op string) *httptest.Respons
 	}
 
 	req := httptest.NewRequest("POST", "/api/silo/v1/access-tokens", strings.NewReader(string(body)))
-	req = middleware.WithAccount(req, accountOf(t, user))
+	req = middleware.WithCredential(req, testCredential(accountOf(t, user)), accountOf(t, user))
 
 	rr := httptest.NewRecorder()
 	CreateAccessTokenHandler(rr, req)
@@ -226,7 +227,7 @@ func TestListLibrariesAnswersEmptyArrayNotNull(t *testing.T) {
 	setupPerms(t)
 
 	req := httptest.NewRequest("GET", "/api/silo/v1/libraries", nil)
-	req = middleware.WithAccount(req, accountOf(t, strangerUser))
+	req = middleware.WithCredential(req, testCredential(accountOf(t, strangerUser)), accountOf(t, strangerUser))
 
 	rr := httptest.NewRecorder()
 	ListLibrariesHandler(rr, req)
@@ -240,7 +241,7 @@ func TestListLibrariesAnswersEmptyArrayNotNull(t *testing.T) {
 
 	// And the populated case still lists, so the fix did not empty the endpoint.
 	req = httptest.NewRequest("GET", "/api/silo/v1/libraries", nil)
-	req = middleware.WithAccount(req, accountOf(t, ownerUser))
+	req = middleware.WithCredential(req, testCredential(accountOf(t, ownerUser)), accountOf(t, ownerUser))
 	rr = httptest.NewRecorder()
 	ListLibrariesHandler(rr, req)
 
@@ -250,5 +251,15 @@ func TestListLibrariesAnswersEmptyArrayNotNull(t *testing.T) {
 	}
 	if len(libraries) != 1 || libraries[0]["id"] != testLibraryID {
 		t.Errorf("owner's listing = %v, want the one seeded library", libraries)
+	}
+}
+
+// testCredential is the unnarrowed credential a handler reads its permission
+// from. These tests call handlers directly, so they supply what
+// RequireCredential would have: unscoped and rw, so the ceiling is not what
+// they are measuring.
+func testCredential(acct *account.Account) *credential.Credential {
+	return &credential.Credential{
+		Kind: credential.KindSession, AccountID: acct.ID, Label: "test", Perm: "rw",
 	}
 }

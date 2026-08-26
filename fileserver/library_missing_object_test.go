@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/libmgr"
+	"github.com/dkam/silo/fileserver/middleware"
 )
 
 const (
@@ -33,6 +35,19 @@ func damagedLibraryTestDB(t *testing.T) {
 	dbExec(t, "INSERT INTO LibraryOwner (library_id, account_id) VALUES (?, ?)", damagedLibrary, mintAccount(t, libraryOwner).ID)
 }
 
+// authed builds a request carrying an unnarrowed credential for a test
+// address, which is what entryLibrary now reads its permission from. The
+// credential is unscoped and rw, so what it measures is the account's
+// permission and the library lookup -- the ceiling has its own tests.
+func authed(t *testing.T, email string) *http.Request {
+	t.Helper()
+	acct := acctFor(t, email)
+	r := httptest.NewRequest(http.MethodGet, "/api/silo/v1/libraries", nil)
+	return middleware.WithCredential(r, &credential.Credential{
+		Kind: credential.KindSession, AccountID: acct.ID, Label: "test", Perm: "rw",
+	}, acct)
+}
+
 // The bug, at the surface porter-fuse and the File Provider extension both
 // read: a library whose head commit object is missing was reported as 404
 // "Library not found". To a sync client a 404 is not "something went wrong", it
@@ -43,7 +58,7 @@ func TestEntryLibraryDoesNotReport404ForAMissingObject(t *testing.T) {
 	damagedLibraryTestDB(t)
 
 	w := httptest.NewRecorder()
-	library := entryLibrary(w, damagedLibrary, acctFor(t, libraryOwner).ID, false)
+	library := entryLibrary(w, authed(t, libraryOwner), damagedLibrary, "/", false)
 
 	if library != nil {
 		t.Fatal("entryLibrary returned a library whose head commit is missing")
@@ -68,7 +83,7 @@ func TestEntryLibraryStillReports404ForAnAbsentLibrary(t *testing.T) {
 	dbExec(t, "INSERT INTO LibraryOwner (library_id, account_id) VALUES (?, ?)", goneLibrary, mintAccount(t, libraryOwner).ID)
 
 	w := httptest.NewRecorder()
-	if library := entryLibrary(w, goneLibrary, acctFor(t, libraryOwner).ID, false); library != nil {
+	if library := entryLibrary(w, authed(t, libraryOwner), goneLibrary, "/", false); library != nil {
 		t.Fatal("entryLibrary returned a library that has no row")
 	}
 	if w.Code != http.StatusNotFound {

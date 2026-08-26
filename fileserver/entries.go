@@ -19,7 +19,6 @@ import (
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -119,11 +118,15 @@ func entryPath(raw string) string {
 // it. A library whose objects the server has lost answers 500, which a client
 // reads as "something is broken", not as "act on this".
 //
-// Both lookups are uncached — CheckPerm is two or more queries and the library
-// lookup is a query plus a commit read — so the result is passed down rather
-// than re-derived by each function that needs it.
-func entryLibrary(w http.ResponseWriter, libraryID string, user account.ID, write bool) *libmgr.Library {
-	perm := share.CheckPerm(libraryID, user)
+// Both lookups are uncached — the permission check is two or more queries and
+// the library lookup is a query plus a commit read — so the result is passed
+// down rather than re-derived by each function that needs it.
+//
+// It asks middleware.Perm rather than share.CheckPerm, which is the difference
+// between what the user may do and what this credential may do. path is the
+// entry being reached, or "" for an operation about the library as a whole.
+func entryLibrary(w http.ResponseWriter, r *http.Request, libraryID, path string, write bool) *libmgr.Library {
+	perm := middleware.Perm(r, libraryID, path)
 	if perm == "" || (write && perm != "rw") {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return nil
@@ -195,12 +198,11 @@ func resolveUnder(library *libmgr.Library, rootID, path string) (*resolved, erro
 // dirent lookup in the parent directory — no blocks are read at all. A client
 // re-checking a materialised file pays almost nothing to learn it is current.
 func getEntry(w http.ResponseWriter, r *http.Request) {
-	acct := middleware.GetAccount(r)
 	vars := mux.Vars(r)
 	libraryID := vars["libraryid"]
 	path := entryPath(vars["path"])
 
-	library := entryLibrary(w, libraryID, acct.ID, false)
+	library := entryLibrary(w, r, libraryID, path, false)
 	if library == nil {
 		return
 	}
@@ -423,7 +425,7 @@ func checkPreconditions(w http.ResponseWriter, r *http.Request, libraryID string
 	if r.Header.Get("If-Match") == "" && r.Header.Get("If-None-Match") == "" {
 		return true
 	}
-	library := entryLibrary(w, libraryID, user, true)
+	library := entryLibrary(w, r, libraryID, path, true)
 	if library == nil {
 		return false
 	}
@@ -492,7 +494,7 @@ func preconditionResult(etag, ifMatch, ifNoneMatch string) bool {
 func putEntryFile(w http.ResponseWriter, r *http.Request, libraryID, path string) {
 	acct := middleware.GetAccount(r)
 
-	library := entryLibrary(w, libraryID, acct.ID, true)
+	library := entryLibrary(w, r, libraryID, path, true)
 	if library == nil {
 		return
 	}
@@ -726,9 +728,7 @@ func idStrings(ids []store.ID) []string {
 //
 // See blocks.go for the surface as a whole.
 func putEntryBlocks(w http.ResponseWriter, r *http.Request, libraryID, path string) {
-	acct := middleware.GetAccount(r)
-
-	library := entryLibrary(w, libraryID, acct.ID, true)
+	library := entryLibrary(w, r, libraryID, path, true)
 	if library == nil {
 		return
 	}
