@@ -91,8 +91,14 @@ func listTokens(acct *account.Account) error {
 		fmt.Printf("  %s  %-7s  %s\n", c.ID, c.Kind, c.Label)
 		fmt.Printf("  %s  created %s  %s  last used %s\n",
 			blanks(len(c.ID)), formatTime(c.Ctime), expiryState(c.ExpiresAt, now), lastUsed(c.LastUsed))
+		// The narrowing is printed whenever there is one. A read-only
+		// credential that looked identical to a full one in this listing would
+		// undo the reason the listing exists: an operator deciding what to
+		// revoke needs to see which rows are already harmless.
 		if s := c.Scope.String(); s != "" {
 			fmt.Printf("  %s  scope %s  perm %s\n", blanks(len(c.ID)), s, c.Perm)
+		} else if c.Perm != "rw" {
+			fmt.Printf("  %s  every library, perm %s\n", blanks(len(c.ID)), c.Perm)
 		}
 	}
 	return nil

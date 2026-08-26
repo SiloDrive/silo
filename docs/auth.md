@@ -181,16 +181,26 @@ transaction in front of every read would serialise an otherwise concurrent
 workload behind an always-on mount's polling, and five minutes answers "is
 anybody still using this?" exactly as well.
 
-### 7. Login says which accounts exist — *open*
+### 7. Login says which accounts exist — *closed on login; open on the salt endpoint*
 
-`ValidatePassword` (`authmgr.go:47`) returns immediately when there is no
-account. An address that exists costs 600,000 PBKDF2 rounds — tens of
-milliseconds — and one that does not costs a database round trip. That gap is
-not noise; it is a directory listing for anyone willing to time the endpoint.
-The login limiter does not help, because enumeration needs one attempt per
-address rather than ten, and Argon2id widens the gap rather than closing it.
-The dummy-hash fix is slated with the Argon2id change in
-[the order of work](#order-of-work).
+`ValidatePassword` returned immediately when there was no account: an address
+that existed cost 600,000 PBKDF2 rounds and one that did not cost a database
+round trip. Measured before the fix, that was 240ms against 109µs — a factor of
+two thousand, and a directory listing for anyone willing to time the endpoint.
+
+A miss now verifies against `dummyHash`, derived once at whatever work factor
+`HashPassword` currently uses, so raising the iteration count raises this too
+and the gap cannot quietly reopen. An account that exists with no
+`AccountPassword` row takes the same path, since that is the same question
+asked a different way. The test measures the timing rather than the error
+string, because timing is the property — a test that checked only the message
+would have passed on the code this replaces.
+
+Still open in one place: **the pre-login KDF parameters endpoint** is the same
+oracle in a new shape, and it does not exist yet. When it does, an unknown
+address has to receive plausible parameters rather than a 404, and the same
+ones every time — see
+[the client's KDF](#the-clients-kdf-is-not-this-one-and-it-needs-four-columns).
 
 ### 8. The credential model was inherited, not chosen — *history*
 
@@ -717,7 +727,7 @@ Password login and OIDC are two enrolment paths that produce one artefact.
 Nothing downstream can tell them apart, which is the point of
 [brokering](#silo-brokers-login-it-does-not-federate-every-request).
 
-### It is not a device grant
+### It is not a device grant — *landed*
 
 The device grant exists for one reason: the client cannot host the user agent
 that has to talk to the authenticator. A local password has no third party —
@@ -727,6 +737,14 @@ declined to build.
 
 So `POST /api/silo/v1/auth/login` stays, and becomes the password half of
 enrolment.
+
+**The request decides which response comes back.** A body carrying any of
+`kind`, `client_name`, `public_key`, `perm` or `scope` is an enrolment and gets
+the shape below; a body carrying none of them gets the `200 {"token": …}` it
+always got, byte for byte. The old shape cannot be widened — adding a number to
+a token body broke a client once already, on the day the field it had asked for
+shipped ([the note](bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md))
+— and two spellings of one secret in one body is one spelling too many.
 
 ```
 POST /api/silo/v1/auth/login
@@ -739,9 +757,31 @@ POST /api/silo/v1/auth/login
 201 { "credential": "silo_device_…", "expires_at": …, "email": "…" }
 ```
 
-`perm` and `scope` follow the [ceiling rule](#permission-ceilings): asking for
-`rw` on an account that has `r` yields `r`, not a 403. A field that can only
-narrow needs no validation branch.
+`perm` and `scope` follow the [ceiling rule](#permission-ceilings--landed):
+asking for `rw` on an account that has `r` yields `r`, not a 403. A field that
+can only narrow needs no validation branch — only a check that it is spellable,
+because `minPerm` reads an unrecognised permission as no access at all and a
+typo would otherwise mint a credential that authenticates and permits nothing.
+
+Three refusals, all `400` except the last:
+
+- **`kind` outside `session` and `device`.** `access` and `s3` are real kinds
+  and are not minted by presenting a password: one belongs to a capability URL
+  and lives in memory, the other derives its secret from the master key.
+- **Enrolment with no `client_name`.** A client asking for a 90-day credential
+  and declining to say what it is leaves an operator a row they cannot decide
+  about, which is the thing `label` exists to prevent. A plain login still
+  falls back to the `User-Agent`.
+- **`public_key`, which answers `501`.** Proof of possession is designed and
+  the RFC 9421 verifier is not built, so the row would resolve to
+  `ErrSignatureNotImplemented` forever. It matches what `RequireCredential`
+  answers for `Authorization: Silo`, and beats handing back a credential that
+  can never work.
+
+The request is validated before the password is checked, so a malformed
+enrolment is a `400` whether or not the password was right — the shape of the
+answer says nothing about the account — and the rate limiter goes on charging
+password attempts rather than typos.
 
 ### The password is an enrolment credential, not a request credential
 
@@ -929,13 +969,20 @@ is that it cannot become the account.
 
 What gets revoked has two answers, because the obvious "everything" is wrong:
 
-- **A user changes their own password** → bump the account generation, revoking
-  every `session` credential at once. `device` credentials survive unless the
-  request asks for them too. Unmounting somebody's laptop as a side effect of
-  routine hygiene teaches them to stop doing hygiene.
+- **A user changes their own password** → revoke every `session` credential at
+  once and leave `device` credentials standing unless the request asks for them
+  too. Unmounting somebody's laptop as a side effect of routine hygiene teaches
+  them to stop doing hygiene. **Not built**: there is no HTTP endpoint for a
+  user to change their own password, so this case has nowhere to live yet. With
+  one credential table it needs no generation column — it is a delete with a
+  `kind` in the where clause.
 - **An administrator resets a password** → revoke everything. The reason an
   administrator resets a password is that the user has lost control of
-  something, and which something is not knowable from here.
+  something, and which something is not knowable from here. **Landed**:
+  `silo user passwd` revokes every credential the account holds and says how
+  many. It runs after the password is set, not before — a revocation that ran
+  and then failed to change the password would sign every device out and leave
+  the old password working, which is the worst of both.
 
 ### Coexisting with OIDC
 
@@ -1347,10 +1394,13 @@ decrypt.
    operator's shell history afterwards. A terminal is prompted twice with echo
    off, a pipe is read from stdin, and `-generate` invents one and prints it
    once.
-4. **Password login as enrolment** — the credential-minting login response, the
-   `AccountPassword` table, Argon2id behind a concurrency semaphore, the
-   dummy-hash fix for finding 7, and setup credentials in place of
-   `SILO_ADMIN_PASSWORD`. This is also where
+4. **Password login as enrolment** — *part-done 2026-08-26*: the
+   credential-minting login response, the `AccountPassword` table and the
+   dummy-hash fix for finding 7 have landed, as has revocation on an
+   administrator reset. Argon2id behind a concurrency semaphore and setup
+   credentials in place of `SILO_ADMIN_PASSWORD` have not — and the Argon2id
+   half should wait, because split-derivation login makes a memory-hard
+   server-side KDF unnecessary and would undo it. This is also where
    [the client's KDF](#the-clients-kdf-is-not-this-one-and-it-needs-four-columns)
    lands — the four schema items and the pre-login parameters endpoint — because
    split-derivation login *is* password login, and building the server half
@@ -1383,17 +1433,31 @@ named and revoked — with the revocation taking effect on the next request
 rather than whenever a cache ages out — and a narrowed credential is now
 honoured on every route.
 
-What is left of step 2 is the **enrolment half**: no route mints a scoped,
-read-only or device credential, so the ceilings are enforced on credentials
-nothing yet asks for. That is deliberate ordering — a narrowing the server
-ignored would have read as a guarantee it did not keep — and it makes the next
-step the one that hands a device its credential. Step 4 is where that lands,
-because what a device is handed at enrolment and what a password buys are the
-same question.
+Step 2 is finished: `POST /auth/login` mints device credentials with a label, a
+permission and a scope, so the ceilings are reachable by a real client rather
+than only by a test.
 
-Also outstanding: **there is no logout endpoint** — a client cannot discard its
-own credential over HTTP, only an operator can at the CLI. It waits for the
-route table to grow a way to mint before it grows a way to discard.
+**Step 4 is part-done.** Its enrolment half has landed, along with
+[finding 7](#7-login-says-which-accounts-exist--closed-on-login-open-on-the-salt-endpoint)'s
+dummy hash and the administrator-reset revocation. What remains is the KDF, and
+it is worth being explicit about the order: building **Argon2id on the server
+now is work that split-derivation login later undoes**. This document already
+says so — a 256-bit `authKey` needs no memory-hard KDF, and the semaphore stops
+being the constraint — so the server-side KDF should be decided together with
+[the client's KDF](#the-clients-kdf-is-not-this-one-and-it-needs-four-columns)
+rather than before it. PBKDF2 at 600k is not the thing standing between this
+system and safety in the meantime.
+
+Two smaller gaps, both waiting on the same route table:
+
+- **No logout endpoint.** A client cannot discard its own credential over HTTP,
+  only an operator can at the CLI.
+- **No self-service password change**, which is where the session-only
+  revocation above belongs.
+
+And one that is not about routes: **the single-use `setup` credential** still
+has not replaced `SILO_ADMIN_PASSWORD`, though `BootstrapAdmin` already keeps
+the default path out of the environment.
 
 One thing step 3 surfaced and step 2 has now fixed: a password change still
 does not revoke anything, but it *can* — `credential.RevokeAll` is the call,

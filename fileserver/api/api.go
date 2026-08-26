@@ -106,14 +106,58 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 	return true
 }
 
+// loginRequest is both halves of the endpoint: a plain login, and enrolment.
+//
+// docs/auth.md makes the password an *enrolment* credential rather than a
+// request credential -- presented once, exchanged, and forgotten -- so this is
+// where a device gets the thing it will actually hold. There is no device
+// grant because there is no third party: Porter collects the password in its
+// own window, and the code-and-approval dance would buy nothing.
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+
+	// The enrolment half. Any of these present makes this an enrolment
+	// request; see enrolling.
+	Kind       string `json:"kind"`
+	ClientName string `json:"client_name"`
+	PublicKey  string `json:"public_key"`
+	Perm       string `json:"perm"`
+	Scope      string `json:"scope"`
+}
+
+// enrolling reports whether the caller asked for the enrolment response.
+//
+// The *request* decides, not a version or a header, because the response
+// shapes differ and the old one cannot be widened: adding a number to a token
+// body broke a client once already, on the day the field it asked for shipped
+// (docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md). A
+// client that sends what it always sent gets what it always got, byte for
+// byte, and a client that asks for a credential gets the documented shape.
+func (req loginRequest) enrolling() bool {
+	return req.Kind != "" || req.ClientName != "" || req.PublicKey != "" ||
+		req.Perm != "" || req.Scope != ""
 }
 
 type loginResponse struct {
 	Token string `json:"token"`
 }
+
+// enrolmentResponse is what docs/auth.md specifies. It carries no "token":
+// two spellings of one secret in one body is one spelling too many, and a
+// client that reads both would not know which to store.
+type enrolmentResponse struct {
+	Credential string `json:"credential"`
+	ExpiresAt  int64  `json:"expires_at"`
+	Email      string `json:"email"`
+}
+
+// The lifetimes docs/auth.md's table of kinds gives each. Both are absolute
+// and do not slide, and either can be revoked before it is reached.
+const (
+	sessionLifetime = 24 * time.Hour
+	deviceLifetime  = 90 * 24 * time.Hour
+)
 
 func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
@@ -123,6 +167,15 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.Email == "" || req.Password == "" {
 		http.Error(w, "Email and password are required", http.StatusBadRequest)
+		return
+	}
+
+	// The request is checked before the password is, so a malformed enrolment
+	// is a 400 whether or not the password was right -- which means the shape
+	// of the answer says nothing about the account. It also keeps the rate
+	// limiter charging password attempts rather than typos.
+	opts, ok := enrolmentOpts(w, req)
+	if !ok {
 		return
 	}
 
@@ -142,16 +195,22 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := option.WithDBTimeout(r.Context())
 	defer cancel()
 
-	_, token, err := credential.Issue(ctx, credential.IssueOpts{
-		Kind:      credential.KindSession,
-		AccountID: acct.ID,
-		Label:     credentialLabel(r),
-		Perm:      "rw",
-		Lifetime:  sessionLifetime,
-	})
+	opts.AccountID = acct.ID
+	if opts.Label == "" {
+		opts.Label = credentialLabel(r)
+	}
+
+	cred, token, err := credential.Issue(ctx, opts)
 	if err != nil {
-		log.Errorf("Failed to issue a session credential: %v", err)
+		log.Errorf("Failed to issue a %s credential: %v", opts.Kind, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if req.enrolling() {
+		writeJSON(w, http.StatusCreated, enrolmentResponse{
+			Credential: token, ExpiresAt: cred.ExpiresAt, Email: acct.Email,
+		})
 		return
 	}
 
@@ -164,10 +223,78 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, loginResponse{Token: token})
 }
 
-// sessionLifetime is what docs/auth.md's table of kinds gives a session
-// credential. Unlike the JWT it replaced, it is absolute and does not slide,
-// and the credential can be revoked before it is reached.
-const sessionLifetime = 24 * time.Hour
+// enrolmentOpts turns the request into what credential.Issue takes, answering
+// the client itself and returning false if the request cannot be honoured.
+//
+// perm and scope get no "may they ask for this?" branch, deliberately. They
+// are a ceiling rather than a grant -- middleware.Perm intersects them with
+// what the account may do on every request -- so asking for rw on an account
+// that has r yields r, not a 403. A field that can only narrow needs no
+// validation beyond being spellable.
+func enrolmentOpts(w http.ResponseWriter, req loginRequest) (credential.IssueOpts, bool) {
+	opts := credential.IssueOpts{Kind: credential.KindSession, Perm: "rw", Lifetime: sessionLifetime}
+	if !req.enrolling() {
+		return opts, true
+	}
+
+	switch req.Kind {
+	case "", string(credential.KindSession):
+		// The default. A client may ask for a named session rather than one
+		// labelled from its User-Agent.
+	case string(credential.KindDevice):
+		opts.Kind = credential.KindDevice
+		opts.Lifetime = deviceLifetime
+	default:
+		// access and s3 are real kinds and are not minted by presenting a
+		// password: one belongs to a capability URL and lives in memory, the
+		// other derives its secret from the master key. Naming them here is a
+		// client that has misread the model, not one that lacks permission.
+		http.Error(w, `kind must be "session" or "device"`, http.StatusBadRequest)
+		return opts, false
+	}
+
+	// Proof of possession is designed and the RFC 9421 verifier is not built,
+	// so a public-key row would resolve to ErrSignatureNotImplemented forever.
+	// Refusing here matches what RequireCredential answers for Authorization:
+	// Silo, and is better than handing back a credential that can never work.
+	if req.PublicKey != "" {
+		http.Error(w, "Signature authentication is not implemented; omit public_key",
+			http.StatusNotImplemented)
+		return opts, false
+	}
+
+	// A label is what turns revocation from a guess into a decision. A client
+	// that asks for a durable credential and will not say what it is leaves an
+	// operator four indistinguishable rows, so this one is required rather
+	// than defaulted from the User-Agent.
+	if req.ClientName == "" {
+		http.Error(w, "client_name is required when asking for a credential", http.StatusBadRequest)
+		return opts, false
+	}
+	opts.Label = req.ClientName
+
+	if req.Perm != "" {
+		// Checked because credential.Issue refuses an unrecognised perm, and
+		// because minPerm reads one as no access at all: a typo would
+		// otherwise mint a credential that authenticates and permits nothing.
+		if req.Perm != "r" && req.Perm != "rw" {
+			http.Error(w, `perm must be "r" or "rw"`, http.StatusBadRequest)
+			return opts, false
+		}
+		opts.Perm = req.Perm
+	}
+
+	scope, err := credential.ParseScope(req.Scope)
+	if err != nil {
+		// The parser's message describes the string the client sent and
+		// nothing about which libraries exist.
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return opts, false
+	}
+	opts.Scope = scope
+
+	return opts, true
+}
 
 // credentialLabel names the credential after the client that asked for it.
 //

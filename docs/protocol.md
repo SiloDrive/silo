@@ -47,9 +47,28 @@ One scheme, one table, one verification path.
 | Bearer credential | `Authorization: Bearer silo_<kind>_<id>_<secret><check>` | silo (TUI), Porter, porter-fuse, `/api/silo/v1/*` | `credential.Resolve` against the `Credential` table |
 
 The middleware is `RequireCredential`, in `fileserver/middleware/credential.go`.
-`POST /api/silo/v1/auth/login` mints a `session` credential and returns it as
-`{"token": "..."}` — the same field it always used, now holding a credential
-rather than a JWT.
+
+`POST /api/silo/v1/auth/login` does double duty, and **the request decides
+which response comes back**:
+
+```
+{"email":…, "password":…}
+  → 200 {"token": "silo_session_…"}          a 24h session; unchanged, byte for byte
+
+{"email":…, "password":…, "kind":"device",   enrolment: any of kind, client_name,
+ "client_name":"Porter 1.2 (macOS)",         public_key, perm or scope makes it one
+ "perm":"r", "scope":"<library-id>"}
+  → 201 {"credential": "silo_device_…", "expires_at": …, "email": …}
+```
+
+A device credential lives 90 days, absolute. `client_name` becomes the label an
+operator revokes by and is required for enrolment. `perm` and `scope` can only
+narrow, so asking for more than the account has yields what the account has
+rather than a 403. `public_key` answers `501` — proof of possession is designed
+and not built.
+
+The password is an *enrolment* credential rather than a request credential:
+presented once, exchanged, and not held afterwards.
 
 Only `SHA-256(secret)` is stored, and a row is found by the public `id` in the
 middle of the token, so the secret never reaches a query or a query log. The

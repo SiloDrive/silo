@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/pbkdf2"
 
@@ -29,6 +30,29 @@ func Init(siloReadDB, siloWriteDB *sql.DB) {
 
 // Legacy fixed salt, from the SHA256 password hashing this inherited.
 var legacySalt = []byte{0xdb, 0x91, 0x45, 0xc3, 0x06, 0xc7, 0xcc, 0x26}
+
+// dummyHash is what a login for an address with no account is verified
+// against, so that a miss costs what a hit costs. See ValidatePassword.
+//
+// It is derived once, lazily, at whatever work factor HashPassword currently
+// uses -- so raising the iteration count raises this too, and the gap this
+// closes cannot quietly reopen. Lazily because the CLI paths never reach it
+// and should not pay 80ms at startup to prepare for a request they will not
+// serve.
+//
+// The password is a constant and is not a secret: what it guards is the
+// timing, and knowing the input tells an attacker nothing about which
+// addresses exist. If deriving it ever fails, the fallback is a well-formed
+// hash of the wrong shape -- validatePasswd will still walk it and refuse,
+// which is slower than returning early and is the property that matters.
+var dummyHash = sync.OnceValue(func() string {
+	h, err := HashPassword("silo/dummy-password/6f3a1c/not-a-secret")
+	if err != nil {
+		log.Errorf("Could not derive the dummy password hash: %v", err)
+		return "PBKDF2SHA256$" + strconv.Itoa(PBKDF2Iterations) + "$00$00"
+	}
+	return h
+})
 
 // ValidatePassword checks an address and password against the account behind
 // them, and returns the account on success.
@@ -50,6 +74,21 @@ func ValidatePassword(email, password string) (*account.Account, error) {
 
 	id, storedPasswd, err := account.PasswordHash(ctx, email)
 	if err != nil {
+		// docs/auth.md finding 7. Returning here costs a database round trip;
+		// the path below costs 600,000 PBKDF2 rounds, and the difference is a
+		// directory listing for anyone willing to time this endpoint. The
+		// login limiter does not help, because enumeration needs one attempt
+		// per address rather than ten.
+		//
+		// So a miss does the work a hit does, against a hash of a password
+		// nobody has. This covers an account with no AccountPassword row as
+		// well, which is the same question asked a different way.
+		if validatePasswd(password, dummyHash()) {
+			// Unreachable: the dummy password is not a caller's. The branch is
+			// here so the call cannot be read as dead by a compiler or by the
+			// next person, and so that being wrong about that is loud.
+			log.Errorf("A login matched the dummy password hash; refusing it")
+		}
 		return nil, fmt.Errorf("user not found")
 	}
 

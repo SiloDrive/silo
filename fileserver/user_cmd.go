@@ -15,6 +15,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/authmgr"
+	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/option"
 )
 
@@ -112,6 +113,11 @@ func RunUser(args []string) error {
 		return err
 	}
 	account.Init(siloPair.Read, siloPair.Write)
+	// passwd revokes what the account holds, so this command needs the
+	// credential store wired even though most of its subcommands do not. A
+	// package left uninitialised does not fail to compile and does not fail
+	// gracefully: the nil *sql.DB panics on first use.
+	credential.Init(siloPair.Read, siloPair.Write)
 
 	return run()
 }
@@ -246,16 +252,29 @@ func passwdUser(email string, generate bool) error {
 		return err
 	}
 
+	// An administrator reset revokes everything, per docs/auth.md. The two
+	// cases genuinely differ: a user changing their own password should revoke
+	// sessions and leave devices mounted, because unmounting somebody's laptop
+	// as a side effect of routine hygiene teaches them to stop doing hygiene.
+	// This is not that case. Reaching this command means shell access to the
+	// server and an account that is not yours to log in to, and the reason an
+	// administrator resets a password is that the user has lost control of
+	// something -- which something is not knowable from here.
+	//
+	// It happens after the password is set rather than before: a revocation
+	// that ran and then failed to change the password would sign every device
+	// out and leave the old password working, which is the worst of both.
+	revoked, err := credential.RevokeAll(setCtx, acct.ID)
+	if err != nil {
+		return fmt.Errorf("password set for %s, but revoking their credentials failed: %v",
+			acct.Email, err)
+	}
+
 	fmt.Printf("Password set for %s.\n", acct.Email)
 	announceGenerated(password, generated)
 
-	// Said plainly because it is the opposite of what a password change
-	// usually means. auth.md wants a password change to revoke every session
-	// credential, but sessions are JWTs signed against a server-wide secret
-	// today: there is nothing per-account to revoke, and the sync tokens the
-	// desktop clients hold were never tied to the password at all.
-	fmt.Printf("\nExisting tokens still work: a password change does not revoke them. Run\n"+
-		"\"silo token revoke %s\" as well if the old password was compromised.\n", acct.Email)
+	fmt.Printf("\nRevoked %d credential%s: every device and session signed out, from the next\n"+
+		"request. They sign in again with the new password.\n", revoked, pluralS(revoked))
 	return nil
 }
 

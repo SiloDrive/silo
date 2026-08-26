@@ -434,3 +434,35 @@ func TestRunUserRejectsUnknownSubcommands(t *testing.T) {
 		}
 	}
 }
+
+// An operator resetting a password is an administrator reset, and docs/auth.md
+// is explicit that the two cases differ: a user changing their own password
+// revokes sessions and leaves devices mounted, because unmounting somebody's
+// laptop as a side effect of routine hygiene teaches them to stop doing
+// hygiene. An administrator reset revokes everything, because the reason an
+// administrator resets a password is that the user has lost control of
+// something and which something is not knowable from here.
+//
+// This command is the second case: it is reached by someone with shell access
+// to the server, acting on an account that is not theirs to log in to.
+func TestPasswdRevokesEveryCredential(t *testing.T) {
+	userTestStore(t)
+
+	const q = "SELECT COUNT(*) FROM Credential WHERE account_id = ?"
+	if before := countRows(t, q, acctFor(t, victim).ID); before == 0 {
+		t.Fatal("the fixture seeded no credentials, so this proves nothing")
+	}
+
+	withStdin(t, "a whole new password\n")
+	if err := passwdUser(victim, false); err != nil {
+		t.Fatalf("passwdUser returned %v", err)
+	}
+
+	if n := countRows(t, q, acctFor(t, victim).ID); n != 0 {
+		t.Errorf("%d credentials survived a password reset, want 0", n)
+	}
+	// Resetting one account's password must not sign the rest of the server out.
+	if n := countRows(t, q, acctFor(t, bystander).ID); n != 1 {
+		t.Errorf("bystander holds %d credentials, want 1", n)
+	}
+}

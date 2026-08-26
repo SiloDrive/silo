@@ -410,3 +410,47 @@ func TestGeneratePassword(t *testing.T) {
 		seen[password] = true
 	}
 }
+
+// Finding 7: an address that exists costs 600,000 PBKDF2 rounds -- tens of
+// milliseconds -- and one that does not costs a database round trip. That gap
+// is not noise; it is a directory listing for anyone willing to time the
+// endpoint, and the login limiter does not help because enumeration needs one
+// attempt per address rather than ten.
+//
+// The fix is to verify against a fixed dummy hash when there is no account, so
+// a miss does the same work as a hit. It is measured by timing because timing
+// is the property: a test that only checked the error message would pass on
+// the code this replaces.
+func TestAMissingAccountCostsWhatAPresentOneDoes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("times two KDF derivations")
+	}
+	authTestDB(t)
+
+	const email, password = "present@example.com", "correct horse battery staple"
+	if _, err := CreateAccount(context.Background(), email, password, false); err != nil {
+		t.Fatalf("creating the account: %v", err)
+	}
+
+	// The wrong password against a real account is the expensive path: the
+	// hash is found and verified. It is the cost a miss has to match.
+	measure := func(addr string) time.Duration {
+		start := time.Now()
+		for i := 0; i < 3; i++ {
+			if _, err := ValidatePassword(addr, "not the password"); err == nil {
+				t.Fatalf("%s: expected a refusal", addr)
+			}
+		}
+		return time.Since(start)
+	}
+
+	hit := measure(email)
+	miss := measure("absent@example.com")
+
+	// Half, not equal. The point is that the two are the same order of
+	// magnitude rather than a database round trip against a KDF; asserting
+	// equality would be a flaky test measuring scheduler noise.
+	if miss < hit/2 {
+		t.Errorf("a miss took %s and a hit took %s: the gap answers which addresses exist", miss, hit)
+	}
+}
