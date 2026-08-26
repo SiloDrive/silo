@@ -11,15 +11,6 @@ import (
 	"time"
 )
 
-func GetAuthorizationToken(h http.Header) string {
-	auth := h.Get("Authorization")
-	splitResult := strings.Split(auth, " ")
-	if len(splitResult) > 1 {
-		return splitResult[1]
-	}
-	return ""
-}
-
 // ClientIP returns the address to attribute a request to.
 //
 // X-Forwarded-For and X-Real-Ip are honoured only when trustProxyHeaders is

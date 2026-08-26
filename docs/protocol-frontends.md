@@ -124,9 +124,9 @@ write sequentially from zero. `SETSTAT`/`chmod`/times are safely ignorable.
   it to pick up the Nextcloud mobile and desktop client fleet, and Silo already
   has Seafile's.
 - **Public share links** (`/d/{token}/`). Already on the roadmap. The
-  "protocol" is just a browser; it needs a new token type alongside
-  `tokenstore.CreateToken` (`fileserver/tokenstore/tokenstore.go:26`) and a
-  short-code generator, nothing more.
+  "protocol" is just a browser; it needs the signed URL
+  [`capability-urls.md`](capability-urls.md) specifies and a short-code
+  generator, nothing more.
 - **An MCP server.** A small surface over the core ops layer (list, read,
   write, search a library) that makes libraries directly available to coding
   agents. Cheap once `core` exists.

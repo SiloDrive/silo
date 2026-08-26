@@ -16,7 +16,7 @@ Downloading a file through `/api/silo/v1` used to take two requests:
 1. `GET /api/silo/v1/libraries/{id}/entries/{path}` — bearer auth → **302**
 2. `GET /files/{token}/{name}` — **no auth header**; the token *is* the credential
 
-The token is a UUID in a `sync.Map` (`fileserver/tokenstore`), created with
+The token was a UUID in a `sync.Map` (`fileserver/tokenstore`, since deleted), created with
 `oneTime=true` at `api_handlers.go`, and redeemed by `QueryToken` with a
 `LoadAndDelete`. Uploads mirrored it: `POST /api/silo/v1/access-tokens` then
 `POST /upload-api/{token}`. At the time this was written both stayed exactly
@@ -97,8 +97,11 @@ collision" behaviour. The body is spooled to a temp file before indexing:
 `indexFileWorker` already accepted a `filePath` with a nil multipart handler for
 exactly that reason. Spooling is the requirement, not a shortcut around it.
 
-`/api/silo/v1/access-tokens` now has no callers in this lane, and the redirect,
-the token map and the two-step upload are all gone from it.
+`/api/silo/v1/access-tokens` and the `fileserver/tokenstore` package behind it
+are gone as well. They survived the route that redeemed them by a release,
+minting tokens no path would accept while `protocol.md` went on advertising the
+endpoint — which is the failure mode a mechanism outliving its only caller
+always has.
 
 ### The charset wart, also fixed
 

@@ -344,3 +344,19 @@ func TestNoTableOrColumnSaysLibrary(t *testing.T) {
 	}
 	_ = dbutil.CreateSiloTables // the schema under test is the one this builds
 }
+
+// The access-token lane is gone. It minted a stateful capability token for
+// /files/{token}/, and that route was deleted with the rest of the legacy
+// lane -- so the endpoint went on handing clients a token nothing could
+// redeem, and protocol.md went on advertising it. docs/capability-urls.md is
+// the record of why a signed URL, not this, is what to build if a browser
+// ever needs one.
+func TestTheAccessTokenLaneIsGone(t *testing.T) {
+	base, token := wire(t)
+	id := makeLibrary(t, base, token)
+
+	body := `{"library_id":"` + id + `","op":"download"}`
+	if code, _ := call(t, "POST", base+"/api/silo/v1/access-tokens", token, body); code != http.StatusNotFound {
+		t.Errorf("POST /access-tokens: status %d, want 404", code)
+	}
+}

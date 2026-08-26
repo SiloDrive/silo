@@ -57,7 +57,7 @@ The three calls the Go fileserver used to make into the C server are now local:
 
 | Was | Now |
 |---|---|
-| `seafile_web_query_access_token` | `sync.Map` with TTL in `fileserver/tokenstore/` |
+| `seafile_web_query_access_token` | ~~`fileserver/tokenstore/`~~ — **gone**; the capability URLs it minted for went with the legacy lanes, and a signed URL is what replaces them ([`capability-urls.md`](capability-urls.md)) |
 | `seafile_get_decrypt_key` | `sync.Map` with TTL in `fileserver/keycache/` |
 | `publish_event` | logrus, plus the WebSocket notification server in `fileserver/notif/` |
 
@@ -150,11 +150,11 @@ type appHandler func(http.ResponseWriter, *http.Request) *appError
 - `fsmgr` / `commitmgr` / `blockmgr` — object read/write with caching
 - `objstore` — storage backend abstraction
 - `share` — permission checking (owner, direct share, group share, virtual library)
-- `tokenstore` — in-memory access token store
 - `keycache` — in-memory decrypt key cache
-- `apitokenstore` — persistent API tokens for sync clients
-- `authmgr` — password validation + JWT session tokens
-- `middleware` — Bearer JWT and `Authorization: Token` auth, transaction naming
+- `credential` — the one credential store: minting, resolving, scoping, revoking
+- `account` — accounts, addresses and external identities
+- `authmgr` — password validation and hashing
+- `middleware` — credential resolution and the permission ceiling, transaction naming
 - `api` — management API handlers (`/api/silo/v1/`)
 - `notif` — WebSocket notification server
 - `option` — config loading (`seafile.conf`, env vars)

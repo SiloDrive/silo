@@ -290,36 +290,6 @@ func TestResolveStampsLastUsedCoarsely(t *testing.T) {
 	}
 }
 
-func TestResolveLegacyToken(t *testing.T) {
-	pair := testDB(t)
-	dan := addUser(t, pair, "dan@example.com", true)
-
-	// A legacy client presents forty hex characters, which auth.md reads as an
-	// encoding of the same row rather than a separate store.
-	const raw = "0401fc662e3bc87a41f299a907c056aaf8322a27"
-	tok, err := ParseLegacyToken(raw)
-	if err != nil {
-		t.Fatalf("ParseLegacyToken: %v", err)
-	}
-	if _, err := pair.Write.Exec(
-		`INSERT INTO Credential (id, kind, secret_hash, account_id, label, perm, ctime)
-		 VALUES (?, 'legacy', ?, ?, 'legacy-client', 'rw', ?)`,
-		tok.ID, tok.SecretHash(), dan, time.Now().Unix()); err != nil {
-		t.Fatalf("inserting credential: %v", err)
-	}
-
-	r := httptest.NewRequest(http.MethodGet, "/api2/libraries/", nil)
-	r.Header.Set("Authorization", "Token "+raw)
-
-	cred, err := Resolve(r, KindLegacy)
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if cred.Kind != KindLegacy || cred.AccountID != dan {
-		t.Errorf("resolved the wrong row: %+v", cred)
-	}
-}
-
 func TestEffectivePerm(t *testing.T) {
 	const library = "library-1"
 
@@ -352,5 +322,21 @@ func TestEffectivePerm(t *testing.T) {
 		if got := c.EffectivePerm(tt.accountPerm, tt.library, tt.path); got != tt.want {
 			t.Errorf("%s: got %q, want %q", tt.name, got, tt.want)
 		}
+	}
+}
+
+// The legacy lane is gone: there are no clients that cannot be changed, so a
+// scheme Silo does not mint for is a client that has misread the model rather
+// than one to accommodate. It must be refused before a lookup, so nothing
+// about which credentials exist is learned by presenting forty hex characters.
+func TestTheLegacySchemeIsRefused(t *testing.T) {
+	testDB(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/silo/v1/libraries", nil)
+	r.Header.Set("Authorization", "Token 0401fc662e3bc87a41f299a907c056aaf8322a27")
+
+	_, err := Resolve(r, KindSession, KindDevice)
+	if !errors.Is(err, ErrMalformed) {
+		t.Errorf("Resolve = %v, want ErrMalformed", err)
 	}
 }

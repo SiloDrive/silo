@@ -111,7 +111,6 @@ credential: one to learn what it is talking to, one to get a token.
 |---|---|---|
 | GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.5.0","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. No chunker parameters: they belong to the library, and the libraries listing carries them. The `libraries` name says this server serves `/libraries/…`; a client that does not find it is talking to a build that predates the word and should say so rather than read the 404 that follows as an empty account |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
-| POST | `/api/silo/v1/access-tokens` | Create a time-limited access token for a specific object |
 | GET | `/api/silo/v1/libraries` | List the caller's libraries — owned, plus any shared directly to them through `SharedLibrary` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |
 | POST | `/api/silo/v1/libraries` | Create a new library |
 | DELETE | `/api/silo/v1/libraries/{libraryid}` | Delete a library |
@@ -132,7 +131,7 @@ in [`responses.md`](responses.md).
 | HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | The same headers as `GET`, no body. On a directory `Content-Length` is the size of the listing, not of its contents |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Store a file — body is the content |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter) |
-| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=blocks` | Store a file from blocks already uploaded — body is `{"blocks":[sha1,…]}`, no content. See the block surface below |
+| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=blocks` | Store a file from blocks already uploaded — body is `{"blocks":[sha256,…]}`, no content. See the block surface below |
 | POST | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"op":"move","to":"/dst"}` — moving covers renaming |
 | POST | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"op":"copy","to":"/dst"}` — server-side copy; `201` and the source's `ETag`, no content transferred |
 | DELETE | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Delete a file or directory |
@@ -164,7 +163,7 @@ Feature name `batch`.
 POST /api/silo/v1/libraries/{library}/batch
 {"ops":[
   {"op":"mkdir",  "path":"/reports"},
-  {"op":"create", "path":"/reports/q3.txt", "blocks":["<sha1>", …]},
+  {"op":"create", "path":"/reports/q3.txt", "blocks":["<sha256>", …]},
   {"op":"move",   "path":"/old.txt", "to":"/reports/old.txt"},
   {"op":"copy",   "path":"/tpl.txt", "to":"/reports/tpl.txt"},
   {"op":"delete", "path":"/stale.txt"}
@@ -258,7 +257,7 @@ Feature name `blocks`. Three calls, and the shape of every resumable upload:
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/silo/v1/libraries/{libraryid}/blocks/missing` | `{"blocks":[id,…]}` → `{"missing":[id,…]}` — which of these do you not already have? |
-| PUT | `/api/silo/v1/libraries/{libraryid}/blocks/{id}` | Upload one chunk. `201` when stored, `204` when it was already there |
+| PUT | `/api/silo/v1/libraries/{libraryid}/blocks/{id}` | Upload one chunk. `201` when stored, `200` when it was already there — re-sending is what a resumed upload does, so it succeeds rather than conflicts. `400` if the bytes do not hash to the id |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=blocks` | `{"blocks":[id,…]}` — create the file from them. `201` and an `ETag`, as any other write |
 
 An id is the SHA-256 of the chunk's bytes, so a client computes the names the
@@ -353,11 +352,11 @@ capability URL is overhead — for a FUSE client, two round trips per read. See
 [`capability-urls.md`](capability-urls.md), which is the decision; this removes
 the last route that still contradicted it.
 
-`POST /api/silo/v1/access-tokens` with `{"library_id":…, "obj_id":<file
-id>, "op":"download"}` still mints a token of the same shape the old redirect
-used, if a browser-usable URL is ever wanted here — but nothing currently
-serves it at a `/files/{token}/...`-style path; that route went with the sync
-lanes. See [`capability-urls.md`](capability-urls.md).
+`POST /api/silo/v1/access-tokens`, which minted the token that redirect used,
+is gone too. It outlived the route that redeemed it and went on handing clients
+a string nothing would accept. If a browser-usable URL is ever wanted here, the
+thing to build is a signed URL rather than a stateful token —
+[`capability-urls.md`](capability-urls.md) is the decision and the design.
 
 ### Change notifications — `WS /notification`
 
@@ -426,7 +425,7 @@ for every request and flags 404s as `WARN`. Off by default.
 Anything outside `/api/silo/v1/*` and `/notification` is a 404, including
 every path listed in older revisions of this document under the
 Seafile/SeaDrive sync lane — see the note at the top. That includes
-`/protocol-version` itself: `handleProtocolVersion` (`server.go:570`) still
+`/protocol-version` itself: `handleProtocolVersion` (`server.go:577`) still
 exists but nothing mounts it, so it's dead code rather than a live route.
 
 ## Divergence policy

@@ -27,12 +27,12 @@ written*.
 
 | Upstream dependency | Replacement |
 |---|---|
-| searpc `seafile_web_query_access_token` | `fileserver/tokenstore/` — `sync.Map` + TTL |
+| searpc `seafile_web_query_access_token` | ~~`fileserver/tokenstore/`~~ — **gone**; deleted with the routes that redeemed its tokens |
 | searpc `seafile_get_decrypt_key` | ~~`fileserver/keycache/`~~ — **gone**; the package was deleted with the Seafile lanes (5d4baa0) |
 | searpc `publish_event` | logrus, plus `fileserver/notif/` over WebSocket |
 | searpc client, `-p` flag, Unix socket | removed outright |
-| Web-layer login | `POST /api/silo/v1/auth/login` → JWT, `fileserver/authmgr/` |
-| Web-layer API tokens for sync clients | ~~`POST /api2/auth-token/`~~ — the `/api2` lane is **gone** (5d4baa0); `fileserver/apitokenstore/` remains |
+| Web-layer login | `POST /api/silo/v1/auth/login` → a `Credential` row, `fileserver/credential/` |
+| Web-layer API tokens for sync clients | ~~`POST /api2/auth-token/`~~ — the `/api2` lane is **gone** (5d4baa0), and `apitokenstore` with it; every credential is a `Credential` row now ([`auth.md`](auth.md)) |
 | 174 C RPC handlers for library operations | `/api/silo/v1/` handlers in `fileserver/api/` |
 | Separate notification-server binary | in-process, `/notification` |
 | Separate controller process | none needed — one process |

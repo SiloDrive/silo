@@ -386,11 +386,12 @@ See [`docs/future-features.md`](docs/future-features.md) for the rough roadmap.
 ```
 fileserver/        Active Go server
   ├── api/         Management API handlers (/api/silo/v1/*)
-  ├── authmgr/     Password validation + JWT
+  ├── account/     Accounts, addresses and external identities
+  ├── credential/  The one credential store: mint, resolve, scope, revoke
+  ├── authmgr/     Password validation and hashing
+  ├── middleware/  Credential resolution and the permission ceiling
   ├── dbutil/      SQLite connection management and query helpers
   ├── share/       Permission checking
-  ├── tokenstore/  In-memory access token cache
-  ├── keycache/    In-memory decrypt key cache
   └── ...
 cmd/silo/          Bubble Tea TUI client
 client/            HTTP client for the management API

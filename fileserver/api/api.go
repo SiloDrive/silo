@@ -12,7 +12,6 @@ import (
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/tokenstore"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -316,81 +315,6 @@ func credentialLabel(r *http.Request) string {
 }
 
 const maxLabel = 96
-
-type accessTokenRequest struct {
-	LibraryID string `json:"library_id"`
-	ObjID     string `json:"obj_id"`
-	Op        string `json:"op"`
-	OneTime   bool   `json:"one_time"`
-}
-
-type accessTokenResponse struct {
-	Token string `json:"token"`
-}
-
-// tokenOps maps each access-token operation to the library permission needed to
-// mint a token for it. The handlers that consume these tokens (/files/,
-// /blks/, /zip/, /upload-api/, ...) authorize from the token alone and never
-// re-check the caller's permission, so this map is the only gate on them.
-//
-// Ops absent from the map are rejected rather than passed through: an
-// unrecognized op must not be able to produce a bearer credential.
-var tokenOps = map[string]string{
-	// Read: any permission on the library is enough.
-	"view":                "r",
-	"download":            "r",
-	"download-link":       "r",
-	"downloadblks":        "r",
-	"download-dir":        "r",
-	"download-dir-link":   "r",
-	"download-multi":      "r",
-	"download-multi-link": "r",
-
-	// Write: "rw" required. A read-only share must not yield an upload token.
-	"upload":      "rw",
-	"upload-link": "rw",
-	"update":      "rw",
-	"update-link": "rw",
-}
-
-func CreateAccessTokenHandler(w http.ResponseWriter, r *http.Request) {
-	acct := middleware.GetAccount(r)
-
-	var req accessTokenRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-
-	if req.LibraryID == "" || req.Op == "" {
-		http.Error(w, "library_id and op are required", http.StatusBadRequest)
-		return
-	}
-
-	needed, ok := tokenOps[req.Op]
-	if !ok {
-		http.Error(w, "Unsupported op", http.StatusBadRequest)
-		return
-	}
-
-	// CheckPerm returns "" for a library the user can't see and for one that
-	// doesn't exist, so a 403 here also avoids confirming which library IDs are
-	// real.
-	// The ceiling, not the account's permission: a read-only credential must
-	// not be able to mint an upload token and write through the capability URL
-	// it produces.
-	perm := middleware.Perm(r, req.LibraryID, "")
-	if perm == "" || (needed == "rw" && perm != "rw") {
-		http.Error(w, "Permission denied", http.StatusForbidden)
-		return
-	}
-
-	// The token carries the address, not the id. It has already been
-	// permission-checked here, and what the upload path does with the string
-	// is write it into a commit as the author — display data, and baked into
-	// a content hash that could never be rewritten anyway.
-	token := tokenstore.CreateToken(req.LibraryID, req.ObjID, req.Op, acct.Email, req.OneTime)
-	writeJSON(w, http.StatusOK, accessTokenResponse{Token: token})
-}
 
 type libraryInfo struct {
 	ID         string `json:"id"`

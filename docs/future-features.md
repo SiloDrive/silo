@@ -84,8 +84,8 @@ Seafile supports three permission levels: `r` (read), `rw` (read-write), and
 ### Public / link shares
 
 Later: public download links (`/d/{token}/`) and upload links. These need a
-new token type in `tokenstore`, a generated short-code, and optional password
-protection. Lower priority than user-to-user sharing.
+signed URL ([`capability-urls.md`](capability-urls.md)), a generated
+short-code, and optional password protection. Lower priority than user-to-user sharing.
 
 ## Groups
 
@@ -290,8 +290,8 @@ A web UI is the one thing that brings back a consumer which cannot set an
 `Authorization` header — a `<video>` src, an `<img>` thumbnail, a download
 link. That is the point at which signed URLs become worth building, and
 [`capability-urls.md`](capability-urls.md) records what they should look like
-(stateless and signed) versus the stateful one-time access tokens
-(`tokenstore`) the file-serving routes use today.
+(stateless and signed) versus the stateful one-time access tokens that used to
+back them, which were deleted along with the routes that redeemed them.
 
 ## Admin / Ops
 

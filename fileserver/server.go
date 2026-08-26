@@ -27,7 +27,6 @@ import (
 	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/share"
-	"github.com/dkam/silo/fileserver/tokenstore"
 	"github.com/dkam/silo/fileserver/utils"
 	"github.com/dkam/silo/internal/observability"
 	"github.com/dkam/silo/internal/xdg"
@@ -322,7 +321,6 @@ func Run(args []string) error {
 
 	share.Init(siloPair.Read, option.GroupTableName, option.CloudMode)
 
-	tokenstore.StartCleanup()
 	account.Init(siloPair.Read, siloPair.Write)
 	authmgr.Init(siloPair.Read, siloPair.Write)
 	api.Init(siloPair.Read, siloPair.Write)
@@ -543,7 +541,6 @@ func newHTTPRouter() *mux.Router {
 	r.HandleFunc("/api/silo/v1/server-info", api.ServerInfoHandler).Methods("GET")
 	apiRouter := r.PathPrefix("/api/silo/v1").Subrouter()
 	apiRouter.Use(middleware.RequireCredential)
-	apiRouter.HandleFunc("/access-tokens", api.CreateAccessTokenHandler).Methods("POST")
 	apiRouter.HandleFunc("/account/usage", api.AccountUsageHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries", api.ListLibrariesHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries", api.CreateLibraryHandler).Methods("POST")

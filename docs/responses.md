@@ -45,10 +45,10 @@ variable.
 | code | means | notes |
 |---|---|---|
 | `200 OK` | done | |
-| `201 Created` | the entry, library or block now exists | `PUT libraries/{libraryid}/entries/{path}` (content or `?type=blocks`), `PUT libraries/{libraryid}/blocks/{sha1}`, `POST /libraries`, and `POST entries/{path}` with `{"op":"copy"}`. Carries the new `ETag` on a write, so a client can record the version without a follow-up `GET`. A copy carries the *source's* `ETag`, because a copy shares its id — so a client that already holds the content knows it does |
-| `204 No Content` | the block is already here | `PUT libraries/{libraryid}/blocks/{sha1}` only. Answered before the body is read, so a client sending `Expect: 100-continue` never transfers it |
+| `201 Created` | the entry, library or block now exists | `PUT libraries/{libraryid}/entries/{path}` (content or `?type=blocks`), `PUT libraries/{libraryid}/blocks/{sha256}`, `POST /libraries`, and `POST entries/{path}` with `{"op":"copy"}`. Carries the new `ETag` on a write, so a client can record the version without a follow-up `GET`. A copy carries the *source's* `ETag`, because a copy shares its id — so a client that already holds the content knows it does |
+| `200 OK` | the chunk is already here | `PUT libraries/{libraryid}/blocks/{sha256}`, answered instead of `201`. Re-sending a chunk is what an interrupted upload does on retry, so it must succeed rather than conflict. (This row said `204 No Content` until 2026-08-26 and the server has answered `200`; the claim that it is answered before the body is read was part of the same stale entry.) |
 | `206 Partial Content` | range request satisfied | `GET libraries/{libraryid}/entries/{path}` advertises `Accept-Ranges: bytes` and honours `Range`. An encrypted library cannot be ranged and says so up front with `Accept-Ranges: none` — see the note below |
-| `302 Found` | **not emitted on this lane.** `GET libraries/{libraryid}/entries/{path}` streams on the same response — one request, no redirect. The `/files/{token}/…` capability URL still exists; mint its token with `POST /access-tokens` and build the URL yourself |
+| `302 Found` | **not emitted on this lane.** `GET libraries/{libraryid}/entries/{path}` streams on the same response — one request, no redirect. There is no capability URL to redirect to: `/files/{token}/…` and the `POST /access-tokens` that minted for it are both gone, and a signed URL is what replaces them if a browser ever needs one — see [`capability-urls.md`](capability-urls.md) |
 | `304 Not Modified` | your `If-None-Match` matched | the entry is unchanged; use your copy |
 
 ### The client asked for something wrong
@@ -65,7 +65,7 @@ variable.
 | `412 Precondition Failed` | your `If-Match` did not match; someone else wrote first | re-read, reapply your change, write again. Not an error — it is the mechanism working |
 | `413 Payload Too Large` | body over the limit, or a batch over 1000 operations | do not retry; split it |
 | `416 Range Not Satisfiable` | the range is outside the entry | |
-| `424 Failed Dependency` | the write names blocks the server does not hold | `PUT entries/{path}?type=blocks` and a `create` inside `POST batch`. The body is `{"error":…,"missing":[sha1,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
+| `424 Failed Dependency` | the write names blocks the server does not hold | `PUT entries/{path}?type=blocks` and a `create` inside `POST batch`. The body is `{"error":…,"missing":[sha256,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
 | `429 Too Many Requests` | login rate limiting; carries `Retry-After` | wait the stated time. Only the login endpoints produce this |
 
 ### The server could not do it

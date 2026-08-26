@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
-	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -17,13 +16,12 @@ const (
 	KindDevice  Kind = "device"  // Porter, the File Provider extension
 	KindSession Kind = "session" // the TUI, the CLI
 	KindAccess  Kind = "access"  // capability URLs
-	KindLegacy  Kind = "legacy"  // legacy clients; nothing validates these now
 	KindS3      Kind = "s3"      // an S3 frontend, if it is ever built
 )
 
 func (k Kind) valid() bool {
 	switch k {
-	case KindDevice, KindSession, KindAccess, KindLegacy, KindS3:
+	case KindDevice, KindSession, KindAccess, KindS3:
 		return true
 	}
 	return false
@@ -188,37 +186,4 @@ func decodeStrict(s string) ([]byte, error) {
 		return nil, fmt.Errorf("not canonical base32")
 	}
 	return raw, nil
-}
-
-// Legacy credentials are forty hex characters presented in Authorization:
-// Token. docs/auth.md reads that as an encoding rather than a separate store —
-// eight hex of credential id, thirty-two of secret — so a legacy client
-// resolves through the same row and the same function as everything else, and
-// revoking it is the same operation.
-const (
-	legacyIDChars     = 8
-	legacySecretChars = 32
-	legacyChars       = legacyIDChars + legacySecretChars
-)
-
-// ParseLegacyToken reads the forty-hex form. There is no checksum to verify:
-// the format predates the decision to have one and the clients that present it
-// cannot be changed, which is the whole reason auth.md treats legacy as its
-// own trust level.
-func ParseLegacyToken(s string) (Token, error) {
-	if len(s) != legacyChars {
-		return Token{}, fmt.Errorf("malformed legacy token: %d characters, want %d", len(s), legacyChars)
-	}
-	raw, err := hex.DecodeString(s)
-	if err != nil {
-		return Token{}, fmt.Errorf("malformed legacy token: not hex")
-	}
-	if strings.ToLower(s) != s {
-		return Token{}, fmt.Errorf("malformed legacy token: not canonical hex")
-	}
-	return Token{
-		Kind:   KindLegacy,
-		ID:     s[:legacyIDChars],
-		Secret: raw[legacyIDChars/2:],
-	}, nil
 }

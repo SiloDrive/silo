@@ -189,8 +189,10 @@ func oneOf(k Kind, kinds []Kind) bool {
 // the database.
 //
 //	Authorization: Bearer silo_<kind>_…   every Silo client
-//	Authorization: Token  <40 hex>        legacy clients; no route mounts this
 //	Authorization: Silo   <credential-id> proof of possession, signature below
+//
+// Any other scheme is malformed. Nothing is looked up, so presenting a
+// credential from some other system says nothing about what this one holds.
 func tokenFromRequest(r *http.Request) (Token, error) {
 	h := r.Header.Get("Authorization")
 	if h == "" {
@@ -207,9 +209,6 @@ func tokenFromRequest(r *http.Request) (Token, error) {
 	switch {
 	case strings.EqualFold(scheme, "Bearer"):
 		parse = ParseToken
-
-	case strings.EqualFold(scheme, "Token"):
-		parse = ParseLegacyToken
 
 	case strings.EqualFold(scheme, "Silo"):
 		// Proof of possession. The credential id travels in the clear and the

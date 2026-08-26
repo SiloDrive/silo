@@ -67,7 +67,7 @@ because a client author has to grep for it.
 
 | file | what it covers |
 |---|---|
-| [`auth.md`](auth.md) | **plan, partly landed.** One credential model to replace three stores, the identity split behind it, proof of possession, OIDC. The `Credential` and `Account` tables and `credential.Resolve` are built; the lanes are being moved onto them now, so read the order-of-work list at the end as the state of play |
+| [`auth.md`](auth.md) | **current and plan, in one file, split down the middle.** Part 1 describes the credential model as it runs — the token format, the one `Resolve`, the permission ceiling, password enrolment — and is normative: if the code disagrees with it, one of them is a bug. Part 2 is designed and not built — proof of possession, Argon2id, OIDC, E2EE libraries — and ends with what is left, in order |
 | [`future-features.md`](future-features.md) | **plan.** The roadmap: user management, sharing, groups, locking, trash, quota, search. Loosely ordered, nothing committed |
 | [`protocol-gaps.md`](protocol-gaps.md) | **plan.** What the Silo lane would need to be an ideal protocol for a Dropbox-shaped client, ranked, with the reasoning attached |
 | [`encryption.md`](encryption.md) | **plan.** Why Seafile's encrypted libraries are not being adopted, and the sketch of the end-to-end scheme that replaces them. Also the list of things not to build |

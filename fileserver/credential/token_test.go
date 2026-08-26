@@ -2,13 +2,12 @@ package credential
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"strings"
 	"testing"
 )
 
 func TestNewTokenRoundTrip(t *testing.T) {
-	for _, kind := range []Kind{KindDevice, KindSession, KindAccess, KindLegacy, KindS3} {
+	for _, kind := range []Kind{KindDevice, KindSession, KindAccess, KindS3} {
 		tok, s, err := NewToken(kind)
 		if err != nil {
 			t.Fatalf("NewToken(%q): %v", kind, err)
@@ -143,38 +142,6 @@ func TestChecksumCoversTheWholeToken(t *testing.T) {
 	}
 }
 
-func TestParseLegacyToken(t *testing.T) {
-	raw := strings.Repeat("ab", 20) // 40 hex characters
-	tok, err := ParseLegacyToken(raw)
-	if err != nil {
-		t.Fatalf("ParseLegacyToken: %v", err)
-	}
-	if tok.Kind != KindLegacy {
-		t.Errorf("kind = %q, want %q", tok.Kind, KindLegacy)
-	}
-	if tok.ID != raw[:8] {
-		t.Errorf("id = %q, want the first 8 hex characters %q", tok.ID, raw[:8])
-	}
-	want, _ := hex.DecodeString(raw[8:])
-	if string(tok.Secret) != string(want) {
-		t.Errorf("secret is not the remaining 32 hex characters")
-	}
-
-	for _, bad := range []string{
-		"",
-		strings.Repeat("ab", 19), // too short
-		strings.Repeat("ab", 21), // too long
-		strings.Repeat("zz", 20), // not hex
-		strings.Repeat("AB", 20), // hex, but not the canonical spelling
-	} {
-		if _, err := ParseLegacyToken(bad); err == nil {
-			t.Errorf("ParseLegacyToken(%q) accepted a malformed token", bad)
-		}
-	}
-}
-
-// A parse error must never quote the credential back. Errors are read in logs
-// and bug reports, which is exactly where a secret must not end up.
 func TestParseErrorsDoNotLeakTheSecret(t *testing.T) {
 	tok, valid, err := NewToken(KindDevice)
 	if err != nil {
