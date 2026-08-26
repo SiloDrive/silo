@@ -179,10 +179,13 @@ Two details are not obvious from the response shape:
   returns `head_commit_id` per library. Without it a client's opening move is to
   enumerate a library with no way to name the state it just enumerated, so its
   first delta call has nothing to pass as `since`.
-- **Apply with `mkdir -p` semantics.** A directory is reported in its own right
-  only when it is *empty*. One that arrives with content appears solely as the
-  paths inside it, because the diff walks to where the trees actually differ.
-  The same holds in reverse for deleting a non-empty directory.
+- **A subtree is reported in full.** Every directory that appeared is reported
+  in its own right, alongside every path inside it, and the same holds in
+  reverse for a deletion. A client does not have to infer parents.
+  (Before store-v2 this rule was the other way round — a directory arriving
+  with content appeared solely as its contents, and an applier needed `mkdir -p`
+  semantics to cope. `objmgr.TestDiffReportsASubtreeInFull` pins what is true
+  now.)
 
 ## Resolved: the shape of the Silo lane
 

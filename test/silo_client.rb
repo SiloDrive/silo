@@ -35,18 +35,6 @@ class SiloClient
     request(:delete, "/api/silo/v1/libraries/#{library_id}")
   end
 
-  # --- Tokens ---
-
-  def create_access_token(library_id:, op:, obj_id: "", one_time: false)
-    post("/api/silo/v1/access-tokens", {
-      library_id: library_id, obj_id: obj_id, op: op, one_time: one_time
-    })
-  end
-
-  def create_sync_token(library_id)
-    post("/api/silo/v1/libraries/#{library_id}/sync-token")
-  end
-
   # --- Entries ---
 
   # The root is /entries/ with nothing after it, not /entries — the route
@@ -103,21 +91,17 @@ class SiloClient
 
   # --- Sync protocol ---
 
-  def get_head_commit(library_id, sync_token)
-    get("/repo/#{library_id}/commit/HEAD", sync_token: sync_token)
-  end
-
   # --- Low-level HTTP ---
 
-  def get(path, sync_token: nil)
-    request(:get, path, sync_token: sync_token)
+  def get(path)
+    request(:get, path)
   end
 
   def post(path, body = nil, auth: true)
     request(:post, path, body: body, auth: auth)
   end
 
-  def request(method, path, body: nil, raw_body: nil, auth: true, sync_token: nil, if_match: nil)
+  def request(method, path, body: nil, raw_body: nil, auth: true, if_match: nil)
     uri = URI("#{@base_url}#{path}")
     http = Net::HTTP.new(uri.host, uri.port)
     http.open_timeout = 5
@@ -132,11 +116,6 @@ class SiloClient
 
     if auth && @token
       req["Authorization"] = "Bearer #{@token}"
-    end
-
-    # Wire-protocol header name, fixed by client compatibility — not renamed.
-    if sync_token
-      req["Seafile-Repo-Token"] = sync_token
     end
 
     req["If-Match"] = if_match if if_match

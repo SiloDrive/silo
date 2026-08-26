@@ -1,9 +1,28 @@
 # Integration tests
 
-Minitest against a **running** Silo server. They exercise the HTTP contract the
-docs describe — status codes, headers, response shapes — which the Go tests
-cannot: nothing in `fileserver/` stands up a database, so handler-level
-behaviour is only ever reachable from outside.
+Minitest against a **running** Silo server — the built binary, over a real
+socket, driven by a client that is not written in Go.
+
+**The reason given here used to be that the Go tests could not stand up a
+database.** That was true when this was written and stopped being true in
+`dee67bd`: `fileserver/library_wire_test.go` stands a real server on a real
+SQLite database with `httptest`, and most contract testing belongs there, where
+it runs under `go test ./...` with no server to start. Keeping the old
+justification nearly cost this suite its life, so here is the real one — two
+things `wire()` cannot do:
+
+- **It tests the router, not the binary.** `newHTTPRouter()` is called directly,
+  so `main()`, `option.Load`, the `*.Init` wiring, the cleanup goroutines and
+  the bootstrap-admin path are all skipped. A missing `credential.Init` in
+  `RunUser` passed every Go test and would have panicked in production; it was
+  caught by running the binary.
+- **It cannot tell `null` from `[]`.** Go unmarshals both into the same nil
+  slice. `blocks_test.rb` asserts `missing` is `[]`, with the comment *"null
+  here breaks every client that is not Go"* — that assertion is unwritable in
+  the language the server is written in.
+
+So: put a contract test in Go by default, and put it here when it is about the
+process, the wire, or a shape only a second language can see.
 
 ## Running
 
@@ -23,7 +42,7 @@ SILO_URL=http://localhost:8099 SILO_EMAIL=admin@example.com SILO_PASSWORD=testpa
 (`http://localhost:8082`, `admin@example.com`).
 
 Run one file with `ruby blocks_test.rb`, and one test with `-n
-test_a_block_that_does_not_hash_to_its_id_is_refused`.
+test_a_chunk_that_does_not_hash_to_its_id_is_refused`.
 
 **Use a throwaway data directory.** The tests create libraries and delete them
 in teardown, but a failure part-way leaves them behind, and nothing here is
@@ -33,10 +52,9 @@ careful about a directory you keep things in.
 
 | file | surface |
 |---|---|
-| `auth_test.rb` | login, tokens, expiry |
+| `auth_test.rb` | login returning a session credential, refusals, protected routes |
 | `libraries_test.rb` | create, list, delete |
-| `tokens_test.rb` | sync and access tokens, and that a library you cannot see is indistinguishable from one that does not exist |
-| `blocks_test.rb` | `blocks/missing`, `PUT blocks/{sha1}`, `?type=blocks`, hash refusal, resume |
+| `blocks_test.rb` | `blocks/missing`, `PUT blocks/{sha256}`, `?type=blocks`, hash refusal, resume |
 | `batch_test.rb` | many operations as one commit, all-or-nothing, `If-Match` on the root |
 | `pagination_test.rb` | `?limit`, the `Link` header, and the anchor withheld until the last page |
 

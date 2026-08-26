@@ -1091,18 +1091,29 @@ Use it for `currentSyncAnchor` too — it is cheaper and more direct than
 
 ### Two contract details that are not visible in the response
 
-**Apply with `mkdir -p` semantics.** A directory is reported in its own right
-only when it is **empty**. One that arrives with content appears solely as the
-paths inside it, because the diff walks to where the trees actually differ and a
-directory present in only one tree differs at its contents. Verified:
+**A subtree is reported in full.** Every directory that appeared is reported in
+its own right, alongside every path inside it. Verified against 0.5.0:
 
 ```
-mkdir /empty                        → create d /empty
-mkdir /deep, /deep/nested, put z.txt → create f /deep/nested/z.txt      (only)
+mkdir /empty                         → create d /empty
+mkdir /deep, /deep/nested, put z.txt → create d /deep
+                                       create d /deep/nested
+                                       create f /deep/nested/z.txt
+delete a non-empty /d                → delete d /d
+                                       delete f /d/z.txt
 ```
 
-Create the parents of every path you are told about. The same holds in reverse
-for deleting a non-empty directory.
+`is_dir` on each row says which is which. You do not have to infer parents —
+though creating them anyway is harmless and is what a client written against
+the older rule already does.
+
+**This paragraph said the opposite until 2026-08-26**, and said it was
+verified: that a directory was reported only when empty, and one arriving with
+content appeared solely as its contents. That was true before store-v2 and the
+diff now reports a subtree in full (`objmgr.TestDiffReportsASubtreeInFull`).
+A client built on the old text is not broken by the new behaviour — it applies
+`mkdir -p` to directories the server now names explicitly — but it was reading
+a false statement.
 
 **Renames are emitted server-side**, not inferred client-side, because the
 server holds both trees. The inference is imperfect either way — deleting one
