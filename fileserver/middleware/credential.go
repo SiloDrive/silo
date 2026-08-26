@@ -17,6 +17,7 @@ import (
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/share"
+	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -67,6 +68,24 @@ func resolveCredential(next http.Handler, optional bool) http.Handler {
 			return
 		}
 
+		// The library half of the ceiling is enforced here, not left to the
+		// handler. Perm is a helper a handler has to remember to call, and
+		// four of them did not: listing libraries, account usage, create and
+		// delete all read the account's own authority, so a credential cut to
+		// one library enumerated every library its account could see. An
+		// enforcement point that must be remembered is one the fifth handler
+		// will forget.
+		//
+		// Only the library is checked here, because it is the only part of the
+		// question this layer can answer: the route carries a library id or it
+		// does not. Path granularity and read-versus-write stay with the
+		// handler, which is what knows the path and what the operation does.
+		if !scopeReachesRoute(cred, r) {
+			log.Debugf("Credential %s is scoped to %q and may not reach %s", cred.ID, cred.Scope, r.URL.Path)
+			http.Error(w, "Permission denied", http.StatusForbidden)
+			return
+		}
+
 		ctx := context.WithValue(r.Context(), AccountKey, cred.Account())
 		ctx = context.WithValue(ctx, CredentialKey, cred)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -110,6 +129,26 @@ func credentialRefused(w http.ResponseWriter, r *http.Request, err error) {
 		log.Errorf("Credential lookup failed on %s: %v", r.URL.Path, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+// scopeReachesRoute reports whether a scoped credential may address this route
+// at all.
+//
+// An unscoped credential reaches everything, which is the common case and the
+// first branch. A scoped one may reach only its own library -- and a route
+// that names no library is answering about the account as a whole, which is
+// strictly wider than the scope and so is refused. There is nothing to narrow
+// by on such a route and no library id to compare against; refusing is the
+// only answer that respects the narrowing.
+func scopeReachesRoute(cred *credential.Credential, r *http.Request) bool {
+	if cred.Scope.LibraryID == "" {
+		return true
+	}
+	libraryID, ok := mux.Vars(r)["libraryid"]
+	if !ok {
+		return false
+	}
+	return libraryID == cred.Scope.LibraryID
 }
 
 // GetCredential returns the credential that authenticated the request, or nil
@@ -162,15 +201,30 @@ func Perm(r *http.Request, libraryID, path string) string {
 		log.Errorf("Permission asked on %s with no credential in context; denying", r.URL.Path)
 		return ""
 	}
+	// Asked before share.CheckPerm, not inside the call. Go evaluates the
+	// argument first, so a credential whose scope excludes this library would
+	// otherwise pay CheckPerm's two-to-six queries and have the answer thrown
+	// away by Covers -- on exactly the requests an out-of-scope client repeats.
+	if !cred.Scope.Covers(libraryID, path) {
+		return ""
+	}
 	return cred.EffectivePerm(share.CheckPerm(libraryID, cred.AccountID), libraryID, path)
 }
 
-// CanWrite and CanRead are Perm read as a yes or no, for the many call sites
-// that want one.
-func CanWrite(r *http.Request, libraryID, path string) bool {
-	return Perm(r, libraryID, path) == "rw"
-}
-
-func CanRead(r *http.Request, libraryID, path string) bool {
-	return Perm(r, libraryID, path) != ""
+// CredentialCanWrite reports whether the credential's own ceiling permits a
+// write, without asking about any library.
+//
+// It is for the handlers that have no library to ask share.CheckPerm about --
+// creating one, where it does not exist yet, and deleting one, which gates on
+// ownership instead. Everywhere else, ask Perm: it answers the whole question
+// rather than half of it.
+//
+// No credential means no write, for the reason Perm gives.
+func CredentialCanWrite(r *http.Request) bool {
+	cred := GetCredential(r)
+	if cred == nil {
+		log.Errorf("Write attempted on %s with no credential in context; denying", r.URL.Path)
+		return false
+	}
+	return cred.Perm == "rw"
 }

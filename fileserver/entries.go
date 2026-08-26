@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
@@ -390,7 +389,7 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !checkPreconditions(w, r, vars["libraryid"], middleware.GetAccountID(r), path) {
+	if !checkPreconditions(w, r, vars["libraryid"], path) {
 		return
 	}
 	setQuery(r, url.Values{"path": {path}})
@@ -421,7 +420,7 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 // repository. It loads one only when a precondition header is actually present,
 // so an unconditional write costs nothing extra — the delegate it is about to
 // call does its own permission check and load anyway.
-func checkPreconditions(w http.ResponseWriter, r *http.Request, libraryID string, user account.ID, path string) bool {
+func checkPreconditions(w http.ResponseWriter, r *http.Request, libraryID, path string) bool {
 	if r.Header.Get("If-Match") == "" && r.Header.Get("If-None-Match") == "" {
 		return true
 	}
@@ -822,7 +821,7 @@ func deleteEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	// If-Match on a delete means "only if this is still what I think it is",
 	// which is how a client avoids deleting an edit it never saw.
-	if !checkPreconditions(w, r, vars["libraryid"], middleware.GetAccountID(r), path) {
+	if !checkPreconditions(w, r, vars["libraryid"], path) {
 		return
 	}
 	setQuery(r, url.Values{"path": {path}})
@@ -859,7 +858,7 @@ func postEntry(w http.ResponseWriter, r *http.Request) {
 	// The precondition is about the source — what is being moved or copied —
 	// because that is the thing the caller looked at before deciding to act on
 	// it. On a copy it means "copy this version, not whatever it became".
-	if !checkPreconditions(w, r, vars["libraryid"], middleware.GetAccountID(r), path) {
+	if !checkPreconditions(w, r, vars["libraryid"], path) {
 		return
 	}
 

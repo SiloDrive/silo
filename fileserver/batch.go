@@ -66,12 +66,19 @@ func batchHandler(w http.ResponseWriter, r *http.Request) {
 	user := acct.Email
 	libraryID := mux.Vars(r)["libraryid"]
 
-	// Library-level, so a path-scoped credential cannot batch. A batch is
-	// ordered and all-or-nothing over a working tree that exists only for this
-	// request, and a move or a copy names two paths -- so "does this batch stay
-	// inside the scope" is a question about the resulting tree rather than
-	// about each path in isolation. Refusing is the honest answer until that is
-	// worked out; nothing mints a path-scoped credential yet.
+	// Library-level, so a path-scoped credential cannot batch.
+	//
+	// This comment used to add "nothing mints a path-scoped credential yet",
+	// which was already false when it was written: POST /auth/login passes any
+	// scope a client sends straight through ParseScope, so the refusal is
+	// reachable behaviour rather than a placeholder.
+	//
+	// The refusal still stands, but on narrower ground than the rest of that
+	// comment claimed. Scope covering is a prefix test, so checking every path
+	// and every destination a batch names would in fact settle it -- prepBatch
+	// has them all before the tree is touched. What is genuinely undecided is
+	// the root ETag precondition below, which reads the whole library. That is
+	// a small question, and until it is answered this stays shut.
 	library := entryLibrary(w, r, libraryID, "", true)
 	if library == nil {
 		return

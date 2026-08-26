@@ -138,3 +138,76 @@ func TestAPathScopedCredentialReachesOnlyThatSubtree(t *testing.T) {
 		t.Errorf("changes with a path-scoped credential: status %d, want 403, body %s", code, body)
 	}
 }
+
+// The ceiling has to hold on routes that name no library and on routes that
+// create one, not only on the entry surface.
+//
+// It did not. Perm was a helper each handler had to remember to call, and four
+// handlers under RequireCredential never did: listing libraries, account
+// usage, create and delete. A credential issued read-only could create a
+// library and delete one, and a credential cut to a single library could
+// enumerate every library its account could see. Found by review, reproduced
+// against the running binary, and fixed in the middleware rather than in the
+// four handlers -- an enforcement point that has to be remembered is one that
+// will be forgotten again by the fifth.
+func TestAReadOnlyCredentialCannotCreateOrDeleteALibrary(t *testing.T) {
+	base, token := wire(t)
+	existing := makeLibrary(t, base, token)
+	readonly := narrowed(t, "r", credential.Scope{})
+
+	if code, body := call(t, "POST", base+"/api/silo/v1/libraries", readonly, `{"name":"nope"}`); code != http.StatusForbidden {
+		t.Errorf("creating a library with perm=r: status %d, want 403, body %s", code, body)
+	}
+	if code, body := call(t, "DELETE", base+"/api/silo/v1/libraries/"+existing, readonly, ""); code != http.StatusForbidden {
+		t.Errorf("deleting a library with perm=r: status %d, want 403, body %s", code, body)
+	}
+	// Reading is still what a read-only credential is for.
+	if code, body := call(t, "GET", base+"/api/silo/v1/libraries", readonly, ""); code != http.StatusOK {
+		t.Errorf("listing libraries with perm=r: status %d, body %s", code, body)
+	}
+}
+
+// An account-wide route answers about every library the account can see, so a
+// credential cut to one library must not reach it. There is no path to narrow
+// by and no library id in the route to compare against -- the only correct
+// answer is to refuse.
+func TestALibraryScopedCredentialCannotReachAccountWideRoutes(t *testing.T) {
+	base, token := wire(t)
+	mine := makeLibrary(t, base, token)
+	scoped := narrowed(t, "rw", credential.Scope{LibraryID: mine})
+
+	for _, path := range []string{"/api/silo/v1/libraries", "/api/silo/v1/account/usage"} {
+		if code, body := call(t, "GET", base+path, scoped, ""); code != http.StatusForbidden {
+			t.Errorf("GET %s with a library-scoped credential: status %d, want 403, body %s",
+				path, code, body)
+		}
+	}
+}
+
+// A move deletes its source. Checking the source for any permission at all,
+// while demanding rw at the destination, let a credential that may read
+// /photos and write /archive move a file out of a subtree it cannot write.
+func TestMovingOutOfAReadOnlySubtreeIsRefused(t *testing.T) {
+	base, token := wire(t)
+	id := makeLibrary(t, base, token)
+
+	seed := `{"ops":[{"op":"mkdir","path":"/photos"},{"op":"mkdir","path":"/archive"}]}`
+	if code, body := call(t, "POST", base+"/api/silo/v1/libraries/"+id+"/batch", token, seed); code != http.StatusOK {
+		t.Fatalf("seeding: status %d, body %s", code, body)
+	}
+	if code, body := call(t, "PUT", base+"/api/silo/v1/libraries/"+id+"/entries/photos/x.txt", token, "x"); code != http.StatusCreated && code != http.StatusOK {
+		t.Fatalf("seeding a file: status %d, body %s", code, body)
+	}
+
+	// Read-only over the whole library: the destination check alone would
+	// already stop this, so narrow to the destination subtree to isolate the
+	// source check.
+	scoped := narrowed(t, "rw", credential.Scope{LibraryID: id, Path: "/archive"})
+
+	code, body := call(t, "POST",
+		base+"/api/silo/v1/libraries/"+id+"/entries/photos/x.txt", scoped,
+		`{"op":"move","to":"/archive/x.txt"}`)
+	if code != http.StatusForbidden {
+		t.Errorf("moving out of a subtree the credential cannot reach: status %d, want 403, body %s", code, body)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/option"
 	log "github.com/sirupsen/logrus"
 )
@@ -19,12 +20,10 @@ import (
 // Issue's refusals. Each one is a row that would resolve to something nobody
 // intended, caught at the write rather than at every read afterwards.
 var (
-	ErrBadKind    = errors.New("unknown credential kind")
-	ErrBadPerm    = errors.New("credential perm must be r or rw")
-	ErrNoAccount  = errors.New("credential needs an account")
-	ErrNoLabel    = errors.New("credential needs a label")
-	ErrBothProofs = errors.New("credential carries a secret or a public key, never both")
-
+	ErrBadKind   = errors.New("unknown credential kind")
+	ErrBadPerm   = errors.New("credential perm must be r or rw")
+	ErrNoAccount = errors.New("credential needs an account")
+	ErrNoLabel   = errors.New("credential needs a label")
 	// ErrBadLifetime is a negative lifetime. It reads as "already expired",
 	// and the arithmetic below would have written no expiry at all -- so the
 	// one request that most obviously means "this must not work" would have
@@ -117,7 +116,7 @@ func Issue(ctx context.Context, o IssueOpts) (*Credential, string, error) {
 		secret = ""
 	}
 
-	var expires, clientID, lastUsed any
+	var expires, clientID any
 	if c.ExpiresAt != 0 {
 		expires = c.ExpiresAt
 	}
@@ -131,7 +130,7 @@ func Issue(ctx context.Context, o IssueOpts) (*Credential, string, error) {
 	           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if _, err := writeDB.ExecContext(ctx, q,
 		c.ID, string(c.Kind), c.secretHash, nullBytes(c.publicKey), c.AccountID,
-		c.Label, c.Scope.String(), c.Perm, clientID, c.Ctime, expires, lastUsed); err != nil {
+		c.Label, c.Scope.String(), c.Perm, clientID, c.Ctime, expires, nil); err != nil {
 		return nil, "", fmt.Errorf("issuing credential: %v", err)
 	}
 	return c, secret, nil
@@ -205,8 +204,35 @@ func Revoke(ctx context.Context, id string, owner account.ID) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("revoking credential: %v", err)
 	}
-	n, err := res.RowsAffected()
-	return n > 0, err
+	// dbutil.RowsAffected rather than res.RowsAffected: the delete has already
+	// succeeded by the time the count is asked for, so a driver that cannot
+	// report one must not turn a completed revocation into a caller-visible
+	// failure.
+	return dbutil.RowsAffected(res) > 0, nil
+}
+
+// RevokeByLibrary deletes every credential scoped to a library, inside the
+// caller's transaction.
+//
+// It lives here because the shape of a scope -- "<id>" or "<id>:<path>" -- is
+// this package's to know. libmgr.DeleteLibrary hand-coded that encoding in SQL
+// so it could clear the rows alongside its other per-library deletes, which
+// meant ParseScope and a DELETE in another package had to agree forever, with
+// nothing to catch them diverging.
+//
+// Matched by exact prefix rather than LIKE: a library id carries no wildcard
+// today, but a pattern match whose safety rests on what the data happens to
+// look like stops being safe the day the id format changes. An unscoped
+// credential (” -- every library) and one scoped elsewhere are untouched,
+// because deleting one library must not sign the account out of the rest.
+func RevokeByLibrary(ctx context.Context, tx *sql.Tx, libraryID string) error {
+	_, err := tx.ExecContext(ctx,
+		"DELETE FROM Credential WHERE scope = ? OR substr(scope, 1, length(?) + 1) = ? || ':'",
+		libraryID, libraryID, libraryID)
+	if err != nil {
+		return fmt.Errorf("revoking credentials scoped to %s: %v", libraryID, err)
+	}
+	return nil
 }
 
 // RevokeAll deletes every credential an account holds and returns how many.
@@ -220,7 +246,7 @@ func RevokeAll(ctx context.Context, owner account.ID) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("revoking credentials: %v", err)
 	}
-	return res.RowsAffected()
+	return dbutil.RowsAffected(res), nil
 }
 
 // CleanupInterval is how often expired rows are swept.
@@ -248,7 +274,7 @@ func DeleteExpired() (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("sweeping expired credentials: %v", err)
 	}
-	return res.RowsAffected()
+	return dbutil.RowsAffected(res), nil
 }
 
 // StartCleanup runs DeleteExpired on a ticker for the life of the process.

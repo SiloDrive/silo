@@ -234,6 +234,21 @@ func TestResolveFollowsTheAccountImmediately(t *testing.T) {
 	}
 }
 
+// awaitLastUsed waits for the detached stamp to land. It fails the test rather
+// than returning zero, so "the write never happened" is a failure here and not
+// a confusing zero compared somewhere below.
+func awaitLastUsed(t *testing.T, read func() int64) int64 {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		if v := read(); v != 0 {
+			return v
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("last_used was never stamped")
+	return 0
+}
+
 func TestResolveStampsLastUsedCoarsely(t *testing.T) {
 	pair := testDB(t)
 	dan := addUser(t, pair, "dan@example.com", true)
@@ -258,7 +273,13 @@ func TestResolveStampsLastUsedCoarsely(t *testing.T) {
 	if _, err := Resolve(bearer(s), KindDevice); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	first := readLastUsed()
+
+	// Polled, because the write is deliberately off the request's goroutine --
+	// it goes to a one-connection pool and would otherwise queue in front of
+	// the caller. That makes last_used eventually consistent, which is the
+	// right trade for a field whose whole purpose is answering "is anybody
+	// still using this?" to five-minute precision.
+	first := awaitLastUsed(t, readLastUsed)
 	if first == 0 {
 		t.Fatal("last_used was not stamped on first use")
 	}
@@ -272,6 +293,9 @@ func TestResolveStampsLastUsedCoarsely(t *testing.T) {
 	if _, err := Resolve(bearer(s), KindDevice); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
+	// Given time to be wrong: a stamp that was going to happen has had far
+	// longer than it needs, so an unchanged value means none was attempted.
+	time.Sleep(100 * time.Millisecond)
 	if got := readLastUsed(); got != first-1 {
 		t.Errorf("last_used was rewritten inside the granularity window: %d, want %d", got, first-1)
 	}
@@ -285,9 +309,21 @@ func TestResolveStampsLastUsedCoarsely(t *testing.T) {
 	if _, err := Resolve(bearer(s), KindDevice); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if got := readLastUsed(); got == stale {
+	if got := awaitChange(t, readLastUsed, stale); got == stale {
 		t.Error("last_used was not refreshed once it went stale")
 	}
+}
+
+// awaitChange waits for the detached stamp to move a value off `was`.
+func awaitChange(t *testing.T, read func() int64, was int64) int64 {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		if v := read(); v != was {
+			return v
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return was
 }
 
 func TestEffectivePerm(t *testing.T) {

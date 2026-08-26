@@ -103,7 +103,10 @@ func TestParseNotifTokenRejectsSessionToken(t *testing.T) {
 		Email: "mallory@example.com",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			Audience:  jwt.ClaimStrings{utils.AudSession},
+			// The literal, not a constant: the point of this test is that the
+			// audience is *not* the notification one, and the session audience
+			// it names no longer exists as a thing Silo issues.
+			Audience: jwt.ClaimStrings{"silo:session"},
 		},
 	}
 	sessionTok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).

@@ -12,6 +12,7 @@ import (
 
 	// Change to non-blank imports when use
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/option"
@@ -649,21 +650,11 @@ func DeleteLibrary(libraryID string) error {
 		}
 	}
 
-	// A credential names its library inside `scope`, as text, in one of two
-	// forms: the id alone, or the id and a path separated by a colon. Both go.
-	// An unscoped credential ('' — every library) and one scoped elsewhere are
-	// untouched, because deleting one library must not sign the account out of
-	// the rest.
-	//
-	// Matched by exact prefix rather than LIKE. A library id is a UUID and
-	// carries no wildcard, but a pattern match whose safety rests on what the
-	// data happens to look like stops being safe the day the id format changes.
-	// It is here rather than in the list above because that loop binds one
-	// parameter and this needs three.
-	if _, err := tx.ExecContext(ctx,
-		"DELETE FROM Credential WHERE scope = ? OR substr(scope, 1, length(?) + 1) = ? || ':'",
-		libraryID, libraryID, libraryID); err != nil {
-		return fmt.Errorf("failed to revoke credentials scoped to the library: %v", err)
+	// The scope encoding belongs to the credential package, so the delete does
+	// too -- inside this transaction, so a library and the credentials cut to
+	// it go together or not at all.
+	if err := credential.RevokeByLibrary(ctx, tx, libraryID); err != nil {
+		return err
 	}
 
 	// Clean up virtual libraries referencing this library

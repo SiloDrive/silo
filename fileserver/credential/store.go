@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -121,13 +122,15 @@ func (c *Credential) Bearer() bool { return len(c.secretHash) > 0 }
 // kinds is the set of lanes the caller accepts. The API routes take a session
 // credential from the CLI and a device credential from Porter, so the question
 // is which of several rather than which one -- but it is still a question the
-// caller has to answer, and an empty set matches nothing.
+// caller has to answer, and an empty set matches nothing: a caller that named
+// no kind forgot to say which lane it was, and reading that as "any lane will
+// do" would accept a credential from the wrong one.
 func Resolve(r *http.Request, kinds ...Kind) (*Credential, error) {
 	tok, err := tokenFromRequest(r)
 	if err != nil {
 		return nil, err
 	}
-	if !oneOf(tok.Kind, kinds) {
+	if !slices.Contains(kinds, tok.Kind) {
 		return nil, ErrWrongKind
 	}
 
@@ -166,23 +169,14 @@ func Resolve(r *http.Request, kinds ...Kind) (*Credential, error) {
 		return nil, ErrInactive
 	}
 
+	// Detached, not merely given a detached context. The write goes to a pool
+	// of one connection (dbutil sets SetMaxOpenConns(1)), so calling it inline
+	// queued this bookkeeping UPDATE behind every commit, upload and GC write
+	// on the server while the request waited -- with a 60s timeout in front of
+	// it. The comment below always claimed it was out of the request's way;
+	// now it is.
 	stampLastUsed(cred)
 	return cred, nil
-}
-
-// oneOf reports whether a credential's kind is one the lane accepts.
-//
-// An empty set matches nothing rather than everything. A caller that passed no
-// kind forgot to say which lane it was, and reading that as "any lane will do"
-// would turn the omission into a credential from the wrong lane being
-// accepted -- silently, and only on the lanes nobody wrote a test for.
-func oneOf(k Kind, kinds []Kind) bool {
-	for _, want := range kinds {
-		if k == want {
-			return true
-		}
-	}
-	return false
 }
 
 // tokenFromRequest pulls the credential out of the request without touching
@@ -330,17 +324,30 @@ func stampLastUsed(c *Credential) {
 		return
 	}
 
-	// Best effort and deliberately not in the request's context: the client
-	// has already been authenticated, and failing their request because a
-	// bookkeeping write lost a race would be the wrong trade.
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
+	// Read on this goroutine, before the write is detached. option.DBOpTimeout
+	// is a package global that tests rewrite in cleanup, so a goroutine that
+	// read it later would race them -- and would be reading configuration from
+	// a point in time nobody chose.
+	timeout := option.DBOpTimeout
+	id, db := c.ID, writeDB
 
-	if _, err := writeDB.ExecContext(ctx,
-		"UPDATE Credential SET last_used = ? WHERE id = ?", now, c.ID); err != nil {
-		return
-	}
-	c.LastUsed = now
+	// Detached, not merely given a detached context. The write goes to a pool
+	// of one connection (dbutil sets SetMaxOpenConns(1)), so inline it queued
+	// this bookkeeping UPDATE behind every commit, upload and GC write on the
+	// server while the request waited. Best effort: the client is already
+	// authenticated, and delaying their request for a row nothing reads back
+	// would be the wrong trade.
+	//
+	// It captures three values rather than the Credential, so the struct --
+	// and the request it belongs to -- can be collected without waiting for
+	// this. Nothing is written back to c for the same reason: the request has
+	// been answered by the time this runs.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		_, _ = db.ExecContext(ctx,
+			"UPDATE Credential SET last_used = ? WHERE id = ?", now, id)
+	}()
 }
 
 // EffectivePerm intersects what the account may do with what the credential

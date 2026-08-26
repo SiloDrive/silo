@@ -14,15 +14,17 @@ func IsValidUUID(u string) bool {
 	return err == nil
 }
 
-// Every Silo JWT is signed with the same key (option.JWTPrivateKey), so a
-// token of one kind parses cleanly as another kind's claims — a notification
-// token read as session claims yields an empty email rather than an error.
-// Each token Silo issues *and validates* therefore carries an audience naming
-// the only validator allowed to accept it, and each validator requires it.
-const (
-	AudSession = "silo:session"
-	AudNotif   = "silo:notif"
-)
+// AudNotif is the audience on the one JWT Silo still issues.
+//
+// There were two, and the pair was the point: every Silo JWT is signed with
+// the same key (option.JWTPrivateKey), so a token of one kind parses cleanly
+// as another kind's claims, and an audience named the only validator allowed
+// to accept it. The session JWT is gone -- a session is a Credential row now
+// -- so one audience is left, and it is still required rather than assumed:
+// the notification server verifies it in a process with no database, where the
+// audience is the only thing distinguishing this token from any other the key
+// could sign.
+const AudNotif = "silo:notif"
 
 // SigningAlg is the only JWT algorithm Silo issues or accepts. Validators pass
 // it to jwt.WithValidMethods so a token cannot select its own algorithm.

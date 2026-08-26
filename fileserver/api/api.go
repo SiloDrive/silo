@@ -574,6 +574,14 @@ type createLibraryResponse struct {
 }
 
 func CreateLibraryHandler(w http.ResponseWriter, r *http.Request) {
+	// Creating a library is a write, and a read-only credential must not do
+	// one. There is no library to ask share.CheckPerm about yet -- the account
+	// is creating its own -- so this asks the credential's ceiling directly
+	// rather than through middleware.Perm.
+	if !middleware.CredentialCanWrite(r) {
+		http.Error(w, "Permission denied", http.StatusForbidden)
+		return
+	}
 	acct := middleware.GetAccount(r)
 
 	var req createLibraryRequest
@@ -600,6 +608,13 @@ func CreateLibraryHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func DeleteLibraryHandler(w http.ResponseWriter, r *http.Request) {
+	// Deleting is the most destructive write there is, and it was reachable
+	// with a read-only credential: this handler asks only whether the account
+	// owns the library. Ownership is still the rule; the ceiling narrows it.
+	if !middleware.CredentialCanWrite(r) {
+		http.Error(w, "Permission denied", http.StatusForbidden)
+		return
+	}
 	id := middleware.GetAccountID(r)
 	vars := mux.Vars(r)
 	libraryID := vars["libraryid"]
