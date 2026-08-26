@@ -40,29 +40,38 @@ traps in it, and links here rather than restating.
 
 ## Authentication
 
-One scheme: JWT Bearer.
+One scheme, one table, one verification path.
 
 | Scheme | Header | Used by | Validated against |
 |---|---|---|---|
-| JWT Bearer | `Authorization: Bearer <jwt>` | silo (TUI), Porter, porter-fuse, `/api/silo/v1/*` | `authmgr.ValidateSessionToken` (24h expiry) |
+| Bearer credential | `Authorization: Bearer silo_<kind>_<id>_<secret><check>` | silo (TUI), Porter, porter-fuse, `/api/silo/v1/*` | `credential.Resolve` against the `Credential` table |
 
-The middleware is `RequireAuth`, in `fileserver/middleware/`.
+The middleware is `RequireCredential`, in `fileserver/middleware/credential.go`.
+`POST /api/silo/v1/auth/login` mints a `session` credential and returns it as
+`{"token": "..."}` — the same field it always used, now holding a credential
+rather than a JWT.
 
-Two more credential types are minted and stored but currently validate
-nothing live: `RequireAPIToken` (`Authorization: Token`) is orphaned — no
-route mounts it — since the routes that used it were deleted with the sync
-lanes; `libmgr.GetAccountByToken`/`GetAccountForToken` (the
-`LibraryUserToken`/"sync token" table) have no caller outside `libmgr` itself.
-Both credential types are still created and revoked through `silo token`;
-neither currently gates access to anything. See
-`fileserver/middleware/apitoken.go` and [`docs/auth.md`](auth.md).
+Only `SHA-256(secret)` is stored, and a row is found by the public `id` in the
+middle of the token, so the secret never reaches a query or a query log. The
+last six characters are a checksum over everything before them, so a truncated
+paste is refused as *malformed* before the database is touched. Revocation is
+a row delete and takes effect on the next request; `silo token list|revoke` is
+the operator's side of it.
+
+`Authorization: Silo` is reserved for
+[proof of possession](auth.md#proof-of-possession) and answers `501` until the
+RFC 9421 verifier exists. `Authorization: Token` (the forty-hex legacy form)
+parses but is mounted on no route.
+
+The notification socket takes the same credential and accepts requests without
+one — see `/notification` below. See [`docs/auth.md`](auth.md) for the model.
 
 ## Endpoints
 
 ### Native management API — `/api/silo/v1/*`
 
 JSON request/response bodies. Used by the silo TUI, the CLI in `client/`, and
-the sync clients. Protected by `RequireAuth` (JWT Bearer), except the two marked
+the sync clients. Protected by `RequireCredential`, except the two marked
 **No auth** below — they are registered above the authenticated subrouter
 (`server.go:701`) because they are what a client needs *before* it has a
 credential: one to learn what it is talking to, one to get a token.

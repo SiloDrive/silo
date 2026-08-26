@@ -11,15 +11,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"golang.org/x/crypto/pbkdf2"
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/utils"
-	jwt "github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -137,73 +133,6 @@ func validateSHA1(password, storedPasswd string) bool {
 	h.Write([]byte(password))
 	computed := hex.EncodeToString(h.Sum(nil))
 	return subtle.ConstantTimeCompare([]byte(computed), []byte(storedPasswd)) == 1
-}
-
-// SessionClaims names the account, not the address.
-//
-// Sub carries the account id in its usual text form. A session that named an
-// address would have to be reissued whenever the address changed, and worse,
-// would resolve to whoever holds that address at the moment it is presented
-// rather than to whoever held it when it was issued.
-type SessionClaims struct {
-	Sub string `json:"sub"`
-	jwt.RegisteredClaims
-}
-
-func GenerateSessionToken(id account.ID) (string, error) {
-	if id.IsZero() {
-		return "", fmt.Errorf("refusing to issue a session token with no account")
-	}
-
-	now := time.Now()
-	claims := SessionClaims{
-		Sub: id.String(),
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(24 * time.Hour)),
-			Audience:  jwt.ClaimStrings{utils.AudSession},
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(option.JWTPrivateKey))
-	if err != nil {
-		return "", fmt.Errorf("failed to sign session token: %v", err)
-	}
-
-	return tokenString, nil
-}
-
-func ValidateSessionToken(tokenString string) (account.ID, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &SessionClaims{},
-		func(token *jwt.Token) (interface{}, error) {
-			return []byte(option.JWTPrivateKey), nil
-		},
-		// The notification tokens are signed with this same key, so the
-		// signature alone proves nothing about which validator a token was
-		// meant for. WithAudience makes that explicit and rejects a token
-		// carrying no audience at all.
-		jwt.WithValidMethods([]string{utils.SigningAlg}),
-		jwt.WithAudience(utils.AudSession),
-	)
-	if err != nil {
-		return account.Zero, fmt.Errorf("invalid token: %v", err)
-	}
-
-	claims, ok := token.Claims.(*SessionClaims)
-	if !ok || !token.Valid {
-		return account.Zero, fmt.Errorf("invalid token claims")
-	}
-
-	// A token of another kind that somehow satisfied the checks above would
-	// carry no subject, and an empty identity must never reach a handler:
-	// share.CheckPerm on no account denies, but library creation would happily
-	// accept it.
-	u, err := uuid.Parse(claims.Sub)
-	if err != nil {
-		return account.Zero, fmt.Errorf("token has no account claim")
-	}
-	return account.ID(u), nil
 }
 
 // PBKDF2Iterations is the work factor for new password hashes, at OWASP's

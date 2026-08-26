@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/objstore"
@@ -45,6 +46,7 @@ func sqliteTestDB(t *testing.T) {
 	siloPair = pair
 	absDataDir = t.TempDir()
 	account.Init(pair.Read, pair.Write)
+	credential.Init(pair.Read, pair.Write)
 	libmgr.Init(pair.Read, pair.Write, absDataDir)
 
 	t.Cleanup(func() {

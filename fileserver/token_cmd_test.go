@@ -3,10 +3,9 @@ package silod
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/apitokenstore"
+	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/option"
 )
 
@@ -14,54 +13,52 @@ const (
 	victim    = "victim@example.com"
 	bystander = "bystander@example.com"
 
-	victimSyncA     = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"
-	victimSyncB     = "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
-	bystanderSync   = "cccc3333cccc3333cccc3333cccc3333cccc3333"
-	victimAPI       = "dddd4444dddd4444dddd4444dddd4444dddd4444"
-	bystanderAPI    = "eeee5555eeee5555eeee5555eeee5555eeee5555"
 	sharedLibraryID = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
 	otherLibraryID  = "c2e3be72-a275-429b-b580-bc916ece6705"
-	unknownTokenID  = "ffff6666ffff6666ffff6666ffff6666ffff6666"
+	unknownCredID   = "aaaaaaaaaaaaaaaa"
 )
 
-// tokenTestStore seeds both token tables with two users, so every test can
+// held is one seeded credential, kept so a test can name it by id.
+type held struct {
+	id    string
+	label string
+}
+
+// tokenTestStore seeds the credential table with two users, so every test can
 // check that a revocation stopped at the user it named.
-func tokenTestStore(t *testing.T) {
+//
+// It seeds two lanes for the victim -- a session from the CLI and a device
+// credential from a mount -- because the failure this command exists for is a
+// person whose laptop was stolen, and the whole point of one table is that
+// revoking reaches both without the operator knowing which is which.
+func tokenTestStore(t *testing.T) (victimSession, victimDevice, bystanderSession held) {
 	t.Helper()
 
 	sqliteTestDB(t)
-	apitokenstore.Init(siloPair.Read, siloPair.Write)
-
-	origTTL := option.APITokenTTL
-	option.APITokenTTL = 30 * 24 * time.Hour
-	t.Cleanup(func() { option.APITokenTTL = origTTL })
 
 	victimAcct := mintAccount(t, victim)
 	bystanderAcct := mintAccount(t, bystander)
 
-	now := time.Now().Unix()
-	for _, tok := range []struct {
-		libraryID string
-		acct      *account.Account
-		token     string
-	}{
-		{sharedLibraryID, victimAcct, victimSyncA},
-		{otherLibraryID, victimAcct, victimSyncB},
-		{sharedLibraryID, bystanderAcct, bystanderSync},
-	} {
-		dbExec(t, "INSERT INTO LibraryUserToken (library_id, account_id, token, ctime) VALUES (?, ?, ?, ?)",
-			tok.libraryID, tok.acct.ID, tok.token, now)
+	victimSession = seedCredential(t, victimAcct, credential.KindSession, "silo-cli", credential.Scope{})
+	victimDevice = seedCredential(t, victimAcct, credential.KindDevice, "victim's macbook",
+		credential.Scope{LibraryID: sharedLibraryID})
+	bystanderSession = seedCredential(t, bystanderAcct, credential.KindSession, "bystander's cli",
+		credential.Scope{LibraryID: otherLibraryID})
+	return
+}
+
+func seedCredential(t *testing.T, acct *account.Account, kind credential.Kind, label string, scope credential.Scope) held {
+	t.Helper()
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+
+	c, _, err := credential.Issue(ctx, credential.IssueOpts{
+		Kind: kind, AccountID: acct.ID, Label: label, Scope: scope, Perm: "rw",
+	})
+	if err != nil {
+		t.Fatalf("issuing a %s credential for %s: %v", kind, acct.Email, err)
 	}
-	for _, tok := range []struct {
-		token string
-		acct  *account.Account
-	}{
-		{victimAPI, victimAcct},
-		{bystanderAPI, bystanderAcct},
-	} {
-		dbExec(t, "INSERT INTO ApiToken (token, account_id, ctime, expires_at) VALUES (?, ?, ?, ?)",
-			tok.token, tok.acct.ID, now, now+86400)
-	}
+	return held{id: c.ID, label: label}
 }
 
 // acctFor resolves one of this file's test addresses.
@@ -85,93 +82,66 @@ func countRows(t *testing.T, query string, args ...interface{}) int {
 	return n
 }
 
-// A sync token has no expiry — the clients it was for persist it and treat it as
-// durable — so revocation is the only thing that can ever invalidate one. It
-// had no reachable caller, which left a token copied off a stolen device with
-// permanent read/write access that a password change did not touch.
-func TestRevokeAllTokensRemovesBothKinds(t *testing.T) {
+// The operation this command exists for: one person's credentials all stop,
+// whatever lane each of them is on, and nobody else's do.
+//
+// It used to reach two tables and miss a third -- sessions were JWTs with no
+// row at all -- so "revoke everything" was a claim the command could not make
+// good on.
+func TestRevokeAllTokensRemovesEveryLane(t *testing.T) {
 	tokenTestStore(t)
 
 	if err := revokeAllTokens(acctFor(t, victim)); err != nil {
 		t.Fatalf("revokeAllTokens returned %v", err)
 	}
 
-	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != 0 {
-		t.Errorf("%d sync tokens survived revocation, want 0", n)
+	if n := countRows(t, "SELECT COUNT(*) FROM Credential WHERE account_id = ?", acctFor(t, victim).ID); n != 0 {
+		t.Errorf("%d credentials survived revocation, want 0", n)
 	}
-	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, victim).ID); n != 0 {
-		t.Errorf("%d API tokens survived revocation, want 0", n)
-	}
-
 	// Revoking one account must not sign out the rest of the server.
-	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
-		t.Errorf("bystander has %d sync tokens, want 1", n)
-	}
-	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
-		t.Errorf("bystander has %d API tokens, want 1", n)
+	if n := countRows(t, "SELECT COUNT(*) FROM Credential WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
+		t.Errorf("bystander holds %d credentials, want 1", n)
 	}
 }
 
-// Revoking one device must leave the user's other devices syncing — that is
-// the whole reason tokens are minted per login rather than reused.
-func TestRevokeOneSyncTokenLeavesTheOthers(t *testing.T) {
-	tokenTestStore(t)
+// Revoking one device must leave the user's others working — that is the whole
+// reason a credential is minted per client rather than shared between them.
+func TestRevokeOneCredentialLeavesTheOthers(t *testing.T) {
+	victimSession, victimDevice, _ := tokenTestStore(t)
 
-	if err := revokeOneToken(acctFor(t, victim), victimSyncA); err != nil {
+	if err := revokeOneToken(acctFor(t, victim), victimDevice.id); err != nil {
 		t.Fatalf("revokeOneToken returned %v", err)
 	}
 
-	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE token = ?", victimSyncA); n != 0 {
-		t.Errorf("the revoked token is still present")
+	if n := countRows(t, "SELECT COUNT(*) FROM Credential WHERE id = ?", victimDevice.id); n != 0 {
+		t.Error("the revoked credential is still present")
 	}
-	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE token = ?", victimSyncB); n != 1 {
-		t.Errorf("the user's other sync token was removed too")
-	}
-	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, victim).ID); n != 1 {
-		t.Errorf("the user's API token was removed by a sync-token revocation")
+	if n := countRows(t, "SELECT COUNT(*) FROM Credential WHERE id = ?", victimSession.id); n != 1 {
+		t.Error("the user's other credential was removed too")
 	}
 }
 
-func TestRevokeOneAPIToken(t *testing.T) {
-	tokenTestStore(t)
+// The account is part of the delete rather than checked before it. Deleting by
+// id alone would let a mistyped email revoke somebody else's credential and
+// report success for it.
+func TestRevokeOneTokenRefusesAnotherUsersCredential(t *testing.T) {
+	_, _, bystanderSession := tokenTestStore(t)
 
-	if err := revokeOneToken(acctFor(t, victim), victimAPI); err != nil {
-		t.Fatalf("revokeOneToken returned %v", err)
-	}
-
-	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE token = ?", victimAPI); n != 0 {
-		t.Errorf("the revoked API token is still present")
-	}
-	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != 2 {
-		t.Errorf("sync tokens were removed by an API-token revocation")
-	}
-}
-
-// The token is matched against the named user's own tokens before anything is
-// deleted. Deleting by value alone would let a mistyped email revoke a
-// credential belonging to someone else, and report success for it.
-func TestRevokeOneTokenRefusesAnotherUsersToken(t *testing.T) {
-	tokenTestStore(t)
-
-	for _, token := range []string{bystanderSync, bystanderAPI, unknownTokenID} {
-		if err := revokeOneToken(acctFor(t, victim), token); err == nil {
-			t.Errorf("revokeOneToken(%s, %s) succeeded, want an error", victim, token)
+	for _, id := range []string{bystanderSession.id, unknownCredID} {
+		if err := revokeOneToken(acctFor(t, victim), id); err == nil {
+			t.Errorf("revokeOneToken(%s, %s) succeeded, want an error", victim, id)
 		}
 	}
-
-	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
-		t.Errorf("bystander's sync token was revoked")
-	}
-	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
-		t.Errorf("bystander's API token was revoked")
+	if n := countRows(t, "SELECT COUNT(*) FROM Credential WHERE account_id = ?", acctFor(t, bystander).ID); n != 1 {
+		t.Error("bystander's credential was revoked")
 	}
 }
 
-func TestListTokensOnAnAccountWithNone(t *testing.T) {
+func TestListTokens(t *testing.T) {
 	tokenTestStore(t)
 
 	if err := listTokens(mintAccount(t, "nobody@example.com")); err != nil {
-		t.Errorf("listTokens returned %v for an account with no tokens", err)
+		t.Errorf("listTokens returned %v for an account with no credentials", err)
 	}
 	if err := listTokens(acctFor(t, victim)); err != nil {
 		t.Errorf("listTokens returned %v", err)

@@ -27,40 +27,29 @@ Two consequences worth knowing:
   (`Seafile-Repo-Token`, `seafile.conf`). The database is now `silo.db`; the
   wire header is fixed by client compatibility and will not change.
 
-## Authentication — two paths
+## Authentication — one path
 
-### Path 1: sync clients (SeaDrive, Seafile Desktop)
-
-```
-Client  → POST /api2/auth-token/          {username, password}
-        ← 40-char hex API token (no expiry — clients persist it)
-
-Client  → POST /api2/repos/{id}/repo-tokens/   Authorization: Token <api-token>
-        ← 41-char library sync token, written to LibraryUserToken
-
-Client  → GET /repo/{id}/commit/HEAD
-          Header: Seafile-Repo-Token: <library-token>
-Silo    → SELECT email FROM LibraryUserToken WHERE library_id=? AND token=?
-Silo    → proceeds with sync
-```
-
-The sync path is a direct DB lookup via `libmgr.GetEmailByToken()`. API tokens
-live in `fileserver/apitokenstore/`; the `Authorization: Token` middleware is
-`fileserver/middleware/apitoken.go`.
-
-### Path 2: management API (TUI, scripts)
+> The two-path section that stood here described `/api2/auth-token/`,
+> `Seafile-Repo-Token` and `LibraryUserToken`. All three were deleted with the
+> sync lanes (`5d4baa0`); it was describing a server that no longer existed.
 
 ```
 Client  → POST /api/silo/v1/auth/login    {email, password}
-        ← JWT session token (24h)
+        ← {"token": "silo_session_<id>_<secret><check>"}   (24h, absolute)
 
-Client  → GET  /api/silo/v1/libraries/{id}/entries/{path}   Authorization: Bearer <jwt>
+Client  → GET  /api/silo/v1/libraries/{id}/entries/{path}
+          Authorization: Bearer silo_session_...
         ← file bytes or a directory listing
 ```
 
-Silo-specific, with no upstream equivalent. It serves bytes on the endpoint
-itself rather than redirecting to a URL that carries a credential — see
-`docs/capability-urls.md` for why.
+One table (`Credential`), one verification path (`credential.Resolve`), one
+middleware (`middleware.RequireCredential`). The row stores `SHA-256(secret)`
+and is found by the public id embedded in the token, so the secret never
+reaches a query. Revoking a row stops it on the next request — there is no
+cache in front of it. `silo token list|revoke <email>` is the operator side.
+
+Serving bytes on the endpoint itself, rather than redirecting to a URL that
+carries a credential, is deliberate — see `docs/capability-urls.md`.
 
 ## Replaced RPC calls
 
@@ -81,7 +70,9 @@ server processes; Silo runs one, so they are one database. `docs/backup.md`
 has the upgrade recipe for a data directory that still has the old pair.
 
 ### Users and groups
-- `EmailUser` — users (id, email, passwd, is_staff, is_active, ctime, reference_id)
+- `Account` / `AccountEmail` / `AccountIdentity` / `AccountPassword` — the
+  identity split; `account_id` is the only user key on the live tables
+- `Credential` — every secret a client presents; see Authentication above
 - `GroupUser` — group membership
 - Groups table (configurable name)
 
@@ -93,7 +84,6 @@ has the upgrade recipe for a data directory that still has the old pair.
 - `LibraryGroup` — group shares
 - `VirtualLibrary` — virtual library mappings (subdirs shared as libraries)
 - `LibraryInfo` — library metadata/settings
-- `LibraryUserToken` — per-user per-library sync tokens (41 chars)
 - `FileLocks` — file locking
 - `InnerPubLibrary` — publicly shared libraries
 - Various permission tables

@@ -278,23 +278,24 @@ func TestDisableAndEnableFlipTheAccount(t *testing.T) {
 // the user's devices rather than making everyone log in again. That is a
 // deliberate difference from `silo token revoke`, and it is only true while
 // nothing here quietly deletes rows.
-func TestDisableLeavesTheTokensInPlace(t *testing.T) {
+//
+// What makes disabling take effect is the account join inside Resolve, not a
+// deletion here — see credential.Resolve and the ErrInactive path it returns.
+func TestDisableLeavesTheCredentialsInPlace(t *testing.T) {
 	userTestStore(t)
 
-	before := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, victim).ID)
+	const q = "SELECT COUNT(*) FROM Credential WHERE account_id = ?"
+	before := countRows(t, q, acctFor(t, victim).ID)
 	if before == 0 {
-		t.Fatal("the fixture seeded no sync tokens, so this proves nothing")
+		t.Fatal("the fixture seeded no credentials, so this proves nothing")
 	}
 
 	if err := setUserActive(victim, false); err != nil {
 		t.Fatalf("disable returned %v", err)
 	}
 
-	if n := countRows(t, "SELECT COUNT(*) FROM LibraryUserToken WHERE account_id = ?", acctFor(t, victim).ID); n != before {
-		t.Errorf("disabling deleted sync tokens: %d then %d", before, n)
-	}
-	if n := countRows(t, "SELECT COUNT(*) FROM ApiToken WHERE account_id = ?", acctFor(t, victim).ID); n == 0 {
-		t.Error("disabling deleted the API tokens")
+	if n := countRows(t, q, acctFor(t, victim).ID); n != before {
+		t.Errorf("disabling deleted credentials: %d then %d", before, n)
 	}
 }
 

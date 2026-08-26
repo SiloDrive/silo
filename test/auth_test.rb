@@ -4,12 +4,32 @@ require "securerandom"
 class AuthTest < Minitest::Test
   include SiloTestHelper
 
-  def test_login_returns_jwt
+  # Login mints a session credential. It used to return a JWT signed against a
+  # server-wide secret, which could not be revoked, named or scoped -- see
+  # docs/auth.md findings 3, 5 and 6. The response field is still "token"
+  # holding a string, deliberately, so what a client does with it did not
+  # change.
+  def test_login_returns_a_session_credential
     c = SiloClient.new(silo_url)
     resp = c.login(silo_email, silo_password)
     assert resp.ok?, "Login failed: #{resp}"
     assert resp["token"], "Expected token in response"
-    assert resp["token"].include?("."), "Token should be a JWT (contains dots)"
+    assert resp["token"].start_with?("silo_session_"),
+      "Token should be a session credential, got #{resp["token"][0, 24]}..."
+    refute resp["token"].include?("."), "A JWT came back; the credential lane is not mounted"
+  end
+
+  # The checksum is six base32 characters over everything before it, so a
+  # truncated paste is refused as malformed before the database is touched.
+  # It must not be mistaken for authentication: both answer 401.
+  def test_a_truncated_credential_is_refused
+    c = SiloClient.new(silo_url)
+    token = c.login(silo_email, silo_password)["token"]
+
+    bad = SiloClient.new(silo_url)
+    bad.instance_variable_set(:@token, token[0...-4])
+    resp = bad.request(:get, "/api/silo/v1/libraries")
+    assert_equal 401, resp.status
   end
 
   def test_login_wrong_password

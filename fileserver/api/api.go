@@ -4,8 +4,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/dkam/silo/fileserver/authmgr"
+	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
@@ -137,15 +140,56 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	loginSucceeded(req.Email)
 
-	token, err := authmgr.GenerateSessionToken(acct.ID)
+	ctx, cancel := option.WithDBTimeout(r.Context())
+	defer cancel()
+
+	_, token, err := credential.Issue(ctx, credential.IssueOpts{
+		Kind:      credential.KindSession,
+		AccountID: acct.ID,
+		Label:     credentialLabel(r),
+		Perm:      "rw",
+		Lifetime:  sessionLifetime,
+	})
 	if err != nil {
-		log.Errorf("Failed to generate session token: %v", err)
+		log.Errorf("Failed to issue a session credential: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
+	// The response field is still "token" holding a string. What the string
+	// is has changed completely; what a client has to do with it has not, and
+	// keeping the shape identical is what let this land without every client
+	// shipping on the same day. Its expiry is deliberately not reported here:
+	// see docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md
+	// for what adding a number to a token body costs.
 	writeJSON(w, http.StatusOK, loginResponse{Token: token})
 }
+
+// sessionLifetime is what docs/auth.md's table of kinds gives a session
+// credential. Unlike the JWT it replaced, it is absolute and does not slide,
+// and the credential can be revoked before it is reached.
+const sessionLifetime = 24 * time.Hour
+
+// credentialLabel names the credential after the client that asked for it.
+//
+// A label is what turns revocation from a guess into a decision, so the worst
+// answer here is an empty one -- an operator looking at four unnamed rows
+// cannot tell which is the laptop they just lost. A User-Agent is a weak name
+// and a great deal better than none.
+func credentialLabel(r *http.Request) string {
+	ua := strings.TrimSpace(r.UserAgent())
+	if ua == "" {
+		return "unnamed client"
+	}
+	if len(ua) > maxLabel {
+		// Truncated rather than refused: the label is for a human reading a
+		// list, and a client sending a paragraph should not fail to log in.
+		return ua[:maxLabel]
+	}
+	return ua
+}
+
+const maxLabel = 96
 
 type accessTokenRequest struct {
 	LibraryID string `json:"library_id"`

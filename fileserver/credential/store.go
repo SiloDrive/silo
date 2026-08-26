@@ -91,11 +91,21 @@ type Credential struct {
 	secretHash []byte
 	publicKey  []byte
 
-	// accountActive comes from the join in load, not from the Credential row.
-	// It is unexported because it is a fact about the account at the moment of
-	// the read, not a property of the credential worth handing to a caller.
-	accountActive bool
+	// acct comes from the join in load, not from the Credential row. It is
+	// unexported, and read through Account, because it is a snapshot of the
+	// account at the moment of the read rather than a property of the
+	// credential.
+	acct *account.Account
 }
+
+// Account is the account the credential belongs to, as it stood when the
+// credential resolved.
+//
+// It comes out of the same query the credential does, which is the whole
+// reason load joins rather than looking the account up afterwards: every
+// authenticated request needs both, and doing it in two would make a second
+// round trip per request structural rather than incidental.
+func (c *Credential) Account() *account.Account { return c.acct }
 
 // Bearer reports whether the credential is proven by presenting a secret
 // rather than by signing the request.
@@ -107,12 +117,17 @@ func (c *Credential) Bearer() bool { return len(c.secretHash) > 0 }
 // It parses the presented credential, verifies its checksum, looks the row up
 // by id, joins the account and checks is_active, checks expiry, proves the
 // secret, and stamps last_used.
-func Resolve(r *http.Request, kind Kind) (*Credential, error) {
+//
+// kinds is the set of lanes the caller accepts. The API routes take a session
+// credential from the CLI and a device credential from Porter, so the question
+// is which of several rather than which one -- but it is still a question the
+// caller has to answer, and an empty set matches nothing.
+func Resolve(r *http.Request, kinds ...Kind) (*Credential, error) {
 	tok, err := tokenFromRequest(r)
 	if err != nil {
 		return nil, err
 	}
-	if tok.Kind != kind {
+	if !oneOf(tok.Kind, kinds) {
 		return nil, ErrWrongKind
 	}
 
@@ -147,12 +162,27 @@ func Resolve(r *http.Request, kind Kind) (*Credential, error) {
 	// kill every lane at once, and it only does if every lane asks — which is
 	// what having one Resolve buys, and what three separate token stores made
 	// impossible. load read it alongside the credential row.
-	if !cred.accountActive {
+	if !cred.acct.IsActive {
 		return nil, ErrInactive
 	}
 
 	stampLastUsed(cred)
 	return cred, nil
+}
+
+// oneOf reports whether a credential's kind is one the lane accepts.
+//
+// An empty set matches nothing rather than everything. A caller that passed no
+// kind forgot to say which lane it was, and reading that as "any lane will do"
+// would turn the omission into a credential from the wrong lane being
+// accepted -- silently, and only on the lanes nobody wrote a test for.
+func oneOf(k Kind, kinds []Kind) bool {
+	for _, want := range kinds {
+		if k == want {
+			return true
+		}
+	}
+	return false
 }
 
 // tokenFromRequest pulls the credential out of the request without touching
@@ -211,18 +241,27 @@ func tokenFromRequest(r *http.Request) (Token, error) {
 var zeroHash = make([]byte, sha256.Size)
 
 func load(ctx context.Context, id string) (*Credential, error) {
-	// account_id is a declared foreign key with an index, so is_active comes
-	// out of the same row read rather than a second round trip. Resolve is the
-	// path every request takes, so the join is the difference between one
-	// query per authenticated call and two.
+	// account_id is a declared foreign key with an index, so the whole account
+	// comes out of the same row read rather than a second round trip. Resolve
+	// is the path every request takes, so the join is the difference between
+	// one query per authenticated call and two.
+	//
+	// AccountEmail is joined for the primary address, which is still what a
+	// commit records as its author and what a response body hands back. The
+	// join is inner and matches account.ByID exactly, so an account with no
+	// primary address is unresolvable here for the same reason it is
+	// unreadable there -- one rule, not two.
 	const q = `SELECT c.id, c.kind, c.secret_hash, c.public_key, c.account_id, c.label,
 	                  c.scope, c.perm, c.client_id, c.ctime, c.expires_at, c.last_used,
-	                  a.is_active
-	           FROM Credential c JOIN Account a ON a.id = c.account_id
+	                  a.is_active, a.is_staff, e.email
+	           FROM Credential c
+	           JOIN Account a ON a.id = c.account_id
+	           JOIN AccountEmail e ON e.account_id = a.id AND e.is_primary = 1
 	           WHERE c.id = ?`
 
 	var (
 		c        Credential
+		acct     account.Account
 		kind     string
 		scope    string
 		clientID sql.NullString
@@ -231,7 +270,7 @@ func load(ctx context.Context, id string) (*Credential, error) {
 	)
 	err := readDB.QueryRowContext(ctx, q, id).Scan(
 		&c.ID, &kind, &c.secretHash, &c.publicKey, &c.AccountID, &c.Label, &scope, &c.Perm,
-		&clientID, &c.Ctime, &expires, &lastUsed, &c.accountActive)
+		&clientID, &c.Ctime, &expires, &lastUsed, &acct.IsActive, &acct.IsStaff, &acct.Email)
 	if err == sql.ErrNoRows {
 		subtle.ConstantTimeCompare(zeroHash, zeroHash)
 		return nil, ErrInvalid
@@ -240,6 +279,8 @@ func load(ctx context.Context, id string) (*Credential, error) {
 		return nil, fmt.Errorf("looking up credential: %v", err)
 	}
 
+	acct.ID = c.AccountID
+	c.acct = &acct
 	c.Kind = Kind(kind)
 	c.ClientID = clientID.String
 	c.ExpiresAt = expires.Int64

@@ -496,65 +496,6 @@ func GetCurrentGCID(libraryID string) (string, error) {
 	return gcID.String, nil
 }
 
-// DeleteLibraryTokensByAccount revokes every sync token an account holds, across
-// all libraries, stopping all of their devices from syncing. Returns the count.
-func DeleteLibraryTokensByAccount(id account.ID) (int64, error) {
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-
-	res, err := writeDB.ExecContext(ctx,
-		"DELETE FROM LibraryUserToken WHERE account_id = ?", id)
-	if err != nil {
-		return 0, fmt.Errorf("failed to delete library tokens: %v", err)
-	}
-	notify(OnTokensRevoked, id)
-
-	return dbutil.RowsAffected(res), nil
-}
-
-// DeleteLibraryToken removes a specific sync token.
-func DeleteLibraryToken(libraryID, token string, id account.ID) error {
-	sqlStr := "DELETE FROM LibraryUserToken WHERE library_id = ? AND token = ? AND account_id = ?"
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	if _, err := writeDB.ExecContext(ctx, sqlStr, libraryID, token, id); err != nil {
-		return fmt.Errorf("failed to delete library token: %v", err)
-	}
-	notify(OnTokensRevoked, id)
-	return nil
-}
-
-type LibraryToken struct {
-	LibraryID string
-	Token     string
-	Ctime     sql.NullInt64
-}
-
-// ListLibraryTokensByAccount returns all sync tokens for an account.
-func ListLibraryTokensByAccount(id account.ID) ([]LibraryToken, error) {
-	sqlStr := "SELECT library_id, token, ctime FROM LibraryUserToken WHERE account_id = ? ORDER BY ctime"
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	rows, err := readDB.QueryContext(ctx, sqlStr, id)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list library tokens: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var tokens []LibraryToken
-	for rows.Next() {
-		var t LibraryToken
-		// A scan failure is returned rather than skipped: this list is what an
-		// operator revokes from, and silently omitting a row would show a
-		// token as already gone while it still authenticates.
-		if err := rows.Scan(&t.LibraryID, &t.Token, &t.Ctime); err != nil {
-			return nil, fmt.Errorf("failed to read library token row: %v", err)
-		}
-		tokens = append(tokens, t)
-	}
-	return tokens, rows.Err()
-}
-
 // CreateLibrary makes a library owned by owner, in the given format. It mints the
 // library's id, its initial objects and every row the library needs.
 //
@@ -652,8 +593,8 @@ func CreateLibrary(name string, owner *account.Account, format Format) (string, 
 // Filesystem objects (commits, blocks, fs) are NOT deleted — GC handles that.
 func DeleteLibrary(libraryID string) error {
 	// Virtual libraries derived from this one go first. Deleting only the origin
-	// removed their VirtualLibrary rows but left their Library, Branch and
-	// LibraryUserToken rows in place, so each child survived as an apparently
+	// removed their VirtualLibrary rows but left their Library and Branch rows
+	// in place, so each child survived as an apparently
 	// ordinary library — while its StoreID still pointed at the origin's
 	// object store, which GC had just reclaimed. A client kept syncing
 	// against an empty store, and nothing ever cleaned the rows up.
@@ -689,7 +630,6 @@ func DeleteLibrary(libraryID string) error {
 		"DELETE FROM SharedLibrary WHERE library_id = ?",
 		"DELETE FROM LibraryGroup WHERE library_id = ?",
 		"DELETE FROM InnerPubLibrary WHERE library_id = ?",
-		"DELETE FROM LibraryUserToken WHERE library_id = ?",
 		"DELETE FROM LibraryUsage WHERE library_id = ?",
 		"DELETE FROM LibraryHistoryLimit WHERE library_id = ?",
 		"DELETE FROM LibraryValidSince WHERE library_id = ?",
@@ -749,19 +689,19 @@ func listVirtualLibraryIDs(libraryID string) ([]string, error) {
 	return ids, rows.Err()
 }
 
-// OnLibraryDeleted and OnTokensRevoked let the fileserver drop cached
-// authorisations the moment the rows they were derived from go away. Without
-// them a cached token or permission stays authoritative for its full TTL,
-// which for a deletion means the server keeps accepting uploads to a library
-// that no longer exists.
+// OnLibraryDeleted lets the fileserver drop cached authorisations the moment
+// the rows they were derived from go away. Without it a cached permission
+// stays authoritative for its full TTL, which for a deletion means the server
+// keeps accepting uploads to a library that no longer exists.
 //
-// They are package variables rather than a direct call because libmgr sits
-// below the fileserver package and cannot import it. Nil until the server
-// registers them, so the CLI paths — which have no caches — need no wiring.
-var (
-	OnLibraryDeleted func(libraryID string)
-	OnTokensRevoked  func(id account.ID)
-)
+// It is a package variable rather than a direct call because libmgr sits below
+// the fileserver package and cannot import it. Nil until the server registers
+// it, so the CLI paths — which have no caches — need no wiring.
+//
+// OnTokensRevoked stood beside it and is gone: the token caches it purged went
+// with the sync lanes, and revoking a credential no longer needs a hook
+// because credential.Resolve reads the row on every request.
+var OnLibraryDeleted func(libraryID string)
 
 // notify fires a registered hook, if one is registered. It is generic because
 // the hooks differ only in what they carry — a library id, an account id — and a

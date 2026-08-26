@@ -283,9 +283,8 @@ func setUserActive(email string, active bool) error {
 	// Disabling is the one operation that stops every lane at once, which is
 	// worth saying out loud: it is why an operator reaches for this instead
 	// of revoking tokens one store at a time.
-	fmt.Printf("Disabled %s. Every credential they hold stops working — sync tokens, API\n"+
-		"tokens and sessions alike — and starts again if the account is re-enabled.\n", acct.Email)
-	warnAboutServerCache(1)
+	fmt.Printf("Disabled %s. Every credential they hold stops working — sessions, device\n"+
+		"credentials and all — from the next request, and starts again if the account\nis re-enabled.\n", acct.Email)
 	return nil
 }
 

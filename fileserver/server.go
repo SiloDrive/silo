@@ -18,8 +18,8 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/api"
-	"github.com/dkam/silo/fileserver/apitokenstore"
 	"github.com/dkam/silo/fileserver/authmgr"
+	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/metrics"
@@ -327,8 +327,8 @@ func Run(args []string) error {
 	authmgr.Init(siloPair.Read, siloPair.Write)
 	api.Init(siloPair.Read, siloPair.Write)
 	api.StartLoginLimiterCleanup()
-	apitokenstore.Init(siloPair.Read, siloPair.Write)
-	apitokenstore.StartCleanup()
+	credential.Init(siloPair.Read, siloPair.Write)
+	credential.StartCleanup()
 
 	// Create the admin user from the environment if it is set, and invent one
 	// if it is not and there are no users at all. A server nobody can log in
@@ -515,7 +515,8 @@ func newHTTPRouter() *mux.Router {
 	}
 	// in-process notification-server WebSocket endpoint
 	//
-	// OptionalAuth rather than RequireAuth: the endpoint predates the header
+	// OptionalCredential rather than RequireCredential: the endpoint predates
+	// the header
 	// and porter, porter-fuse and every older TUI dial it with no credential,
 	// so requiring one here would break them all on the day it shipped. What
 	// authenticating buys a client is the right to hold an idle socket; one
@@ -523,7 +524,7 @@ func newHTTPRouter() *mux.Router {
 	// -- inside provisionalGrace or be dropped. A credential that is offered
 	// and bad is still refused, in either mode.
 	if option.EnableNotification {
-		r.Handle("/notification", middleware.OptionalAuth(http.HandlerFunc(notif.Handler)))
+		r.Handle("/notification", middleware.OptionalCredential(http.HandlerFunc(notif.Handler)))
 	}
 
 	// pprof
@@ -541,7 +542,7 @@ func newHTTPRouter() *mux.Router {
 	r.HandleFunc("/api/silo/v1/auth/login", api.LoginHandler).Methods("POST")
 	r.HandleFunc("/api/silo/v1/server-info", api.ServerInfoHandler).Methods("GET")
 	apiRouter := r.PathPrefix("/api/silo/v1").Subrouter()
-	apiRouter.Use(middleware.RequireAuth)
+	apiRouter.Use(middleware.RequireCredential)
 	apiRouter.HandleFunc("/access-tokens", api.CreateAccessTokenHandler).Methods("POST")
 	apiRouter.HandleFunc("/account/usage", api.AccountUsageHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries", api.ListLibrariesHandler).Methods("GET")

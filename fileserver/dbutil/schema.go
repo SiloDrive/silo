@@ -169,9 +169,8 @@ CREATE INDEX IF NOT EXISTS librarygroup_libraryid_index on LibraryGroup (library
 CREATE INDEX IF NOT EXISTS librarygroup_account_indx on LibraryGroup (account_id);
 CREATE TABLE IF NOT EXISTS InnerPubLibrary (library_id CHAR(37) PRIMARY KEY, permission CHAR(15));
 
-CREATE TABLE IF NOT EXISTS LibraryUserToken (library_id CHAR(37), account_id BLOB NOT NULL REFERENCES Account(id), token CHAR(41), ctime BIGINT);
-CREATE UNIQUE INDEX IF NOT EXISTS library_token_indx on LibraryUserToken (library_id, token);
-CREATE INDEX IF NOT EXISTS library_token_account_indx on LibraryUserToken (account_id);
+-- LibraryUserToken is gone. It held per-user, per-library sync tokens with no
+-- expiry, for a lane that was deleted; the Credential table below replaced it.
 CREATE TABLE IF NOT EXISTS LibraryTokenPeerInfo (token CHAR(41) PRIMARY KEY, peer_id CHAR(41), peer_ip VARCHAR(50), peer_name VARCHAR(255), sync_time BIGINT, client_ver VARCHAR(20));
 
 CREATE TABLE IF NOT EXISTS LibraryHead (library_id CHAR(37) PRIMARY KEY, branch_name VARCHAR(10));
@@ -269,14 +268,14 @@ CREATE TABLE IF NOT EXISTS GCID (library_id CHAR(36) PRIMARY KEY, gc_id VARCHAR(
 CREATE TABLE IF NOT EXISTS LastGCID (id INTEGER PRIMARY KEY AUTOINCREMENT, library_id CHAR(36) NOT NULL, client_id VARCHAR(128) NOT NULL, gc_id VARCHAR(10) NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS lastgcid_libraryid_clientid_idx ON LastGCID (library_id, client_id);
 
-CREATE TABLE IF NOT EXISTS ApiToken (token CHAR(40) PRIMARY KEY, account_id BLOB NOT NULL REFERENCES Account(id), ctime BIGINT, expires_at BIGINT NOT NULL);
-CREATE INDEX IF NOT EXISTS apitoken_account_idx ON ApiToken (account_id);
-CREATE INDEX IF NOT EXISTS apitoken_expires_idx ON ApiToken (expires_at);
+-- ApiToken is gone too. It stored a cleartext bearer secret as its own primary
+-- key and slid its expiry forward on every use, so a mount that polled could
+-- never age out.
 
--- One credential row for every secret a client presents to Silo, replacing the
--- three separate stores (ApiToken, LibraryUserToken, session JWTs) that could not
--- be revoked together. Both lanes still write their own tables. Nothing reads
--- this one yet.
+-- One credential row for every secret a client presents to Silo. It replaced
+-- three separate stores -- ApiToken, LibraryUserToken and session JWTs -- that
+-- could not be revoked together, which is what made "revoke everything this
+-- person holds" unanswerable. Every authenticated route resolves through it.
 --
 -- scope is empty for "every library". credential.ParseScope owns the encoding
 -- of the narrower forms. It is TEXT and not CHAR(37) because a scope can name a

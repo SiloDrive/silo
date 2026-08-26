@@ -17,9 +17,9 @@ else runs this server.
 - **The identity split.** `Account` (UUIDv7), `AccountEmail`,
   `AccountIdentity`, `AccountPassword`; `account_id` is the only user key on
   the live tables and `EmailUser` is gone. `is_active` is checked on **every
-  authenticated request** — `requireCredential` (`middleware/auth.go`) asks
-  once, unskippably, for every lane, which is the check the split existed to
-  make possible.
+  authenticated request** — the join inside `credential.load` asks once,
+  unskippably, for every lane, which is the check the split existed to make
+  possible.
 - **A user lifecycle**: `silo user list | add | passwd | disable | enable`,
   over `account.Create` / `SetPassword` / `SetActive`. `BootstrapAdmin`
   replaces the cleartext `SILO_ADMIN_PASSWORD` path with a generated,
@@ -28,29 +28,32 @@ else runs this server.
   404 since `5d4baa0`. The three-credential, three-header shape this document
   was written against no longer exists to authenticate to.
 
-**Built, not yet mounted:**
+- **`Credential`, and one `Resolve` reading it.** Every route under
+  `/api/silo/v1` and the notification socket authenticate through
+  `credential.Resolve`; `middleware.RequireCredential` is the only thing
+  mounted on the API subrouter. Login mints a `session` credential instead of
+  signing a JWT, `credential.Issue` is the one way a row comes into being, and
+  `silo token` lists and revokes out of that single table.
 
-- **The `Credential` table and the `credential` package** — the token format,
-  `credential.Resolve` (`credential/store.go:110`), scope parsing. The schema
-  comment on the table is the honest status line: *"Both lanes still write
-  their own tables. Nothing reads this one yet."* Mounting `Resolve` on the
-  routes is the step that retires everything in the next list.
+  The three stores it replaced are gone with it: the session JWT
+  (`GenerateSessionToken`/`ValidateSessionToken` deleted), the `ApiToken` table
+  and its package, the `LibraryUserToken` table and `libmgr`'s functions over
+  it, and `middleware.RequireAPIToken`. The `Credential` swap is what finally
+  made "revoke everything this person holds" a statement the command could make
+  good on.
 
 **What a client actually presents today:**
 
 | Credential | Where | Form on disk | Lifetime | Revocable |
 |---|---|---|---|---|
 | Account password | `AccountPassword.hash` | self-describing prefix, PBKDF2-SHA256 600k today | — | n/a |
-| Session JWT | not stored — signed with `option.JWTPrivateKey` | HS256, `aud=silo:session` | 24h | **no** |
+| Session credential | `Credential`, kind `session` | `SHA-256(secret)` only; id is the public half | 24h, absolute | **yes**, immediately |
 | Access token | `tokenstore`, memory only | uuid v4, cleartext | 1h | one-time redeem |
-| Notification JWT | not stored — same key | HS256, `aud=silo:notif` | 72h, per library | no |
+| Notification JWT | not stored — signed with `option.JWTPrivateKey` | HS256, `aud=silo:notif` | 72h, per library | no |
 
-Two stores linger beside that table as dead weight: `ApiToken` and
-`LibraryUserToken` rows are still minted (and revoked) by `silo token`, still
-cleartext, and authenticate **nothing** — `RequireAPIToken`
-(`middleware/apitoken.go`) is defined but mounted on no route, and the sync
-lane that read `LibraryUserToken` is deleted. They are the old model's stumps,
-and they go when the `Credential` swap lands rather than being patched.
+The notification JWT is the last unstored bearer token, and deliberately: it is
+verified in a process with no database. It is why [finding 4](#4-the-jwt-secret-is-ephemeral-by-default)
+survives the swap when findings 3, 5 and 6 did not.
 
 ## What is right, and worth keeping
 
@@ -73,8 +76,10 @@ account, charges only failures, and clears the account bucket on success.
 `tokenstore.QueryToken` redeems a one-time token with a single `LoadAndDelete`,
 so two requests racing on the same capability URL cannot both be served.
 
-`apitokenstore.Lookup` distinguishes `ErrNotFound` from a database error, so an
-outage does not present itself to a client as "your credential is invalid".
+Distinguishing `ErrNotFound` from a database error, so an outage does not
+present itself to a client as "your credential is invalid". `apitokenstore`
+had this right and is gone; `credential.Resolve` kept the property, and
+`middleware.credentialRefused` is where it turns into 401 or 500.
 
 None of that changes below. What changes is everything around it.
 
@@ -83,59 +88,80 @@ None of that changes below. What changes is everything around it.
 The numbered findings this design was argued from, kept because later sections
 cite them — each now carries its status.
 
-### 1. The token columns are cleartext — *demoted to dead weight*
+### 1. The token columns are cleartext — *closed*
 
-`apitokenstore.Create` inserts the raw token and `libmgr` did the same for
-sync tokens. What has changed is the blast radius: no route authenticates
-against either store any more, so a read of `silo.db` no longer yields a
-usable credential from them. They remain the wrong pattern sitting in the
-schema, and the fix is unchanged — the `Credential` swap stores
-`SHA-256(secret)` only. See
+`apitokenstore.Create` inserted the raw token and `libmgr` did the same for
+sync tokens. Both tables and both packages are deleted, and the one table left
+stores `SHA-256(secret)` and looks a row up by its public id, so the secret
+never reaches a query, a query log or a slow-query trace. A read of `silo.db`
+now yields no usable credential at all. See
 [why a fast hash is the right one](#why-tokens-want-a-fast-hash-and-passwords-do-not).
 
 ### 2. `is_active` is never read — *closed*
 
-Closed by the identity split. `requireCredential` (`middleware/auth.go`)
-checks `IsActive` after every successful lookup, on every lane, with a comment
-that names this finding as the reason it lives there and not per-lane. The
-account-lifecycle half is closed too: `silo user` exists, and disabling an
-account stops its sessions on the next request.
+Closed by the identity split, and now closed at a lower level still: the check
+is a join inside `credential.load`, so it costs nothing extra and no lane can
+be written that skips it. The account-lifecycle half is closed too: `silo user`
+exists, and disabling an account stops every credential it holds on the next
+request — without deleting them, so re-enabling restores the user's devices
+rather than making everyone log in again.
 
-### 3. Sessions cannot be revoked — *open; the next thing the swap fixes*
+### 3. Sessions cannot be revoked — *closed*
 
-`/api/silo/v1` has no logout endpoint, no `jti`, and no deny list. A session
-JWT is valid for its full 24 hours no matter what happens to the account
-behind it — password changed, laptop stolen. (Deactivating the account now
-works, per finding 2 — but that kills the account, not one session.)
+A session is a row now, so revoking one is deleting it: `silo token revoke
+<email> <id>` stops that credential and leaves the account's others working,
+and `silo token revoke <email>` stops all of them. `Resolve` reads the row on
+every request, so there is no cache and no window — the next request after the
+delete is a 401.
 
-The only whole-lane kill switch is rotating `SILO_JWT_SECRET`, which also
-invalidates every notification token in flight.
+What is still absent is a *logout endpoint*: a client cannot revoke its own
+credential over HTTP, only an operator can at the CLI. That is a smaller hole
+than this finding described and it belongs with the enrolment work, since the
+same route table has to grow a way to mint before it grows a way to discard.
 
-### 4. The JWT secret is ephemeral by default — *open*
+### 4. The JWT secret is ephemeral by default — *open, and narrowed*
 
 `LoadJWTConfig` generates a random key when `SILO_JWT_SECRET` is unset and
-logs a line about it. Every restart invalidates every session simultaneously.
+logs a line about it. What that costs has shrunk: sessions are rows and survive
+a restart, so the only thing an ephemeral key still invalidates is the
+**notification tokens** in flight. A client re-mints one per subscription, so
+the cost is a reconnect rather than a re-login.
 
-Because there is also no refresh endpoint, the documented client workaround is
-to **keep the account password in the Keychain** and re-login on 401
-(`porter-brief.md`). So the default configuration pushes the highest-value
-secret in the system into long-term storage on every device, to work around a
-session that cannot be renewed. That is the wrong secret in the wrong place for
-the wrong reason.
+The keyfile is still worth having — a restart should not disconnect every
+watching client — but it no longer stands between a user and their account. The
+part of this finding that pushed **the account password into the Keychain** as
+the documented workaround is gone with it: a device holds a revocable
+credential, and the password is needed once, at enrolment.
 
-### 5. Nothing has a scope — *open until `Resolve` mounts*
+### 5. Nothing has a scope — *expressible; not yet enforced*
 
-Every live credential grants the whole account. A read-only, single-library
-credential — the thing you actually want to hand a backup tool, or a mount you
-do not fully trust — is not expressible. `share.CheckPerm` has no notion of a
-ceiling that a credential could lower. The `Credential` row carries `scope`
-and `perm` for exactly this; nothing reads them yet.
+The row carries `scope` and `perm`, `ParseScope` owns the encoding,
+`Credential.EffectivePerm` intersects them with what the account may do, and
+`Resolve` hands the credential to the handler through
+`middleware.GetCredential`. Everything needed to cut a read-only,
+single-library credential exists and is reachable.
 
-### 6. Nothing has a name — *open until `Resolve` mounts*
+What is missing is the last link: **no handler calls `EffectivePerm` yet**.
+They still ask `share.CheckPerm(library, account)`, which is what the *user*
+may do rather than what *this credential* may do, so a scoped row would
+authenticate correctly and then be ignored. That is
+[step 6](#order-of-work), and until it lands nothing mints a scoped credential
+either — a narrowing nothing honours is worse than no narrowing, because it
+reads as a guarantee.
 
-`silo token list` prints indistinguishable hex strings with no label, no
-last-used timestamp, and no client identity. Deciding which one to revoke is a
-guess. `Credential.label` and `last_used` exist for this; same gate as 5.
+### 6. Nothing has a name — *closed*
+
+`silo token list` prints, per credential, its id, its kind, its label, when it
+was created, when it expires and when it was last used. Login names the
+credential after the `User-Agent` that asked for it, and `credential.Issue`
+refuses a row with no label at all, so the column cannot quietly go back to
+being empty. Deciding which one to revoke is a decision rather than a guess,
+which is the whole reason `label` and `last_used` are columns.
+
+`last_used` is stamped at five-minute granularity, not per request: a write
+transaction in front of every read would serialise an otherwise concurrent
+workload behind an always-on mount's polling, and five minutes answers "is
+anybody still using this?" exactly as well.
 
 ### 7. Login says which accounts exist — *open*
 
@@ -164,7 +190,8 @@ legacy clients' sake, was answered by deleting the legacy lanes whole.
 `utils.GetAuthorizationToken` (`utils/http.go:14`) splits the header on a
 space and ignores the scheme entirely. The sync lane that made this matter is
 gone and the function now has no callers — it should be deleted before
-something finds it. `requireCredential` checks its scheme properly.
+something finds it. `credential.tokenFromRequest` dispatches on the scheme
+properly, and answers `Bearer`, `Token` and `Silo` differently.
 
 `SILO_ADMIN_PASSWORD` in the environment is *half-closed*: `BootstrapAdmin`
 generates and logs a password when the table is empty and none was supplied,
@@ -263,8 +290,9 @@ because trash, locking and folder-level permissions are unimplemented,
 because both callers of the org-aware share functions pass `orgID = -1` and the
 branch reading them is unreachable. They are dropped along with the branch,
 rather than carried. What remains: `LibraryOwner`, `LibraryGroup`, `GroupUser`,
-`Group`, `UserQuota`, `SharedLibrary` (both ends), `LibraryUserToken`, `ApiToken` and
-`Credential`.
+`Group`, `UserQuota`, `SharedLibrary` (both ends) and `Credential`.
+(`LibraryUserToken` and `ApiToken` were on this list and have since been
+dropped outright — see [Where this stands](#where-this-stands).)
 
 **A separate password table, because not every account has a password.** An
 OIDC-only account has none, and a nullable `passwd` column is how you end up
@@ -345,7 +373,7 @@ guessing at one, which is why `ghp_` tokens carry the same thing.
 (A `legacy` kind for SeaDrive existed in this table until the legacy lanes
 were deleted; see [the retired adapter](#the-legacy-adapter--retired-unbuilt).)
 
-### The table — *landed; unread*
+### The table — *landed; read on every request*
 
 The DDL lives in `dbutil/schema.go` now and differs from the first draft here
 in one deliberate way: `scope` is `TEXT NOT NULL DEFAULT ''` rather than
@@ -377,12 +405,25 @@ a guess into a decision.
 A row carries a secret hash or a public key, never both. An `s3` row carries
 neither and derives its secret from the master key.
 
-`expires_at` is **absolute and does not slide**. The current `ApiToken`
-behaviour renews any token more than halfway through its life
-(`apitokenstore.go:102`), which means an always-on mount polling constantly can
-never age out — the 30-day TTL is unreachable in the one case it was written
-for. Absolute expiry plus `last_used` gives an operator the same information
-without the credential quietly becoming permanent.
+`expires_at` is **absolute and does not slide**. The `ApiToken` behaviour this
+replaced renewed any token more than halfway through its life, which meant an
+always-on mount polling constantly could never age out — the 30-day TTL was
+unreachable in the one case it was written for. Absolute expiry plus
+`last_used` gives an operator the same information without the credential
+quietly becoming permanent.
+
+Expired rows are swept hourly by `credential.StartCleanup`. That is table
+space only — `Resolve` refuses an expired credential whether or not the sweeper
+has run — but a client re-logs in when its credential lapses, so an always-on
+mount leaves one dead row behind per day and nothing else would collect them.
+A row with no expiry has `expires_at` NULL, which fails the comparison rather
+than reading as zero, so the sweep cannot reach the long-lived device
+credentials.
+
+`Issue` refuses a negative lifetime rather than treating it as none. Zero means
+"no expiry" and the arithmetic that skips writing `expires_at` would otherwise
+have turned the one request that most clearly means *this must not work* into
+the one credential that works forever.
 
 ### One verification path
 
@@ -898,57 +939,6 @@ is a real account password rather than a single-use setup credential — that
 part waits on credentials existing at all — but it means the default path to a
 running server no longer goes through a cleartext password in the environment.
 
-## Running with no authentication
-
-Discovery, exploration, a test harness, a fresh checkout at 11pm — all of it is
-faster when there is no credential to obtain first. Silo should support that
-directly, so that nobody arrives at it by disabling a check.
-
-```
-SILO_AUTH=none          # every request is the configured account
-SILO_AUTH=none:r        # …read-only, which is what exploring actually needs
-```
-
-### It grants a credential; it does not skip one
-
-The implementation that matters: **no-auth is not a bypass.** `Resolve` is
-still called on every request and still returns a `*Credential` — a synthetic
-one, in memory, belonging to a real account, carrying a real `perm`. Nothing
-downstream learns that the mode exists.
-
-That is the whole design. A bypass means every handler grows a branch, and one
-of those branches is eventually wrong in a build where the mode is off. A
-synthetic credential means the authorization path has exactly one shape, is
-exercised identically in development and production, and `share.CheckPerm` and
-the [ceilings](#permission-ceilings) keep applying — `SILO_AUTH=none:r` really
-is read-only, because it is the same ceiling code every other credential uses.
-
-Which account: `SILO_AUTH_USER`, or the only account if there is exactly one.
-If there are several and none is named, refuse to start. An ambiguous answer to
-"who is everybody?" is not one to guess at.
-
-### Making it hard to run by accident
-
-The mode is safe in the case it is for and catastrophic in every other, so the
-guards are about the boundary rather than the feature:
-
-- **Environment or flag only**, never a value read from the database or from a
-  file that a user of the server can write.
-- **Refuse to start when the listener is not loopback**, unless a second,
-  differently-named acknowledgement is also set. Silo already warns about a
-  non-loopback `SILO_HOST`; with authentication off, a warning is not enough.
-- **Say so, repeatedly.** A banner at startup, a line on every request log, and
-  a field in `GET /api/silo/v1/server-info` — which is already unauthenticated
-  — so the TUI and Porter can show it and skip login rather than inventing a
-  credential.
-- **Never in a release container's default configuration**, and it should be
-  visible in `docker-compose.yml` only as a commented line explaining itself.
-
-E2EE libraries are unaffected: the server holds only ciphertext and no-auth
-does not change that. Turning authentication off gives away everything the
-account can see, which is the point — it does not give away what the server
-itself cannot decrypt.
-
 ## OIDC
 
 ### Silo brokers login; it does not federate every request
@@ -1242,6 +1232,66 @@ failure mode if nobody decides is a mount silently serving ciphertext. A
 paragraph of policy, not a project, but it should be written before the first
 frontend ships.
 
+### Running with no authentication
+
+`SILO_AUTH=none` — every request resolving to a synthetic credential for a
+configured account, with `SILO_AUTH=none:r` narrowing it to read — was step 5
+of the list below for one reason: discovery, a test harness, a fresh checkout
+at 11pm, all of it faster when there is no credential to obtain first. Silo
+should support that directly, the argument went, so that nobody arrives at it
+by disabling a check.
+
+Two things are true now that were not when that was written.
+
+**The first-boot credential exists.** `authmgr.BootstrapAdmin` mints
+`admin@silo.local` with a generated password and logs it once when the account
+table is empty, [above](#bootstrap-without-a-password-in-the-environment). The
+case this mode was for — a server nobody can log in to without having set two
+environment variables before the first boot — is now one warning line and one
+`POST /auth/login`. The Ruby harness in [`test/`](../test/README.md) already
+does exactly that, transparently, and gains nothing from the mode; and CI
+never reaches the generated password at all, because it can set
+`SILO_ADMIN_EMAIL` and `SILO_ADMIN_PASSWORD` itself and know the answer before
+the server starts.
+
+**The ergonomics argument moves to step 2.** No-auth was specified as a
+credential rather than a bypass — `Resolve` still called on every request,
+still returning a `*Credential`, so the authorization path keeps exactly one
+shape and `share.CheckPerm` and the [ceilings](#permission-ceilings) keep
+applying. That design is right, and it is also why the mode could never land
+before `Resolve` mounts. But once it does, a long-lived device credential in an
+environment variable buys the same absence of a login round trip through the
+real code path — and unlike this mode it is revocable, nameable and
+narrowable.
+
+What is left is a mode that is safe in the case it was for and catastrophic in
+every other, where the guards are the bulk of the work rather than the feature:
+environment or flag only, never a value the database or a user-writable file
+can supply; refuse to start off loopback unless a second, differently-named
+acknowledgement is set, because the existing non-loopback warning is not enough
+once authentication is off; a startup banner, a line on every request log, and
+a field in the unauthenticated `server-info` so a client can show it and skip
+login; never in a release container's default configuration. Plus a rule for
+*which* account is everybody — `SILO_AUTH_USER`, or the sole account, or refuse
+to start, because an ambiguous answer to "who is everybody?" is not one to
+guess at.
+
+That is a day of guards buying an ergonomic win a static credential already
+buys. Deferred rather than rejected: reconsider when a concrete consumer asks
+— porter mounting without enrolment, or a harness where the login round trip is
+genuinely in the way. Neither is asking.
+
+One thing not to lose with it. `SILO_AUTH=none:r` was the forcing function for
+[permission ceilings](#permission-ceilings) — the mode is why a read-only
+credential had to *mean* something rather than being a column nobody
+intersects. The ceilings are worth building on their own merits and keep their
+place in the list without this.
+
+E2EE would have been unaffected either way, and the reason is worth keeping on
+the record: the server holds only ciphertext, so turning authentication off
+gives away everything the account can see and nothing the server itself cannot
+decrypt.
+
 ## Order of work
 
 1. **The identity split.** `Account` (UUIDv7), `AccountEmail`,
@@ -1250,9 +1300,13 @@ frontend ships.
    SeaDrive expects. `EmailUser` is deleted, not drained. Everything else
    assumes this, and it lands whole rather than in pieces.
 2. **`Credential`, device credentials, hashed secrets, one `Resolve`** — with
-   the `is_active` join that closes findings 1, 5 and 6 at once. (The legacy
-   adapter this step once included is retired — the clients it served are
-   gone.)
+   the `is_active` join. Mounted 2026-08-26: every route resolves through it,
+   login mints a session credential, and the session JWT, `ApiToken` and
+   `LibraryUserToken` went with it. Findings 1, 3 and 6 closed; 5 is
+   expressible and waits on step 6 to be enforced. Device credentials are the
+   half still to come — nothing mints one yet, because what a device is handed
+   at enrolment is [step 4](#order-of-work)'s question. (The legacy adapter
+   this step once included is retired — the clients it served are gone.)
 3. **A real user CLI** (`silo user add | disable | passwd`), which step 1 makes
    possible and `future-features.md`'s admin API then builds on. Done, with
    `list` and `enable` alongside — a `disable` with no way back is a one-way
@@ -1272,35 +1326,43 @@ frontend ships.
    split-derivation login *is* password login, and building the server half
    first means building it twice. It is sequenced by
    [`plans/store-v2.md`](plans/store-v2.md) phase 2, which needs it.
-5. **`SILO_AUTH=none`** — a synthetic credential from `Resolve`, the
-   non-loopback refusal, and the `server-info` field. Cheap, and worth having
-   early, because it is what makes the next three steps pleasant to develop
-   against.
-6. **Persistent JWT keyfile.** Closes finding 4 for notification tokens; login
+5. **Persistent JWT keyfile.** Closes finding 4 for notification tokens; login
    no longer depends on it.
-7. **Permission ceilings in `CheckPerm`.** Read-only, single-library
-   credentials — and the thing that makes `SILO_AUTH=none:r` mean something.
-8. **Proof of possession** — public keys registered at enrolment, RFC 9421
+6. **Permission ceilings in `CheckPerm`.** Read-only, single-library
+   credentials — the narrowing every other kind of credential is defined in
+   terms of. `SILO_AUTH=none:r` used to be the argument for this step and is
+   now [deferred](#running-with-no-authentication); the ceilings outlived it,
+   because step 2's device credentials are what a client is handed and a
+   credential that cannot be narrowed is one that can only be revoked.
+7. **Proof of possession** — public keys registered at enrolment, RFC 9421
    signatures on the Silo-native lanes, bearer retained for legacy clients and
    capability URLs. Independent of OIDC; whichever is wanted first.
-9. **OIDC** — Silo's `/device/code` enrolment endpoint for Porter, the device
+8. **OIDC** — Silo's `/device/code` enrolment endpoint for Porter, the device
    grant run against the IdP, ID-token verification, `AccountIdentity` binding
    with verified-email recovery, and backchannel logout. Adds no browser
    surface, and step 2's `Credential` is the artefact it produces.
-10. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
+9. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
-Where the list stands: **step 1 is done**, and so is **step 3**. **Step 2 is
-half done** — the table, the token format, `Resolve` and scope parsing are all
-built and tested, but no route reads them yet; the schema comment on
-`Credential` says so in as many words. Mounting `Resolve` — and retiring the
-session JWT, the orphaned `ApiToken`/`LibraryUserToken` stores and the `silo
-token` command with it — is the next step with a deadline flavour to it, since
-every day the routes run on JWTs is a day findings 3, 5 and 6 stay open.
+Where the list stands: **steps 1, 2 and 3 are done.** `Resolve` is mounted, the
+three token stores it replaced are deleted, and a credential can be listed,
+named and revoked — with the revocation taking effect on the next request
+rather than whenever a cache ages out.
 
-Two things step 3 surfaced rather than fixed, both belonging to later steps. A
-password change does not revoke anything: sessions are JWTs signed against a
-server-wide secret, so there is nothing per-account to revoke. `silo user
-passwd` says so on the way out, which is honest rather than sufficient. And
-`is_staff` can be set when an account is created but not afterwards, which is
-fine only until [`plans/admin-check.md`](plans/admin-check.md) makes the flag
-mean something.
+Two things are left over from step 2 and belong to the steps that follow.
+**Nothing mints a scoped or read-only credential**, deliberately: `perm` and
+`scope` are honoured by `EffectivePerm` and no handler calls it yet, so a
+narrowing would read as a guarantee the server does not keep. That is step 6,
+and it now gates step 2's device credentials rather than the other way round.
+And **there is no logout endpoint** — a client cannot discard its own
+credential over HTTP, only an operator can at the CLI. It waits for the route
+table to grow a way to mint before it grows a way to discard.
+
+One thing step 3 surfaced and step 2 has now fixed: a password change still
+does not revoke anything, but it *can* — `credential.RevokeAll` is the call,
+and whether changing a password should sign out every device is a policy
+question rather than a missing mechanism. `silo user passwd` still says
+nothing is revoked, which is now a choice rather than a confession.
+
+Still open from step 3, unchanged: `is_staff` can be set when an account is
+created but not afterwards, which is fine only until
+[`plans/admin-check.md`](plans/admin-check.md) makes the flag mean something.

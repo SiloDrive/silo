@@ -13,7 +13,7 @@ const (
 	otherLibrary  = "cccc1111-2222-3333-4444-555555555555"
 )
 
-func seedLibrary(t *testing.T, libraryID, email, token string) {
+func seedLibrary(t *testing.T, libraryID, email string) {
 	t.Helper()
 	insertTestLibrary(t, libraryID)
 	dbExec(t, "INSERT INTO Branch (name, library_id, commit_id) VALUES (?, ?, ?)",
@@ -21,21 +21,19 @@ func seedLibrary(t *testing.T, libraryID, email, token string) {
 	dbExec(t, "INSERT INTO LibraryHead (library_id, branch_name) VALUES (?, ?)", libraryID, "master")
 	id := mintAccount(t, email).ID
 	dbExec(t, "INSERT INTO LibraryOwner (library_id, account_id) VALUES (?, ?)", libraryID, id)
-	dbExec(t, "INSERT INTO LibraryUserToken (library_id, account_id, token, ctime) VALUES (?, ?, ?, ?)",
-		libraryID, id, token, time.Now().Unix())
 }
 
 // Deleting an origin removed its children's VirtualLibrary rows but left their
-// Library, Branch and LibraryUserToken rows behind. Each child survived as an
+// Library and Branch rows behind. Each child survived as an
 // apparently ordinary library whose StoreID still pointed at the origin's
 // object store — which GC had just reclaimed — so a client kept syncing
 // against an empty store and nothing ever cleaned the rows up.
 func TestDeleteLibraryCascadesToVirtualLibraries(t *testing.T) {
 	sqliteTestDB(t)
 
-	seedLibrary(t, originLibrary, "owner@example.com", "1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa")
-	seedLibrary(t, childLibrary, "owner@example.com", "2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb")
-	seedLibrary(t, otherLibrary, "owner@example.com", "3333cccc3333cccc3333cccc3333cccc3333cccc")
+	seedLibrary(t, originLibrary, "owner@example.com")
+	seedLibrary(t, childLibrary, "owner@example.com")
+	seedLibrary(t, otherLibrary, "owner@example.com")
 	dbExec(t, "INSERT INTO VirtualLibrary (library_id, origin_library, path, base_commit) VALUES (?, ?, ?, ?)",
 		childLibrary, originLibrary, "/sub", "0401fc662e3bc87a41f299a907c056aaf8322a27")
 
@@ -43,7 +41,7 @@ func TestDeleteLibraryCascadesToVirtualLibraries(t *testing.T) {
 		t.Fatalf("DeleteLibrary returned %v", err)
 	}
 
-	for _, table := range []string{"Library", "Branch", "LibraryHead", "LibraryOwner", "LibraryUserToken"} {
+	for _, table := range []string{"Library", "Branch", "LibraryHead", "LibraryOwner"} {
 		if n := countRows(t, "SELECT COUNT(*) FROM "+table+" WHERE library_id = ?", childLibrary); n != 0 {
 			t.Errorf("%s still holds %d row(s) for the orphaned virtual library", table, n)
 		}
@@ -73,7 +71,7 @@ func TestDeleteLibraryCascadesToVirtualLibraries(t *testing.T) {
 func TestDeleteLibrarySurvivesSelfReferencingVirtualLibrary(t *testing.T) {
 	sqliteTestDB(t)
 
-	seedLibrary(t, originLibrary, "owner@example.com", "1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa")
+	seedLibrary(t, originLibrary, "owner@example.com")
 	dbExec(t, "INSERT INTO VirtualLibrary (library_id, origin_library, path, base_commit) VALUES (?, ?, ?, ?)",
 		originLibrary, originLibrary, "/", "0401fc662e3bc87a41f299a907c056aaf8322a27")
 
