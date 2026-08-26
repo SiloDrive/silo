@@ -214,8 +214,6 @@ not reclaim unreferenced history inside a library that still exists.
 | `SILO_LOG_LEVEL` | Log level: debug, info, warn, error | — |
 | `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
 | `SILO_VERIFY_FS_OBJECT_HASHES` | Check uploaded fs objects hash to their id (costs a decompress each; blocks and commits are always checked) | `true` |
-| `SILO_AUTH_CACHE_TTL` | How long token/permission lookups are cached (`0` disables) | `5m` |
-| `SILO_API_TOKEN_TTL` | How long a persistent API token (`silo token`) lasts. A value below one hour is refused rather than clamped — it would expire every existing token irrecoverably | `720h` (30 days) |
 | `SILO_ENABLE_NOTIFICATIONS` | Serve the WebSocket notification endpoint. `false` turns it off, and `notify-token` then answers `404` | `true` |
 | `SILO_GROUP_TABLE_NAME` | Name of the groups table, for a database inherited from a deployment that renamed it | `Group` |
 | `SILO_LOGIN_RATE_LIMIT` | Throttle failed logins per address and per account | `true` |
@@ -325,24 +323,30 @@ since from there Silo cannot tell whether anything is terminating TLS for it.
 
 ## Revoking access
 
-Sync tokens have no expiry, so revoking one is the only way to cut a device
-off. A password change does not.
+Every credential a client presents is a row in one table, so revoking is a
+delete and it reaches every lane at once. A password change does not revoke
+anything.
 
 ```sh
-silo token list bob@example.com      # sync tokens (per device) and API tokens
-silo token revoke bob@example.com    # every token: all devices, all libraries
-silo token revoke bob@example.com <token>   # just one device
+silo token list bob@example.com          # id, kind, label, expiry, last used
+silo token revoke bob@example.com        # every credential, every device
+silo token revoke bob@example.com <id>   # just one, by the id list prints
 ```
+
+The label is what the client called itself when it logged in, and `last used`
+is stamped at five-minute granularity — together they are what makes choosing
+which one to revoke a decision rather than a guess.
 
 Failed logins are throttled per client address and per account, so online
 password guessing is bounded. **Behind a reverse proxy, set
 `SILO_TRUST_PROXY_HEADERS=true`** — otherwise every client arrives as the
 proxy's address and shares one bucket, and one attacker throttles everyone.
 
-Revoking through the CLI takes effect within `SILO_AUTH_CACHE_TTL` (5 minutes
-by default), since a separate process cannot purge the running server's auth
-cache. Set it to `0` to check the database on every request, or restart the
-server to apply a revocation at once.
+Revoking takes effect on the next request. There is no cache in front of the
+credential table and no restart to perform — the row is read on every
+authenticated call. The same is true of `silo user disable`, which stops every
+credential an account holds without deleting any of them, so re-enabling
+restores the user's devices rather than making everyone log in again.
 
 ## Client compatibility
 

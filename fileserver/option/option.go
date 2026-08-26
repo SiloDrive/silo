@@ -18,15 +18,6 @@ import (
 // InfiniteQuota indicates that the quota is unlimited.
 const InfiniteQuota = -2
 
-// MinAPITokenTTL is the shortest API token lifetime an operator may configure.
-// It is a floor on operator input, not on the code: dbutil separately refuses a
-// non-positive TTL, which catches the different failure of a caller reaching the
-// migration before options are loaded.
-//
-// An hour is already far shorter than any real deployment wants for a sliding
-// credential; anything below it is a typo rather than an intent.
-const MinAPITokenTTL = time.Hour
-
 // Storage unit.
 const (
 	KB = 1000
@@ -98,22 +89,6 @@ var (
 	// DB default timeout
 	DBOpTimeout time.Duration
 
-	// AuthCacheTTL bounds how long validateToken and checkPermission may
-	// answer from memory before consulting the database again. It is the
-	// window in which a revoked token or a deleted library still works on a
-	// running server.
-	//
-	// Changes this process makes itself — a library deleted through the
-	// management API — purge the caches immediately, so the TTL only bounds
-	// what it cannot see: `silo token revoke` running as a separate process,
-	// and edits made directly to the database.
-	//
-	// Five minutes keeps effectively all of the benefit. The caches exist to
-	// keep a database round trip out of the path of every block request, and
-	// an actively syncing client makes far more than one request per five
-	// minutes. Set SILO_AUTH_CACHE_TTL=0 to check the database every time.
-	AuthCacheTTL time.Duration
-
 	// SyncObjectWrites fsyncs every commit, fs and block object before it is
 	// published, and fsyncs the directory entry after. On by default: the
 	// branch head lives in SQLite, which fsyncs its own WAL, so without this
@@ -130,17 +105,6 @@ var (
 	// the bool zero value would otherwise turn fsync off for any caller
 	// that reaches the object store first.
 	SyncObjectWrites = true
-
-	// APITokenTTL bounds how long an /api2/ API token stays valid without
-	// being used. The expiry slides on use, so an actively syncing client is
-	// never logged out; only an idle — or leaked and unused — token ages out.
-	//
-	// Configurable because the failure mode on the client side is not fully
-	// known: a client that does not re-authenticate on 401 would stop working
-	// at the TTL, and an operator who hits that needs a way to raise it
-	// without a rebuild. Sync tokens (LibraryUserToken) deliberately have no
-	// equivalent — sync clients persist those and treat them as durable.
-	APITokenTTL time.Duration
 
 	// VerifyFSObjectHashes checks that an uploaded fs object hashes to the id
 	// it was sent under, before it is stored.
@@ -219,8 +183,6 @@ func initDefaultOptions() {
 	RedisMaxConn = 100
 	RedisTimeout = 1 * time.Second
 	MaxIndexingFiles = 10
-	APITokenTTL = 30 * 24 * time.Hour
-	AuthCacheTTL = 5 * time.Minute
 	SyncObjectWrites = true
 	VerifyFSObjectHashes = true
 	LoginRateLimit = true
@@ -294,19 +256,6 @@ func LoadFileServerOptions(configFile string) {
 	// entirely. Unlike the token TTL, a wrong value here is recoverable by
 	// fixing it and restarting, so it is clamped rather than rejected: a
 	// negative duration means the same thing as zero.
-	if v := os.Getenv("SILO_AUTH_CACHE_TTL"); v != "" {
-		d, err := time.ParseDuration(v)
-		switch {
-		case err != nil:
-			log.Warnf("Ignoring unparseable SILO_AUTH_CACHE_TTL %q, using %s", v, AuthCacheTTL)
-		case d <= 0:
-			log.Info("SILO_AUTH_CACHE_TTL is zero: every request will re-check the database.")
-			AuthCacheTTL = 0
-		default:
-			AuthCacheTTL = d
-		}
-	}
-
 	LoginRateLimit = envBool(LoginRateLimit, "SILO_LOGIN_RATE_LIMIT")
 	if !LoginRateLimit {
 		log.Warn("SILO_LOGIN_RATE_LIMIT is off: password guessing against the login " +
@@ -380,33 +329,6 @@ func LoadFileServerOptions(configFile string) {
 		LogLevel = lvl
 	}
 
-	// Accepts a Go duration ("720h", "30m"). An unparseable value keeps the
-	// default rather than disabling expiry, so a typo cannot silently turn API
-	// tokens back into permanent credentials.
-	if v := os.Getenv("SILO_API_TOKEN_TTL"); v != "" {
-		d, err := time.ParseDuration(v)
-		switch {
-		case err != nil:
-			log.Warnf("Ignoring unparseable SILO_API_TOKEN_TTL %q, using %s", v, APITokenTTL)
-		case d < MinAPITokenTTL:
-			// Rejected rather than clamped, because the difference between a
-			// deliberate short TTL and a typo is not knowable here and the
-			// consequence of guessing wrong is not recoverable. The migration
-			// stamps every pre-existing token with expires_at = now + TTL, and
-			// backfills only rows where expires_at IS NULL — so once a too-short
-			// TTL has stamped them, correcting the variable and restarting does
-			// not undo it. Every token stays expired, with nothing in the logs
-			// connecting the symptom to the cause.
-			//
-			// The realistic typo this catches is "30m" for an intended "30 days",
-			// which is 720h.
-			log.Warnf("Ignoring SILO_API_TOKEN_TTL %q: below the %s minimum. Using %s. "+
-				"A shorter value would expire existing tokens irrecoverably.",
-				v, MinAPITokenTTL, APITokenTTL)
-		default:
-			APITokenTTL = d
-		}
-	}
 }
 
 func parseFileServerSection(section *ini.Section) {
