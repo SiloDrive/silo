@@ -29,22 +29,18 @@ we cannot build or modify it.
 bidirectional merge logic that the File Provider model makes unnecessary (see
 below). Wrong tool.
 
-## Verified: the content-addressing model
+## The content-addressing model
 
-Checked against both `seadrive-fuse/src/fs-mgr.c` and
-`silo/fileserver/fsmgr/fsmgr.go`. Everything is SHA-1, hex-encoded to 40 chars.
-
-| Object | ID is SHA-1 of | Reference |
-|---|---|---|
-| Block | raw block content | `objstore/backend_fs.go:109` |
-| File (`Seafile`) | JSON `{type, version, size, block_ids[]}` | `fsmgr.go:406`, `fs-mgr.c:129` |
-| Dir (`SeafDir`) | JSON of its entries | `fsmgr.go:394-401` |
-| Commit | JSON of commit fields | `commitmgr.go:74` |
-
-A `SeafDirent` is `{Mode, ID, Name, Mtime, Modifier, Size}` — note there is **no
-identity field**. `ID` is the content hash.
-
-Empty dir is the sentinel `EmptySha1` (40 zeros).
+> **This section described the object format that preceded the current one** —
+> SHA-1 ids, JSON file and directory objects, a 40-zero empty-directory
+> sentinel. None of it is true any more: ids are SHA-256 over the stored bytes,
+> files are binary manifests over content-defined chunks, and directories and
+> commits are binary objects with public and sealed sections. See
+> [`storage.md`](storage.md) for what the objects are and
+> [`spec/store-format.md`](spec/store-format.md) for their bytes. What survives
+> from the original argument is only the shape: every object is named by the
+> hash of its own content, there is no identity field anywhere, and a client
+> can therefore ask "do you have this?" before transferring anything.
 
 ### The consequence: content hashes cannot be item identifiers
 

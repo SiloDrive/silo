@@ -1,9 +1,8 @@
 # Silo store format v1 — normative specification
 
-Status: **complete for phase 1.** This document is the interop contract between
-the Go implementation in [`store/`](../../store) and porter-mac's Swift port.
-Every section [`plans/store-v2.md`](../plans/store-v2.md) phase 1 pins is now
-restated here as bytes.
+Status: **complete.** This document is the interop contract between the Go
+implementation in [`store/`](../../store) and porter-mac's Swift port. Every
+byte [`../storage.md`](../storage.md) describes is restated here exactly.
 
 | Section | State |
 |---|---|
@@ -16,9 +15,9 @@ restated here as bytes.
 | Directory and commit objects | specified |
 | Key wrapping | specified |
 
-Everything here is normative. Where this document and the plan disagree, this
-one is wrong and should be fixed — the plan holds the arguments, this holds the
-bytes.
+Everything here is normative. Where this document and
+[`../storage.md`](../storage.md) disagree, this one is wrong and should be
+fixed: that document holds the arguments, this one holds the bytes.
 
 ## Conformance
 
@@ -61,7 +60,7 @@ SHA-256 rather than BLAKE3 because nothing in the system is hash-bound —
 ingest is network-capped, the client's change scan is gated on xxh3, scrub is
 disk-capped — and SHA-256 is within 8% of itself on every target with zero
 dependencies, where Go BLAKE3 spans 8× between arm64 and x86. The measurements
-are in [`store-v2-hash-bench.md`](../plans/store-v2-hash-bench.md).
+are in [`../plans/hash-choice.md`](../plans/hash-choice.md).
 
 ## Chunking
 

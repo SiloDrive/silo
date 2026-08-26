@@ -113,7 +113,7 @@ media where the dedup argument does not.
 
 ## What the migration settled
 
-The store-v2 migration changed every id anyway, so the decisions that each
+The move to the current format changed every id anyway, so the decisions that each
 individually meant "rename everything" were taken together, once:
 
 - **The hash is SHA-256**, not SHA-1 (broken collision resistance has no place

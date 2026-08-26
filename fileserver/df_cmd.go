@@ -21,8 +21,8 @@ import (
 //
 //   - head — what the library holds now. Reclaimed by deleting files.
 //   - history — reachable from an older commit but not from head. Reclaimed
-//     only by a retention policy, which does not exist yet; this is the number
-//     that says whether one is worth having.
+//     only by `silo retention` and the expiry pass behind it; this is the
+//     number that says what a shorter window would buy.
 //   - unreferenced — reachable from nothing. Interrupted uploads and abandoned
 //     commits. Reclaimable now, with no policy attached, which is why it is a
 //     column of its own rather than part of history.

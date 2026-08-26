@@ -10,7 +10,7 @@
 >
 > Each false claim is annotated below with the commit that ended it. What
 > *should* bind new work is not decided here and is deliberately not invented:
-> `docs/plans/store-v2.md` is the document that knows, and the one live
+> `storage.md` is the document that knows, and the one live
 > constraint is marked as such.
 >
 > This is a **record** in the sense `docs/README.md` uses the word — kept
@@ -58,7 +58,7 @@ was shaped around them for as long as it was.
   header. New surface goes in the Silo lane (`/api/silo/v1/`), which is free to
   differ — see `docs/sync-design.md`.
 - ~~**Data compatibility.**~~ **Ended twice.** The object layout was replaced by
-  store-v2 — SHA-256 ids, `fastcdc-gear64/v1` content-defined chunking, binary
+  the current store format — SHA-256 ids, `fastcdc-gear64/v1` content-defined chunking, binary
   manifests (c9d5b92, 2efc3dd) — and the two-database guard this bullet
   describes was deleted in d644f8f, so no server refuses to start on anything.
   Table definitions have since been renamed wholesale (dee67bd). The standing
@@ -77,8 +77,8 @@ was shaped around them for as long as it was.
   SHA256-with-fixed-salt, and unsalted SHA1. Old formats are flagged for rehash
   on successful login rather than rejected.
 - ~~**Encryption compatibility.**~~ **Ended by 5d4baa0.** `fileserver/crypt.go`
-  does not exist. Encryption at rest is store-v2's per-library E2EE, which is a
-  different scheme with different guarantees — see `docs/plans/store-v2.md`,
+  does not exist. Encryption at rest is the store's per-library E2EE, which is a
+  different scheme with different guarantees — see `storage.md`,
   not the text below. Original text:
   <br>**Encryption compatibility.** AES-CBC for library versions 1, 2 and 4, and
   AES-128-ECB for version 3, matching what clients already write

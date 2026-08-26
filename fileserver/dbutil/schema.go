@@ -192,10 +192,6 @@ CREATE TABLE IF NOT EXISTS LibraryHead (library_id CHAR(37) PRIMARY KEY, branch_
 -- delta is computed between, and because a commit that publishes an identical
 -- root changes no total.
 --
--- Separate from LibrarySize, which the dying scheduler owns, because the two
--- cover disjoint sets of libraries -- 40-hex heads there, 64-hex heads here --
--- and sharing a row would have made the deletion a rewrite instead of a
--- subtraction.
 CREATE TABLE IF NOT EXISTS LibraryUsage (
   library_id    CHAR(37) PRIMARY KEY,
   size       BIGINT   NOT NULL,
@@ -236,7 +232,7 @@ CREATE TABLE IF NOT EXISTS GarbageLibraries (library_id CHAR(36) PRIMARY KEY);
 -- files inside it; it does not cover the library's own display name, which the
 -- server has to sort, search and show in a listing to a client that has not
 -- unlocked anything. Recorded as a boundary rather than a gap: see the
--- guardrails in docs/plans/store-v2.md.
+-- guardrails in docs/storage.md.
 --
 -- last_modifier holds an address rather than an account id, and stays that
 -- way. It is display data of the same kind as a commit author: a record of

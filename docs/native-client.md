@@ -1,16 +1,16 @@
 # A Native Silo Client
 
-> **Partly stale as of 5d4baa0 / store-v2.** Two things below no longer hold.
+> **Partly stale as of `5d4baa0` and the current store format.** Two things below no longer hold.
 > The `/repo/*` sync-protocol table in "What the CLI does today" describes
 > routes deleted with the Seafile lane in `5d4baa0` — nothing to cross to
 > any more. And "Tier 2" describes the block surface as it worked under fixed
 > 8 MiB SHA-1 chunking (`fileop.go`, `blockmgr/blockmgr.go` — both deleted in
-> the same commit); store-v2 replaced it with content-defined SHA-256
+> the same commit); the current format replaced it with content-defined SHA-256
 > chunking, so the mechanism `blocks/missing` uses today is not the one
 > described here. Kept because the *reasoning* — ask before you send, dedup
 > is a network problem not a storage one — is what tier 2 actually shipped on,
 > and still holds under the new chunker. See
-> [`docs/plans/store-v2.md`](plans/store-v2.md) for what's current and
+> [`storage.md`](storage.md) for what's current and
 > [`porter-brief.md`](porter-brief.md) for the live wire contract.
 
 Silo ships a CLI and a TUI, but neither of them syncs on its own — they drive

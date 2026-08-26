@@ -1,7 +1,7 @@
 # Plan: accounts, public libraries, and share links
 
 Date: 2026-08-22
-Status: **proposed** — depends on [`store-v2.md`](store-v2.md) (E2EE model,
+Status: **proposed** — depends on [`../storage.md`](../storage.md) (E2EE model,
 convergent chunk keys, manifests) and on [`auth.md`](../auth.md)'s credential
 table, which has landed — including the `library_id:path` scope extension this
 plan needs. Build order at the end sequences against both.
@@ -17,7 +17,7 @@ out (deferred, not rejected; see the end).
 |---|---|
 | 1 | Three principals — account, anonymous-via-public-grant, anonymous-via-link — resolve through **one permission path**. No ad-hoc checks in read handlers. |
 | 2 | Public-read-only is a **permanent, listed grant to the anonymous principal** — the same grant machinery as a share link scoped to the library root, differing only in discovery. |
-| 3 | `public_read` ⇒ server-readable library. Exclusive with E2EE at creation; converting an E2EE library to public is `silo convert`, the client-side re-encryption operation store-v2 defines — and conversion to public always starts a new history root. |
+| 3 | `public_read` ⇒ server-readable library. Exclusive with E2EE at creation; converting an E2EE library to public is `silo convert`, the client-side re-encryption operation [`storage.md`](../storage.md) defines — and conversion to public always starts a new history root. |
 | 4 | Anonymous read on public libraries covers the **chunk surface** (manifests + chunks), not just `entries/` — porter can mount a public library with no account. |
 | 5 | A share link is a **Credential row**: `kind=link`, path-extended scope, `perm` ceiling `r`. Revocation, listing, labels, `last_used`, expiry, and the `is_active` account join all come from the existing model. |
 | 6 | Content is encrypted **once**; link flavors differ only in where the share key SK comes from. Three flavors on E2EE libraries: **e2e** (SK in URL fragment — default), **password** (SK wrapped under a password-derived key, `curl -u`), **compatible** (SK wrapped to the server — plain `curl`). |
@@ -45,7 +45,7 @@ path — and it is where E2EE bootstrap lives, because it is the one moment a
 client is guaranteed present:
 
 1. client generates the X25519 identity keypair
-2. client picks the password, runs the argon2id split (store-v2): `authKey`
+2. client picks the password, runs the argon2id split ([`storage.md`](../storage.md)): `authKey`
    goes up as the account password, `wrapKey` never leaves
 3. client uploads the wrapped private key, the published public key, the KDF
    salt, and a recovery-code wrap
@@ -158,13 +158,13 @@ DELETE /api/silo/v1/links/{link-id}
 
 ### One encryption, many doors
 
-Content chunks are encrypted once, at write time, per store-v2. A link never
+Content chunks are encrypted once, at write time, per [`storage.md`](../storage.md). A link never
 re-encrypts anything; it wraps keys:
 
 ```
 chunks        encrypted once under per-chunk keys K_c        (never touched)
 share manifest = the file's (chunk_id, size)* public skeleton plus its K_c
-                list sealed under SK — the store-v2 manifest container with
+                list sealed under SK — the store's manifest container with
                 a different sealed payload — stored as an object the GC
                 treats as a root (below), referenced by the link row
 SK            = the flavor decision:
@@ -174,10 +174,10 @@ SK            = the flavor decision:
    compatible  SK wrapped under link.key — a dedicated server key — in the row
 ```
 
-The container inherits store-v2's zero-nonce discipline **structurally, not
+The container inherits the store's zero-nonce discipline **structurally, not
 by convention**: the sealing key is
 `HKDF-SHA256(SK, salt="silo/share/v1", info=SHA-256(AD), L=32)` — AD being
-store-v2's pinned byte range, header through the end of the public
+the store's pinned byte range, header through the end of the public
 skeleton, which carries `seal_hash = SHA-256(sealed plaintext)` per the
 uniform sealing rule — zero nonce, that same range bound as AD. The same
 shape as the CK path: the reader derives the key from bytes it holds
@@ -202,7 +202,7 @@ over link rows, never a key derivation.
 
 The share manifest is built and uploaded by the **sharer's client** (it holds
 CK; the server cannot build this for an E2EE library). It travels in the
-body of the mint request, and the server holds it to store-v2's manifest
+body of the mint request, and the server holds it to the store's manifest
 byte ceiling — at ~67 bytes per chunk that is generous for any single
 file, and a bound stated is a bound enforced. For the compatible
 flavor the client sends SK in the creation request over TLS — acceptable by
@@ -232,7 +232,7 @@ argon2id verifier in the row, compare per request. Same UX, no key wrapping.
 
 ### Share manifests are GC roots
 
-store-v2's mark phase traces from live commits; a share manifest hangs off a
+The store's mark phase traces from live commits; a share manifest hangs off a
 credential row, not a commit. Without this rule the first GC after a link is
 minted collects the share manifest and the link 404s. So the mark's root
 set is **live commits ∪ the manifests referenced by live link rows** — the
@@ -240,7 +240,7 @@ share manifest for E2EE flavors, and for plain-library links the file's
 ordinary manifest id, recorded on the row at mint time so the pin survives
 the file's deletion (a plain link has no share manifest, and without this
 it would break the moment the file was removed). Share manifests use the
-store-v2 container (chunk ids public, K_c list sealed) precisely so the
+store container (chunk ids public, K_c list sealed) precisely so the
 server can trace what they pin without reading what they carry.
 
 The converse is decided here rather than discovered in phase 5: **a live
@@ -318,7 +318,7 @@ redemption never touches `allowLoginAttempt` or login lockout state; its
 per-code and per-IP counters are its own, for the same reason auth.md has
 `Resolve` bypass login throttling. Worth saying out loud: once enrolment
 derivation moves client-side and authKey verification drops to a fast hash
-(store-v2), link redemption is the **only** argon2id the server ever runs —
+([`storage.md`](../storage.md)), link redemption is the **only** argon2id the server ever runs —
 a pool sized to protect login now exists entirely to serve unauthenticated
 share redeemers, and its sizing should be revisited under that identity.
 
@@ -339,7 +339,7 @@ browser path.
 One embedded static HTML file — no framework, no build step, served for every
 flavor at `/s/{code}`. Filename, size, a download button; for e2e it reads SK
 from the fragment, for password it prompts; decrypts via WebCrypto (AES-GCM
-and HKDF are native — the store-v2 AEAD choice paying off) with argon2id as a
+and HKDF are native — the store's AEAD choice paying off) with argon2id as a
 small WASM blob used only by the password flavor. Download only — no inline
 preview, because preview is what drags in signed URLs, and those wait.
 
@@ -376,7 +376,7 @@ purity here was already imperfect.
 
 1. **Grant model + roles + invites.** Grant table, `CheckPerm` unification,
    role column, invite kind + redemption flow with E2EE bootstrap. Requires
-   auth.md's credential table; sequence with store-v2 phase 3.
+   auth.md's credential table; sequence with the account side of E2EE in [`storage.md`](../storage.md).
 2. **Public libraries.** Anonymous grants, `public-libraries` listing, anonymous
    read across entries + manifests + chunks, per-IP rate limiting, read-only
    enforcement on the write surface. porter learns credential-less `ro`

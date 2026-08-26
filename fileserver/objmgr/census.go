@@ -11,8 +11,8 @@ import (
 
 // Extent is a number of stored objects and the bytes they occupy on disk.
 //
-// Bytes here is what the filesystem holds — the stored form, after compression
-// and after E2EE framing — and not the logical size of anything. That is the
+// Bytes here is what the filesystem holds — the stored form, after E2EE
+// framing — and not the logical size of anything. That is the
 // whole point of the census: quota answers "what do this account's files add
 // up to", and this answers "what is that costing", which are different
 // questions with different answers and only one of them can be acted on by

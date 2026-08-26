@@ -5,13 +5,14 @@
 // because that is what the storage tiers this is heading for actually offer.
 // The local filesystem backend implements it degenerately: one object per
 // "pack", sealing is the atomic publish it already did, and a ranged read is a
-// seek. Phase 4 of the store-v2 plan adds real packs by writing another
-// implementation of this same interface, so the seam changes shape once, here,
-// rather than once now and again later.
+// seek. Real packs arrive as another implementation of this same interface
+// (docs/storage.md), so the seam changes shape once, here, rather than once
+// now and again later.
 //
-// The per-object API on ObjectStore is what commitmgr, fsmgr and blockmgr
-// still call. It is an adapter over the pack interface and goes away with
-// them.
+// ObjectStore is the per-object API over that seam: one object, addressed by
+// its id, which is what every caller above this actually holds. It stays an
+// adapter rather than the interface itself, because a real pack store answers
+// the same question with a lookup and a byte range.
 package objstore
 
 import (
@@ -38,7 +39,13 @@ var ErrContentMismatch = errors.New("content does not match its object id")
 // sentinel means the tiering logic is written once instead of per backend.
 var ErrNotFound = errors.New("no such object")
 
-// The three object types, and the directory each one's store occupies.
+// The two object types, and the directory each one's store occupies.
+//
+// Chunks are the large content objects — the ones packs exist for — and
+// objects are the small ones that describe them: manifests, directories and
+// commits. They are separate because their access patterns and their eventual
+// packing are different: a chunk is read as a byte range out of whatever holds
+// it, and an object is read whole.
 //
 // Exported because they are not private to this package in practice: gc walks
 // the same directories to reclaim them and backup names them in its
@@ -47,22 +54,13 @@ var ErrNotFound = errors.New("no such object")
 // nothing to reclaim, so a renamed store would have turned "silo gc -delete"
 // into a silent no-op that still reported success.
 const (
-	TypeCommits = "commits"
-	TypeFS      = "fs"
-	TypeBlocks  = "blocks"
-
-	// The store-v2 stores. Chunks are the large content objects — the ones
-	// packs exist for — and objects are the small ones that describe them:
-	// manifests, directories and commits. Separate because their access
-	// patterns and their eventual packing are different, the same way blocks
-	// and fs objects are separate today.
 	TypeChunks  = "chunks"
 	TypeObjects = "objects"
 )
 
-// Types lists every object store a repository has, for callers that must
-// cover all of them.
-var Types = []string{TypeCommits, TypeFS, TypeBlocks, TypeChunks, TypeObjects}
+// Types lists every object store a library has, for callers that must cover
+// all of them.
+var Types = []string{TypeChunks, TypeObjects}
 
 // Root returns the directory holding every object store.
 func Root(dataDir string) string {
@@ -83,7 +81,7 @@ func LibraryDir(dataDir, objType, storeID string) string {
 
 // ObjectStore is a container to access storage backend
 type ObjectStore struct {
-	// one of TypeCommits, TypeFS or TypeBlocks
+	// TypeChunks or TypeObjects
 	ObjType string
 	backend storageBackend
 	// initErr is why there is no backend, if there is not. See New.
@@ -162,15 +160,14 @@ type storageBackend interface {
 	removeLibrary(libraryID string) error
 }
 
-// New returns a new object store for a given type of objects.
-// objType is one of TypeCommits, TypeFS or TypeBlocks.
+// New returns a new object store for a given type of objects: TypeChunks or
+// TypeObjects.
 //
 // A backend that cannot be created is recorded rather than returned, and every
-// operation then reports it. The three managers that call this have Init
-// functions returning nothing, and they are deleted by the end of the store
-// cutover — so widening their signatures now costs a ripple through server.go
-// for code with a known end date. What this does fix is the nil dereference
-// the ignored error used to produce: the failure now says what happened.
+// operation then reports it. Callers open their stores where there is nothing
+// to return an error to, so the failure is carried until something asks it a
+// question — which fixes the nil dereference an ignored error used to produce,
+// and says what happened.
 func New(confPath string, dataDir string, objType string) *ObjectStore {
 	obj := &ObjectStore{ObjType: objType}
 	backend, err := newFSBackend(dataDir, objType)
@@ -216,14 +213,11 @@ func (s *ObjectStore) Write(libraryID string, objID string, r io.Reader, sync bo
 // WriteVerified writes an object and publishes it only if its content hashes
 // to objID.
 //
-// This is for the object types whose id is the hash of exactly the bytes
-// stored: blocks in the format being replaced, and every store-v2 object —
-// chunks, manifests, directories and commits. For those it is the invariant of
-// the store itself, so it is enforced here rather than at each caller. Legacy
-// commit and fs ids are computed over other representations and cannot use it.
+// Every object's id is the hash of exactly the bytes stored under it —
+// chunks, manifests, directories and commits alike — so this is the invariant
+// of the store itself, enforced here rather than at each caller.
 //
-// Which digest is decided by the id's width, not by the caller. See
-// verifierFor.
+// The digest is not the caller's to choose. See verifierFor.
 //
 // The check runs before the publish, not after the write, which matters: the
 // object may already exist with the correct content, and a verify-then-delete

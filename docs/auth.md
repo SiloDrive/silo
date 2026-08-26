@@ -600,7 +600,7 @@ sign anything.
 
 ## The client's KDF is not this one, and it needs four columns
 
-Once [`plans/store-v2.md`](plans/store-v2.md)'s split-derivation login lands
+Once [`storage.md`](storage.md)'s split-derivation login lands
 there are **two** argon2id derivations per password, and they are constantly
 mistaken for one. The client stretches the password into `authKey` under
 parameters it fetches before logging in; the server stretches the `authKey` it
@@ -962,7 +962,7 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
 4. **Argon2id behind a concurrency semaphore**, and with it
    [the client's KDF](#the-clients-kdf-is-not-this-one-and-it-needs-four-columns)
    — the four schema items and the pre-login parameters endpoint. Sequenced by
-   [`plans/store-v2.md`](plans/store-v2.md) phase 2, which needs it:
+   [`storage.md`](storage.md) phase 2, which needs it:
    split-derivation login *is* password login, and building the server half first
    means building it twice.
 5. **A persistent JWT keyfile** at mode 0600, so a restart does not disconnect

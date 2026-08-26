@@ -1,4 +1,4 @@
-// Package objmgr is one library's store-v2 objects: its chunks, and the
+// Package objmgr is one library's stored objects: its chunks, and the
 // manifests, directories and commits that describe them.
 //
 // It is the join between the two halves that know nothing about each other.
@@ -6,9 +6,6 @@
 // [objstore] is the tier — bytes addressed by id, no idea what is in them.
 // This package encodes and decodes format objects, puts and gets their bytes,
 // and verifies that an id names what it claims to.
-//
-// It replaces fsmgr, blockmgr and commitmgr, and for now it lives alongside
-// them: nothing here is wired into a request path yet.
 //
 // # The three modes
 //

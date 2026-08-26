@@ -76,7 +76,7 @@ type DirEntry struct {
 	Type string `json:"type"` // "file" or "dir"
 	ID   string `json:"id"`
 	// Size is a pointer because absent and zero are different answers, and on
-	// this endpoint the difference is the common case. A store-v2 dirent
+	// this endpoint the difference is the common case. A dirent
 	// carries no size — it lives in the file's manifest — so the server omits
 	// it rather than reading N manifests to answer one listing. Rendering that
 	// as 0 B states a fact the server never gave: an empty file and a file of

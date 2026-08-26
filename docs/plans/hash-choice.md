@@ -3,7 +3,7 @@
 Date: 2026-08-22
 Status: **closed — SHA-256 confirmed.**
 
-The measurement behind decision 4 of [`store-v2.md`](store-v2.md): which hash
+The measurement behind decision 4 of [`../storage.md`](../storage.md): which hash
 names every chunk and object in the store. Two runs, one per architecture —
 arm64 first, x86 appended — plus source inspection of each candidate library,
 because one of them was doing something that would have quietly poisoned the
@@ -79,7 +79,7 @@ numbers.
 
 AMD Ryzen 5 5600 (Zen 3), `sha_ni` present · go1.27.0 linux/amd64 · GOMAXPROCS=1,
 one-shot API, median of 5. Bench source: recreated per the table above
-(store-v2 gate G2).
+(the store format's hash gate).
 
 | Library | 64 KiB | 256 KiB | 1 MiB | 8 MiB |
 |---|---|---|---|---|
@@ -103,7 +103,7 @@ picture is therefore an inversion in both directions:
 | crypto/sha256 | 2353 | 2193 |
 | zeebo/blake3 | 662 | 5150 |
 
-**Decision: SHA-256 stands**, per store-v2's selection rule — nothing in the
+**Decision: SHA-256 stands**, per the store format's selection rule — nothing in the
 system is hash-bound, so the pick is the hash that is uniformly
 hardware-fast, dependency-free, and native in both Go (stdlib) and Swift
 (CryptoKit) on every target. SHA-256 is within 8% of itself across both

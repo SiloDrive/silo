@@ -1,6 +1,7 @@
 package objstore
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +14,7 @@ import (
 
 const (
 	libraryID = "b1f2ad61-9164-418a-a47f-ab805dbd5694"
-	objID     = "0401fc662e3bc87a41f299a907c056aaf8322a27"
+	objID     = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 )
 
 // Set from os.MkdirTemp in TestMain (t.TempDir needs a *testing.T, which
@@ -208,10 +209,10 @@ func TestObjStoreRejectsInvalidObjectID(t *testing.T) {
 		"a",
 		"ab",
 		"../../../etc/passwd",
-		"0401fc662e3bc87a41f299a907c056aaf8322a2",   // 39 chars
-		"0401fc662e3bc87a41f299a907c056aaf8322a277", // 41 chars
-		"0401FC662E3BC87A41F299A907C056AAF8322A27",  // uppercase hex
-		"0401fc662e3bc87a41f299a907c056aaf8322g27",  // non-hex
+		objID[:len(objID)-1],   // 63 chars
+		objID + "0",            // 65 chars
+		strings.ToUpper(objID), // uppercase hex
+		"g" + objID[1:],        // non-hex
 	}
 
 	bend := New(confPath, dataDir, "commit")
@@ -233,9 +234,8 @@ func TestObjStoreRejectsInvalidObjectID(t *testing.T) {
 	}
 }
 
-// A 64-character id is a store-v2 chunk or pack. Both widths have to work at
-// once: the old objects are still here while the new ones start arriving.
-const sha256ObjID = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+// A second id, for the tests that need two distinct objects in one store.
+const otherObjID = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 
 func writeTestObject(t *testing.T, s *ObjectStore, id, content string) {
 	t.Helper()
@@ -244,9 +244,9 @@ func writeTestObject(t *testing.T, s *ObjectStore, id, content string) {
 	}
 }
 
-func TestBothIDWidthsAreStorable(t *testing.T) {
+func TestObjectsRoundTripUnderTheirOwnIDs(t *testing.T) {
 	s := New(confPath, dataDir, "widths")
-	for _, id := range []string{objID, sha256ObjID} {
+	for _, id := range []string{objID, otherObjID} {
 		writeTestObject(t, s, id, "content for "+id)
 		var got strings.Builder
 		if err := s.Read(libraryID, id, &got); err != nil {
@@ -310,7 +310,7 @@ func TestReadAtPastTheEndReportsEOF(t *testing.T) {
 // above this asks "is it here" once rather than once per backend.
 func TestAMissingObjectIsErrNotFound(t *testing.T) {
 	s := New(confPath, dataDir, "notfound")
-	missing := "1111111111111111111111111111111111111111"
+	missing := strings.Repeat("1", 2*sha256.Size)
 
 	if _, err := s.Stat(libraryID, missing); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Stat: %v, want ErrNotFound", err)
@@ -332,7 +332,7 @@ func TestListYieldsEveryObjectWithItsSize(t *testing.T) {
 	s := New(confPath, dataDir, "list")
 	want := map[string]int64{
 		objID:           4,
-		sha256ObjID:     11,
+		otherObjID:      11,
 		"a" + objID[1:]: 2,
 	}
 	for id, size := range want {
@@ -399,7 +399,7 @@ func TestListSkipsTheDebrisOfAnInterruptedWrite(t *testing.T) {
 func TestListStopsOnTheCallbacksError(t *testing.T) {
 	s := New(confPath, dataDir, "list-stop")
 	writeTestObject(t, s, objID, "one")
-	writeTestObject(t, s, sha256ObjID, "two")
+	writeTestObject(t, s, otherObjID, "two")
 
 	sentinel := errors.New("stop")
 	seen := 0
@@ -437,7 +437,7 @@ func TestRemoveIsIdempotent(t *testing.T) {
 func TestRemoveLibraryTakesEverythingAndIsIdempotent(t *testing.T) {
 	s := New(confPath, dataDir, "remove-library")
 	writeTestObject(t, s, objID, "one")
-	writeTestObject(t, s, sha256ObjID, "two")
+	writeTestObject(t, s, otherObjID, "two")
 
 	for i := range 2 {
 		if err := s.RemoveLibrary(libraryID); err != nil {
@@ -486,5 +486,44 @@ func TestAStoreWithNoBackendReportsWhy(t *testing.T) {
 	}
 	if _, err := s.ReadAt(libraryID, objID, make([]byte, 1), 0); err == nil {
 		t.Error("ReadAt on a store with no backend returned nil")
+	}
+}
+
+// Nothing mints a forty-character id any more. The routes pin their id
+// variable to sixty-four hex characters, store.ParseID refuses anything
+// narrower, and the format that produced SHA-1 commits, fs objects and blocks
+// is gone. A backend that still builds a path from one is a second id parser
+// waiting to disagree with the first.
+func TestOnlyTheSHA256WidthIsStorable(t *testing.T) {
+	const sha1ObjID = "0401fc662e3bc87a41f299a907c056aaf8322a27"
+
+	s := New(confPath, dataDir, TypeChunks)
+	if err := s.Write(libraryID, sha1ObjID, strings.NewReader("legacy"), false); err == nil {
+		t.Errorf("Write(%s) accepted a 40-character id", sha1ObjID)
+	}
+	if err := s.Read(libraryID, sha1ObjID, io.Discard); err == nil {
+		t.Errorf("Read(%s) accepted a 40-character id", sha1ObjID)
+	}
+	if exists, err := s.Exists(libraryID, sha1ObjID); err == nil || exists {
+		t.Errorf("Exists(%s) = (%v, %v), want (false, error)", sha1ObjID, exists, err)
+	}
+	if _, err := s.Stat(libraryID, sha1ObjID); err == nil {
+		t.Errorf("Stat(%s) accepted a 40-character id", sha1ObjID)
+	}
+}
+
+// Types is what gc walks to reclaim a deleted library, so a name in it that no
+// longer names a store is a directory gc looks for and never finds -- and a
+// store missing from it is one gc leaves on disk forever. Two object stores
+// exist: the chunks that hold content and the objects that describe it.
+func TestTypesAreTheTwoLiveStores(t *testing.T) {
+	want := []string{TypeChunks, TypeObjects}
+	if len(Types) != len(want) {
+		t.Fatalf("Types = %v, want %v", Types, want)
+	}
+	for i := range want {
+		if Types[i] != want[i] {
+			t.Fatalf("Types = %v, want %v", Types, want)
+		}
 	}
 }

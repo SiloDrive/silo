@@ -25,7 +25,7 @@ admire; it is the boundary that scopes this plan.
 ## Decisions
 
 - **The log records the control plane and access, never content.** "File X
-  changed at T" is derivable from commits, and store-v2's rule — *store
+  changed at T" is derivable from commits, and the store's rule — *store
   what cannot be derived, advise what can* — applies to the server's own
   tables too. A content event in this log would be the sealed-name-list
   mistake at server scale: two encodings of one history, drifting, with
@@ -151,7 +151,7 @@ Every `audit` row carries
 over the **stored bytes, verbatim** — canonicalisation-by-storage, no
 re-serialization to disagree about. The hash must exist before the row
 does, and `seq` is what the insert produces — the manifest circularity
-from store-v2's first review, one layer up — so **the writer supplies
+from the store format's first review, one layer up — so **the writer supplies
 `seq` explicitly in the INSERT**: the single writer goroutine reads
 `sqlite_sequence` and allocates the next value itself. AUTOINCREMENT's
 no-reuse guarantee survives (an explicit value above the stored sequence
@@ -180,7 +180,7 @@ What it does not buy: fork *consistency*. A server can serve each client
 its own consistent chain, and detecting that requires clients to exchange
 heads out of band. There is a beautiful hook for this already reserved —
 a client could carry its last-seen head inside a commit's sealed section,
-which a malicious server can neither forge nor strip, and store-v2's
+which a malicious server can neither forge nor strip, and the store format's
 reserved flags bits with their reject-if-set rule are exactly the
 deployment mechanism. That is a **named future occupant, not a proposal to
 reopen the format**: it goes in the same queue as per-entry xattrs and
@@ -215,7 +215,7 @@ waits for evidence anyone needs it.
    `LibrarySyncError` has already been dropped.
 3. **The chain + `/events/head` + client pinning.** Porter pins
    `(seq, head)` in its local index and verifies on reconnect. The
-   threat-model paragraph in store-v2.md gains its clause.
+   threat-model paragraph in [`storage.md`](../storage.md) gains its clause.
 4. **The tail as wake-up channel** — if and when measurement says
    per-library polling is the pain.
 
@@ -239,7 +239,7 @@ waits for evidence anyone needs it.
 
 ## Doc changes
 
-- `docs/plans/store-v2.md` — threat model: when phase 3 lands, the
+- `../storage.md` — threat model: when phase 3 lands, the
   rollback sentence gains "control-plane rollback (revocations,
   membership) is *evident* to clients that pin the audit chain head;
   content rollback remains accepted." The reserved-bits rule's candidate

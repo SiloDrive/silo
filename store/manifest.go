@@ -68,7 +68,7 @@ type Manifest struct {
 }
 
 // Inlined reports whether a file of this size carries its bytes in its
-// manifest. G1 measured a third of all files under the threshold holding
+// manifest. Measurement found a third of all files under the threshold holding
 // 0.01% of all bytes: inlining removes a third of the store's chunk objects,
 // and spares a 4 KB file the three round trips of manifest, dirent and chunk.
 func Inlined(fileSize int64) bool { return fileSize < InlineThreshold }

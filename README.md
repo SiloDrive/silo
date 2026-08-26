@@ -41,7 +41,7 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
 - Library create / list / delete
 - File operations: upload, download, mkdir, rename, move, delete
 - Directory listing via `/api/silo/v1/libraries/{id}/dir/`
-- Content-defined chunking, SHA-256 content addressing, per-library end-to-end encryption — see [`docs/plans/store-v2.md`](docs/plans/store-v2.md)
+- Content-defined chunking, SHA-256 content addressing, per-library end-to-end encryption — see [`docs/storage.md`](docs/storage.md)
 - In-process notification server (WebSocket `/notification`) so a client gets push events on library updates instead of polling
 - Embedded SQLite backend (WAL mode, read/write connection split)
 - Auto-generated ephemeral JWT signing key if `SILO_JWT_SECRET` is unset

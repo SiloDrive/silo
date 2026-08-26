@@ -13,7 +13,7 @@ import (
 // added later without a format change — the plan's decision 2.
 const ChunkerAlgorithm = "fastcdc-gear64/v1"
 
-// The default chunker sizes, confirmed by gate G1 against a real 6 TB
+// The default chunker sizes, confirmed by measurement against a real 6 TB
 // workload: 93% of bytes sit in files over 256 MiB, so the target is chosen
 // for read amplification rather than dedup granularity, and 1 MiB is where
 // porter's 2 MiB read window converges.
@@ -30,9 +30,9 @@ const (
 )
 
 // InlineThreshold is the size below which a file's bytes live in its manifest
-// instead of becoming a chunk. G1 measured a third of all files under this
-// size holding 0.01% of all bytes: the threshold removes a third of the chunk
-// objects in the store and costs nothing.
+// instead of becoming a chunk. The workload measurement found a third of all
+// files under this size holding 0.01% of all bytes: the threshold removes a
+// third of the chunk objects in the store and costs nothing.
 const InlineThreshold = 64 << 10
 
 // Params is one library's chunker, as stored in the catalog and served to

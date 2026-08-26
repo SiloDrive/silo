@@ -348,13 +348,13 @@ are surveyed in [`protocol-frontends.md`](protocol-frontends.md).
 Parked, not scheduled. Recorded because the format already does most of the
 work and it would be a shame to drift away from that by accident.
 
-The observation: a plain library under store-v2 is, structurally, what casync
+The observation: a plain library is, structurally, what casync
 was invented to be — a content-addressed chunk store for distributing large
 file trees over dumb transport. Nothing about consuming one read-only needs
 the Silo server:
 
 - **The store is a static tree.** `storage/<type>/<libraryID>/<aa>/<rest>`
-  (`objstore.go:80`) is servable as-is from nginx, an S3 bucket, or a torrent.
+  (`objstore.go:78`) is servable as-is from nginx, an S3 bucket, or a torrent.
   Only writes need Silo; `rsync -a` of the store directory — already the
   documented backup path — is also a mirror.
 - **Every object is immutable, so cache lifetime is forever.** The id is the
@@ -462,7 +462,7 @@ Not being built now — parked here until a client actually needs it.
 
 ## Compression
 
-Nothing compresses today: store-v2 objects and chunks are stored raw (the
+Nothing compresses today: objects and chunks are stored raw (the
 zlib-over-fs-objects inheritance died with the old object format). The
 identity rule that makes compression legal later is unchanged — an id is the
 hash of the *stored form* the client sent, so a storage tier is free to hold
@@ -474,7 +474,7 @@ workloads, so measure first. The original analysis is in
 
 ## Chunking — landed; packing and compaction remain
 
-Content-defined chunking shipped with store-v2: keyed FastCDC
+Content-defined chunking is what the store does: keyed FastCDC
 (`fastcdc-gear64/v1`), 256 KiB / 1 MiB / 4 MiB, per-library parameters, SHA-256
 ids, inlining under 64 KiB. [`chunking.md`](chunking.md) describes the scheme;
 [`spec/store-format.md`](spec/store-format.md) binds it.

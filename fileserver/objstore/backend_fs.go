@@ -7,7 +7,6 @@
 package objstore
 
 import (
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -24,7 +23,6 @@ type fsBackend struct {
 	// Path of the object directory
 	objDir  string
 	objType string
-	tmpDir  string
 }
 
 func newFSBackend(dataDir string, objType string) (*fsBackend, error) {
@@ -33,46 +31,32 @@ func newFSBackend(dataDir string, objType string) (*fsBackend, error) {
 	if err != nil {
 		return nil, err
 	}
-	tmpDir := path.Join(dataDir, "tmpfiles")
-	err = os.MkdirAll(tmpDir, os.ModePerm)
-	if err != nil {
-		return nil, err
-	}
 	backend := new(fsBackend)
 	backend.objDir = objDir
 	backend.objType = objType
-	backend.tmpDir = tmpDir
 	return backend, nil
 }
 
-// verifierFor returns the digest an id names, chosen by the id's width.
+// verifierFor returns the digest an id names.
 //
-// A 40-character id is SHA-1 — a commit, fs object or block from the format
-// being replaced. A 64-character id is SHA-256 — a store-v2 chunk, manifest,
-// directory or commit. There is exactly one right answer per width, and both
-// widths are in the store at once during the cutover, so deriving it here
-// beats threading a hash choice through every caller and giving each one a
-// chance to pick the wrong one.
+// One hash, because there is one id width: every id in the store is the
+// SHA-256 of the bytes it names. It stays a function rather than a call to
+// sha256.New at each site so that the id and the digest that checks it are
+// decided in one place.
 //
-// validPackID has already established that the width is one of the two.
-func verifierFor(id string) hash.Hash {
-	if len(id) == sha256.Size*2 {
-		return sha256.New()
-	}
-	return sha1.New()
-}
+// validPackID has already established the width.
+func verifierFor(string) hash.Hash { return sha256.New() }
 
 // validPackID reports whether an id is one this store will build a path from.
 //
-// Lowercase hex, and either 40 characters or 64: SHA-1 for the objects that
-// exist today and SHA-256 for store-v2's chunks and packs, which are already
-// arriving while the old ones are still here. Both widths are more than the
-// two characters the fan-out slices off, which is the crash this guards.
+// Lowercase hex, sixty-four characters: the SHA-256 of what is stored under
+// it. Sixty-four is more than the two characters the fan-out slices off, which
+// is the crash this guards.
 //
 // One case only. Two spellings of an id are two files holding one object, and
 // the second is invisible to every reader looking for the first.
 func validPackID(id string) bool {
-	if len(id) != 40 && len(id) != 64 {
+	if len(id) != 2*sha256.Size {
 		return false
 	}
 	for i := 0; i < len(id); i++ {
@@ -181,11 +165,11 @@ func (b *fsBackend) write(libraryID string, packID string, r io.Reader, opts wri
 		return err
 	}
 
-	tmpDir := b.tmpDir
-	if b.objType != TypeBlocks {
-		tmpDir = parentDir
-	}
-	tFile, err := os.CreateTemp(tmpDir, packID+".*")
+	// The temp file is written into the directory it will be renamed within,
+	// so the publish is a rename inside one directory rather than a move that
+	// might cross a filesystem. list skips what it leaves behind on a failure
+	// by the suffix CreateTemp adds.
+	tFile, err := os.CreateTemp(parentDir, packID+".*")
 	if err != nil {
 		return err
 	}

@@ -173,7 +173,7 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 // different status.
 var errHistoryCut = errors.New("history cut")
 
-// storeV2Changes computes the diff for a store-v2 library, keylessly.
+// storeV2Changes computes a library's diff, keylessly.
 //
 // It works on an E2EE library, which is the point: the commits give up their
 // roots through the public decoder, the directories give up their edges the

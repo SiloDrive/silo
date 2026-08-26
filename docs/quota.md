@@ -122,7 +122,7 @@ quota.
 
 **Cross-library sharing is not a problem here, and that is what makes this
 clean.** Objects live at `storage/{type}/{storeID}/`, one store per library
-(`objstore.go:80`, `091e22f`), and E2EE libraries have per-library keys anyway,
+(`objstore.go:78`, `091e22f`), and E2EE libraries have per-library keys anyway,
 so identical bytes in two libraries are two blocks. A block therefore belongs
 to exactly one library, which is owned by exactly one account. There is no
 question of who pays for a shared block, no split that changes when somebody
@@ -437,7 +437,7 @@ on describing the world it replaced.
 | `fileserver/objmgr/measure.go:5` | what `Usage` is |
 | `docs/porter-brief.md:166,186,1122` | the wire contract clients are written against |
 | `docs/future-features.md:210` | the roadmap entry |
-| `docs/plans/store-v2.md:951,977,1096,1117` | "accounting is untouched by design" |
+| [`docs/storage.md`](storage.md) § What the numbers mean | "cutting history reclaims disk, never quota" |
 | `fileserver/quota_v2_test.go:102` | the test pinning "freeing space makes room" |
 
 That last row is the honest one. There is a passing test asserting the property
@@ -473,7 +473,7 @@ deleted.
      to close.
 
    Nothing had ever written `gc_id`. The read side has been in place since
-   store-v2 and inert; this activates it.
+   the store cutover and inert; this activates it.
 3. ~~**Date-based expiry.**~~ **Done** — `c99b745`.
    `silo gc -expire-history 30d`, reporting by default.
 

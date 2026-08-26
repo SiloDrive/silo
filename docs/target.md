@@ -142,9 +142,11 @@ these speeds and because the assumption is much easier to keep than to add back.
   the cheapest thing in the system.
 - **Third-party clients.** The lane is ours and has one family of consumers.
 
-Object storage sits outside this list rather than in it: nothing should preclude
-an S3 backend — `storageBackend` (`objstore.go:62`) is the seam and stays clean
-— but it is not being built and does not get a vote in any decision.
+Object storage sits outside this list rather than in it. `storageBackend`
+(`objstore.go:140`) is the seam, and it is already pack-shaped for exactly this
+reason. S3 and a NAS mount are planned durable tiers rather than non-goals —
+see [`storage.md`](storage.md) § Durable tiers — but they are not built, and
+nothing in this target may be shaped around them before they are.
 
 Replication with a single authority (a primary, some number of read-only
 replicas, a minimum copy count that makes dropping safe) is a genuine stretch

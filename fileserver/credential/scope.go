@@ -103,12 +103,12 @@ func (s Scope) String() string {
 // that is ciphertext, and so is a stored path scope — the server compares
 // bytes either way, exactly as it already routes entries/{path} on names it
 // cannot read. That works only because a directory's name salt is generated
-// once and carried forward (docs/plans/store-v2.md), which is what keeps a
+// once and carried forward (docs/storage.md), which is what keeps a
 // path's ciphertext stable across writes; a fresh salt per write would expire
 // every path-scoped credential on the next commit.
 //
 // Two things still move a path out from under a scope, and both are quiet.
-// Renaming an ancestor leaves every segment ciphertext untouched — store-v2.md
+// Renaming an ancestor leaves every segment ciphertext untouched — storage.md
 // is explicit that renaming an ancestor re-encrypts nothing — but the path
 // those segments spell is a different one, exactly as a plaintext path scope
 // stops following a renamed folder. Directory merge is the other way round: it
