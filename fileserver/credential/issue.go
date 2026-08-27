@@ -249,6 +249,31 @@ func RevokeAll(ctx context.Context, owner account.ID) (int64, error) {
 	return dbutil.RowsAffected(res), nil
 }
 
+// RevokeKind deletes every credential of one lane an account holds, and
+// returns how many.
+//
+// It exists for the self-service password change, which docs/auth.md says
+// must revoke session credentials and leave device ones mounted: unmounting
+// somebody's laptop as a side effect of routine hygiene teaches them to stop
+// doing hygiene. RevokeAll is the administrator's version of the same
+// decision, and the two are separate functions because the difference between
+// them is the whole point.
+//
+// The kind is validated rather than passed through: an unrecognised one
+// matches no row, so a typo would report a successful revocation that revoked
+// nothing -- which is the one failure mode a caller cannot see.
+func RevokeKind(ctx context.Context, owner account.ID, kind Kind) (int64, error) {
+	if !kind.valid() {
+		return 0, fmt.Errorf("%w: %q", ErrBadKind, kind)
+	}
+	res, err := writeDB.ExecContext(ctx,
+		"DELETE FROM Credential WHERE account_id = ? AND kind = ?", owner, string(kind))
+	if err != nil {
+		return 0, fmt.Errorf("revoking %s credentials: %v", kind, err)
+	}
+	return dbutil.RowsAffected(res), nil
+}
+
 // CleanupInterval is how often expired rows are swept.
 //
 // Expiry is enforced inside Resolve regardless, so this reclaims table space

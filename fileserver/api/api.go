@@ -71,6 +71,13 @@ func features() []string {
 		"pagination",         // ?limit on changes and directory listings, Link: rel="next"
 		"batch",              // POST libraries/{id}/batch — many operations, one commit
 		"usage",              // GET account/usage, and size/file_count on the libraries listing
+		// Credential self-service. A client cannot discover these by version
+		// number and should not learn them from a 404: a 404 on logout reads
+		// as a broken route rather than as an older server, and a client that
+		// cannot tell the difference has no safe fallback but to leave the
+		// credential live.
+		"logout",          // POST auth/logout, POST auth/logout/everywhere
+		"password-change", // POST auth/password
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification, POST libraries/{id}/notify-token

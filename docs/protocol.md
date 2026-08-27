@@ -92,10 +92,34 @@ the account's alone, so a narrowed credential answers `403` where the account
 behind it would have been allowed. Library-wide operations — `changes`,
 `commits`, `notify-token` — and the id-addressed chunk and object surfaces are
 refused to a folder-scoped credential outright, since neither can be answered
-partially. No route mints a narrowed credential yet; login mints one unscoped
-`rw` session.
+partially. A plain login mints one unscoped `rw` session; an enrolment request
+mints whatever narrowing it asks for, since `perm` and `scope` can only take
+access away.
+
+A scoped credential is refused every route that names no library, because such
+a route answers about the account and that is wider than the scope. `POST
+/auth/logout` is the one exception, and it is not a special case: its subject
+is the row presenting it rather than the account, so it is mounted on
+`RequireOwnCredential`, which is `RequireCredential` without the scope check.
+Nothing else uses that lane.
 
 See [`docs/auth.md`](auth.md) for the model.
+
+### Discarding a credential, and changing a password
+
+```
+POST /api/silo/v1/auth/logout             → 200 {"revoked": 1}   this credential
+POST /api/silo/v1/auth/logout/everywhere  → 200 {"revoked": n}   all of them
+POST /api/silo/v1/auth/password           → 200 {"revoked": n}   n sessions signed out
+{"current_password": "…", "new_password": "…"}
+```
+
+Logging out needs no write permission — revocation only ever takes access away.
+Changing a password needs `rw`, needs the **current** password even though the
+request is authenticated, and signs out every `session` credential on the
+account including the one that asked, while leaving `device` credentials
+mounted. A wrong current password answers `401` and charges the login rate
+limiter.
 
 ## Endpoints
 
@@ -104,13 +128,18 @@ See [`docs/auth.md`](auth.md) for the model.
 JSON request/response bodies. Used by the silo TUI, the CLI in `client/`, and
 the sync clients. Protected by `RequireCredential`, except the two marked
 **No auth** below — they are registered above the authenticated subrouter
-(`server.go:701`) because they are what a client needs *before* it has a
-credential: one to learn what it is talking to, one to get a token.
+(`fileserver/server.go:540`) because they are what a client needs *before* it
+has a credential: one to learn what it is talking to, one to get a token.
+`auth/logout` is registered there too, but is authenticated: see the lane note
+above.
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.5.0","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. No chunker parameters: they belong to the library, and the libraries listing carries them. The `libraries` name says this server serves `/libraries/…`; a client that does not find it is talking to a build that predates the word and should say so rather than read the 404 that follows as an empty account |
-| POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → JWT |
+| POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → a `session` credential, or an enrolled one. Not a JWT: it names a row in `Credential` that can be revoked, labelled and narrowed |
+| POST | `/api/silo/v1/auth/logout` | Discard the credential that made the request. No write permission needed, and a scoped credential may reach it |
+| POST | `/api/silo/v1/auth/logout/everywhere` | Discard every credential the account holds, including this one |
+| POST | `/api/silo/v1/auth/password` | `{"current_password":…,"new_password":…}` — change the password. Needs `rw` and the current password; revokes `session` credentials and leaves `device` ones mounted |
 | GET | `/api/silo/v1/libraries` | List the caller's libraries — owned, plus any shared directly to them through `SharedLibrary` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |
 | POST | `/api/silo/v1/libraries` | Create a new library |
 | DELETE | `/api/silo/v1/libraries/{libraryid}` | Delete a library |

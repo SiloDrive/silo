@@ -23,9 +23,21 @@ import (
 // gets past its argument check and reaches the permission check this measures.
 const zeroCommit = "0000000000000000000000000000000000000000000000000000000000000000"
 
-// narrowed issues a credential for the account the wire harness logs in as,
-// and returns the string a client would present.
+// narrowed issues a device credential for the account the wire harness logs
+// in as, and returns the string a client would present.
 func narrowed(t *testing.T, perm string, scope credential.Scope) string {
+	t.Helper()
+	return issueCredential(t, credential.IssueOpts{
+		Kind:  credential.KindDevice,
+		Scope: scope,
+		Perm:  perm,
+	})
+}
+
+// issueCredential fills in the account and the label -- the two fields every
+// test wants the same and credential.Issue refuses to default -- and returns
+// the secret a client would present.
+func issueCredential(t *testing.T, o credential.IssueOpts) string {
 	t.Helper()
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
@@ -34,15 +46,13 @@ func narrowed(t *testing.T, perm string, scope credential.Scope) string {
 	if err != nil {
 		t.Fatalf("looking up the wire account: %v", err)
 	}
-	_, secret, err := credential.Issue(ctx, credential.IssueOpts{
-		Kind:      credential.KindDevice,
-		AccountID: acct.ID,
-		Label:     "narrowed, for a test",
-		Scope:     scope,
-		Perm:      perm,
-	})
+	o.AccountID = acct.ID
+	if o.Label == "" {
+		o.Label = "issued for a test"
+	}
+	_, secret, err := credential.Issue(ctx, o)
 	if err != nil {
-		t.Fatalf("issuing a %q credential: %v", perm, err)
+		t.Fatalf("issuing a %s credential with perm %q: %v", o.Kind, o.Perm, err)
 	}
 	return secret
 }

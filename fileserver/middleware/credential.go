@@ -40,7 +40,21 @@ var apiKinds = []credential.Kind{credential.KindSession, credential.KindDevice}
 // RequireCredential rejects a request that does not carry a valid credential
 // for one of the lanes this API serves.
 func RequireCredential(next http.Handler) http.Handler {
-	return resolveCredential(next, false)
+	return resolveCredential(next, resolveOpts{})
+}
+
+// RequireOwnCredential authenticates a route whose subject is the presenting
+// credential itself -- logging out, and nothing else so far.
+//
+// It differs from RequireCredential in one thing: it does not apply the
+// narrowing. A scoped credential is refused every route that names no library
+// because such a route answers about the account, which is strictly wider
+// than the scope. This one is strictly narrower -- it is about the row that
+// carries the scope -- and refusing it would leave a mount cut to one library
+// unable to sign itself out, needing an operator with shell access to do what
+// it is entitled to do to itself.
+func RequireOwnCredential(next http.Handler) http.Handler {
+	return resolveCredential(next, resolveOpts{aboutSelf: true})
 }
 
 // OptionalCredential resolves a credential when one is offered and lets the
@@ -53,14 +67,27 @@ func RequireCredential(next http.Handler) http.Handler {
 // it is authenticated and would learn otherwise only from the permissions it
 // silently stopped having.
 func OptionalCredential(next http.Handler) http.Handler {
-	return resolveCredential(next, true)
+	return resolveCredential(next, resolveOpts{optional: true})
 }
 
-func resolveCredential(next http.Handler, optional bool) http.Handler {
+// resolveOpts is how the three wrappers above differ. They are fields rather
+// than two boolean parameters because a call site reading (next, false, true)
+// says nothing about which false and which true.
+type resolveOpts struct {
+	// optional lets an anonymous request through. A credential that is
+	// offered and bad is still refused.
+	optional bool
+
+	// aboutSelf says the route's subject is the credential presenting it, so
+	// a narrowing does not exclude it. See RequireOwnCredential.
+	aboutSelf bool
+}
+
+func resolveCredential(next http.Handler, opts resolveOpts) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cred, err := credential.Resolve(r, apiKinds...)
 		if err != nil {
-			if errors.Is(err, credential.ErrMissing) && optional {
+			if errors.Is(err, credential.ErrMissing) && opts.optional {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -80,7 +107,7 @@ func resolveCredential(next http.Handler, optional bool) http.Handler {
 		// question this layer can answer: the route carries a library id or it
 		// does not. Path granularity and read-versus-write stay with the
 		// handler, which is what knows the path and what the operation does.
-		if !scopeReachesRoute(cred, r) {
+		if !opts.aboutSelf && !scopeReachesRoute(cred, r) {
 			log.Debugf("Credential %s is scoped to %q and may not reach %s", cred.ID, cred.Scope, r.URL.Path)
 			http.Error(w, "Permission denied", http.StatusForbidden)
 			return

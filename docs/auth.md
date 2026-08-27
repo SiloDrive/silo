@@ -403,14 +403,49 @@ so the log line is the only copy that will ever exist. `SILO_ADMIN_EMAIL` and
 `SILO_ADMIN_PASSWORD` still work when set, which is what CI uses. An existing
 table is left alone: this is a bootstrap, not a reset.
 
+## Discarding a credential
+
+A client that can mint one can discard it. Before these routes existed only an
+operator with shell access could, through `silo token revoke`, which made
+signing out of a laptop a support request.
+
+```
+POST /api/silo/v1/auth/logout             this credential
+POST /api/silo/v1/auth/logout/everywhere  every credential the account holds
+
+200 { "revoked": 1 }
+```
+
+Both answer the same body, and the count is worth returning: *"signed out of
+four places"* is a sentence a client can show and cannot derive from a `204`.
+`logout` answers `{"revoked": 0}` if something else revoked the row first,
+which is the outcome the caller asked for either way.
+
+**Neither route asks for write permission.** Revocation only ever takes access
+away, so a `perm: "r"` credential may do it — refusing would mean the client
+narrowed to the point of harmlessness is also the one that cannot slam the
+door.
+
+**The two routes differ in what the request is about, and the narrowing follows
+that.** `logout` is about the row presenting it, which is not wider than that
+row's own scope, so a credential cut to one library may sign itself out;
+`middleware.RequireOwnCredential` is the lane that skips the scope check for
+exactly this reason, and nothing else uses it. `logout/everywhere` answers about
+every credential the account holds, which is strictly wider than any scope, so a
+scoped credential gets `403` from the ordinary rule.
+
+That is also why "everywhere" is a second route rather than a field in the body:
+a flag inside the body would put the answer somewhere the middleware cannot see,
+and the scope check would have to move into the handler — which is how four
+handlers came to bypass it before.
+
 ## Changing a password, and what it revokes
 
 The obvious answer — "everything" — is wrong for one of the two cases:
 
-- **A user changing their own password** should revoke `session` credentials and
-  leave `device` credentials mounted. Unmounting somebody's laptop as a side
-  effect of routine hygiene teaches them to stop doing hygiene. *No HTTP route
-  does this yet; `credential.RevokeAll` is the mechanism when one exists.*
+- **A user changing their own password** revokes `session` credentials and
+  leaves `device` credentials mounted. Unmounting somebody's laptop as a side
+  effect of routine hygiene teaches them to stop doing hygiene.
 - **An administrator resetting a password** revokes everything, and `silo user
   passwd` does. Reaching that command means shell access and an account that is
   not yours to log in to, and the reason an administrator resets a password is
@@ -419,10 +454,40 @@ The obvious answer — "everything" — is wrong for one of the two cases:
   then failed to change the password would sign every device out and leave the
   old password working.
 
-A future self-service change must require the **current** password even when the
-request is already authenticated. Otherwise a stolen device credential upgrades
-itself into account takeover, and the point of a scoped, revocable credential is
-that it cannot become the account.
+```
+POST /api/silo/v1/auth/password
+{ "current_password": "…", "new_password": "…" }
+
+200 { "revoked": 2 }    how many session credentials were signed out
+```
+
+**The current password is required even though the request is already
+authenticated.** Otherwise a stolen device credential upgrades itself into
+account takeover, and the point of a scoped, revocable credential is that it
+cannot become the account. It is checked against the account the credential
+resolved to; there is no address in the body, so nothing here can name somebody
+else's.
+
+**The session that asks is revoked with the rest.** The rule is about kinds, and
+a carve-out for "this one" would mean a client could not read the count as what
+it says.
+
+| Request | Answer |
+|---|---|
+| Either field missing or empty | `400` — the rule `silo user passwd` already holds |
+| A wrong current password | `401`, and it charges the login rate limiter |
+| A `perm: "r"` credential | `403` — setting the account password is the most consequential write there is, and holding the password means a fresh login is available |
+| A scoped credential | `403` — the password is the account's, which is wider than one library |
+
+Permission is checked before the body is read, and the current password after
+the shape: a caller who may not do this at all learns nothing about their body,
+and a malformed request charges no password attempt. The revocation runs
+**after** the new password is stored, for the reason the administrator path
+gives.
+
+Rate limiting is the login endpoint's, on the same buckets. A credential is not
+a throttle: whoever holds one could otherwise guess the password here as fast as
+the server will hash.
 
 ## Operating it
 
@@ -954,27 +1019,22 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
 
 1. **Proof of possession** — public keys registered at enrolment, RFC 9421
    signatures on the Silo lane. Independent of OIDC; whichever is wanted first.
-2. **A logout endpoint.** A client cannot discard its own credential over HTTP,
-   only an operator can at the CLI. The smallest gap on the list, and the route
-   table now has a way to mint, so it can grow a way to discard.
-3. **Self-service password change**, requiring the current password, revoking
-   `session` credentials and leaving `device` ones alone.
-4. **Argon2id behind a concurrency semaphore**, and with it
+2. **Argon2id behind a concurrency semaphore**, and with it
    [the client's KDF](#the-clients-kdf-is-not-this-one-and-it-needs-four-columns)
    — the four schema items and the pre-login parameters endpoint. Sequenced by
    [`storage.md`](storage.md) phase 2, which needs it:
    split-derivation login *is* password login, and building the server half first
    means building it twice.
-5. **A persistent JWT keyfile** at mode 0600, so a restart does not disconnect
+3. **A persistent JWT keyfile** at mode 0600, so a restart does not disconnect
    every watching client. Nothing but notification tokens depends on it.
-6. **A single-use setup credential** in place of `SILO_ADMIN_PASSWORD`, minted on
+4. **A single-use setup credential** in place of `SILO_ADMIN_PASSWORD`, minted on
    first run with no accounts, valid for fifteen minutes or until used.
    `SILO_ADMIN_PASSWORD_FILE` stays for automated deployments.
-7. **OIDC** — `/device/code`, the device grant against the IdP, ID-token
+5. **OIDC** — `/device/code`, the device grant against the IdP, ID-token
    verification, `AccountIdentity` binding with verified-address recovery, and
    backchannel logout. Adds no browser surface, and produces exactly the
    `Credential` row Part 1 describes.
-8. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
+6. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
 Outside that list: `is_staff` can be set when an account is created but not
 afterwards, which is fine only until [`plans/admin-check.md`](plans/admin-check.md)

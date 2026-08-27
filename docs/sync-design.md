@@ -8,7 +8,7 @@
 > object format (fixed-offset chunking, SHA-1 ids, zlib-compressed `fsmgr`
 > objects) — store-v2 replaced the hash (SHA-256), the chunking (content-defined),
 > and the object encoding entirely; see
-> [`docs/plans/store-v2.md`](plans/store-v2.md) for what's current. "The change
+> [`storage.md`](storage.md) for what's current. "The change
 > that actually makes sync fast" proposes a `pack-blocks` alongside `pack-fs`,
 > both Seafile-lane calls that no longer exist. Kept because the reasoning —
 > why a content hash is the right address, why compression is per-lane, why

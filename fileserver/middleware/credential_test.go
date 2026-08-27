@@ -170,7 +170,7 @@ func TestRequireCredentialRefusals(t *testing.T) {
 		{"empty bearer", "Bearer "},
 		{"not a silo credential", "Bearer abcdef"},
 		{"truncated, so the checksum fails", "Bearer " + good[:len(good)-4]},
-		{"a character mistyped", "Bearer " + good[:len(good)-1] + "z"},
+		{"a character mistyped", "Bearer " + mistype(good)},
 		{"unknown credential", "Bearer " + mutateID(good)},
 		{"revoked", "Bearer " + revoked},
 		{"expired", "Bearer " + expired},
@@ -264,6 +264,22 @@ func TestOptionalCredentialStillRefusesABadOne(t *testing.T) {
 // mutateID rewrites the id half of a token and re-checksums it, producing a
 // well-formed credential that no row matches. Editing a character in place
 // would fail the checksum instead, which is a different refusal.
+// mistype changes the last character of a credential, which is the last
+// character of its checksum, so the string is malformed rather than invalid.
+//
+// The replacement is chosen against the character it replaces. Writing "z"
+// unconditionally left one token in thirty-two unchanged -- and an unchanged
+// token is a valid one, so the case passed a request the test believed it had
+// broken and failed at a rate that read as an unrelated flake.
+func mistype(s string) string {
+	last := s[len(s)-1]
+	replacement := byte('z')
+	if last == replacement {
+		replacement = 'a'
+	}
+	return s[:len(s)-1] + string(replacement)
+}
+
 func mutateID(s string) string {
 	tok, err := credential.ParseToken(s)
 	if err != nil {

@@ -32,8 +32,40 @@ what to call instead.
 ## Authentication
 
 `POST /api/silo/v1/auth/login` with `{"email":…,"password":…}` returns
-`{"token": "<JWT>"}`. Send it as `Authorization: Bearer <token>` on every
-`/api/silo/v1/…` request.
+`{"token": "silo_session_…"}`. Send it as `Authorization: Bearer <token>` on
+every `/api/silo/v1/…` request.
+
+It is **not a JWT**, whatever an older copy of this brief said. It names a row
+in the `Credential` table, which is what lets it be revoked, labelled and
+narrowed — none of which a signed blob could be.
+
+Ask for a **device** credential rather than a session and it lasts 90 days
+instead of 24 hours, which is what Porter wants:
+
+```
+POST /api/silo/v1/auth/login
+{"email":…, "password":…, "kind":"device", "client_name":"Porter 1.2 (macOS)"}
+  → 201 {"credential": "silo_device_…", "expires_at": …, "email": …}
+```
+
+`client_name` is required and becomes the label an operator revokes by. Add
+`"perm":"r"` or `"scope":"<library-id>"` to narrow what the credential can
+reach; both can only take access away, so asking for more than the account has
+yields what the account has rather than a `403`. The response shape is chosen
+by the *request* — send none of those fields and you get the plain `{"token":…}`
+you always got, byte for byte.
+
+**Discarding one is a request, not a support ticket:**
+
+```
+POST /api/silo/v1/auth/logout             → 200 {"revoked": 1}   this credential
+POST /api/silo/v1/auth/logout/everywhere  → 200 {"revoked": n}   all of them
+```
+
+Call the first when the user removes the account from Porter — otherwise the
+credential stays live for the rest of its 90 days on a machine that has stopped
+using it. Neither needs write permission, and a credential scoped to one
+library can still sign *itself* out.
 
 There is one surface and one credential now. The `Authorization: Token …` that
 `/api2/…` and `/api/v2.1/…` took, and the `Seafile-Repo-Token` on `/repo/…`,
@@ -55,7 +87,7 @@ password in the Keychain, not the token — the token is the short-lived thing.
 > - [`auth.md`](auth.md)'s device lane makes the password an **enrolment
 >   credential** — presented once, exchanged for a registered keypair,
 >   forgotten. Requests are signed thereafter; there is nothing to re-present.
-> - [`plans/store-v2.md`](plans/store-v2.md)'s split derivation goes further:
+> - [`storage.md`](storage.md)'s split derivation goes further:
 >   nothing persists the password at all. The client derives `wrapKey` at
 >   enrolment, unwraps its identity key with it, stores **the identity key** in
 >   the platform key store, and discards both the password and `wrapKey`.
@@ -855,7 +887,7 @@ What does not yet answer:
 
 The format's spec is in [`spec/store-format.md`](spec/store-format.md), the Go
 in [`store/`](../store) with test vectors for every piece, and the remaining
-build order in [`plans/store-v2.md`](plans/store-v2.md).
+build order in [`storage.md`](storage.md).
 
 **porter-fuse should import `store/`, not reimplement it.** It is a Go package
 in this module with no server dependencies — it holds the chunker, the ids, the

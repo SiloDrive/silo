@@ -539,8 +539,18 @@ func newHTTPRouter() *mux.Router {
 	// Management API
 	r.HandleFunc("/api/silo/v1/auth/login", api.LoginHandler).Methods("POST")
 	r.HandleFunc("/api/silo/v1/server-info", api.ServerInfoHandler).Methods("GET")
+	// Logging out is about the credential presenting it rather than about the
+	// account, so it is mounted outside the subrouter with the lane that does
+	// not apply the narrowing. A mount cut to one library must be able to sign
+	// itself out; see middleware.RequireOwnCredential.
+	r.Handle("/api/silo/v1/auth/logout",
+		middleware.RequireOwnCredential(http.HandlerFunc(api.LogoutHandler))).Methods("POST")
 	apiRouter := r.PathPrefix("/api/silo/v1").Subrouter()
 	apiRouter.Use(middleware.RequireCredential)
+	// Both of these are account-wide, so both take the narrowing: a credential
+	// scoped to one library is refused them here rather than in the handler.
+	apiRouter.HandleFunc("/auth/logout/everywhere", api.LogoutEverywhereHandler).Methods("POST")
+	apiRouter.HandleFunc("/auth/password", api.ChangePasswordHandler).Methods("POST")
 	apiRouter.HandleFunc("/account/usage", api.AccountUsageHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries", api.ListLibrariesHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries", api.CreateLibraryHandler).Methods("POST")

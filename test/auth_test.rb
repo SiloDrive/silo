@@ -64,6 +64,26 @@ class AuthTest < Minitest::Test
     assert_equal 401, resp.status
   end
 
+  # Logging out over the wire, against the running binary. The Go tests measure
+  # the contract; what this adds is the process -- the route is registered
+  # outside the authenticated subrouter, on its own middleware lane, and a
+  # mount that answers 404 in production would pass every router test.
+  #
+  # Only the self form is here. Signing the account out everywhere, or changing
+  # its password, would break every other test in the run and the operator's
+  # SILO_PASSWORD with it; both are covered in Go, against a database per test.
+  def test_logging_out_discards_the_credential
+    c = SiloClient.new(silo_url)
+    c.login(silo_email, silo_password)
+    assert c.list_libraries.ok?, "the credential did not work before logging out"
+
+    resp = c.post("/api/silo/v1/auth/logout")
+    assert resp.ok?, resp.to_s
+    assert_equal 1, resp["revoked"]
+
+    assert_equal 401, c.list_libraries.status, "the credential still works after logging out"
+  end
+
   def test_protected_endpoints_reject_bad_token
     c = SiloClient.new(silo_url)
     c.instance_variable_set(:@token, "not.a.valid.jwt.token")
