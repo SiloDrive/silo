@@ -59,7 +59,7 @@ var commitAttempts = 5
 // sentence.
 const errE2EEWriteByID = "This library is end-to-end encrypted; write its objects by id"
 
-// writeTreeErr answers a failed store-v2 tree mutation.
+// writeTreeErr answers a failed tree mutation.
 //
 // It exists for the reason writeCommitErr does, one layer up: the objmgr
 // sentinels that deserve an answer other than 500 are a fixed set, and every
@@ -114,16 +114,15 @@ func treeFailure(err error, notFound string) *batchFailure {
 const defaultFileMode = 0o644
 
 // defaultDirMode is the mode a server-created directory gets. Permission bits
-// only — a store-v2 dirent records the entry's type in NodeType, so the
+// only — a dirent records the entry's type in NodeType, so the
 // S_IFDIR that a stat-shaped mode ors in here has no place in it.
 const defaultDirMode = 0o755
 
-// mutateTree applies one change to a store-v2 library's tree and moves the
+// mutateTree applies one change to a library's tree and moves the
 // head to a commit describing it, retrying if it loses the race for the head.
 //
-// This is the store-v2 replacement for GenNewCommit and its friends, and the
-// difference worth naming is what it does NOT do. The lane this replaced, on losing
-// the head, merged: it read both trees and reconciled them. That cannot exist
+// The difference worth naming is what it does NOT do. The lane this replaced,
+// on losing the head, merged: it read both trees and reconciled them. That cannot exist
 // here, because merging trees means reading names, and in an E2EE library the
 // server cannot. So a lost race re-applies the same mutation to the new root
 // and swaps again — which is the same loop a client runs against PUT head, and
@@ -290,11 +289,10 @@ func writeCommitErr(w http.ResponseWriter, r *http.Request, err error, what stri
 // headMove is a proposed new head: the commit, the root it names, and who
 // moved it when.
 //
-// It exists so that updateBranch takes facts rather than a commit
-// object. Those four values are all it ever read out of one, and a store-v2
-// commit has the same four — so the compare-and-swap, the GC generation check
-// and the catalog record are written once and serve both formats, rather than
-// being copied into a parallel implementation that then drifts.
+// It exists so that updateBranch takes facts rather than a commit object.
+// Those four values are all it ever read out of one, so the compare-and-swap,
+// the GC generation check and the catalog record are written against the facts
+// rather than against the shape of whatever object supplied them.
 type headMove struct {
 	CommitID string
 	RootID   string

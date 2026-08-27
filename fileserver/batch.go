@@ -56,9 +56,9 @@ type batchFailure struct {
 	message string
 }
 
-// errUnsupportedOp names the operations both lanes accept. One string because
+// errUnsupportedOp names the operations a batch accepts. One string because
 // the set is one set: a client reading it after a typo must not be told
-// different things depending on which lane its library is on.
+// different things depending on where in the batch path it was refused.
 const errUnsupportedOp = `Unsupported op; the operations are "mkdir", "delete", "move", "copy" and "create"`
 
 func batchHandler(w http.ResponseWriter, r *http.Request) {
@@ -107,5 +107,5 @@ func batchHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	batchV2(w, r, library, user, body.Ops)
+	applyBatch(w, r, library, user, body.Ops)
 }

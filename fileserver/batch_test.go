@@ -16,7 +16,7 @@ import (
 // that tree would half-apply the batch — the one outcome a client cannot
 // recover from, because it has no way to find out which half.
 func TestAFailedBatchCommitsNothing(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
@@ -59,7 +59,7 @@ func TestAFailedBatchCommitsNothing(t *testing.T) {
 // The ordinary case, and the two properties that make a batch worth having:
 // operations see each other's effects, and they land in one commit.
 func TestABatchAppliesInOrderAndCommitsOnce(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +102,7 @@ func TestABatchAppliesInOrderAndCommitsOnce(t *testing.T) {
 	}
 }
 
-// mkdir of a directory that already exists is 409 on a store-v2 library, where
+// mkdir of a directory that already exists is 409, where
 // the lane this replaced treated it as satisfied and carried on.
 //
 // Pinned because it is a divergence between the two lanes rather than an
@@ -115,8 +115,8 @@ func TestABatchAppliesInOrderAndCommitsOnce(t *testing.T) {
 // Making Mkdir satisfied-by-existing would fix that, but it is a change to
 // what the mutation layer means, and porter is a second implementation of the
 // same rules. So it is recorded here rather than changed in passing.
-func TestBatchMkdirOfAnExistingDirectoryIsRefusedOnStoreV2(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+func TestBatchMkdirOfAnExistingDirectoryIsRefused(t *testing.T) {
+	libraryID, acct := testLibrary(t)
 
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
 		map[string]string{"libraryid": libraryID}, []byte(`{"ops":[{"op":"mkdir","path":"/x"}]}`))
@@ -148,7 +148,7 @@ func TestBatchMkdirOfAnExistingDirectoryIsRefusedOnStoreV2(t *testing.T) {
 // PutNode has no self-reference check of its own — the guard Rename gets for
 // free from splitLeaf refusing the root, copy does not.
 func TestBatchCopyOfTheLibraryRootIsRefused(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
@@ -173,7 +173,7 @@ func TestBatchCopyOfTheLibraryRootIsRefused(t *testing.T) {
 // Resumable upload: chunks go up separately, then one call names them in
 // order. The file that comes back has to be the file that went up.
 func TestChunksNamedInOrderBecomeTheFile(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	parts := [][]byte{
 		bytes.Repeat([]byte("alpha-"), 40000),
@@ -213,7 +213,7 @@ func TestChunksNamedInOrderBecomeTheFile(t *testing.T) {
 // Naming a chunk the server does not hold is 424 with the list, not a file
 // with a hole in it.
 func TestNamingAnAbsentChunkIsRefused(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	absent := store.ChunkID([]byte("never uploaded")).String()
 	body, _ := json.Marshal(map[string]any{"blocks": []string{absent}})
 
@@ -229,7 +229,7 @@ func TestNamingAnAbsentChunkIsRefused(t *testing.T) {
 // the ignore list are this package's rule — and the batch was the one write
 // path that did not apply it.
 func TestABatchRefusesANameTheSingleOpPathWouldRefuse(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
@@ -256,7 +256,7 @@ func TestABatchRefusesANameTheSingleOpPathWouldRefuse(t *testing.T) {
 // the last operation of a long batch costs nothing — no manifests built, no
 // tree rewritten, nothing to throw away.
 func TestABatchRefusesAnUnknownOpBeforeApplyingAnything(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +291,7 @@ func TestABatchRefusesAnUnknownOpBeforeApplyingAnything(t *testing.T) {
 // query for a value the server had just written — and one that returns a
 // different writer's commit if theirs lands in between.
 func TestABatchReportsTheCommitItMinted(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
 		map[string]string{"libraryid": libraryID}, []byte(`{"ops":[{"op":"mkdir","path":"/d"}]}`))

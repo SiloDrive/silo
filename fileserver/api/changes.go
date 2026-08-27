@@ -138,7 +138,7 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 	// boundary in both directions.
 	target := library.HeadCommitID
 
-	target, changes, err := storeV2Changes(library, since, pinned)
+	target, changes, err := libraryChanges(library, since, pinned)
 	if err != nil {
 		writeChangesErr(w, err, since, target, libraryID)
 		return
@@ -173,14 +173,14 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 // different status.
 var errHistoryCut = errors.New("history cut")
 
-// storeV2Changes computes a library's diff, keylessly.
+// libraryChanges computes a library's diff, keylessly.
 //
 // It works on an E2EE library, which is the point: the commits give up their
 // roots through the public decoder, the directories give up their edges the
 // same way, and the paths come back as base64url of the SIV ciphertext —
 // exactly what entries/{path} routes on. The server answers what changed
 // without learning what any of it is called.
-func storeV2Changes(library *libmgr.Library, since, pinned string) (string, []change, error) {
+func libraryChanges(library *libmgr.Library, since, pinned string) (string, []change, error) {
 	st, err := library.Store()
 	if err != nil {
 		return "", nil, err

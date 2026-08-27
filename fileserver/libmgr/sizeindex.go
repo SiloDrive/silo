@@ -14,7 +14,7 @@ import (
 
 // The listing sidecar: manifest id to file size.
 //
-// A store-v2 directory object names its children and their types and says
+// A directory object names its children and their types and says
 // nothing about how big any of them are, because the size is a property of the
 // file rather than of the directory that mentions it. That is the right shape
 // for the format — a rename rewrites one directory and touches no sizes — and

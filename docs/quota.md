@@ -18,8 +18,8 @@ because answering any of them alone produces a number nobody can act on.
 |---|---|---|
 | Per-account ceiling (`UserQuota` row) | `libmgr.AccountQuota` | built |
 | Config fallback for accounts with no row | `[quota] default`, `option.go:344` | built |
-| Admission on the write path, serialized per owner | `checkQuotaV2` / `refuseOverQuota`, `quota_v2.go` | built |
-| Refusal status **507 Insufficient Storage** | `quota_v2.go:20` | built |
+| Admission on the write path, serialized per owner | `checkQuota` / `refuseOverQuota`, `quota.go` | built |
+| Refusal status **507 Insufficient Storage** | `quota.go:20` | built |
 | Setting a cap from the shell | `silo user quota <email> [size\|none]` | built (`5f5ed23`) |
 | Self lookup `GET /account/usage` → `{usage, quota, kind}` | `api/api.go:439` | built |
 | Per-library size on the libraries listing | `api/api.go:250` | built |
@@ -99,11 +99,11 @@ reaches (`objmgr.Usage`, `libmgr.Usage`). The wire says so in as many words:
 `kind: "logical-at-head"` on `/account/usage`, so a client can name which
 number it is displaying instead of arguing about it.
 
-The reasoning, recorded in `quota_v2.go:26` and worth stating before it is
+The reasoning, recorded in `quota.go:26` and worth stating before it is
 overturned: dedup and compaction move stored bytes under the user's feet, and a
 number that changes because the server ran a background job is not one anybody
 can act on. Under logical-at-head, deleting a file frees exactly its size,
-immediately, and that property is what `quota_v2_test.go:102` exists to pin.
+immediately, and that property is what `quota_test.go:102` exists to pin.
 
 ### What it should count
 
@@ -428,7 +428,7 @@ on describing the world it replaced.
 
 | site | what it says |
 |---|---|
-| `fileserver/quota_v2.go:26` | the charge, and why it is not stored bytes |
+| `fileserver/quota.go:26` | the charge, and why it is not stored bytes |
 | `fileserver/api/api.go:428` | `usageKind = "logical-at-head"` |
 | `fileserver/api/api.go:234` | listing-row `Size`, same claim |
 | `fileserver/user_quota_cmd.go:113` | what the CLI prints to an operator |
@@ -438,7 +438,7 @@ on describing the world it replaced.
 | `docs/porter-brief.md:166,186,1122` | the wire contract clients are written against |
 | `docs/future-features.md:210` | the roadmap entry |
 | [`docs/storage.md`](storage.md) § What the numbers mean | "cutting history reclaims disk, never quota" |
-| `fileserver/quota_v2_test.go:102` | the test pinning "freeing space makes room" |
+| `fileserver/quota_test.go:102` | the test pinning "freeing space makes room" |
 
 That last row is the honest one. There is a passing test asserting the property
 this change gives up. It should fail first, then be rewritten to assert what

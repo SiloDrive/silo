@@ -48,7 +48,7 @@ type prepOp struct {
 	size int64
 }
 
-// batchV2 applies a whole batch to a store-v2 library and commits it once.
+// applyBatch applies a whole batch to a library and commits it once.
 //
 // The shape a per-operation commit loop has to build by hand — a working root that each
 // operation advances, committed only if every one of them succeeded — is what
@@ -56,7 +56,7 @@ type prepOp struct {
 // the head moves underneath it, the entire batch re-applies to the head that
 // won rather than being merged into it, which is the same all-or-nothing
 // promise the endpoint makes, extended to cover contention as well as failure.
-func batchV2(w http.ResponseWriter, r *http.Request, library *libmgr.Library, user string, ops []batchOp) {
+func applyBatch(w http.ResponseWriter, r *http.Request, library *libmgr.Library, user string, ops []batchOp) {
 	st, err := library.Store()
 	if err != nil {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -90,7 +90,7 @@ func batchV2(w http.ResponseWriter, r *http.Request, library *libmgr.Library, us
 	root, commit, err := mutateTree(library, user, func(st *objmgr.Store, start store.ID, now int64) (store.ID, error) {
 		root := start
 		for i, op := range ops {
-			next, fail := applyBatchOpV2(st, root, op.Op, prepped[i], now)
+			next, fail := applyBatchOp(st, root, op.Op, prepped[i], now)
 			if fail != nil {
 				return store.ID{}, &batchErr{i, fail}
 			}
@@ -141,9 +141,9 @@ func prepBatch(w http.ResponseWriter, st *objmgr.Store, ops []batchOp) ([]prepOp
 		// the mutation layer, because objmgr.SplitPath rejects only "." and
 		// "..". Length, encoding and the ignore list are this package's rule,
 		// and validEntryName is where it lives —
-		// and every single-op v2 handler is called with it already applied.
+		// and every single-op handler is called with it already applied.
 		// Without this the batch is the one route by which a name nothing
-		// downstream expects enters a store-v2 library.
+		// downstream expects enters a library.
 		var creates string
 		switch op.Op {
 		case "mkdir", "create":
@@ -196,19 +196,19 @@ func batchFailed(w http.ResponseWriter, i int, op batchOp, fail *batchFailure) {
 	})
 }
 
-// applyBatchOpV2 performs one operation against a working root.
+// applyBatchOp performs one operation against a working root.
 //
 // Every lookup is against that working root rather than the head, which is
 // what makes an ordered batch mean anything: an operation has to see what the
 // ones before it did.
-func applyBatchOpV2(st *objmgr.Store, root store.ID, verb string, p prepOp, now int64) (store.ID, *batchFailure) {
+func applyBatchOp(st *objmgr.Store, root store.ID, verb string, p prepOp, now int64) (store.ID, *batchFailure) {
 	switch verb {
 	case "mkdir":
-		return v2Result(st.Mkdir(root, p.path, defaultDirMode, now))
+		return treeResult(st.Mkdir(root, p.path, defaultDirMode, now))
 	case "delete":
-		return v2Result(st.Remove(root, p.path, now))
+		return treeResult(st.Remove(root, p.path, now))
 	case "move":
-		return v2Result(st.Rename(root, p.path, p.to, now))
+		return treeResult(st.Rename(root, p.path, p.to, now))
 	case "copy":
 		// Rename refuses this for "move" on its own (from has no segments to
 		// split a leaf from); copy has no such gate, since it resolves and
@@ -220,17 +220,17 @@ func applyBatchOpV2(st *objmgr.Store, root store.ID, verb string, p prepOp, now 
 		}
 		node, err := st.Resolve(root, p.path)
 		if err != nil {
-			return v2Result(store.ID{}, err)
+			return treeResult(store.ID{}, err)
 		}
 		// A copy is a move with the delete left off: the new entry points at
 		// the object the source already names, so no content moves and a
 		// directory copies in constant time however large it is.
-		return v2Result(st.PutNode(root, p.to, objmgr.Node{
+		return treeResult(st.PutNode(root, p.to, objmgr.Node{
 			ID: node.ID, Type: node.Type, Name: upath.Base(p.to),
 			Mtime: now, Mode: node.Mode,
 		}, now))
 	case "create":
-		return v2Result(st.PutNode(root, p.path, objmgr.Node{
+		return treeResult(st.PutNode(root, p.path, objmgr.Node{
 			ID: p.manifest, Type: store.NodeFile, Name: upath.Base(p.path),
 			Mtime: now, Mode: defaultFileMode,
 		}, now))
@@ -241,10 +241,10 @@ func applyBatchOpV2(st *objmgr.Store, root store.ID, verb string, p prepOp, now 
 	return store.ID{}, &batchFailure{http.StatusInternalServerError, errUnsupportedOp}
 }
 
-// v2Result turns an objmgr error into the status the same operation would have
+// treeResult turns an objmgr error into the status the same operation would have
 // answered on its own — the same table writeTreeErr puts on the wire, because
 // it is the same table.
-func v2Result(id store.ID, err error) (store.ID, *batchFailure) {
+func treeResult(id store.ID, err error) (store.ID, *batchFailure) {
 	if err == nil {
 		return id, nil
 	}

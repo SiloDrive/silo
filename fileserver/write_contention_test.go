@@ -26,7 +26,7 @@ import (
 // Eight writers start from the same head. One wins; the rest either win a
 // later attempt or come back saying "contention", never "broken".
 func TestConcurrentWritesReportContentionNotFailure(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	const writers = 8
 	codes := make([]int, writers)
@@ -56,7 +56,7 @@ func TestConcurrentWritesReportContentionNotFailure(t *testing.T) {
 // compare-and-swap cannot match on the first attempt, so with no retries left
 // the budget is guaranteed to run out.
 func TestLostRaceIsReportedAsContention(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	stale, err := libmgr.GetWithReason(libraryID)
 	if err != nil {

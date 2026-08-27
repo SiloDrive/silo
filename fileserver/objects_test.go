@@ -36,7 +36,7 @@ func idReq(t *testing.T, h http.HandlerFunc, acct *account.Account, method, targ
 // plain library precisely so the server can read the result back and prove the
 // change actually landed, which on an encrypted one it could not.
 func TestALibraryCanBeWrittenEntirelyByID(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	vars := map[string]string{"libraryid": libraryID}
 	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
@@ -135,7 +135,7 @@ func TestALibraryCanBeWrittenEntirelyByID(t *testing.T) {
 // This is the case server-side merge used to absorb, and refusing it is the
 // whole reason the surface exists in this shape.
 func TestAStaleHeadSwapIsRefused(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	vars := map[string]string{"libraryid": libraryID}
 	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
@@ -170,7 +170,7 @@ func TestAStaleHeadSwapIsRefused(t *testing.T) {
 // A commit with no parent would replace a library's whole history in one call.
 // It has to be refused however well formed it is.
 func TestAHeadSwapToACommitThatDoesNotDescendIsRefused(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	vars := map[string]string{"libraryid": libraryID}
 	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
@@ -198,7 +198,7 @@ func TestAHeadSwapToACommitThatDoesNotDescendIsRefused(t *testing.T) {
 // library can be pointed at a root that does not exist, and every reader after
 // that gets damage rather than an answer.
 func TestAHeadSwapToAnUnknownCommitIsRefused(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +269,7 @@ func buildInlineFileCommit(t *testing.T, acct *account.Account, libraryID, name 
 // up are only an estimate, and nothing charged the exact number at the
 // moment that estimate is supposed to be replaced. This is that charge.
 func TestPutHeadRefusesAHeadMoveThatWouldExceedQuota(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	setQuota(t, acct, 1000)
 
 	oldHead, commitID := buildInlineFileCommit(t, acct, libraryID, "big.bin", bytes.Repeat([]byte("a"), 1500))
@@ -291,14 +291,14 @@ func TestPutHeadRefusesAHeadMoveThatWouldExceedQuota(t *testing.T) {
 }
 
 // Two libraries under one owner, each individually well under quota, but
-// together over it. checkQuotaV2's usage read used to race a concurrent one
+// together over it. checkQuota's usage read used to race a concurrent one
 // with nothing serializing the sequence, so two head moves — the point
 // where usage is actually charged — could each read the account's usage
 // before either had committed and both be admitted. lockOwner (quota_v2.go)
 // closes it by holding the owner's admission lock across the commit, not
 // only the read.
 func TestConcurrentHeadMovesCannotJointlyExceedQuota(t *testing.T) {
-	libraryA, acct := storeV2Library(t)
+	libraryA, acct := testLibrary(t)
 	libraryB, err := libmgr.CreateLibrary("v2b", acct, libmgr.DefaultFormat(false))
 	if err != nil {
 		t.Fatal(err)

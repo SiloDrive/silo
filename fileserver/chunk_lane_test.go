@@ -28,7 +28,7 @@ import (
 // test ever put them in the same process.
 //
 // Nothing here is faked. The router is the one Run builds, the client is the
-// one cmd/silo uses, the store is a real store-v2 library on a temp directory,
+// one cmd/silo uses, the store is a real library on a temp directory,
 // and the bytes go over a real socket.
 
 // laneClient stands up the whole server and returns a logged-in client, the id

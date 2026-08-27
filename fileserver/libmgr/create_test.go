@@ -7,10 +7,11 @@ import (
 	"github.com/dkam/silo/store"
 )
 
-// A new library is store-v2. The ids are the visible half of that — sixty-four
-// hex characters rather than forty — and the empty root is the other: the
-// commit points at a directory object that decodes and holds nothing.
-func TestACreatedLibraryIsStoreV2(t *testing.T) {
+// A new library is fully formed the moment it is created. The ids are the
+// visible half of that — sixty-four hex characters, the SHA-256 of the bytes
+// they name — and the empty root is the other: the commit points at a
+// directory object that decodes and holds nothing.
+func TestACreatedLibraryHasSHA256IDsAndAnEmptyRoot(t *testing.T) {
 	getTestStore(t)
 
 	libraryID, err := CreateLibrary("Fresh", testAccount(t), DefaultFormat(false))
@@ -27,7 +28,7 @@ func TestACreatedLibraryIsStoreV2(t *testing.T) {
 		{"root", library.RootID},
 	} {
 		if len(f.id) != 2*store.IDSize {
-			t.Errorf("%s id %q is %d characters, want %d — this library is not store-v2",
+			t.Errorf("%s id %q is %d characters, want %d — that is not a store id",
 				f.what, f.id, len(f.id), 2*store.IDSize)
 		}
 	}

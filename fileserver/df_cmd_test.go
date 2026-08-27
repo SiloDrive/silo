@@ -18,7 +18,7 @@ import (
 // happen; a census is what somebody runs when things that should not happen
 // have.
 func TestDFAndTheCollectorSeeTheSameLibraries(t *testing.T) {
-	libraryID, _ := storeV2Library(t)
+	libraryID, _ := testLibrary(t)
 	dbExec(t, "DELETE FROM LibraryOwner WHERE library_id = ?", libraryID)
 
 	forDF, err := libraryIDsForDF(nil)

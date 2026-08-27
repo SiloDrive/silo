@@ -18,23 +18,23 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// storeV2Library sets the package up with a throwaway database and one
-// store-v2 library, and returns its id and the account that owns it.
-func storeV2Library(t *testing.T) (string, *account.Account) {
+// testLibrary sets the package up with a throwaway database and one
+// library, and returns its id and the account that owns it.
+func testLibrary(t *testing.T) (string, *account.Account) {
 	t.Helper()
 	sqliteTestDB(t)
 	share.Init(siloPair.Read, "Group", false)
 
 	ctx := context.Background()
-	if _, _, err := account.Create(ctx, "v2@example.com", "", false); err != nil {
+	if _, _, err := account.Create(ctx, "wire@example.com", "", false); err != nil {
 		t.Fatalf("create account: %v", err)
 	}
-	acct, err := account.ByEmail(ctx, "v2@example.com")
+	acct, err := account.ByEmail(ctx, "wire@example.com")
 	if err != nil {
 		t.Fatalf("load account: %v", err)
 	}
 
-	libraryID, err := libmgr.CreateLibrary("v2", acct, libmgr.DefaultFormat(false))
+	libraryID, err := libmgr.CreateLibrary("Wire", acct, libmgr.DefaultFormat(false))
 	if err != nil {
 		t.Fatalf("CreateLibrary: %v", err)
 	}
@@ -70,13 +70,13 @@ func withHeader(k, v string) func(*http.Request) {
 	return func(r *http.Request) { r.Header.Set(k, v) }
 }
 
-// A store-v2 library takes a write and gives the same bytes back, at the whole
+// A library takes a write and gives the same bytes back, at the whole
 // file and at an offset. This is the round trip the HTTP surface exists for,
 // and it is worth asserting here rather than only in objmgr: everything
 // between — the format branch, the tree mutation, the commit and the head
 // swap — is this package's, and objmgr's tests cannot see any of it.
-func TestAStoreV2LibraryRoundTripsAFileOverHTTP(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+func TestALibraryRoundTripsAFileOverHTTP(t *testing.T) {
+	libraryID, acct := testLibrary(t)
 
 	// Big enough to chunk rather than inline, so the manifest has a chunk list
 	// and the ranged read has boundaries to get wrong.
@@ -119,8 +119,8 @@ func TestAStoreV2LibraryRoundTripsAFileOverHTTP(t *testing.T) {
 
 // The head must actually move, and the objects it names must be on disk. A
 // round trip alone would pass if the read were served from anything cached.
-func TestAStoreV2WriteMovesTheHeadToANewCommit(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+func TestAWriteMovesTheHeadToANewCommit(t *testing.T) {
+	libraryID, acct := testLibrary(t)
 
 	before, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
@@ -168,8 +168,8 @@ func TestAStoreV2WriteMovesTheHeadToANewCommit(t *testing.T) {
 }
 
 // A write into a directory that is not there is a 404, not a silent mkdir -p.
-func TestAStoreV2WriteRefusesAMissingParent(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+func TestAWriteRefusesAMissingParent(t *testing.T) {
+	libraryID, acct := testLibrary(t)
 
 	w := do(t, putEntry, acct, http.MethodPut, "/entries/nope/a.txt",
 		map[string]string{"libraryid": libraryID, "path": "nope/a.txt"}, []byte("hello"))
@@ -188,8 +188,8 @@ func TestAStoreV2WriteRefusesAMissingParent(t *testing.T) {
 // anywhere said otherwise. A truncation that reports success is worse than a
 // refusal, and there is no request this can be confused with: a client that
 // declares no length is exactly the one that cannot be caught up front.
-func TestAStoreV2UploadOverTheLimitIsRefusedNotTruncated(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+func TestAnUploadOverTheLimitIsRefusedNotTruncated(t *testing.T) {
+	libraryID, acct := testLibrary(t)
 
 	oldMax := option.MaxUploadSize
 	option.MaxUploadSize = 64
@@ -229,7 +229,7 @@ func TestAStoreV2UploadOverTheLimitIsRefusedNotTruncated(t *testing.T) {
 // inside a batch and 500 outside it, on the same library. One table now, and
 // this is an arm that was missing from it.
 func TestWritingAFileOverADirectoryIsAConflictNotAServerError(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	w := do(t, batchHandler, acct, http.MethodPost, "/batch",
 		map[string]string{"libraryid": libraryID}, []byte(`{"ops":[{"op":"mkdir","path":"/d"}]}`))

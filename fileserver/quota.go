@@ -20,7 +20,7 @@ import (
 // stop rather than to free some space and try again.
 const errOverQuota = "The owner of this library is out of quota"
 
-// checkQuotaV2 refuses a write that would put a library's owner over quota.
+// checkQuota refuses a write that would put a library's owner over quota.
 // nil admits it.
 //
 // The charge is logical size at head, so what is being asked is whether the
@@ -39,7 +39,7 @@ const errOverQuota = "The owner of this library is out of quota"
 // because the lookup failed is how a quota comes to be unenforced without
 // anybody noticing, which is the failure this lane already had and is the
 // reason this function exists.
-func checkQuotaV2(library *libmgr.Library, delta int64) *batchFailure {
+func checkQuota(library *libmgr.Library, delta int64) *batchFailure {
 	owner, err := libmgr.GetLibraryOwner(library.ID)
 	if err != nil || owner.IsZero() {
 		log.Errorf("Failed to find the owner of %s for a quota check: %v", library.ID, err)
@@ -66,7 +66,7 @@ var ownerLocks sync.Map // account.ID -> *sync.Mutex
 // releases it.
 //
 // A caller that only needs the read-then-decide to be atomic — the per-chunk
-// estimate checks — can call checkQuotaV2, which holds this only for the
+// estimate checks — can call checkQuota, which holds this only for the
 // check. A caller whose write is what actually changes usage — the head-move
 // gate — must hold it from before the check through the commit, via
 // checkQuotaLocked, or the same race reopens one level up: the lock would
@@ -78,7 +78,7 @@ func lockOwner(id account.ID) func() {
 	return mu.Unlock
 }
 
-// checkQuotaLocked is checkQuotaV2's read-and-decide step, for a caller that
+// checkQuotaLocked is checkQuota's read-and-decide step, for a caller that
 // already holds owner's admission lock (see lockOwner) across a write that
 // changes usage — the head-move gate keeps the lock through its commit so
 // the total this decides against cannot be admitted against twice.
@@ -105,7 +105,7 @@ func checkQuotaLocked(library *libmgr.Library, owner account.ID, delta int64) *b
 // refuseOverQuota writes the refusal, and reports whether the caller should
 // stop.
 func refuseOverQuota(w http.ResponseWriter, library *libmgr.Library, delta int64) bool {
-	fail := checkQuotaV2(library, delta)
+	fail := checkQuota(library, delta)
 	if fail == nil {
 		return false
 	}

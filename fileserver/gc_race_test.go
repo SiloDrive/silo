@@ -24,7 +24,7 @@ import (
 // So: run the real sweep in the window between a real commit reading the
 // generation and swapping the head.
 func TestARealSweepRejectsAWriteThatWasAlreadyInFlight(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +58,7 @@ func TestARealSweepRejectsAWriteThatWasAlreadyInFlight(t *testing.T) {
 
 // Expiry bumps the generation too, and the same write loses to it.
 func TestARealExpiryRejectsAWriteThatWasAlreadyInFlight(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)

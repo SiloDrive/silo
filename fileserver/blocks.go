@@ -99,29 +99,21 @@ func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
 	writeEntryJSON(w, http.StatusOK, map[string]any{"missing": missing})
 }
 
-// blockInventory reports which of the offered ids the store does not hold, in
-// the order they were offered, and the total size of a file made of them.
+// chunkInventory reports which of the offered ids the chunk store does not
+// hold, in the order they were offered, and the total size of a file made of
+// them.
 //
 // An id is inspected once however often it repeats, and reported missing once,
-// because a file that repeats a block — a run of zeroes, a duplicated section
+// because a file that repeats a chunk — a run of zeroes, a duplicated section
 // — would otherwise have the client upload the same bytes twice. Its size
 // still counts every time it appears: the repeat is a real part of the file's
 // length even though it is one object on disk.
 //
 // Presence is asked of Exists rather than inferred from a failed Stat. They
 // are not the same question: a stat that fails because the disk is unhappy
-// would come back as "not present", the client would upload the block again,
+// would come back as "not present", the client would upload the chunk again,
 // and the second write would fail the same way with the cause now two steps
 // removed from where it happened.
-// chunkInventory is blockInventory for a store-v2 library: the same question
-// asked of the chunk store instead of the block store.
-//
-// Separate rather than a branch inside blockInventory because the id spaces
-// are separate — a forty-character SHA-1 block and a sixty-four-character
-// SHA-256 chunk are not the same object under two names — and a single
-// function taking either would have to decide which store to ask from the
-// shape of a string, which is the kind of inference that is right until
-// somebody offers a mixed list.
 //
 // The size it returns is the STORED size, which under E2EE is sixteen bytes
 // per chunk larger than the plaintext. That is correct for what this answers —

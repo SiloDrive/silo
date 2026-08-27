@@ -958,7 +958,5 @@ the two library types.
 7. **Compression**, measured before it is written.
 8. **`silo convert`.**
 
-Two pieces of debris to clear on the way past, neither load-bearing: nothing
-creates a `VirtualLibrary` row while several queries still join the table, and
-the `_v2` suffixes on files and identifiers name a format that no longer has a
-peer.
+One piece of debris to clear on the way past, not load-bearing: nothing creates
+a `VirtualLibrary` row while several queries still join the table.

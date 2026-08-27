@@ -106,8 +106,7 @@ func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 	head := library.HeadCommitID
 
 	// Exactly the damage the accident caused: the row stays, the object goes.
-	// A store-v2 commit lives in the objects store, not the old commits
-	// one.
+	// A commit lives in the objects store, beside the tree it names.
 	if err := os.RemoveAll(objstore.LibraryDir(dataDir, objstore.TypeObjects, libraryID)); err != nil {
 		t.Fatalf("remove object store: %v", err)
 	}

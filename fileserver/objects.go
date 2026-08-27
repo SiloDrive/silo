@@ -40,12 +40,13 @@ import (
 //
 // What the server verifies, and it is a short list because it is everything it
 // can: that an object's id is the SHA-256 of the bytes offered under it, and
-// that the bytes decode as some store-v2 object. It cannot check that a
-// manifest describes a real file, that a directory's names are well formed, or
-// that a commit says anything true — those need the key. What it can do is
-// refuse to store something that would break its own walks later, which is
-// what the decode check buys: GC's mark and changes?since= both read public
-// sections, and an object that never parsed would fail there instead of here.
+// that the bytes decode as one of the store's object kinds. It cannot check
+// that a manifest describes a real file, that a directory's names are well
+// formed, or that a commit says anything true — those need the key. What it
+// can do is refuse to store something that would break its own walks later,
+// which is what the decode check buys: GC's mark and changes?since= both read
+// public sections, and an object that never parsed would fail there instead of
+// here.
 
 // maxObjectBody bounds an object PUT. store.MaxManifestBytes is the format's
 // own ceiling for the largest object type, so this is that plus room for the
@@ -76,7 +77,7 @@ func idAddressedLibrary(w http.ResponseWriter, r *http.Request, write bool) (*li
 func objectID(w http.ResponseWriter, r *http.Request) (store.ID, bool) {
 	id, err := store.ParseID(mux.Vars(r)["id"])
 	if err != nil {
-		http.Error(w, "Not a store-v2 object id", http.StatusBadRequest)
+		http.Error(w, "Not an object id", http.StatusBadRequest)
 		return store.ID{}, false
 	}
 	return id, true
@@ -231,7 +232,7 @@ func putChunkHandler(w http.ResponseWriter, r *http.Request) {
 	// collector takes them back, because nothing here counts bytes that no
 	// head names. Bounding that needs a per-account tally of unreferenced
 	// bytes, which is the mark phase's number and does not exist yet — see
-	// docs/plans/store-v2.md. Unreferenced bytes are what GC is for; this
+	// docs/storage.md. Unreferenced bytes are what GC is for; this
 	// stops the case where a client is already out of room.
 	if refuseOverQuota(w, library, declaredLength(r)) {
 		return
@@ -280,7 +281,8 @@ func readObjectBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	return data, true
 }
 
-// decodesAsAnObject reports whether the bytes parse as some store-v2 object.
+// decodesAsAnObject reports whether the bytes parse as one of the store's
+// object kinds.
 //
 // It tries all three because the format carries no type tag — a manifest, a
 // directory and a commit each start with a version and a flags byte, and

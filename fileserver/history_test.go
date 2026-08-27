@@ -53,7 +53,7 @@ func listCommits(t *testing.T, libraryID string, acct *account.Account, query st
 // The whole point of the endpoint: history is walkable without the client
 // fetching commit objects one at a time to find out what the previous one was.
 func TestCommitsListsHistoryNewestFirst(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	first := commitFile(t, libraryID, acct, "a.txt", "one")
 	second := commitFile(t, libraryID, acct, "a.txt", "two")
@@ -77,7 +77,7 @@ func TestCommitsListsHistoryNewestFirst(t *testing.T) {
 // under E2EE -- so a history listing that dropped them would make plain
 // history anonymous for no reason.
 func TestCommitsCarriesAuthorAndMessageForAPlainLibrary(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	commitFile(t, libraryID, acct, "a.txt", "one")
 
 	_, got := listCommits(t, libraryID, acct, "")
@@ -90,7 +90,7 @@ func TestCommitsCarriesAuthorAndMessageForAPlainLibrary(t *testing.T) {
 // resumes the walk rather than indexing into it: history is a linked list, and
 // an offset cursor would re-walk from the head on every page.
 func TestCommitsPagesWithoutRepeatingOrSkipping(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	commitFile(t, libraryID, acct, "a.txt", "one")
 	commitFile(t, libraryID, acct, "a.txt", "two")
 	commitFile(t, libraryID, acct, "b.txt", "three")
@@ -128,7 +128,7 @@ func TestCommitsPagesWithoutRepeatingOrSkipping(t *testing.T) {
 // something reasonable is how that bug reaches production. Same rule as
 // parseLimit already applies to the changes feed.
 func TestCommitsRefusesANonsenseLimit(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	commitFile(t, libraryID, acct, "a.txt", "one")
 
 	for _, q := range []string{"?limit=0", "?limit=-1", "?limit=many"} {
@@ -141,7 +141,7 @@ func TestCommitsRefusesANonsenseLimit(t *testing.T) {
 
 // A cursor this server did not issue is refused rather than guessed at.
 func TestCommitsRefusesACursorItDidNotIssue(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	commitFile(t, libraryID, acct, "a.txt", "one")
 
 	resp, _ := listCommits(t, libraryID, acct, "?cursor=bm90LWEtY3Vyc29y")
@@ -153,7 +153,7 @@ func TestCommitsRefusesACursorItDidNotIssue(t *testing.T) {
 // Reading is allowed to anyone who can see the library at all, and refused to
 // everyone else. History is library content, not metadata about it.
 func TestCommitsRefusesAnAccountWithNoPermission(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	commitFile(t, libraryID, acct, "a.txt", "one")
 
 	stranger := mintAccount(t, "stranger@example.com")
@@ -167,7 +167,7 @@ func TestCommitsRefusesAnAccountWithNoPermission(t *testing.T) {
 // This is what makes a .history/ view possible without the client walking the
 // tree object by object.
 func TestEntriesAtAnOldCommitServesTheOldBytes(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	first := commitFile(t, libraryID, acct, "a.txt", "one")
 	commitFile(t, libraryID, acct, "a.txt", "two")
@@ -188,7 +188,7 @@ func TestEntriesAtAnOldCommitServesTheOldBytes(t *testing.T) {
 // A file that has since been deleted is still there in the commit that had it.
 // Recovering a deletion is the main thing anybody wants this for.
 func TestEntriesAtAnOldCommitFindsADeletedFile(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	before := commitFile(t, libraryID, acct, "gone.txt", "content")
 	vars := map[string]string{"libraryid": libraryID, "path": "gone.txt"}
@@ -209,7 +209,7 @@ func TestEntriesAtAnOldCommitFindsADeletedFile(t *testing.T) {
 // A directory listing at an old commit, because a .history/ view is a tree and
 // not a single file.
 func TestEntriesAtAnOldCommitListsTheOldDirectory(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	one := commitFile(t, libraryID, acct, "a.txt", "one")
 	commitFile(t, libraryID, acct, "b.txt", "two")
@@ -232,7 +232,7 @@ func TestEntriesAtAnOldCommitListsTheOldDirectory(t *testing.T) {
 // to the head, because a client that thinks it is editing the past and is
 // silently editing the present is the worst available outcome.
 func TestWritesAtAnOldCommitAreRefused(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	first := commitFile(t, libraryID, acct, "a.txt", "one")
 
 	vars := map[string]string{"libraryid": libraryID, "path": "a.txt"}
@@ -254,7 +254,7 @@ func TestWritesAtAnOldCommitAreRefused(t *testing.T) {
 // longer reachable, and the caller's recovery is to look at what history it
 // does have rather than to retry.
 func TestEntriesAtAnUnreachableCommitIsGone(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	commitFile(t, libraryID, acct, "a.txt", "one")
 
 	missing := "0000000000000000000000000000000000000000000000000000000000000000"
@@ -267,7 +267,7 @@ func TestEntriesAtAnUnreachableCommitIsGone(t *testing.T) {
 
 // An ?at= that is not an id at all is the caller's mistake, not a cut history.
 func TestEntriesAtANonsenseCommitIsBadRequest(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	commitFile(t, libraryID, acct, "a.txt", "one")
 
 	vars := map[string]string{"libraryid": libraryID, "path": "a.txt"}

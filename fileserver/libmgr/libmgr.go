@@ -75,7 +75,7 @@ var dataDir string  // where object stores live
 // Init initialize status of libmgr package.
 //
 // dataDir is here because creating a library now writes objects as well as
-// rows: a store-v2 library's first commit and its empty root are real objects
+// rows: a library's first commit and its empty root are real objects
 // that have to exist before the branch can point at them.
 func Init(read, write *sql.DB, dir string) {
 	readDB = read
@@ -83,7 +83,7 @@ func Init(read, write *sql.DB, dir string) {
 	dataDir = dir
 }
 
-// OpenStore opens a library's store-v2 objects from the server's side.
+// OpenStore opens a library's objects from the server's side.
 //
 // Server's side means without a content key, always — see Format.ServerParams.
 // For a plain library that is the whole story and the Store can do everything.
@@ -268,7 +268,7 @@ func GetWithReason(id string) (*Library, error) {
 	return library, nil
 }
 
-// checkHeadPresent verifies a store-v2 library's head commit object is
+// checkHeadPresent verifies a library's head commit object is
 // actually there.
 //
 // Nothing else does any more, and that is the point. The head used to be
@@ -511,7 +511,7 @@ func GetCurrentGCID(libraryID string) (string, error) {
 // life of the library: every client that ever reads it chunks to these
 // numbers, so the one moment it can be chosen is this one.
 //
-// The library is store-v2: an empty root directory object and an initial
+// The library starts populated: an empty root directory object and an initial
 // commit pointing at it, both minted here and both addressed by SHA-256. The
 // commit carries no library name — the catalog is the authority for that, and
 // a name sealed inside a commit would be unreadable in the library type this

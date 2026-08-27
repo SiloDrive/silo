@@ -198,8 +198,8 @@ assigns to that job; they are the same mark phase.
 > follows here is the summary; read that file before changing any of it.
 
 Quota is **per user**, not per library — a user's cap applies to the total
-size of every library they own. Enforcement is real now: `checkQuotaV2` /
-`refuseOverQuota` (`fileserver/quota_v2.go`) gate the write path, and
+size of every library they own. Enforcement is real now: `checkQuota` /
+`refuseOverQuota` (`fileserver/quota.go`) gate the write path, and
 `silo user quota` (`fileserver/user_quota_cmd.go`) sets one.
 
 ### How it works

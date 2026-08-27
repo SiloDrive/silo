@@ -135,7 +135,7 @@ func renameLibrary(w http.ResponseWriter, r *http.Request, library *libmgr.Libra
 	return true
 }
 
-// mkdirV2 creates one directory in a store-v2 library.
+// mkdirHandler creates one directory in a library.
 //
 // Mkdir rather than MkdirAll: the parent must exist. A typo in a path should
 // not silently build a directory tree, and a client that wants mkdir -p asks

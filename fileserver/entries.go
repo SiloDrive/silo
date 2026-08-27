@@ -601,7 +601,7 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, libraryID, path string
 	})
 }
 
-// putEntryChunks commits a store-v2 file whose chunks are already on the
+// putEntryChunks commits a file whose chunks are already on the
 // server, named in order by the client.
 //
 // This is the resumable upload's second half, and it transfers no content: the
@@ -764,7 +764,7 @@ func putEntryBlocks(w http.ResponseWriter, r *http.Request, libraryID, path stri
 //
 // The limit is policy and spooling to a temp file is mechanism, so the policy
 // lives here rather than inside the temp-file spool where it started. A lane
-// that does not spool — putEntryFileV2 chunks the stream straight into the
+// that does not spool — putEntryFile chunks the stream straight into the
 // object store — needs the same bound and none of the temp file, and taking
 // only the LimitReader from the spool is how it came to enforce half the rule.
 // The half it took is the half that silently truncates.

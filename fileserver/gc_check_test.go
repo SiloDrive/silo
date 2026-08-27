@@ -19,7 +19,7 @@ import (
 // What is still worth asserting is that the check rejects. Opting into a check
 // that never fires is decoration.
 func TestCommitThatRacedGCIsRejected(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)

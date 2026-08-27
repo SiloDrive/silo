@@ -14,7 +14,7 @@ import (
 	"github.com/dkam/silo/fileserver/option"
 )
 
-// checkQuotaV2 used to read owner, quota and usage as three independent
+// checkQuota used to read owner, quota and usage as three independent
 // queries with nothing serializing them: two requests racing the same
 // owner's headroom could each read the same pre-write usage and both be
 // admitted, together landing the owner over quota by more than either write
@@ -77,7 +77,7 @@ func setQuota(t *testing.T, acct *account.Account, bytes int64) {
 }
 
 func TestAWriteThatWouldExceedQuotaIsRefused(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	setQuota(t, acct, 1000)
 
 	vars := map[string]string{"libraryid": libraryID, "path": "first.bin"}
@@ -103,7 +103,7 @@ func TestAWriteThatWouldExceedQuotaIsRefused(t *testing.T) {
 // stored bytes would not: the deleted file's chunks are still on disk until
 // the collector runs, and the user is charged for neither.
 func TestDeletingAFileMakesRoomImmediately(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	setQuota(t, acct, 1000)
 
 	vars := map[string]string{"libraryid": libraryID, "path": "big.bin"}
@@ -128,7 +128,7 @@ func TestDeletingAFileMakesRoomImmediately(t *testing.T) {
 // nothing about quotas rejects every write on the grounds that zero bytes are
 // allowed.
 func TestWithNoQuotaConfiguredNothingIsRefused(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	vars := map[string]string{"libraryid": libraryID, "path": "big.bin"}
 	if w := do(t, entriesHandler, acct, "PUT", "/x", vars, bytes.Repeat([]byte("a"), 1<<20)); w.Code != http.StatusCreated {
@@ -141,7 +141,7 @@ func TestWithNoQuotaConfiguredNothingIsRefused(t *testing.T) {
 // a widget rendering "-2 bytes" is the predictable end of putting it on the
 // wire.
 func TestAccountUsageReportsWhatIsUsedAndLabelsIt(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	vars := map[string]string{"libraryid": libraryID, "path": "a.bin"}
 	if w := do(t, entriesHandler, acct, "PUT", "/x", vars, bytes.Repeat([]byte("a"), 4096)); w.Code != http.StatusCreated {
@@ -183,7 +183,7 @@ func TestAccountUsageReportsWhatIsUsedAndLabelsIt(t *testing.T) {
 // The listing carries each library's own size, because a library shared with
 // you appears there but is charged to its owner.
 func TestTheLibrariesListingCarriesEachLibrarysSize(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	api.Init(siloPair.Read, siloPair.Write) // the listing reads the catalog directly
 	vars := map[string]string{"libraryid": libraryID, "path": "a.bin"}
 	if w := do(t, entriesHandler, acct, "PUT", "/x", vars, bytes.Repeat([]byte("a"), 2048)); w.Code != http.StatusCreated {
@@ -218,7 +218,7 @@ func TestTheLibrariesListingCarriesEachLibrarysSize(t *testing.T) {
 // counter gets wrong: charge the new size without crediting the old and the
 // number climbs forever.
 func TestUsageIsExactAfterAnOverwrite(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	vars := map[string]string{"libraryid": libraryID, "path": "a.bin"}
 
 	for _, size := range []int{5000, 100, 3000} {

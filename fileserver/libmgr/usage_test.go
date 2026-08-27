@@ -10,7 +10,7 @@ import (
 	storefmt "github.com/dkam/silo/store"
 )
 
-// newLibrary creates a store-v2 library owned by the test account and returns
+// newLibrary creates a library owned by the test account and returns
 // it loaded.
 func newLibrary(t *testing.T, name string) *Library {
 	t.Helper()

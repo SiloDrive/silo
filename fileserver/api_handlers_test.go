@@ -80,7 +80,7 @@ func TestMovesIntoOwnSubtree(t *testing.T) {
 // commit — silent data loss reported as 200. Refused before anything is
 // written. See docs/bugs/fixed/move-onto-directory-destroys-it.md.
 func TestMoveOntoDirectoryIsRefused(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	mkdir(t, libraryID, acct, "/dst")
 	put(t, libraryID, acct, "/dst/keep.txt", []byte("precious"))
@@ -98,7 +98,7 @@ func TestMoveOntoDirectoryIsRefused(t *testing.T) {
 // A move of a directory into its own subtree cannot be done at all: the
 // destination would be inside the thing being removed.
 func TestMoveIntoOwnSubtreeIsRefused(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 
 	mkdir(t, libraryID, acct, "/docs")
 	put(t, libraryID, acct, "/docs/keep.txt", []byte("precious"))
@@ -115,7 +115,7 @@ func TestMoveIntoOwnSubtreeIsRefused(t *testing.T) {
 // A copy leaves the source where it was, and transfers no content: the new
 // entry names the object the source already names.
 func TestCopyLeavesTheSourceInPlace(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	put(t, libraryID, acct, "/original.txt", []byte("content"))
 
 	w := postOp(t, libraryID, acct, "/original.txt", "copy", "/duplicate.txt")
@@ -146,7 +146,7 @@ func TestCopyLeavesTheSourceInPlace(t *testing.T) {
 // source as it stands at this commit, so it is a snapshot of a finite thing.
 // This is the one case a move must refuse and a copy need not.
 func TestCopyIntoOwnSubtreeTerminates(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	mkdir(t, libraryID, acct, "/docs")
 	put(t, libraryID, acct, "/docs/keep.txt", []byte("precious"))
 
@@ -169,7 +169,7 @@ func TestCopyIntoOwnSubtreeTerminates(t *testing.T) {
 // component that is not a directory read as a plain 404 through this
 // endpoint and as 409 everywhere else the same error is produced.
 func TestMoveSourceThroughAFileAnswersConflictNotNotFound(t *testing.T) {
-	libraryID, acct := storeV2Library(t)
+	libraryID, acct := testLibrary(t)
 	put(t, libraryID, acct, "/f.txt", []byte("not a directory"))
 
 	w := postOp(t, libraryID, acct, "/f.txt/nested", "move", "/elsewhere")
