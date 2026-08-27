@@ -121,6 +121,46 @@ account including the one that asked, while leaving `device` credentials
 mounted. A wrong current password answers `401` and charges the login rate
 limiter.
 
+### The account's key material
+
+Four things per account that the server stores and cannot read: the published
+X25519 public key, the identity private key wrapped under a password-derived
+key, that same key wrapped once per recovery code, and the argon2id parameters
+the password is stretched under. See
+[`auth.md`](auth.md#the-accounts-key-material).
+
+```
+GET    /api/silo/v1/account/keys                → 200 {public_key, wrapped_key, kdf_params, recovery:[…]}
+                                                  404 if nothing has been published
+PUT    /api/silo/v1/account/keys                → 200 {"updated_at": …, "recovery": 10}
+{"public_key": "<b64>", "wrapped_key": "<b64>", "kdf_params": "$argon2id$…",
+ "recovery": [{"ordinal": 0, "wrapped_key": "<b64>"}, …]}
+
+DELETE /api/silo/v1/account/keys/recovery/{n}   → 200 {"remaining": 9}
+
+POST   /api/silo/v1/auth/kdf                    → 200 {"kdf_params": "$argon2id$…"}
+{"email": "…"}
+```
+
+Every blob is base64. `PUT` replaces the whole set rather than merging into it,
+in one transaction, because a password change re-wraps all of them at once and
+a stale blob is one that still opens with the old secret. The server refuses a
+publish whose `kdf_params` disagree with the parameters sealed inside
+`wrapped_key` — they are one fact stored twice, and a pair that can drift makes
+a blob nobody can open.
+
+`POST auth/kdf` is **unauthenticated**, because a client needs the parameters
+before it can turn a password into anything. It never answers `404`: an address
+nobody holds gets plausible parameters derived from a stored server secret, the
+same ones every time, because the difference between two answers would be an
+account-enumeration oracle. `POST` rather than `GET` so the address does not
+travel in a URL and into every log along the way. Rate limited per address at
+sixty a minute.
+
+Nothing sends the derived `authKey` yet — `POST auth/login` still takes the
+password. The endpoint ships with the account model rather than after it; see
+[`storage.md`](storage.md)'s split-derivation login.
+
 ## Endpoints
 
 ### Native management API — `/api/silo/v1/*`
@@ -128,10 +168,10 @@ limiter.
 JSON request/response bodies. Used by the silo TUI, the CLI in `client/`, and
 the sync clients. Protected by `RequireCredential`, except the two marked
 **No auth** below — they are registered above the authenticated subrouter
-(`fileserver/server.go:540`) because they are what a client needs *before* it
-has a credential: one to learn what it is talking to, one to get a token.
-`auth/logout` is registered there too, but is authenticated: see the lane note
-above.
+(`fileserver/server.go:542`) because they are what a client needs *before* it
+has a credential: one to learn what it is talking to, one to get the parameters
+that turn a password into what it sends, and one to get a token. `auth/logout`
+is registered there too, but is authenticated: see the lane note above.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -140,6 +180,10 @@ above.
 | POST | `/api/silo/v1/auth/logout` | Discard the credential that made the request. No write permission needed, and a scoped credential may reach it |
 | POST | `/api/silo/v1/auth/logout/everywhere` | Discard every credential the account holds, including this one |
 | POST | `/api/silo/v1/auth/password` | `{"current_password":…,"new_password":…}` — change the password. Needs `rw` and the current password; revokes `session` credentials and leaves `device` ones mounted |
+| POST | `/api/silo/v1/auth/kdf` | **No auth.** `{"email":…}` → the argon2id parameters that address's password is stretched under, client-side. Never `404`: an address with no account gets plausible, stable, per-address parameters, so this cannot be used to ask which addresses exist |
+| GET | `/api/silo/v1/account/keys` | The account's published X25519 public key, its wrapped identity private key, its recovery wraps and its `kdf_params`. `404` before anything is published. Readable with a `perm: "r"` credential |
+| PUT | `/api/silo/v1/account/keys` | Publish all of it, replacing what was there. Needs `rw`. `400` names the specific refusal — every one is a client bug whose symptom otherwise appears on a device months later |
+| DELETE | `/api/silo/v1/account/keys/recovery/{n}` | Redeem one recovery wrap; the rest of the set stands. Needs `rw`. `404` if that ordinal is already spent |
 | GET | `/api/silo/v1/libraries` | List the caller's libraries — owned, plus any shared directly to them through `SharedLibrary` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |
 | POST | `/api/silo/v1/libraries` | Create a new library |
 | DELETE | `/api/silo/v1/libraries/{libraryid}` | Delete a library |

@@ -84,6 +84,42 @@ class AuthTest < Minitest::Test
     assert_equal 401, c.list_libraries.status, "the credential still works after logging out"
   end
 
+  # The pre-login parameters endpoint, against the running binary. It is
+  # unauthenticated, so what this measures that a Go test cannot is that it is
+  # mounted outside the credential subrouter -- a route registered one line
+  # lower would answer 401 to every client before it ever had a password to
+  # stretch.
+  #
+  # The dummy salt for an address nobody holds is derived from a secret in the
+  # database rather than one generated at boot, so that two requests either
+  # side of a restart cannot be told apart. This asks the same address twice
+  # against one process, which is the half of that a test can see; the other
+  # half is covered in Go, where the store is reachable directly.
+  def test_pre_login_parameters_answer_alike_for_an_address_with_no_account
+    c = SiloClient.new(silo_url)
+
+    known = c.post("/api/silo/v1/auth/kdf", { email: silo_email }, auth: false)
+    assert known.ok?, known.to_s
+    assert_match(/\A\$argon2id\$v=19\$m=\d+,t=\d+,p=\d+\$/, known["kdf_params"],
+      "the parameters are not a PHC argon2id string")
+
+    unknown = c.post("/api/silo/v1/auth/kdf", { email: "nobody@example.invalid" }, auth: false)
+    assert unknown.ok?, "an unknown address was not answered like a known one: #{unknown}"
+    assert_match(/\A\$argon2id\$v=19\$/, unknown["kdf_params"])
+
+    again = c.post("/api/silo/v1/auth/kdf", { email: "nobody@example.invalid" }, auth: false)
+    assert_equal unknown["kdf_params"], again["kdf_params"],
+      "two requests for one unknown address answered differently"
+
+    refute_equal known["kdf_params"], unknown["kdf_params"]
+  end
+
+  def test_pre_login_parameters_need_an_address
+    c = SiloClient.new(silo_url)
+    resp = c.post("/api/silo/v1/auth/kdf", {}, auth: false)
+    assert_equal 400, resp.status
+  end
+
   def test_protected_endpoints_reject_bad_token
     c = SiloClient.new(silo_url)
     c.instance_variable_set(:@token, "not.a.valid.jwt.token")

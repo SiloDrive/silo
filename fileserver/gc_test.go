@@ -14,6 +14,7 @@ import (
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/serversecret"
 )
 
 // sqliteTestDB points the package's database connection at a throwaway SQLite
@@ -47,6 +48,7 @@ func sqliteTestDB(t *testing.T) {
 	absDataDir = t.TempDir()
 	account.Init(pair.Read, pair.Write)
 	credential.Init(pair.Read, pair.Write)
+	serversecret.Init(pair.Read, pair.Write)
 	libmgr.Init(pair.Read, pair.Write, absDataDir)
 
 	t.Cleanup(func() {

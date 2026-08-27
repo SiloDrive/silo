@@ -153,6 +153,14 @@ disagreeing about — it is not a migration system, for either case above.
 cannot apply safely to an existing database: a rename, a drop, a type change.
 A purely additive change (new table, new index) needs no bump.
 
+**Version 2** is the current stamp. It bumped from 1 when `client_kdf_params`
+was added to `AccountPassword` — a column on a table that may already exist,
+which is exactly what `CREATE TABLE IF NOT EXISTS` cannot apply. The three
+tables that landed with it (`AccountIdentityKey`, `AccountRecoveryWrap`,
+`ServerSecret`) are additive and would not have needed one on their own. A
+database stamped `1` is refused at startup with the message below; since Silo
+has no deployments, the answer is to delete it and let the server recreate it.
+
 You can inspect or clear the stamp directly:
 
 ```sh

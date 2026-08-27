@@ -89,10 +89,79 @@ CREATE INDEX IF NOT EXISTS account_identity_account_idx ON AccountIdentity (acco
 -- that names itself the same way. A bare hash with no prefix would be
 -- unreadable to authmgr.validatePasswd, which dispatches on the prefix and
 -- falls back to length. Anything writing this column has to keep that true.
+--
+-- client_kdf_params is the *client's* parameter set, not this column's: the
+-- PHC string store.KDFParams.String() writes, carrying the per-user salt, so
+-- there is no separate salt column. It sits here because it governs how a
+-- password becomes the authKey that the hash column stores, and an account
+-- with no password has none -- which is why it is nullable, not defaulted.
+--
+-- It is one fact stored twice. The same parameters ride inside the wrapped
+-- identity key in AccountIdentityKey, because store.WrapIdentity makes every
+-- blob self-describing; this copy exists so the pre-login endpoint can answer
+-- "what were you stretched under" without handing out the blob itself, which
+-- is an offline attack target. account.SetKeys checks the two agree at the
+-- write, because a pair that can drift is a pair that will.
 CREATE TABLE IF NOT EXISTS AccountPassword (
-  account_id BLOB    PRIMARY KEY REFERENCES Account(id),
-  hash       TEXT    NOT NULL,
-  changed_at INTEGER NOT NULL
+  account_id        BLOB    PRIMARY KEY REFERENCES Account(id),
+  hash              TEXT    NOT NULL,
+  changed_at        INTEGER NOT NULL,
+  client_kdf_params TEXT
+);
+
+-- The account's published X25519 identity key, and its private half wrapped
+-- under a key derived from the password. Exactly one row per account.
+--
+-- public_key is a column rather than something derived, because another
+-- member's client wraps a library content key to it: it is read by people who
+-- are not its owner and must be servable without unwrapping anything.
+--
+-- wrapped_key is opaque here. It is store wrap kind 1 -- sealed under wrapKey,
+-- with the account id bound in as associated data, so this server can neither
+-- read it nor hand one account's blob to another and watch what happens.
+CREATE TABLE IF NOT EXISTS AccountIdentityKey (
+  account_id  BLOB    PRIMARY KEY REFERENCES Account(id),
+  public_key  BLOB    NOT NULL,
+  wrapped_key BLOB    NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+-- The same identity private key, wrapped once per recovery code. Ten rows per
+-- account; store wrap kind 2.
+--
+-- Individually deletable rows, and the granularity is forced rather than
+-- chosen: redeeming a code deletes its blob and the rest of the set stands.
+-- Regenerating the whole set on redemption is the tidier-looking rule and the
+-- worse one, because it invalidates the codes a person is still holding at the
+-- moment they have proved they lost their device.
+--
+-- ordinal says which of the set a blob is, and is never the code. The server
+-- never learns a code: redemption is the client fetching the set and trying
+-- each blob.
+CREATE TABLE IF NOT EXISTS AccountRecoveryWrap (
+  account_id  BLOB    NOT NULL REFERENCES Account(id),
+  ordinal     INTEGER NOT NULL,
+  wrapped_key BLOB    NOT NULL,
+  ctime       INTEGER NOT NULL,
+  PRIMARY KEY (account_id, ordinal)
+);
+
+-- A secret this server holds for its own use, minted on first need and read
+-- back on every start after that.
+--
+-- One table rather than one file per secret, because the property every
+-- consumer needs is that the value outlives the process: the pre-login KDF
+-- endpoint derives an unknown address's fake parameters from one of these, and
+-- a secret regenerated at boot would make that answer differ across a restart
+-- -- which is the enumeration oracle the fake exists to close.
+--
+-- name is the purpose, not a key id. Two purposes must never share a secret,
+-- so the name is part of the primary key and reaching for a new purpose mints
+-- a new row rather than reusing one.
+CREATE TABLE IF NOT EXISTS ServerSecret (
+  name   TEXT    PRIMARY KEY,
+  secret BLOB    NOT NULL,
+  ctime  INTEGER NOT NULL
 );
 
 -- Groups.
@@ -311,7 +380,11 @@ CREATE INDEX IF NOT EXISTS credential_expires_idx ON Credential (expires_at);
 // apply to a table that already exists in the old shape. A change that only
 // adds a new table or a new index needs no bump; CREATE TABLE IF NOT EXISTS
 // already applies that safely to an older database.
-const SchemaVersion = 1
+// Version 2 added client_kdf_params to AccountPassword, which is a change to
+// an existing table rather than a new one -- CREATE TABLE IF NOT EXISTS cannot
+// apply it to a database already holding the old shape, which is exactly what
+// this constant is for.
+const SchemaVersion = 2
 
 // CreateSiloTables creates all tables if they don't exist, after checking
 // the database's schema version against SchemaVersion.

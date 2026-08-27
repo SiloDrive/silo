@@ -22,7 +22,7 @@ because answering any of them alone produces a number nobody can act on.
 | Refusal status **507 Insufficient Storage** | `quota.go:20` | built |
 | Setting a cap from the shell | `silo user quota <email> [size\|none]` | built (`5f5ed23`) |
 | Self lookup `GET /account/usage` → `{usage, quota, kind}` | `api/api.go:439` | built |
-| Per-library size on the libraries listing | `api/api.go:250` | built |
+| Per-library size on the libraries listing | `api/api.go:360` | built |
 | Quota answering `df` on a porter-fuse mount | `internal/vfs/statfs.go` (porter-fuse) | built |
 | History enumerable and readable at a point in time | `GET …/commits`, `entries/{path}?at=` | built (`6943a16`) |
 | The three numbers: head, history, unreferenced | `objmgr.Census`, `silo df` | built (`fc6e846`) |

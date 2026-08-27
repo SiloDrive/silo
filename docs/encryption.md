@@ -119,7 +119,7 @@ stores, and the changes feed works on a library the server cannot read, which
 is the point of the design. What does not exist yet:
 
 - **The account key schema** — the four items in
-  [`auth.md`](auth.md#the-clients-kdf-is-not-this-one-and-it-needs-four-columns):
+  [`auth.md`](auth.md#the-accounts-key-material):
   `client_kdf_params`, `AccountIdentityKey`, `AccountRecoveryWrap`, and the
   pre-login parameters endpoint. That endpoint is the sharp piece: it is
   unauthenticated by necessity, must answer unknown addresses with stable

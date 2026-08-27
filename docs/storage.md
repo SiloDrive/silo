@@ -525,7 +525,7 @@ gets the change they asked for rather than a usage message.
   feature's clothes. Everything else about E2EE — the codecs, the key-free
   readers, the three store states, the name encryption, the wrap primitives and
   their vectors — is built and tested. What is missing is the account side. See
-  Part 2, and [`auth.md`](auth.md#the-clients-kdf-is-not-this-one-and-it-needs-four-columns).
+  Part 2, and [`auth.md`](auth.md#the-accounts-key-material).
 - **There is no cache in front of the store.** A read is a read.
 - **Objects are stored raw**, unencrypted and uncompressed.
 - **The id-addressed surface has no `server-info` feature name.** `blocks`
@@ -539,8 +539,11 @@ gets the change they asked for rather than a usage message.
 
 ## End-to-end encryption, end to end
 
-The format is done and the account model it needs does not exist. The gap is
-four schema items and one endpoint:
+The format is done and the account model it needs is **built** — see
+[`auth.md`](auth.md#the-accounts-key-material), which is now the normative
+description of all five items below. What follows is the reasoning that chose
+them, and it holds. The gap it described was four schema items and one
+endpoint:
 
 - the published X25519 public key;
 - the wrapped identity private key, one blob;
@@ -555,7 +558,7 @@ attacker-influenced input to the client's KDF — which is what the parameter
 ceiling in `store/` was written to survive. Asking for an unknown address must
 return a deterministic fake salt, indistinguishable from a real one, exactly as
 login does. The account half of this is written up in
-[`auth.md`](auth.md#the-clients-kdf-is-not-this-one-and-it-needs-four-columns).
+[`auth.md`](auth.md#the-accounts-key-material).
 
 **Keys.** An X25519 identity keypair per user, its private half wrapped under a
 key derived from the user's password and stored server-side as an opaque blob.
@@ -936,9 +939,13 @@ the two library types.
 
 ## What is left, in order
 
-1. **The account side of E2EE** — four schema items, the salt endpoint with its
-   dummy-salt closure, and creation of an encrypted library. Everything below
-   is storage; this is the one item that unblocks a product decision already
+1. **The account side of E2EE.** The four schema items and the salt endpoint
+   with its dummy-salt closure are **built** — see
+   [`auth.md`](auth.md#the-accounts-key-material) for the routes and the
+   reasoning. What is left of this item is **creation of an encrypted
+   library**: the content key is wrapped to each member's public key, that key
+   now exists, and the wrap blob still has no table. Everything below is
+   storage; this is the one item that unblocks a product decision already
    taken.
 2. **The split-derivation login**, which lands with or after
    [`auth.md`](auth.md)'s credential work and cannot land before it.

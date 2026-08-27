@@ -26,6 +26,7 @@ import (
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/serversecret"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/utils"
 	"github.com/dkam/silo/internal/observability"
@@ -327,6 +328,7 @@ func Run(args []string) error {
 	api.StartLoginLimiterCleanup()
 	credential.Init(siloPair.Read, siloPair.Write)
 	credential.StartCleanup()
+	serversecret.Init(siloPair.Read, siloPair.Write)
 
 	// Create the admin user from the environment if it is set, and invent one
 	// if it is not and there are no users at all. A server nobody can log in
@@ -538,6 +540,11 @@ func newHTTPRouter() *mux.Router {
 
 	// Management API
 	r.HandleFunc("/api/silo/v1/auth/login", api.LoginHandler).Methods("POST")
+	// The pre-login parameters endpoint, which is unauthenticated because
+	// nothing can be authenticated yet: a client needs these to turn a
+	// password into the value it sends. See api.KDFParamsHandler for the two
+	// hazards that keeps it from being an account-enumeration oracle.
+	r.HandleFunc("/api/silo/v1/auth/kdf", api.KDFParamsHandler).Methods("POST")
 	r.HandleFunc("/api/silo/v1/server-info", api.ServerInfoHandler).Methods("GET")
 	// Logging out is about the credential presenting it rather than about the
 	// account, so it is mounted outside the subrouter with the lane that does
@@ -551,6 +558,10 @@ func newHTTPRouter() *mux.Router {
 	// scoped to one library is refused them here rather than in the handler.
 	apiRouter.HandleFunc("/auth/logout/everywhere", api.LogoutEverywhereHandler).Methods("POST")
 	apiRouter.HandleFunc("/auth/password", api.ChangePasswordHandler).Methods("POST")
+	apiRouter.HandleFunc("/account/keys", api.GetAccountKeysHandler).Methods("GET")
+	apiRouter.HandleFunc("/account/keys", api.PutAccountKeysHandler).Methods("PUT")
+	apiRouter.HandleFunc("/account/keys/recovery/{ordinal:[0-9]+}",
+		api.DeleteRecoveryWrapHandler).Methods("DELETE")
 	apiRouter.HandleFunc("/account/usage", api.AccountUsageHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries", api.ListLibrariesHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries", api.CreateLibraryHandler).Methods("POST")

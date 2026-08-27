@@ -489,6 +489,107 @@ Rate limiting is the login endpoint's, on the same buckets. A credential is not
 a throttle: whoever holds one could otherwise guess the password here as fast as
 the server will hash.
 
+## The account's key material
+
+End-to-end encryption needs four things per account that the server stores and
+cannot read: a published X25519 public key, the private half wrapped under a
+password-derived key, that same private half wrapped once per recovery code,
+and the argon2id parameters the password is stretched under to get there. The
+format for all four is in [`spec/store-format.md`](spec/store-format.md) and
+implemented in `store/`; what follows is where they live and who may touch
+them.
+
+```
+GET    /api/silo/v1/account/keys                  what this account has published
+PUT    /api/silo/v1/account/keys                  publish, replacing everything
+DELETE /api/silo/v1/account/keys/recovery/{n}     redeem one recovery wrap
+POST   /api/silo/v1/auth/kdf                      the pre-login parameters, unauthenticated
+```
+
+**`PUT` replaces the whole set rather than merging into it.** A password change
+produces a new `wrapKey`, so every blob the account holds is re-wrapped at
+once. A stale recovery wrap left standing beside the new set still opens with a
+code the user was told to throw away; a stale identity blob still opens with
+the old password. One transaction, or none of it.
+
+**The parameters are stored twice, and the write checks they agree.**
+`AccountPassword.client_kdf_params` carries them so the pre-login endpoint can
+answer without handing out the blob, and `store.WrapIdentity` seals them inside
+the blob because every stretched secret in this system is self-describing.
+`store.WrapIdentity`'s own comment names the hazard in storing them once: "a
+pair that can drift, after which the blob is unopenable and nothing says why".
+So `account.Keys.Validate` refuses a publish whose column and blob disagree.
+
+**An account with no password is refused outright.** The parameters describe
+how a password becomes the `wrapKey` that opens the identity blob, so an
+account with no password has nothing for them to describe. Writing the identity
+key anyway would be a publish that succeeds and a new device that can never
+bootstrap — the failure surfaces months later, on the one day it cannot be
+worked around. When OIDC-only accounts want E2EE they will need a different
+wrapping secret, and that is a design, not a column.
+
+**Redemption deletes one blob and the rest of the set stands.** Regenerating
+the set on redemption is the tidier-looking rule and the worse one: it
+invalidates the codes a person is still holding at the moment they have proved
+they lost their device. The server never learns a code — it stores an
+`ordinal`, never the code — so redemption is the client fetching the set,
+trying each blob, and telling the server which one is spent.
+
+| Request | Answer |
+|---|---|
+| A publish whose blob and `kdf_params` disagree | `400`, saying which is which — every case here is a client bug whose symptom otherwise appears months later |
+| A `public_key` that is not an X25519 key, a blob over 4 KiB, a duplicate or out-of-range ordinal | `400` |
+| `GET` before anything is published | `404` |
+| Redeeming an ordinal that is already gone | `404` |
+| A `perm: "r"` credential on `PUT` or `DELETE` | `403` — replacing the identity key is the one write that can make an account's own libraries unreadable. `GET` is permitted |
+| A scoped credential | `403` — the key material is the account's, which is wider than one library |
+
+### The pre-login parameters endpoint
+
+`authKey` is a function of parameters only the server knows, so a client has to
+ask before it can log in. That makes this the one endpoint that answers with
+nothing authenticated, and it is sharper than it looks.
+
+**It is an account-enumeration oracle by default.** An address nobody holds
+must receive plausible parameters rather than a `404`, and the same ones every
+time, or the difference between two requests answers the question. They are
+derived from `HMAC(server secret, normalized address)`, exactly as the dummy
+password hash closes the same gap on login, and at the default cost — because
+the default is what a real account will almost always carry, and a fake at any
+other cost would stand out.
+
+**The secret is stored, not generated at boot.** A `ServerSecret` row, minted on
+first need. A value regenerated per process would make one address answer
+differently after a restart, which says "no account here" exactly as loudly as
+a `404` would. An account that exists but has published nothing is answered the
+same way, and is the case a naive handler gets wrong: the row is there, so it
+is tempting to answer "no parameters".
+
+**The answer is attacker-influenced input to the client's KDF.** A server
+answering `m=4 GiB` does not weaken anything; it takes the device down. The
+client validates against `store.KDFParams.Validate` before deriving — it
+already does — and this is the request that makes that guard load-bearing.
+
+**`POST`, for a request that reads.** The address is the one identifier this
+endpoint takes and the request is unauthenticated, so a query string would put
+every address anyone asked about into the access log, the proxy log, and any
+`Referer` a browser sent onward.
+
+Rate limited per address only, at sixty a minute, and every request spends a
+token rather than only the failures — there is no failure here. A per-account
+bucket would break the contract: an address that can be throttled is an address
+that has an account. What makes a sweep useless is the indistinguishable
+answer; the bucket bounds what the sweep costs this server.
+
+**The endpoint ships ahead of its consumer, deliberately.** Nothing sends
+`authKey` yet — [`storage.md`](storage.md)'s split-derivation login is the item
+that changes what `POST auth/login` receives. Until then a client logs in with
+the password, fetches `account/keys`, and derives `wrapKey` under the
+parameters the blob itself carries. What this endpoint is needed for on day one
+is the same bootstrap when the login lane changes, and building it with the
+account model rather than after it is what keeps the two from being designed
+twice.
+
 ## Operating it
 
 ```
@@ -663,7 +764,12 @@ The only things that cannot play are an S3 frontend, whose SigV4 needs a shared
 secret the server can recompute with, and a capability URL, because a URL cannot
 sign anything.
 
-## The client's KDF is not this one, and it needs four columns
+## The client's KDF is not this one
+
+> **The schema and the endpoint are built.** The four items below and the
+> pre-login endpoint landed with [the account's key material](#the-accounts-key-material)
+> in Part 1, which is the normative description; what is left here is the
+> reasoning, and the one half still outstanding — nothing sends `authKey` yet.
 
 Once [`storage.md`](storage.md)'s split-derivation login lands
 there are **two** argon2id derivations per password, and they are constantly
@@ -674,10 +780,9 @@ one in each schema — neither vestigial, and raising one does not raise the oth
 The server's half gets *cheaper* when this lands: by this document's own rule a
 256-bit `authKey` needs no memory-hard KDF at all.
 
-Silo has designed the client half twice — [`spec/store-format.md`](spec/store-format.md)
+Silo had designed the client half twice — [`spec/store-format.md`](spec/store-format.md)
 pins the wire format, this document pins the account model — and connected them
-nowhere. Nothing in the schema stores the key material, and the endpoint that
-hands out the client's parameters has no route and no backing column.
+nowhere. This is what connected them:
 
 ```sql
 ALTER TABLE AccountPassword
@@ -1019,14 +1124,23 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
 
 1. **Proof of possession** — public keys registered at enrolment, RFC 9421
    signatures on the Silo lane. Independent of OIDC; whichever is wanted first.
-2. **Argon2id behind a concurrency semaphore**, and with it
-   [the client's KDF](#the-clients-kdf-is-not-this-one-and-it-needs-four-columns)
-   — the four schema items and the pre-login parameters endpoint. Sequenced by
-   [`storage.md`](storage.md) phase 2, which needs it:
-   split-derivation login *is* password login, and building the server half first
-   means building it twice.
-3. **A persistent JWT keyfile** at mode 0600, so a restart does not disconnect
-   every watching client. Nothing but notification tokens depends on it.
+2. **Argon2id behind a concurrency semaphore.** The four schema items and the
+   pre-login parameters endpoint that used to sit alongside this are built —
+   see [the account's key material](#the-accounts-key-material). What is left
+   is the server's own hashing, and it is now cheap to defer: by this
+   document's own rule the argon2id that matters most is the client's, and
+   that one already runs. Sequenced with [`storage.md`](storage.md)'s
+   split-derivation login, which is what makes `AccountPassword.hash` a hash of
+   a 256-bit `authKey` rather than of a password — at which point this becomes
+   a *fast* hash rather than a memory-hard one, and the semaphore is moot.
+3. **A persistent JWT signing key**, so a restart does not disconnect every
+   watching client. Nothing but notification tokens depends on it. It now has
+   somewhere to live that did not exist when this was written: the
+   `ServerSecret` table, added for the pre-login endpoint's dummy salt, holds
+   exactly this shape of value — a secret that is the server's own and must
+   outlive the process. A 0600 keyfile is still the answer if the key has to be
+   readable by an operator or shared across processes; if it does not, a row is
+   one fewer file to get the permissions wrong on.
 4. **A single-use setup credential** in place of `SILO_ADMIN_PASSWORD`, minted on
    first run with no accounts, valid for fifteen minutes or until used.
    `SILO_ADMIN_PASSWORD_FILE` stays for automated deployments.

@@ -78,6 +78,11 @@ func features() []string {
 		// credential live.
 		"logout",          // POST auth/logout, POST auth/logout/everywhere
 		"password-change", // POST auth/password
+		// The account side of end-to-end encryption. A client that cannot see
+		// this name is talking to a server with nowhere to put an identity
+		// key, and must say so rather than enrol into a library whose content
+		// key would die with the device that made it.
+		"account-keys", // GET/PUT account/keys, DELETE …/recovery/{n}, POST auth/kdf
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification, POST libraries/{id}/notify-token

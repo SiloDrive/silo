@@ -66,7 +66,7 @@ variable.
 | `413 Payload Too Large` | body over the limit, or a batch over 1000 operations | do not retry; split it |
 | `416 Range Not Satisfiable` | the range is outside the entry | |
 | `424 Failed Dependency` | the write names blocks the server does not hold | `PUT entries/{path}?type=blocks` and a `create` inside `POST batch`. The body is `{"error":…,"missing":[sha256,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
-| `429 Too Many Requests` | password rate limiting; carries `Retry-After` | wait the stated time. Produced only where a password is verified: the login endpoints, and `POST auth/password`, which spends the same buckets because a credential is not a throttle |
+| `429 Too Many Requests` | rate limiting; carries `Retry-After` | wait the stated time. Two sources. Where a password is verified — the login endpoints, and `POST auth/password`, which spends the same buckets because a credential is not a throttle. And `POST auth/kdf`, which has its own per-address bucket at sixty a minute and spends a token on every request rather than only on failures, because it has no failures |
 
 ### The server could not do it
 
