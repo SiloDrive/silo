@@ -878,12 +878,20 @@ What actually answers on a running server today:
 - **Manifests, directories and commits by content id**, over `/objects/{id}`
   and `/head`.
 
-What does not yet answer:
+**Per-library E2EE now answers.** An encrypted library can be created —
+`POST /libraries` with `"e2ee": true`, the sealed root, the sealed initial
+commit, the library id and the content key wrapped to your identity key — and
+read and written by id, which is the path described under *The part that
+changes the shape of the client* below. `GET libraries/{library}/key` hands
+back the wrap. The account has to publish an identity key first
+(`PUT account/keys`); see [`auth.md`](auth.md#the-accounts-key-material).
 
-- **Per-library E2EE.** The format is specified and implemented in `store/`,
-  but the server still refuses the block surface for an encrypted library
-  (**400**), so the client-encrypts-and-names-the-ciphertext path is not
-  reachable over HTTP yet.
+What still does not answer:
+
+- **Path-addressed writes on an encrypted library**, deliberately and
+  permanently: `PUT entries/{path}` and `?type=blocks` answer **403** telling
+  you to write by id, because the server cannot chunk what it cannot read.
+  That is the design, not a gap.
 
 The format's spec is in [`spec/store-format.md`](spec/store-format.md), the Go
 in [`store/`](../store) with test vectors for every piece, and the remaining
@@ -1063,7 +1071,9 @@ whole path: `DeriveCredentials`, `OpenIdentityWithPassword`, `UnwrapCK`.
 
 - **No password-to-the-server endpoint for an encrypted library.** The
   server-side key cache that today's 400 mentions is being deleted, not
-  completed.
+  completed. The content key reaches a new device by being wrapped to that
+  account's identity key — `GET libraries/{library}/key` — never by the server
+  holding it.
 - **No path-addressed API on an E2EE library**, per above.
 - **No pack ids or offsets on the wire.** Chunks live in packs on the server;
   compaction moves them, so a pack id in a response would be a lie by the time

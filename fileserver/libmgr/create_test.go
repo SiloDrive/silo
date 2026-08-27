@@ -71,10 +71,10 @@ func TestACreatedLibraryHasSHA256IDsAndAnEmptyRoot(t *testing.T) {
 	}
 }
 
-// E2EE creation is refused, and the refusal names the content key rather than
-// the commit. The server not being able to mint a sealed commit was never the
-// blocker it looked like — a client mints it. What is missing is anywhere for
-// the wrapped key to live, so this must keep failing until that exists.
+// CreateLibrary refuses E2EE, and now has a partner that does not:
+// CreateEncryptedLibrary takes the sealed root and commit from the client. The
+// refusal here is not a gap -- it is this function saying it cannot seal an
+// initial commit, which remains true and always will be.
 func TestCreatingAnEncryptedLibraryIsRefusedForTheKeyNotTheCommit(t *testing.T) {
 	getTestStore(t)
 

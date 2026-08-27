@@ -567,6 +567,7 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/libraries", api.CreateLibraryHandler).Methods("POST")
 	apiRouter.HandleFunc("/libraries/{libraryid}", api.DeleteLibraryHandler).Methods("DELETE")
 	apiRouter.HandleFunc("/libraries/{libraryid}", patchLibraryHandler).Methods("PATCH")
+	apiRouter.HandleFunc("/libraries/{libraryid}/key", api.LibraryKeyHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries/{libraryid}/changes", api.ChangesHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries/{libraryid}/commits", api.CommitsHandler).Methods("GET")
 	// The chunk surface. "missing" cannot collide with a chunk id — the id

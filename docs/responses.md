@@ -60,7 +60,7 @@ variable.
 | `403 Forbidden` | authenticated, but not permitted — including libraries you cannot see | surface it; do not retry. A library you cannot see and a library that does not exist both answer `403` from the token endpoints on purpose, so they cannot be used to probe for valid ids |
 | `404 Not Found` | the named thing does not exist — see the overload note below | depends on *what* was not found |
 | `405 Method Not Allowed` | wrong verb on a real path; carries `Allow` | the path was fine, the verb was not |
-| `409 Conflict` | a destination collision, or an attempt to create `/` — see the overload note below | rename and retry, or fix the client |
+| `409 Conflict` | a destination collision, an attempt to create `/`, an encrypted library id already in use, or creating an encrypted library before the account has published an identity key — see the overload note below | rename and retry, or fix the client |
 | `410 Gone` | your `since` anchor, or the commit your page cursor was issued against, is no longer reachable | stop incremental sync and enumerate from scratch. `GET libraries/{libraryid}/changes` only |
 | `412 Precondition Failed` | your `If-Match` did not match; someone else wrote first | re-read, reapply your change, write again. Not an error — it is the mechanism working |
 | `413 Payload Too Large` | body over the limit, or a batch over 1000 operations | do not retry; split it |
@@ -104,9 +104,12 @@ a client written from the code alone.
 |---|---|---|
 | `Destination exists and is a directory` / `…and is a file` | a move or copy would destroy the destination | rename and retry (`NSFileProviderError.filenameCollision`) |
 | `The library root already exists` | you tried to create `/` | a bug in the client; do not retry |
+| `A library with that id already exists` | the `library_id` you minted for an encrypted library is taken | mint another and rebuild the wrap, which binds the id |
+| `This account has published no identity key…` | you asked for an encrypted library before `PUT account/keys` | publish key material, then retry |
 
-Both are collisions, and both want the same shape of response, so `409` is no
-longer overloaded on this lane.
+All four are "the state here is not what your request assumed", and all four
+want the same shape of handling: change something and send it again, rather
+than retrying unchanged.
 
 It used to be. `GC conflict; retry` — a write that raced the garbage collector —
 also answered `409`, which meant a client reading `409` as "collision" would

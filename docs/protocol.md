@@ -161,6 +161,48 @@ Nothing sends the derived `authKey` yet — `POST auth/login` still takes the
 password. The endpoint ships with the account model rather than after it; see
 [`storage.md`](storage.md)'s split-derivation login.
 
+### Creating an encrypted library
+
+A different request from creating a plain one, because the server cannot build
+any of it. The root directory and the initial commit are sealed under a content
+key the server never holds, so both arrive with the request; and the library id
+arrives with them, because `store.WrapCK` binds the library id into the wrap as
+associated data and so the id must exist before the key can be wrapped.
+
+```
+POST /api/silo/v1/libraries                     → 201 {"id": …, "name": …}
+{"name": "…", "e2ee": true,
+ "library_id":  "<canonical lower-case hyphenated UUID>",
+ "root":        "<b64 of the sealed empty root directory object>",
+ "commit":      "<b64 of the sealed initial commit object>",
+ "wrapped_key": "<b64 of the content key wrapped to your identity key>"}
+
+GET /api/silo/v1/libraries/{libraryid}/key      → 200 {"wrapped_key": "<b64>"}
+                                                  404 on a plain library
+```
+
+The alternative — the server mints the id, the client publishes the key
+afterwards — leaves a window holding a library whose content key nobody stored.
+One request, or none of it.
+
+**The account must have published an identity key first** (`PUT account/keys`),
+or the request is `409`: a content key wrapped to nothing lives on the device
+that made it and dies with it.
+
+What the server checks, and it is everything it can check without a key: each
+object's id is the SHA-256 of its bytes, each decodes, both are sealed rather
+than plain, the root is empty, the commit has no parents and names that root,
+and the id is free. `400` names the specific failure; `409` means the id is
+taken. Sending `root`, `commit`, `library_id` or `wrapped_key` **without**
+`"e2ee": true` is `400` rather than ignored — a client that sent a wrapped key
+and got a server-readable library would not find out until somebody read the
+data.
+
+`GET libraries/{libraryid}/key` needs read permission and nothing more: whoever
+can read the ciphertext and holds this can read the library, and whoever cannot
+gains nothing from a blob they cannot open. The library id is in the route, so
+a scoped credential reaches its own library's key and no other.
+
 ## Endpoints
 
 ### Native management API — `/api/silo/v1/*`
@@ -185,7 +227,8 @@ is registered there too, but is authenticated: see the lane note above.
 | PUT | `/api/silo/v1/account/keys` | Publish all of it, replacing what was there. Needs `rw`. `400` names the specific refusal — every one is a client bug whose symptom otherwise appears on a device months later |
 | DELETE | `/api/silo/v1/account/keys/recovery/{n}` | Redeem one recovery wrap; the rest of the set stands. Needs `rw`. `404` if that ordinal is already spent |
 | GET | `/api/silo/v1/libraries` | List the caller's libraries — owned, plus any shared directly to them through `SharedLibrary` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |
-| POST | `/api/silo/v1/libraries` | Create a new library |
+| POST | `/api/silo/v1/libraries` | Create a new library. `{"name":…}` for a plain one; add `"e2ee": true` and the four fields above for an encrypted one |
+| GET | `/api/silo/v1/libraries/{libraryid}/key` | The library's content key, wrapped to the calling account. `404` on a plain library, and on an encrypted one nobody has shared with you |
 | DELETE | `/api/silo/v1/libraries/{libraryid}` | Delete a library |
 | PATCH | `/api/silo/v1/libraries/{libraryid}` | `{"name":"New name"}` — rename a library. `PATCH` because the body names only what changes |
 | POST | `/api/silo/v1/libraries/{libraryid}/batch` | `{"ops":[…]}` — many operations, one commit. See the batch surface below |

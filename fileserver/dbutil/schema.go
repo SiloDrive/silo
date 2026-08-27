@@ -229,6 +229,28 @@ CREATE TABLE IF NOT EXISTS ObjectSize (
   object_id CHAR(64) PRIMARY KEY,
   file_size BIGINT   NOT NULL
 );
+-- An end-to-end encrypted library's content key, wrapped to one member's
+-- X25519 public key. One row per member; sharing a library is one more row.
+--
+-- The server cannot open any of these and does not try. What it can do is
+-- refuse to create a library whose key would have no row at all, which is the
+-- failure this table exists to prevent: a content key that lives only on the
+-- device that generated it is data loss wearing a feature's clothes.
+--
+-- The wrap binds both the holder and the library as associated data, so a
+-- server that moved a blob between rows would produce one that no longer
+-- opens. That is why the library id has to exist before the wrap can be made,
+-- and why an E2EE library's id arrives with the create request rather than
+-- being minted here.
+CREATE TABLE IF NOT EXISTS LibraryKeyWrap (
+  library_id  CHAR(37) NOT NULL,
+  account_id  BLOB     NOT NULL REFERENCES Account(id),
+  wrapped_key BLOB     NOT NULL,
+  ctime       INTEGER  NOT NULL,
+  PRIMARY KEY (library_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS library_key_wrap_account_idx ON LibraryKeyWrap (account_id);
+
 CREATE TABLE IF NOT EXISTS LibraryOwner (library_id CHAR(37) PRIMARY KEY, account_id BLOB NOT NULL REFERENCES Account(id));
 CREATE INDEX IF NOT EXISTS OwnerIndex ON LibraryOwner (account_id);
 

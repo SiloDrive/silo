@@ -3,10 +3,12 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/libmgr"
@@ -83,6 +85,13 @@ func features() []string {
 		// key, and must say so rather than enrol into a library whose content
 		// key would die with the device that made it.
 		"account-keys", // GET/PUT account/keys, DELETE …/recovery/{n}, POST auth/kdf
+		// Creating an end-to-end encrypted library, which takes a different
+		// request from creating a plain one: the client brings the sealed
+		// root, the sealed initial commit, the library id and the wrapped
+		// content key. A client that cannot see this name must not offer the
+		// option -- a POST without those fields silently makes a
+		// server-readable library.
+		"e2ee-libraries", // POST /libraries with "e2ee": true, GET libraries/{id}/key
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification, POST libraries/{id}/notify-token
@@ -394,7 +403,13 @@ type chunkerInfo struct {
 // library with no branch row is broken but should still be listable — a client
 // that can see it can delete it.
 func librarySelect(alias string) string {
-	return "SELECT " + alias + ".library_id, i.name, i.update_time, i.is_encrypted, b.commit_id, " +
+	// f.e2ee, not i.is_encrypted. LibraryInfo.is_encrypted is the old column --
+	// a password over a server-side key -- which nothing writes and every
+	// creation path hard-codes to 0, so this flag read false for an
+	// end-to-end encrypted library as surely as for a plain one. Library.e2ee
+	// is the library's own answer to "can the server read this", and is the
+	// column the schema comment says is authoritative.
+	return "SELECT " + alias + ".library_id, i.name, i.update_time, f.e2ee, b.commit_id, " +
 		"b.root_id, u.size, u.file_count, u.root_id, " +
 		"f.chunker, f.chunk_min, f.chunk_target, f.chunk_max, f.chunk_norm "
 }
@@ -419,7 +434,8 @@ func scanLibraries(rows *sql.Rows) []libraryInfo {
 	libraries := make([]libraryInfo, 0)
 	for rows.Next() {
 		var library libraryInfo
-		var name, isEncrypted, commitID, headRoot, measuredAt, chunker sql.NullString
+		var name, commitID, headRoot, measuredAt, chunker sql.NullString
+		var isEncrypted sql.NullBool
 		var updateTime, size, fileCount sql.NullInt64
 		var chunkMin, chunkTarget, chunkMax, chunkNorm sql.NullInt64
 		if err := rows.Scan(&library.ID, &name, &updateTime, &isEncrypted, &commitID,
@@ -430,7 +446,7 @@ func scanLibraries(rows *sql.Rows) []libraryInfo {
 		}
 		library.Name = name.String
 		library.UpdateTime = updateTime.Int64
-		library.Encrypted = isEncrypted.String == "1"
+		library.Encrypted = isEncrypted.Bool
 		library.HeadCommitID = commitID.String
 		if chunker.Valid {
 			library.Chunker = &chunkerInfo{
@@ -578,6 +594,23 @@ func AccountUsageHandler(w http.ResponseWriter, r *http.Request) {
 
 type createLibraryRequest struct {
 	Name string `json:"name"`
+
+	// E2EE asks for an end-to-end encrypted library, and the four fields below
+	// come with it. They are here rather than on a second route because a
+	// client is doing one thing -- creating a library -- and the difference is
+	// what it has to bring.
+	E2EE bool `json:"e2ee"`
+
+	// LibraryID is the client's, and only for an E2EE library. store.WrapCK
+	// binds the library id into the wrap as associated data, so the id has to
+	// exist before the content key can be wrapped to anybody -- which means
+	// either the client mints it, or creation takes two requests with a window
+	// in between holding a library whose key nobody stored.
+	LibraryID string `json:"library_id"`
+
+	Root       []byte `json:"root"`
+	Commit     []byte `json:"commit"`
+	WrappedKey []byte `json:"wrapped_key"`
 }
 
 type createLibraryResponse struct {
@@ -606,9 +639,22 @@ func CreateLibraryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Server-readable for now: an E2EE library's initial commit is sealed
-	// under a key the server never holds, so creating one is a client
-	// operation. See libmgr.CreateLibrary.
+	if req.E2EE {
+		createEncryptedLibrary(w, r, acct, req)
+		return
+	}
+	// A plain library's initial objects are the server's to mint, so nothing
+	// else has to arrive with the request. Fields that only mean something for
+	// an encrypted library are refused rather than ignored: a client that sent
+	// a wrapped key and got a library the server can read has been told its
+	// request succeeded, and the difference will not surface until somebody
+	// reads the data.
+	if req.LibraryID != "" || len(req.Root) > 0 || len(req.Commit) > 0 || len(req.WrappedKey) > 0 {
+		http.Error(w, `library_id, root, commit and wrapped_key are only for "e2ee": true`,
+			http.StatusBadRequest)
+		return
+	}
+
 	libraryID, err := libmgr.CreateLibrary(req.Name, acct, libmgr.DefaultFormat(false))
 	if err != nil {
 		log.Errorf("Failed to create library: %v", err)
@@ -617,6 +663,95 @@ func CreateLibraryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, createLibraryResponse{ID: libraryID, Name: req.Name})
+}
+
+// createEncryptedLibrary is the E2EE half of CreateLibraryHandler.
+//
+// The account must already have published an identity key. That is checked
+// here rather than inside libmgr because it is an account fact rather than a
+// library one, and it is checked at all because a content key wrapped to
+// nothing lives on the device that made it and dies with it -- which is data
+// loss wearing a feature's clothes, and is exactly why this route could not
+// exist until account/keys did.
+func createEncryptedLibrary(w http.ResponseWriter, r *http.Request, acct *account.Account, req createLibraryRequest) {
+	ctx, cancel := option.WithDBTimeout(r.Context())
+	defer cancel()
+
+	if _, err := account.PublicKey(ctx, acct.ID); err != nil {
+		if errors.Is(err, account.ErrNoKeys) {
+			http.Error(w,
+				"This account has published no identity key, so an encrypted library's "+
+					"content key would have nowhere recoverable to live. PUT account/keys first.",
+				http.StatusConflict)
+			return
+		}
+		log.Errorf("Failed to read the creator's public key: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	libraryID, err := libmgr.CreateEncryptedLibrary(req.Name, acct, libmgr.DefaultFormat(true),
+		libmgr.EncryptedSeed{
+			LibraryID:  req.LibraryID,
+			Root:       req.Root,
+			Commit:     req.Commit,
+			WrappedKey: req.WrappedKey,
+		})
+	switch {
+	case err == nil:
+	case errors.Is(err, libmgr.ErrBadSeed):
+		// Said in full: every one of these is a client bug that would
+		// otherwise produce a library which loads and cannot be read.
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	case errors.Is(err, libmgr.ErrLibraryExists):
+		http.Error(w, "A library with that id already exists", http.StatusConflict)
+		return
+	default:
+		log.Errorf("Failed to create an encrypted library: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, createLibraryResponse{ID: libraryID, Name: req.Name})
+}
+
+// LibraryKeyHandler handles GET /api/silo/v1/libraries/{libraryid}/key.
+//
+// It serves the library's content key wrapped to the calling account, which is
+// what a new device needs after it has opened its identity key: the wrap is
+// useless without that key, and the server holds neither in a form it can use.
+//
+// Read permission, because that is what the wrap grants: whoever can read the
+// library's ciphertext and holds this can read the library, and whoever cannot
+// read it gains nothing from a blob they cannot open. The library id is in the
+// route, so a scoped credential reaches its own library's key and no other.
+func LibraryKeyHandler(w http.ResponseWriter, r *http.Request) {
+	libraryID := mux.Vars(r)["libraryid"]
+	if middleware.Perm(r, libraryID, "") == "" {
+		http.Error(w, "Permission denied", http.StatusForbidden)
+		return
+	}
+
+	ctx, cancel := option.WithDBTimeout(r.Context())
+	defer cancel()
+
+	wrapped, err := libmgr.ContentKeyWrap(ctx, libraryID, middleware.GetAccountID(r))
+	if errors.Is(err, libmgr.ErrNoContentKeyWrap) {
+		// Not 403: the caller may read this library. There is simply no wrap
+		// -- because it is a plain library, or because nobody has shared this
+		// one with them yet.
+		http.Error(w, "No content key wrap for this library", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Errorf("Failed to read a content key wrap: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		WrappedKey []byte `json:"wrapped_key"`
+	}{WrappedKey: wrapped})
 }
 
 func DeleteLibraryHandler(w http.ResponseWriter, r *http.Request) {

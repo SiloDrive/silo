@@ -517,20 +517,17 @@ func GetCurrentGCID(libraryID string) (string, error) {
 // a name sealed inside a commit would be unreadable in the library type this
 // server exists to serve.
 //
-// E2EE is still refused, but the reason has moved. It is no longer that the
-// server cannot mint a sealed commit — that is true and remains a client
-// operation with a client-supplied id, and the wire shape for it is in
-// porter-brief.md. It is that the content key would have nowhere to live: the
-// CK is wrapped to each member's X25519 public key, that key is an account
-// column that does not exist yet, and the wrap blob has no table. Creating an
-// E2EE library before then would produce one whose key dies with the device
-// that made it, which is data loss wearing a feature's clothes.
+// E2EE is refused here and built by CreateEncryptedLibrary instead. It is not
+// a flag on this function because almost none of this applies to one: the root
+// and the initial commit are sealed under a key the server never holds, so
+// they arrive with the request rather than being minted here, and the library
+// id arrives with them.
 func CreateLibrary(name string, owner *account.Account, format Format) (string, error) {
 	if err := format.Validate(); err != nil {
 		return "", err
 	}
 	if format.E2EE {
-		return "", fmt.Errorf("cannot yet create an end-to-end encrypted library: its content key has nowhere durable to live: %w", ErrNoContentKey)
+		return "", fmt.Errorf("the server cannot seal an initial commit: %w", ErrNoContentKey)
 	}
 	libraryID := uuid.New().String()
 
@@ -562,25 +559,11 @@ func CreateLibrary(name string, owner *account.Account, format Format) (string, 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx,
-		"INSERT INTO Library (library_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		libraryID, format.Chunker, format.MinSize, format.TargetSize, format.MaxSize,
-		format.Normalization, format.E2EE); err != nil {
-		return "", fmt.Errorf("failed to insert library: %v", err)
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO Branch (name, library_id, commit_id, root_id) VALUES ('master', ?, ?, ?)",
-		libraryID, commitID.String(), root.String()); err != nil {
-		return "", fmt.Errorf("failed to insert branch: %v", err)
-	}
-	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("LibraryHead", "library_id, branch_name"), libraryID, "master"); err != nil {
-		return "", fmt.Errorf("failed to insert library head: %v", err)
-	}
-	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("LibraryOwner", "library_id, account_id"), libraryID, owner.ID); err != nil {
-		return "", fmt.Errorf("failed to insert library owner: %v", err)
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO LibraryInfo (library_id, name, update_time, version, is_encrypted, last_modifier) VALUES (?, ?, ?, 1, 0, ?)",
-		libraryID, name, now, owner.Email); err != nil {
-		return "", fmt.Errorf("failed to insert library info: %v", err)
+	if err := insertLibraryRows(ctx, tx, libraryRows{
+		LibraryID: libraryID, Name: name, Owner: owner, Format: format,
+		CommitID: commitID.String(), RootID: root.String(), Now: now,
+	}); err != nil {
+		return "", err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -588,6 +571,42 @@ func CreateLibrary(name string, owner *account.Account, format Format) (string, 
 	}
 
 	return libraryID, nil
+}
+
+// libraryRows is the catalog half of creating a library: everything that goes
+// into the transaction once the initial objects exist, whoever made them.
+type libraryRows struct {
+	LibraryID string
+	Name      string
+	Owner     *account.Account
+	Format    Format
+	CommitID  string
+	RootID    string
+	Now       int64
+}
+
+func insertLibraryRows(ctx context.Context, tx *sql.Tx, r libraryRows) error {
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO Library (library_id, chunker, chunk_min, chunk_target, chunk_max, chunk_norm, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		r.LibraryID, r.Format.Chunker, r.Format.MinSize, r.Format.TargetSize, r.Format.MaxSize,
+		r.Format.Normalization, r.Format.E2EE); err != nil {
+		return fmt.Errorf("failed to insert library: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO Branch (name, library_id, commit_id, root_id) VALUES ('master', ?, ?, ?)",
+		r.LibraryID, r.CommitID, r.RootID); err != nil {
+		return fmt.Errorf("failed to insert branch: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("LibraryHead", "library_id, branch_name"), r.LibraryID, "master"); err != nil {
+		return fmt.Errorf("failed to insert library head: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, dbutil.InsertOrReplace("LibraryOwner", "library_id, account_id"), r.LibraryID, r.Owner.ID); err != nil {
+		return fmt.Errorf("failed to insert library owner: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO LibraryInfo (library_id, name, update_time, version, is_encrypted, last_modifier) VALUES (?, ?, ?, 1, 0, ?)",
+		r.LibraryID, r.Name, r.Now, r.Owner.Email); err != nil {
+		return fmt.Errorf("failed to insert library info: %v", err)
+	}
+	return nil
 }
 
 // DeleteLibrary removes a repository and all associated DB records.
@@ -635,6 +654,11 @@ func DeleteLibrary(libraryID string) error {
 		"DELETE FROM LibraryHistoryLimit WHERE library_id = ?",
 		"DELETE FROM LibraryValidSince WHERE library_id = ?",
 		"DELETE FROM LibraryRetention WHERE library_id = ?",
+		// The content key wraps go with the library. They are keyed by
+		// (library, account) and the server cannot open one, so a row left
+		// behind is a blob keyed to an id that could be handed to the next
+		// library created.
+		"DELETE FROM LibraryKeyWrap WHERE library_id = ?",
 		// Keyed by store id, which is spelled library_id in this table. They
 		// are the same string for an ordinary library, and for a virtual one
 		// the row belongs to the origin and lives under the origin's id — so

@@ -251,7 +251,8 @@ func TestALibrarysFormatSurvivesTheCatalog(t *testing.T) {
 
 // An E2EE library's initial commit is sealed under a key the server does not
 // have, so the server must refuse to mint one rather than create a library
-// whose history it silently wrote in the clear.
+// whose history it silently wrote in the clear. The client mints it and hands
+// it over -- see CreateEncryptedLibrary, which is the route this one is not.
 func TestTheServerWillNotCreateAnEncryptedLibrary(t *testing.T) {
 	getTestStore(t)
 

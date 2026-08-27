@@ -567,6 +567,13 @@ creation, never password-derived, wrapped to each member's public key as one
 blob per member. Sharing is a wrap for one more key; a password change re-wraps
 only the user's own private key.
 
+**The library id has to exist before its CK can be wrapped**, because the wrap
+binds the id as associated data. That is why an encrypted library's id arrives
+with the create request rather than being minted by the server — see
+[`protocol.md`](protocol.md). The alternative is creating the library and
+publishing its key in two requests, which leaves a window holding a library
+whose key nobody stored.
+
 **The wrap construction is owned, HPKE-shaped, and does not claim to be HPKE** —
 ephemeral X25519, HKDF-SHA256 over a context carrying both public keys, then
 AES-256-GCM. RFC 9180 ships in neither Go's standard library nor CryptoKit, so
@@ -767,7 +774,7 @@ Eviction deletes the only fast copy of data, so the word has to name a check:
 1. **HEAD**, confirming the object exists and its length is exactly the pack's.
 2. **The pack's SHA-256, computed by us**, checked against
    `x-amz-checksum-sha256` where the backend supports it.
-3. **Where it does not**, a ranged read-back of the frame headers.
+2. **Where it does not**, a ranged read-back of the frame headers.
 
 **ETag is not the check.** It is MD5 *sometimes* — not with SSE-KMS, not on
 multipart, and not at all on several clones. A check that means "MD5 of one
@@ -939,31 +946,29 @@ the two library types.
 
 ## What is left, in order
 
-1. **The account side of E2EE.** The four schema items and the salt endpoint
-   with its dummy-salt closure are **built** — see
-   [`auth.md`](auth.md#the-accounts-key-material) for the routes and the
-   reasoning. What is left of this item is **creation of an encrypted
-   library**: the content key is wrapped to each member's public key, that key
-   now exists, and the wrap blob still has no table. Everything below is
-   storage; this is the one item that unblocks a product decision already
-   taken.
-2. **The split-derivation login**, which lands with or after
-   [`auth.md`](auth.md)'s credential work and cannot land before it.
-3. **A `server-info` feature name for the id-addressed surface**, so a client
+1. **The split-derivation login**, which lands with or after
+   [`auth.md`](auth.md)'s credential work — that work is done, so this is now
+   unblocked. It is mostly a client change: the server already hashes whatever
+   arrives, and the parameters it must arrive under are served by
+   `POST auth/kdf`. What is left on this side is that switching an account over
+   has to be atomic — the new hash and the new `client_kdf_params` in one
+   write — or the account is left with parameters that describe a password the
+   stored hash was not made from.
+2. **A `server-info` feature name for the id-addressed surface**, so a client
    can detect `objects/{id}` and `PUT head` rather than assume them.
-4. **Packs** — the format, per-pack indexes, seal-on-size-or-age-or-shutdown,
+3. **Packs** — the format, per-pack indexes, seal-on-size-or-age-or-shutdown,
    `storage.key` and its backup wiring, the recovery scan, and the loose-store
    ingest that scan doubles as.
-5. **The tracing mark and compaction** — `PackStats`, threshold and throttled
+4. **The tracing mark and compaction** — `PackStats`, threshold and throttled
    rewrite, locality and undersize as scheduling inputs, two budgets. Built
    together with per-library GC, which is the same mark.
-6. **Durable backends** — NAS and S3 against the four-verb floor, async upload
+5. **Durable backends** — NAS and S3 against the four-verb floor, async upload
    of sealed packs, verified-then-evictable local cache, the cache-size knob,
    the unverified-packs column and the scan that rebuilds it, replication as
    pack copy. The background workers arrive here and bring their panic recovery
    and the three error-level conditions with them.
-7. **Compression**, measured before it is written.
-8. **`silo convert`.**
+6. **Compression**, measured before it is written.
+7. **`silo convert`.**
 
 One piece of debris to clear on the way past, not load-bearing: nothing creates
 a `VirtualLibrary` row while several queries still join the table.
