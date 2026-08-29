@@ -208,20 +208,22 @@ a scoped credential reaches its own library's key and no other.
 ### Native management API — `/api/silo/v1/*`
 
 JSON request/response bodies. Used by the silo TUI, the CLI in `client/`, and
-the sync clients. Protected by `RequireCredential`, except the two marked
+the sync clients. Protected by `RequireCredential`, except the four marked
 **No auth** below — they are registered above the authenticated subrouter
-(`fileserver/server.go:542`) because they are what a client needs *before* it
+(`fileserver/server.go:555`) because they are what a client needs *before* it
 has a credential: one to learn what it is talking to, one to get the parameters
-that turn a password into what it sends, and one to get a token. `auth/logout`
+that turn a password into what it sends, one to get a token, and one to create
+the first account on a server that has none. `auth/logout`
 is registered there too, but is authenticated: see the lane note above.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.5.0","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. No chunker parameters: they belong to the library, and the libraries listing carries them. The `libraries` name says this server serves `/libraries/…`; a client that does not find it is talking to a build that predates the word and should say so rather than read the 404 that follows as an empty account |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.5.0","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. Carries `"setup_required": true` on a server that has no accounts yet, and omits the key entirely otherwise, so a claimed server's body is unchanged from before the field existed. No chunker parameters: they belong to the library, and the libraries listing carries them. The `libraries` name says this server serves `/libraries/…`; a client that does not find it is talking to a build that predates the word and should say so rather than read the 404 that follows as an empty account |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → a `session` credential, or an enrolled one. Not a JWT: it names a row in `Credential` that can be revoked, labelled and narrowed |
 | POST | `/api/silo/v1/auth/logout` | Discard the credential that made the request. No write permission needed, and a scoped credential may reach it |
 | POST | `/api/silo/v1/auth/logout/everywhere` | Discard every credential the account holds, including this one |
 | POST | `/api/silo/v1/auth/password` | `{"current_password":…,"new_password":…}` — change the password. Needs `rw` and the current password; revokes `session` credentials and leaves `device` ones mounted |
+| POST | `/api/silo/v1/auth/setup` | **No auth**, because it is the request that creates the first account — there is nothing to authenticate it against yet. `{"email":…,"password":…,"setup_token":…}` → `201 {"token":…}`, login's shape exactly. The address and password are the operator's choice; the setup token, printed at boot and by `silo setup-token`, is what proves they own the host. `401` for a wrong *or* malformed token, indistinguishably; `409` once any account exists. Guarded by `setup_required` above rather than by trying it |
 | POST | `/api/silo/v1/auth/kdf` | **No auth.** `{"email":…}` → the argon2id parameters that address's password is stretched under, client-side. Never `404`: an address with no account gets plausible, stable, per-address parameters, so this cannot be used to ask which addresses exist |
 | GET | `/api/silo/v1/account/keys` | The account's published X25519 public key, its wrapped identity private key, its recovery wraps and its `kdf_params`. `404` before anything is published. Readable with a `perm: "r"` credential |
 | PUT | `/api/silo/v1/account/keys` | Publish all of it, replacing what was there. Needs `rw`. `400` names the specific refusal — every one is a client bug whose symptom otherwise appears on a device months later |

@@ -30,9 +30,13 @@ Start a server on a throwaway data directory, then point the suite at it:
 
 ```bash
 go build -o /tmp/silo ./cmd/silo
-SILO_DATA_DIR=/tmp/silo-data SILO_PORT=8099 \
-  SILO_ADMIN_EMAIL=admin@example.com SILO_ADMIN_PASSWORD=testpass123 \
-  /tmp/silo serve &
+SILO_DATA_DIR=/tmp/silo-data SILO_PORT=8099 /tmp/silo serve &
+
+# The server no longer invents an account, so the suite needs one made for it.
+# Not through the setup token: that is a one-shot the suite would have to parse
+# out of a log. `user add` reads a piped password and is idempotent enough to
+# put in a script.
+echo testpass123 | /tmp/silo user -d /tmp/silo-data add admin@example.com
 
 cd test
 SILO_URL=http://localhost:8099 SILO_EMAIL=admin@example.com SILO_PASSWORD=testpass123 rake

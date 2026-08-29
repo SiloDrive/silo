@@ -49,11 +49,55 @@ var (
 // what enumerating a directory wants.
 var kdfIPLimiter = ratelimit.New(60, time.Minute)
 
+// The setup endpoint gets its own bucket, per address only.
+//
+// Not because eighty bits needs defending. A guess a millisecond for the age of
+// the universe does not get through 2^80, so the token is the defence and this
+// is not -- do not read the limiter as load-bearing and shorten the token.
+// What this bounds is the cost of the endpoint to the server and the damage a
+// client stuck in a retry loop can do, while still forgiving an operator
+// retyping a code off a log line.
+//
+// Per address only, because there is no account to count against: the address
+// in the request is one the operator is inventing, and a per-account bucket
+// would be a fresh map entry for every string submitted -- unbounded growth
+// keyed by attacker input, which is what the cleanup sweep exists to avoid.
+//
+// Smaller and slower than the login buckets, because the traffic is different.
+// Login has to tolerate many legitimate users behind one address; this endpoint
+// has exactly one legitimate user, once, ever.
+var setupIPLimiter = ratelimit.New(5, time.Minute)
+
 // StartLoginLimiterCleanup drops idle buckets for the life of the process.
 func StartLoginLimiterCleanup() {
 	loginIPLimiter.StartCleanup()
 	loginAccountLimiter.StartCleanup()
 	kdfIPLimiter.StartCleanup()
+	setupIPLimiter.StartCleanup()
+}
+
+// allowSetupAttempt reports whether a setup attempt may proceed, writing a 429
+// itself when it may not. Only failures spend a token, matching login: the one
+// success this endpoint ever sees should not leave the operator throttled.
+func allowSetupAttempt(w http.ResponseWriter, r *http.Request) bool {
+	if !option.LoginRateLimit {
+		return true
+	}
+	ip := utils.ClientIP(r, option.TrustProxyHeaders)
+	if ok, retry := setupIPLimiter.Allowed(ip); !ok {
+		tooManyAttempts(w, "setup", retry)
+		log.Warnf("Setup rate limit reached for address %s", ip)
+		return false
+	}
+	return true
+}
+
+// setupFailed charges a refused setup attempt against the address bucket.
+func setupFailed(r *http.Request) {
+	if !option.LoginRateLimit {
+		return
+	}
+	setupIPLimiter.Penalize(utils.ClientIP(r, option.TrustProxyHeaders))
 }
 
 // allowKDFRequest reports whether a pre-login parameter request may proceed,
@@ -64,7 +108,7 @@ func allowKDFRequest(w http.ResponseWriter, r *http.Request) bool {
 	}
 	ip := utils.ClientIP(r, option.TrustProxyHeaders)
 	if ok, retry := kdfIPLimiter.Allowed(ip); !ok {
-		tooManyAttempts(w, retry)
+		tooManyAttempts(w, "pre-login parameter", retry)
 		log.Warnf("Pre-login parameter rate limit reached for address %s", ip)
 		return false
 	}
@@ -82,12 +126,12 @@ func allowLoginAttempt(w http.ResponseWriter, r *http.Request, account string) b
 
 	ip := utils.ClientIP(r, option.TrustProxyHeaders)
 	if ok, retry := loginIPLimiter.Allowed(ip); !ok {
-		tooManyAttempts(w, retry)
+		tooManyAttempts(w, "login", retry)
 		log.Warnf("Login rate limit reached for address %s", ip)
 		return false
 	}
 	if ok, retry := loginAccountLimiter.Allowed(accountKey(account)); !ok {
-		tooManyAttempts(w, retry)
+		tooManyAttempts(w, "login", retry)
 		log.Warnf("Login rate limit reached for account %s", account)
 		return false
 	}
@@ -121,7 +165,12 @@ func accountKey(account string) string {
 	return strings.ToLower(strings.TrimSpace(account))
 }
 
-func tooManyAttempts(w http.ResponseWriter, retry time.Duration) {
+// tooManyAttempts writes the 429 for whichever bucket refused, naming it. The
+// body was "Too many login attempts" when logging in was the only thing behind
+// a bucket; it takes the noun now because two of the three callers are not
+// logins, and a setup attempt told it had made too many login attempts is being
+// pointed at the wrong thing to stop doing.
+func tooManyAttempts(w http.ResponseWriter, what string, retry time.Duration) {
 	// Rounded up: Retry-After carries whole seconds, and a truncated wait
 	// would invite a retry that is still too early.
 	seconds := int(math.Ceil(retry.Seconds()))
@@ -129,5 +178,5 @@ func tooManyAttempts(w http.ResponseWriter, retry time.Duration) {
 		seconds = 1
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
-	http.Error(w, "Too many login attempts", http.StatusTooManyRequests)
+	http.Error(w, "Too many "+what+" attempts", http.StatusTooManyRequests)
 }

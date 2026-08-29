@@ -66,7 +66,7 @@ variable.
 | `413 Payload Too Large` | body over the limit, or a batch over 1000 operations | do not retry; split it |
 | `416 Range Not Satisfiable` | the range is outside the entry | |
 | `424 Failed Dependency` | the write names blocks the server does not hold | `PUT entries/{path}?type=blocks` and a `create` inside `POST batch`. The body is `{"error":…,"missing":[sha256,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
-| `429 Too Many Requests` | rate limiting; carries `Retry-After` | wait the stated time. Two sources. Where a password is verified — the login endpoints, and `POST auth/password`, which spends the same buckets because a credential is not a throttle. And `POST auth/kdf`, which has its own per-address bucket at sixty a minute and spends a token on every request rather than only on failures, because it has no failures |
+| `429 Too Many Requests` | rate limiting; carries `Retry-After` | wait the stated time. Three sources. Where a password is verified — the login endpoints, and `POST auth/password`, which spends the same buckets because a credential is not a throttle. And `POST auth/kdf`, which has its own per-address bucket at sixty a minute and spends a token on every request rather than only on failures, because it has no failures. And `POST auth/setup`, per address only at five a minute — there is no account to count against, since the address in the request is one the operator is inventing |
 
 ### The server could not do it
 
@@ -106,8 +106,9 @@ a client written from the code alone.
 | `The library root already exists` | you tried to create `/` | a bug in the client; do not retry |
 | `A library with that id already exists` | the `library_id` you minted for an encrypted library is taken | mint another and rebuild the wrap, which binds the id |
 | `This account has published no identity key…` | you asked for an encrypted library before `PUT account/keys` | publish key material, then retry |
+| `This server has already been set up` | you posted `auth/setup` to a server that already has an account | log in instead; the setup token is spent for good |
 
-All four are "the state here is not what your request assumed", and all four
+All five are "the state here is not what your request assumed", and all five
 want the same shape of handling: change something and send it again, rather
 than retrying unchanged.
 

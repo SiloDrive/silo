@@ -246,18 +246,29 @@ func (c *APIClient) reloginIfStale(tokenUsed string) error {
 
 // reloginLocked performs a login and updates c.token. Caller must hold c.mu.
 func (c *APIClient) reloginLocked() error {
-	bodyBytes, err := json.Marshal(map[string]string{"email": c.email, "password": c.password})
+	return c.postForTokenLocked("/api/silo/v1/auth/login",
+		map[string]string{"email": c.email, "password": c.password})
+}
+
+// postForTokenLocked posts to one of the unauthenticated credential endpoints
+// and keeps the token it answers with. Caller must hold c.mu.
+//
+// Login and setup share it because their responses are deliberately the same
+// shape -- one string under "token" -- so that a client needs one piece of
+// parsing rather than two that could drift.
+func (c *APIClient) postForTokenLocked(path string, body map[string]string) error {
+	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	resp, err := c.sendRequest("POST", "/api/silo/v1/auth/login", bodyBytes, "")
+	resp, err := c.sendRequest("POST", path, bodyBytes, "")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s: %s", resp.Status, string(msg))
+		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
 	var result struct {
 		Token string `json:"token"`
@@ -275,6 +286,28 @@ func (c *APIClient) Login(email, password string) error {
 	c.email = email
 	c.password = password
 	return c.reloginLocked()
+}
+
+// Setup creates this server's first account and signs in as it.
+//
+// The credentials are kept exactly as Login keeps them, because the session it
+// returns expires in twenty-four hours like any other and the automatic
+// re-login on a 401 needs something to present. They are cleared again if the
+// request fails: leaving them set for an account that was never created would
+// turn every later 401 into a re-login that cannot succeed.
+func (c *APIClient) Setup(email, password, setupToken string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	err := c.postForTokenLocked("/api/silo/v1/auth/setup", map[string]string{
+		"email": email, "password": password, "setup_token": setupToken,
+	})
+	if err != nil {
+		return err
+	}
+	c.email = email
+	c.password = password
+	return nil
 }
 
 func (c *APIClient) ListLibraries() ([]Library, error) {
@@ -491,6 +524,13 @@ func (c *APIClient) uploadWhole(libraryID, parentDir, localPath string) error {
 type ServerInfo struct {
 	Version  string   `json:"version"`
 	Features []string `json:"features"`
+
+	// SetupRequired says this server has no accounts yet and is waiting for
+	// someone holding its setup token to create the first one. State rather
+	// than a capability, so it is a field here and "setup" is the feature name
+	// beside it: the name says the server can be claimed at all, this says it
+	// still needs to be.
+	SetupRequired bool `json:"setup_required"`
 }
 
 // Has reports whether the server advertises a capability. Prefer it to

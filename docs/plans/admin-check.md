@@ -82,9 +82,9 @@ No routes are wired up in this change. `RequireAdmin` is added as infrastructure
 
 ## Reused existing code
 
-- `readDB` + `option.DBOpTimeout` pattern — same as `ValidateSessionToken` and `EnsureAdmin` in `fileserver/authmgr/authmgr.go`
+- `readDB` + `option.DBOpTimeout` pattern — same as `ValidatePassword` and `CreateAccount` in `fileserver/authmgr/authmgr.go`
 - `middleware.GetUserEmail` + `UserEmailKey` context — `fileserver/middleware/auth.go:47`
-- `EmailUser.is_staff` column — already in `fileserver/dbutil/schema.go:17`, already populated by `authmgr.EnsureAdmin` at `fileserver/authmgr/authmgr.go:196-197`
+- `Account.is_staff` column — already in `fileserver/dbutil/schema.go:43`, and now set by the setup token's claim (`setup.Claim` creates the first account as staff) rather than by a bootstrap admin. The old citation named `EmailUser`, a table that predates the library rename, and `authmgr.EnsureAdmin`, which no longer exists
 
 ## Verification
 

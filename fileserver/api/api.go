@@ -14,6 +14,7 @@ import (
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/setup"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -28,6 +29,19 @@ func Init(read, _ *sql.DB) {
 type siloServerInfo struct {
 	Version  string   `json:"version"`
 	Features []string `json:"features"`
+
+	// SetupRequired says this server has no accounts and is holding a setup
+	// token. It is state rather than a capability, which is why it is a field
+	// here and not a name in features: it is true once, on a server nobody has
+	// claimed, and false forever after -- and features promises never to
+	// remove a name it has published.
+	//
+	// omitempty is load-bearing, not tidiness. Without it every server that has
+	// been set up would start sending a key it did not send before, and
+	// docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md is
+	// what that costs. With it, a claimed server's body is byte-identical to
+	// the one it sent yesterday.
+	SetupRequired bool `json:"setup_required,omitempty"`
 }
 
 // There is deliberately no block_size here.
@@ -92,6 +106,12 @@ func features() []string {
 		// option -- a POST without those fields silently makes a
 		// server-readable library.
 		"e2ee-libraries", // POST /libraries with "e2ee": true, GET libraries/{id}/key
+		// Claiming an unclaimed server. The name says this build has the
+		// endpoint; the setup_required field beside this list says whether
+		// this server still needs it. A client that cannot see the name is
+		// talking to a server that creates its own admin account at boot, and
+		// should say so rather than read the 404 as a transient failure.
+		"setup", // POST auth/setup, and setup_required on this response
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification, POST libraries/{id}/notify-token
@@ -101,9 +121,27 @@ func features() []string {
 
 // ServerInfoHandler handles GET /api/silo/v1/server-info.
 func ServerInfoHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := option.WithDBTimeout(r.Context())
+	defer cancel()
+
+	// One primary-key lookup on a route nothing polls. A process-level cached
+	// bool would be cheaper and wrong: `silo user add` can create the first
+	// account from another process, and a cache would go on advertising setup
+	// on a server that had already been claimed.
+	//
+	// A failure here is not worth a 500 -- the version and the feature list are
+	// what most callers came for -- so it is logged and answered as "no setup
+	// needed", which is the answer that sends a client to the login screen
+	// rather than to a setup screen that cannot work.
+	required, err := setup.Required(ctx)
+	if err != nil {
+		log.Errorf("Failed to check whether setup is required: %v", err)
+	}
+
 	writeJSON(w, http.StatusOK, siloServerInfo{
-		Version:  option.Version,
-		Features: features(),
+		Version:       option.Version,
+		Features:      features(),
+		SetupRequired: required,
 	})
 }
 
@@ -243,6 +281,18 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, loginResponse{Token: token})
 }
 
+// defaultSessionOpts is what a credential looks like when the client asked for
+// nothing in particular: a session, for as long as sessions last, with a
+// ceiling middleware.Perm narrows per request.
+//
+// One definition, because two handlers start from it -- login and setup -- and
+// the one an operator is most likely to keep using is the one setup issues.
+// Narrowing the default perm or changing the lifetime in a place setup did not
+// read would leave that credential on the old policy.
+func defaultSessionOpts() credential.IssueOpts {
+	return credential.IssueOpts{Kind: credential.KindSession, Perm: "rw", Lifetime: sessionLifetime}
+}
+
 // enrolmentOpts turns the request into what credential.Issue takes, answering
 // the client itself and returning false if the request cannot be honoured.
 //
@@ -252,7 +302,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 // that has r yields r, not a 403. A field that can only narrow needs no
 // validation beyond being spellable.
 func enrolmentOpts(w http.ResponseWriter, req loginRequest) (credential.IssueOpts, bool) {
-	opts := credential.IssueOpts{Kind: credential.KindSession, Perm: "rw", Lifetime: sessionLifetime}
+	opts := defaultSessionOpts()
 	if !req.enrolling() {
 		return opts, true
 	}

@@ -69,7 +69,8 @@ type movePickerLoadedMsg struct {
 	err  error
 }
 type serverInfoMsg struct {
-	version string
+	version       string
+	setupRequired bool
 }
 
 // libraryUpdatedMsg is a push from the notification socket: a library's head
@@ -89,9 +90,17 @@ type model struct {
 	view    string
 
 	// Login
-	emailInput    textinput.Model
-	passwordInput textinput.Model
-	loginFocus    int // 0=email, 1=password
+	emailInput      textinput.Model
+	passwordInput   textinput.Model
+	setupTokenInput textinput.Model
+	loginFocus      int // 0=email, 1=password, 2=setup token (setup mode only)
+	// setupMode says the server told us it has no accounts. The same screen
+	// then collects a third field and creates the account rather than signing
+	// in to one. A mode rather than a second view: everything after the
+	// request -- the transition to the library list, the watcher, the error
+	// row -- is shared, and the mode arrives asynchronously from server-info,
+	// so a view switch would race the first frame.
+	setupMode bool
 
 	// Libraries
 	libraries       []client.Library
@@ -146,9 +155,15 @@ type model struct {
 	height int
 }
 
+// fetchServerInfo asks what this server is and whether anyone has claimed it.
+//
+// The error is still discarded, and that is still right: an unreachable server
+// leaves setupRequired false, the login screen stays a login screen, and the
+// attempt the operator makes next produces a message they can act on. A second
+// error row saying the same thing in different words would not help them.
 func (m model) fetchServerInfo() tea.Msg {
 	info, _ := m.api.GetServerInfo()
-	return serverInfoMsg{version: info.Version}
+	return serverInfoMsg{version: info.Version, setupRequired: info.SetupRequired}
 }
 
 // awaitUpdate waits for the next push. Bubble Tea runs commands off the update
@@ -200,6 +215,12 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 	password.EchoMode = textinput.EchoPassword
 	password.CharLimit = 255
 
+	// Not masked. It is meant to be checked against a log line by eye, and a
+	// masked field makes a mistyped token undiagnosable.
+	setupToken := textinput.New()
+	setupToken.Placeholder = "SILO-XXXX-XXXX-XXXX-XXXX"
+	setupToken.CharLimit = 64
+
 	newLibrary := textinput.New()
 	newLibrary.Placeholder = "Library name"
 	newLibrary.CharLimit = 255
@@ -221,6 +242,7 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 		view:            viewLogin,
 		emailInput:      email,
 		passwordInput:   password,
+		setupTokenInput: setupToken,
 		newLibraryInput: newLibrary,
 		uploadInput:     upload,
 		mkdirInput:      mkdirIn,
@@ -244,12 +266,12 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 func (m model) Init() tea.Cmd {
 	if m.autoEmail != "" && m.autoPassword != "" {
 		m.message = "Logging in..."
-		return func() tea.Msg {
+		return tea.Batch(m.fetchServerInfo, func() tea.Msg {
 			err := m.api.Login(m.autoEmail, m.autoPassword)
 			return loginDoneMsg{err: err}
-		}
+		})
 	}
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, m.fetchServerInfo)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -270,10 +292,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-	// The server answers after login has already handed the screen to the
-	// library list, so this cannot live in the login view's update.
+	// Asked twice now: once from Init, so the login screen knows whether it is
+	// really a setup screen, and again after login for the version in the
+	// status bar. It stays here rather than in the login view's update because
+	// the second answer arrives once the library list is already on screen.
 	case serverInfoMsg:
 		m.serverVersion = msg.version
+		// Only while the login screen is still up. The post-login answer must
+		// not be able to flip a live session into setup mode, however slow it
+		// was in coming.
+		if m.view == viewLogin {
+			m.setupMode = msg.setupRequired
+			if m.loginFocus >= m.loginFields() {
+				m.loginFocus = 0
+			}
+			m.focusLoginField()
+			if m.setupMode {
+				// An auto-login fired from Init before this answer arrived, and
+				// on an unclaimed server it failed. Clear it: a 401 about an
+				// account that does not exist yet only reads as something the
+				// operator did wrong.
+				m.message = ""
+			}
+		}
 
 	// A library moved. Handled here rather than in a view's update because it
 	// arrives whatever is on screen, and because the wait for the next one has
@@ -327,24 +368,65 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // --- Login View ---
 
+// loginFields is how many inputs the login screen is showing. Setup mode adds
+// the token, and the cycle is sized from this rather than from a constant so
+// that a fourth field would be one line rather than four.
+func (m model) loginFields() int {
+	if m.setupMode {
+		return 3
+	}
+	return 2
+}
+
+// focusLoginField moves the cursor to whichever field loginFocus names, and
+// blurs the rest. Blur everything first: a field left focused behind the cursor
+// still takes keystrokes, and two focused inputs would each get every rune.
+func (m *model) focusLoginField() {
+	m.emailInput.Blur()
+	m.passwordInput.Blur()
+	m.setupTokenInput.Blur()
+
+	switch m.loginFocus {
+	case 0:
+		m.emailInput.Focus()
+	case 1:
+		m.passwordInput.Focus()
+	case 2:
+		m.setupTokenInput.Focus()
+	}
+}
+
 func (m model) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "tab", "shift+tab", "down", "up":
-			m.loginFocus = (m.loginFocus + 1) % 2
-			if m.loginFocus == 0 {
-				m.emailInput.Focus()
-				m.passwordInput.Blur()
-			} else {
-				m.emailInput.Blur()
-				m.passwordInput.Focus()
-			}
+		case "tab", "down":
+			m.loginFocus = (m.loginFocus + 1) % m.loginFields()
+			m.focusLoginField()
+			return m, nil
+
+		case "shift+tab", "up":
+			n := m.loginFields()
+			m.loginFocus = (m.loginFocus + n - 1) % n
+			m.focusLoginField()
 			return m, nil
 
 		case "enter":
 			email := m.emailInput.Value()
 			password := m.passwordInput.Value()
+
+			if m.setupMode {
+				token := strings.TrimSpace(m.setupTokenInput.Value())
+				if email == "" || password == "" || token == "" {
+					m.message = errorStyle.Render("Email, password and setup token required")
+					return m, nil
+				}
+				m.message = "Creating the first account..."
+				return m, func() tea.Msg {
+					return loginDoneMsg{err: m.api.Setup(email, password, token)}
+				}
+			}
+
 			if email == "" || password == "" {
 				m.message = "Email and password required"
 				return m, nil
@@ -376,10 +458,20 @@ func (m model) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 	m.passwordInput, cmd = m.passwordInput.Update(msg)
 	cmds = append(cmds, cmd)
+	// Only in setup mode, so keystrokes are not buffered into a field that is
+	// not on screen and cannot be reached.
+	if m.setupMode {
+		m.setupTokenInput, cmd = m.setupTokenInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 	return m, tea.Batch(cmds...)
 }
 
 func (m model) renderLogin() string {
+	if m.setupMode {
+		return m.renderSetup()
+	}
+
 	header := []string{titleStyle.Render("Silo Login"), ""}
 	body := []string{
 		"Email:",
@@ -389,6 +481,37 @@ func (m model) renderLogin() string {
 		m.passwordInput.View(),
 	}
 	return m.frame(header, body, m.footer(headerRows, loginHelp))
+}
+
+// renderSetup is the login screen on a server nobody has claimed.
+//
+// The sentence about choosing rather than signing in is the load-bearing one.
+// The entire risk of this screen is an operator reading three fields, assuming
+// the first two name an account that already exists, and typing a guess at
+// credentials rather than deciding on them.
+func (m model) renderSetup() string {
+	header := []string{titleStyle.Render("Silo Setup"), ""}
+
+	body := []string{}
+	body = append(body, wrapText(
+		"This server has no accounts yet. Choose the email and password you want — "+
+			"you are creating the first account, not signing in to one.", m.width)...)
+	body = append(body, "")
+	body = append(body, wrapText(
+		"Paste the setup token from the server's log, or run: silo setup-token", m.width)...)
+
+	body = append(body,
+		"",
+		"Email:",
+		m.emailInput.View(),
+		"",
+		"Password:",
+		m.passwordInput.View(),
+		"",
+		"Setup token:",
+		m.setupTokenInput.View(),
+	)
+	return m.frame(header, body, m.footer(headerRows, setupHelp))
 }
 
 // --- Libraries View ---
@@ -1113,6 +1236,7 @@ func (m model) renderConfirmOverwrite() string {
 // left for the list above it.
 var (
 	loginHelp     = []string{"tab: switch field", "enter: login", "ctrl+c: quit"}
+	setupHelp     = []string{"tab: switch field", "enter: create account", "ctrl+c: quit"}
 	librariesHelp = []string{"j/k: navigate", "g/G: top/bottom", "n: new", "d: delete", "r: refresh", "q: quit"}
 	browseHelp    = []string{"j/k: navigate", "g/G: top/bottom", "enter: open/download", "u: upload", "m: mkdir", "r: rename", "v: move", "x: delete", "esc: back", "q: quit"}
 	moveHelp      = []string{"j/k: navigate", "enter: open dir", "space: move here", "backspace: up", "esc: cancel"}
@@ -1121,6 +1245,34 @@ var (
 	uploadHelp    = []string{"enter: upload", "esc: cancel"}
 	renameHelp    = []string{"enter: rename", "esc: cancel"}
 )
+
+// wrapText breaks a sentence to width, at spaces.
+//
+// wrapHelp cannot do this: it breaks only between whole items, because
+// breaking inside "r: rename" would read as two bindings. Prose has the
+// opposite requirement, and frame clips rather than wraps, so a sentence handed
+// through unbroken loses its tail rather than gaining a line.
+func wrapText(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return []string{""}
+	}
+
+	lines := []string{}
+	line := words[0]
+	for _, w := range words[1:] {
+		if lipgloss.Width(line)+1+lipgloss.Width(w) > width {
+			lines = append(lines, line)
+			line = w
+			continue
+		}
+		line += " " + w
+	}
+	return append(lines, line)
+}
 
 // wrapHelp packs bindings into lines no wider than width, breaking only
 // between them. A general-purpose word wrap breaks inside "r: rename", which

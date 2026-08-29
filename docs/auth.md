@@ -22,7 +22,9 @@ hang off it as attributes, so none of them is the key.
 
 **Every secret a client presents is a row** in one table, resolved by one
 function. Revoking any of them is deleting a row. There is no second store and no
-lane that authenticates some other way.
+lane that authenticates some other way. Two secrets sit outside that table, both
+listed below and both for reasons the table itself creates rather than for
+convenience.
 
 **A credential can only narrow.** Its `perm` and `scope` are a ceiling
 intersected with what the account may do, never a grant of their own.
@@ -33,9 +35,18 @@ intersected with what the account may do, never a grant of their own.
 | Session credential | `Credential`, kind `session`; `SHA-256(secret)` only | 24h, absolute | yes, next request |
 | Device credential | `Credential`, kind `device`; `SHA-256(secret)` only | 90d, absolute | yes, next request |
 | Notification token | not stored — HS256 over `option.JWTPrivateKey` | 72h, per library | no |
+| Setup token | `SetupToken.token`, one row, in the clear | until the first account exists | by claiming it, or `silo user add` |
 
 The notification token is the only unstored bearer token, and deliberately: it is
 verified in a process with no database.
+
+The setup token is the only secret held in the clear, and the only one that is
+not a `Credential`. Both follow from what it is for: it exists precisely while
+`Credential` cannot hold it — that table's `account_id` references an `Account`
+row, and there are none — and it has to be legible because the server reprints
+it and `silo setup-token` prints it. It authenticates nobody and grants no
+access; it authorises the single transition from no accounts to one. See
+[claiming a server](#claiming-a-server-that-has-no-accounts).
 
 ## Identity
 
@@ -395,13 +406,58 @@ proof and the address is only a lookup key. It is **not** fine for linking an
 external identity, where the address *is* the proof — see
 [identity binding](#binding-an-external-identity-to-a-silo-account).
 
+### Claiming a server that has no accounts
+
 A server with an empty account table is a server nobody can use: there is no
-signup endpoint and no user-management API. `authmgr.BootstrapAdmin` creates
-`admin@silo.local` with a generated password and logs it once when the table is
-empty and no password was supplied; the password is stored hashed like any other,
-so the log line is the only copy that will ever exist. `SILO_ADMIN_EMAIL` and
-`SILO_ADMIN_PASSWORD` still work when set, which is what CI uses. An existing
-table is left alone: this is a bootstrap, not a reset.
+signup endpoint and no user-management API. It used to answer that by inventing
+an account — `admin@silo.local`, a generated password, one log line — or by
+reading `SILO_ADMIN_EMAIL` and `SILO_ADMIN_PASSWORD`. Both are gone. The first
+handed the operator an identity they did not choose; the second put a password
+in a compose file and an environment for the life of a deployment, to be read
+once.
+
+What replaces them is a **setup token**: sixteen Crockford base32 symbols,
+eighty bits from `crypto/rand`, printed at warning level on every boot until it
+is claimed and reprinted on demand by `silo setup-token`. `POST auth/setup`
+takes it with an address and a password of the operator's choosing and creates
+the first account, as staff. It is refused with `409` the moment any account
+exists, and `GET server-info` carries `setup_required` so a client can offer the
+right screen rather than a login form that cannot work.
+
+Three things about it are worth stating because they are exceptions to rules
+this document makes elsewhere.
+
+**It is a second secret outside `Credential`.** Rule 2 says every secret a
+client presents is a row in one table resolved by one function, with the
+notification token as the single documented exception. This is the second, and
+the reason is structural rather than convenience: `Credential.account_id`
+references `Account(id)`, so on a server with no accounts the rule's own table
+cannot hold it. It authenticates nobody, names no account, and authorises
+exactly one transition — after which its row is gone. It lives in `SetupToken`,
+a single-row table whose `CHECK (id = 1)` makes "two live tokens"
+unrepresentable, and it is consumed in the same transaction that inserts the
+account, so the two can never come apart.
+
+**It is stored in plaintext**, where every `Credential` stores only
+`SHA-256(secret)`. It has to be: the server reprints it at every boot and
+`silo setup-token` prints it on demand, and a hash does neither. The cost is
+bounded to nothing — the row exists only while the server has no accounts, and
+anyone who can read that table can already `INSERT INTO Account` by hand. That
+same premise is why `silo setup-token` is a local command with no remote
+version: an HTTP endpoint handing out the setup token would be unauthenticated
+by construction, which is the same as having no token at all.
+
+**Its rate limit is not the defence.** Five attempts a minute per address, which
+bounds the cost of the endpoint and forgives a mistyped code. Eighty bits is
+what makes guessing hopeless. Do not read the limiter as load-bearing and
+shorten the token.
+
+The account predicate is deliberately unfiltered — `SELECT 1 FROM Account`, not
+the active-only count the old bootstrap used. Under an active-only test,
+disabling your last account would put the server back into setup mode and mint a
+fresh token, handing a way in to anyone who could read its logs. A disabled
+account is still an account; the way back from locking yourself out is
+`silo user enable`, which needs the same shell access the token does.
 
 ## Discarding a credential
 
@@ -647,8 +703,11 @@ would learn otherwise only from the permissions it silently stopped having.
 
 ## What is not authenticated
 
-`GET /api/silo/v1/server-info` and `POST /api/silo/v1/auth/login`. Everything
-else under `/api/silo/v1` is mounted on a subrouter carrying
+`GET /api/silo/v1/server-info`, `POST /api/silo/v1/auth/login`,
+`POST /api/silo/v1/auth/kdf`, and `POST /api/silo/v1/auth/setup` — the last
+because it is the request that creates the first account, so there is nothing
+yet to authenticate it against; the setup token is what stands in its place.
+Everything else under `/api/silo/v1` is mounted on a subrouter carrying
 `middleware.RequireCredential`, and everything outside `/api/silo/v1/*` and
 `/notification` is a 404.
 
@@ -1141,9 +1200,15 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
    outlive the process. A 0600 keyfile is still the answer if the key has to be
    readable by an operator or shared across processes; if it does not, a row is
    one fewer file to get the permissions wrong on.
-4. **A single-use setup credential** in place of `SILO_ADMIN_PASSWORD`, minted on
-   first run with no accounts, valid for fifteen minutes or until used.
-   `SILO_ADMIN_PASSWORD_FILE` stays for automated deployments.
+4. ~~**A single-use setup credential** in place of `SILO_ADMIN_PASSWORD`.~~
+   **Built** — see [claiming a server](#claiming-a-server-that-has-no-accounts)
+   in Part 1. Two things landed differently from this line. There is no
+   fifteen-minute expiry: a clock the operator cannot see is a lockout, and
+   "until an account exists" is both a better death condition and one the server
+   can check rather than race. And `SILO_ADMIN_PASSWORD_FILE` did not stay,
+   because nothing was left for it to do — the token is read back from the host
+   with `silo setup-token`, which is the same access a file would have needed
+   and leaves no secret at rest in a config file.
 5. **OIDC** — `/device/code`, the device grant against the IdP, ID-token
    verification, `AccountIdentity` binding with verified-address recovery, and
    backchannel logout. Adds no browser surface, and produces exactly the

@@ -17,6 +17,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/setup"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -249,21 +250,14 @@ func upgradeHash(ctx context.Context, acct *account.Account, password string) {
 	log.Infof("Upgraded stored password hash for %s", acct.Email)
 }
 
-// EnsureAdmin creates an admin user if it doesn't already exist.
-// Uses INSERT OR IGNORE to avoid TOCTOU races.
-func EnsureAdmin(email, password string) error {
-	_, err := ensureAdmin(email, password)
-	return err
-}
-
 // CreateAccount is the plaintext lane: it turns a password an operator typed
 // into a stored account, so that no caller has to know which KDF this is or
 // remember that account.Create takes a hash.
 //
 // The account package only ever sees hashes. That is the invariant this
-// function exists to hold, and it holds it for the CLI, for the bootstrap
-// admin, and for the admin HTTP endpoint docs/roadmap.md means to
-// build on these calls rather than beside them.
+// function exists to hold, and it holds it for the CLI, for the setup token's
+// claim (ClaimSetup below), and for the admin HTTP endpoint docs/roadmap.md
+// means to build on these calls rather than beside them.
 //
 // created is false when the address was already claimed, in which case
 // nothing was written and the existing password is still the live one.
@@ -297,89 +291,38 @@ func SetAccountPassword(ctx context.Context, id account.ID, password string) err
 	return account.SetPassword(ctx, id, hash)
 }
 
-// ensureAdmin is EnsureAdmin plus the one fact the bootstrap path needs: did
-// this call actually write the row? A generated password is only worth
-// printing if the account it belongs to is the account that was created.
-func ensureAdmin(email, password string) (created bool, err error) {
-	if email == "" || password == "" {
-		return false, nil
-	}
-
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-
-	created, err = CreateAccount(ctx, email, password, true)
-	if err != nil {
-		return false, fmt.Errorf("failed to create admin user: %v", err)
-	}
-	if created {
-		log.Infof("Created admin user: %s", email)
-	} else {
-		log.Infof("Admin user %s already exists", email)
-	}
-	return created, nil
-}
-
-// DefaultAdminEmail is the login the server invents when it has to create the
-// first account by itself. It is a login, not an address — nothing is ever
-// sent to it — so it uses a reserved TLD that cannot resolve to somebody
-// else's mailbox.
-const DefaultAdminEmail = "admin@silo.local"
-
-// BootstrapAdmin makes sure the server has an account somebody can log in
-// with, and returns the password it generated when it had to invent one.
+// ClaimSetup is the plaintext lane for the one account that has no operator
+// behind a shell to create it: the first one, made by trading the setup token
+// over HTTP.
 //
-// A server with an empty user table is a server nobody can use: there is no
-// signup endpoint and no user-management API, so the only way in was to have
-// set SILO_ADMIN_EMAIL and SILO_ADMIN_PASSWORD before the first boot. Someone
-// who just ran the binary to see what it does got a working server and no way
-// to talk to it, and the fix — stop it, export two variables, start it again —
-// is only obvious once you already know the answer.
+// It is here rather than in the handler for the reason CreateAccount is. The
+// KDF has one entry point, and a caller outside this package should no more
+// have to know that setup.Claim takes a hash than it has to know what the hash
+// is made of. Adding a pepper, moving to argon2 or putting the parameters in a
+// column is then an edit to this package, not an edit to this package and a
+// thing to remember about an HTTP handler.
 //
-// So: if there are no users at all and no password was supplied, mint one and
-// let the caller print it. The generated password is stored hashed like any
-// other, which means the log line is the only copy of it that will ever exist.
-// Supplying SILO_ADMIN_PASSWORD keeps the old behaviour exactly, and an
-// existing user table is left alone — this is a bootstrap, not a reset.
-func BootstrapAdmin(email, password string) (generated string, err error) {
-	if email == "" {
-		email = DefaultAdminEmail
-	}
-	if password != "" {
-		return "", EnsureAdmin(email, password)
-	}
-
-	users, err := userCount()
+// The order is load-bearing twice over. The token is compared first, so a wrong
+// guess costs a single-row read rather than 600k PBKDF2 rounds. The hash is
+// derived second, before setup.Claim opens its transaction, because writeDB is
+// a pool of one connection and eighty milliseconds of hashing inside that
+// transaction would hold it against every other writer. Neither read is the
+// guard: setup.Claim re-reads the row and re-compares inside the transaction it
+// commits, which is what makes the token single-use.
+func ClaimSetup(ctx context.Context, presented setup.Token, email, password string) (account.ID, error) {
+	stored, err := setup.Peek(ctx)
 	if err != nil {
-		return "", err
+		return account.Zero, err
 	}
-	if users > 0 {
-		return "", nil
+	if stored.IsZero() || !stored.Equal(presented) {
+		return account.Zero, setup.ErrBadToken
 	}
 
-	password, err = GeneratePassword()
+	hash, err := HashPassword(password)
 	if err != nil {
-		return "", err
+		return account.Zero, err
 	}
-	created, err := ensureAdmin(email, password)
-	if err != nil {
-		return "", err
-	}
-	if !created {
-		// Another process won the race between the count and the insert. Its
-		// password is the real one; ours was never stored, so printing it
-		// would send the operator chasing a credential that cannot work.
-		return "", nil
-	}
-	return password, nil
-}
-
-// userCount reports how many accounts exist.
-func userCount() (int, error) {
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-
-	return account.Count(ctx)
+	return setup.Claim(ctx, presented, email, hash)
 }
 
 // passwordAlphabet excludes the characters that get lost between a terminal
@@ -392,8 +335,8 @@ const passwordAlphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456
 // still short enough to retype.
 const generatedPasswordLen = 20
 
-// GeneratePassword returns a random password. It is what the bootstrap admin
-// gets, and what "silo user add --generate" offers an operator who would
+// GeneratePassword returns a random password. It is what "silo user add
+// --generate" and "silo user passwd --generate" offer an operator who would
 // otherwise invent one by hand.
 func GeneratePassword() (string, error) {
 	buf := make([]byte, generatedPasswordLen)

@@ -158,16 +158,39 @@ func ByID(ctx context.Context, id ID) (*Account, error) {
 // row is written at all, rather than a row holding a sentinel that some future
 // comparison could misread as "matches anything".
 func Create(ctx context.Context, email, passwordHash string, isStaff bool) (id ID, created bool, err error) {
-	norm := Normalize(email)
-	if norm == "" {
-		return Zero, false, fmt.Errorf("refusing to create an account with no address")
-	}
-
 	tx, err := writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return Zero, false, fmt.Errorf("creating an account: %v", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	id, created, err = CreateTx(ctx, tx, email, passwordHash, isStaff)
+	if err != nil {
+		return Zero, false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Zero, false, fmt.Errorf("creating an account: %v", err)
+	}
+	return id, created, nil
+}
+
+// CreateTx is Create inside a transaction the caller already holds.
+//
+// The split exists for the setup token, which has to consume itself and create
+// the first account in one commit -- a claim that succeeded and an insert that
+// then failed would leave a server with no account and no way to make one.
+//
+// It cannot be done by calling Create from inside another transaction. writeDB
+// is a pool of exactly one connection (see dbutil), so the nested BeginTx would
+// not nest: it would wait for the connection the outer transaction is holding,
+// until the context times out. Two other callers in fileserver/credential
+// already have that comment; this is the third.
+func CreateTx(ctx context.Context, tx *sql.Tx, email, passwordHash string, isStaff bool) (id ID, created bool, err error) {
+	norm := Normalize(email)
+	if norm == "" {
+		return Zero, false, fmt.Errorf("refusing to create an account with no address")
+	}
 
 	var existing ID
 	err = tx.QueryRowContext(ctx,
@@ -211,9 +234,6 @@ func Create(ctx context.Context, email, passwordHash string, isStaff bool) (id I
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return Zero, false, fmt.Errorf("creating an account: %v", err)
-	}
 	return id, true, nil
 }
 
@@ -273,18 +293,54 @@ func SetActive(ctx context.Context, id ID, active bool) error {
 	return nil
 }
 
-// Count reports how many accounts exist, for the first-boot bootstrap.
+// ExistsTx reports whether this server has any account at all, inside a
+// transaction the caller holds.
 //
-// Tombstones are excluded. An install whose only accounts are the inactive
-// stand-ins minted for orphaned shares still has nobody who can log in, and
-// counting them would leave that server unreachable.
-func Count(ctx context.Context) (int, error) {
-	var n int
-	if err := readDB.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM Account WHERE is_active = 1").Scan(&n); err != nil {
-		return 0, fmt.Errorf("counting accounts: %v", err)
+// Two things about it are deliberate.
+//
+// It takes a transaction rather than reading readDB, because its one caller is
+// the setup token's claim, and readDB is a separate pool on a separate WAL
+// snapshot -- it cannot see the claiming transaction's own writes, so a check
+// made through it would be a decoration rather than a guard.
+//
+// And it counts tombstones, where the first-boot count this replaced excluded
+// them. That count wanted "is there anyone who can log in", so an install whose
+// only rows were the inactive stand-ins minted for orphaned shares was treated
+// as empty. The setup token wants a different question -- "has this server ever
+// been set up" -- because the answer gates minting a fresh credential and
+// printing it to the log. Under the old predicate, disabling your last account
+// would put the server back into setup mode and hand a way in to anyone who
+// could read its logs. An account that is disabled is still an account; the way
+// back from locking yourself out is `silo user enable`, which needs the same
+// shell access the token does.
+func ExistsTx(ctx context.Context, tx *sql.Tx) (bool, error) {
+	return existsIn(ctx, tx)
+}
+
+// Exists is ExistsTx outside a transaction, for the callers that only want to
+// know and are not about to write.
+func Exists(ctx context.Context) (bool, error) {
+	return existsIn(ctx, readDB)
+}
+
+// rowQuerier is the one method existsIn needs, and both *sql.DB and *sql.Tx
+// have it. It is here so that the transactional and non-transactional forms
+// above are two names for one query rather than two copies of it -- the same
+// split Create and CreateTx make, for the same reason.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func existsIn(ctx context.Context, q rowQuerier) (bool, error) {
+	var one int
+	err := q.QueryRowContext(ctx, "SELECT 1 FROM Account LIMIT 1").Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
 	}
-	return n, nil
+	if err != nil {
+		return false, fmt.Errorf("looking for any account: %v", err)
+	}
+	return true, nil
 }
 
 // Listed is one account as an operator listing them wants to see it: the

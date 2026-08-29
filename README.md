@@ -85,19 +85,16 @@ Build and run directly from GitHub — no clone needed:
 
 ```bash
 docker build -t silo https://github.com/dkam/silo.git
-docker run -d -p 8082:8082 -v /path/to/silo-data:/data \
-  -e SILO_ADMIN_EMAIL=admin@example.com \
-  -e SILO_ADMIN_PASSWORD=changeme \
-  silo
+docker run -d --name silo -p 8082:8082 -v /path/to/silo-data:/data silo
+docker logs silo          # the setup token is here
 ```
 
 Multi-arch images (linux/amd64, linux/arm64) are also published to GitHub Container Registry on each release:
 
 ```bash
-docker run -d -p 8082:8082 -v /path/to/silo-data:/data \
-  -e SILO_ADMIN_EMAIL=admin@example.com \
-  -e SILO_ADMIN_PASSWORD=changeme \
+docker run -d --name silo -p 8082:8082 -v /path/to/silo-data:/data \
   ghcr.io/dkam/silo:latest
+docker logs silo          # the setup token is here
 ```
 
 Or with Docker Compose — save as `docker-compose.yml`:
@@ -110,33 +107,43 @@ services:
       - "8082:8082"
     volumes:
       - /path/to/silo-data:/data
-    environment:
-      SILO_ADMIN_EMAIL: admin@example.com
-      SILO_ADMIN_PASSWORD: changeme
 ```
 
-Then `docker compose up -d`.
+Then `docker compose up -d`, and `docker compose logs silo` for the setup
+token. No credentials go in this file: there is nothing to put there, which is
+the point — a bootstrap password is needed for exactly one boot and would sit
+in your compose file, your shell history and `docker inspect` output for the
+life of the deployment.
 
 ### Run the server
 
 ```bash
-SILO_ADMIN_EMAIL=admin@example.com \
-SILO_ADMIN_PASSWORD=changeme \
 ./silo serve -d /path/to/silo-data
 ```
 
-The server listens on `127.0.0.1:8082`. On first run it creates the SQLite database, the storage directory, and the admin user.
-
-The credentials are optional. Started with an empty user table and no `SILO_ADMIN_PASSWORD`, the server creates `admin@silo.local` with a random password and prints it once, at warning level:
+The server listens on `127.0.0.1:8082`. On first run it creates the SQLite database and the storage directory. It does **not** create an account — you choose that, and the setup token is how the server knows it is you asking:
 
 ```
-[WARNING] No users existed and no SILO_ADMIN_PASSWORD was set, so an admin account was created:
-[WARNING]     email:    admin@silo.local
-[WARNING]     password: meKFutKgmKnYF9rFesaJ
-[WARNING] This password is stored hashed and will not be shown again. Save it now.
+[WARNING] This server has no accounts. Create the first one with this setup token:
+[WARNING]     setup token: SILO-685Y-9Y0R-8ANQ-CRWX
+[WARNING] Run `silo tui`, enter the email and password you want, and paste it in.
+[WARNING] It stops working the moment an account exists. `silo setup-token` reprints it.
 ```
 
-Save it — the password is stored hashed, so later runs cannot print it again. Setting `SILO_ADMIN_EMAIL` alone names the account and still generates the password; setting `SILO_ADMIN_PASSWORD` skips the whole thing. Once any user exists, this never fires again. No config file is required — Silo runs on compiled defaults plus environment variables. If you want to tweak low-level settings (quota defaults, cache limits, cluster options) you can pass a `silo.conf` with `-C /path/to/silo.conf`.
+Run `silo tui`, type the email and password you want, paste the token, and you have an account. Nothing about the address is fixed by the server, and no password ever passes through a log line or an environment variable.
+
+The token is the same on every boot until it is claimed, so scrolling past it costs nothing — `silo setup-token` prints it again without a restart:
+
+```bash
+./silo setup-token -d /path/to/silo-data
+docker exec silo silo setup-token          # or, under Docker
+```
+
+It stops working the instant the first account exists, and `silo setup-token` says so rather than printing a token that would be refused.
+
+Two things worth knowing. The token is printed to the log at every boot until it is claimed, so if you ship logs off the box, it goes with them — claim it before exposing the port, and treat an unclaimed server's logs as sensitive. And a server reachable from off the machine advertises `setup_required` on `GET /api/silo/v1/server-info`, which is what lets the TUI show a setup screen instead of a login form that could not work; the token is what stands between that and anyone else claiming it first.
+
+No config file is required — Silo runs on compiled defaults plus environment variables. If you want to tweak low-level settings (quota defaults, cache limits, cluster options) you can pass a `silo.conf` with `-C /path/to/silo.conf`.
 
 **Loopback is the default on purpose.** Silo speaks plaintext — TLS is the reverse proxy's job — and every credential it uses is a bearer token in a header. To reach it from other machines, see [Exposing the server](#exposing-the-server).
 
@@ -157,13 +164,11 @@ A typical `.envrc` for local development with [direnv](https://direnv.net/):
 ```bash
 export SILO_HOST=127.0.0.1
 export SILO_PORT=8082
-export SILO_ADMIN_EMAIL=admin@example.com
-export SILO_ADMIN_PASSWORD=changeme
 export SILO_EMAIL=admin@example.com
 export SILO_PASSWORD=changeme
 ```
 
-With that loaded, `./silo serve -d /tmp/silo-data` and `./silo tui` both pick up the same host, port, and credentials — no flags needed.
+With that loaded, `./silo serve -d /tmp/silo-data` and `./silo tui` both pick up the same host, port, and credentials — no flags needed. The account itself is made once, through the setup screen; these two variables only say who to log in as afterwards.
 
 From the TUI: `n` to create a library, `enter` to open it, `u` to upload a local file or directory, `v` to move, `r` to rename, `x` to delete, `q` to quit. Lists scroll: `j`/`k` or the arrow keys move the cursor, `g`/`G` jump to the top and bottom, and page up/down move a screen at a time.
 
@@ -208,8 +213,6 @@ not reclaim unreferenced history inside a library that still exists.
 | `SILO_DATA_DIR` | Data directory | `~/.local/share/silo` |
 | `SILO_HOST` | Bind address | `127.0.0.1` (`0.0.0.0` in the Docker image) |
 | `SILO_PORT` | Listen port | `8082` |
-| `SILO_ADMIN_EMAIL` | Create admin user on startup | `admin@silo.local` when the user table is empty |
-| `SILO_ADMIN_PASSWORD` | Admin password | generated and logged on first run |
 | `SILO_JWT_SECRET` | JWT signing key | auto-generated (ephemeral) |
 | `SILO_LOG_LEVEL` | Log level: debug, info, warn, error | — |
 | `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
@@ -366,7 +369,7 @@ Tested clients:
 
 Silo is a lean rewrite focused on the sync path and a minimal management API. The following are **not** available:
 
-- No user management API — the first user is created at startup (from `SILO_ADMIN_EMAIL`/`SILO_ADMIN_PASSWORD`, or generated and logged), and any further users need a direct database insert
+- No user management API — the first account is created by claiming the setup token, and any further account needs `silo user add` on the host
 - No library sharing API — nothing can *create* a share. The share tables are read
   and honoured: a row in `SharedLibrary` or `LibraryGroup` grants the access it
   describes, and `GET /api/silo/v1/libraries` lists directly shared libraries beside

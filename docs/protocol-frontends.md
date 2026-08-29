@@ -159,7 +159,7 @@ first two contradict the one-binary-one-node non-goal in
 ### Issued credentials
 
 Login runs 600,000 rounds of PBKDF2 (`authmgr.PBKDF2Iterations`,
-`fileserver/authmgr/authmgr.go:206`). WebDAV and S3 authenticate *every
+`fileserver/authmgr/authmgr.go:192`). WebDAV and S3 authenticate *every
 request*, so reusing the account password means running the login KDF per
 request — a self-inflicted denial of service that the login rate limiter cannot
 help with, because these are all successful verifications.

@@ -164,6 +164,26 @@ CREATE TABLE IF NOT EXISTS ServerSecret (
   ctime  INTEGER NOT NULL
 );
 
+-- The one-time token that creates this server's first account.
+--
+-- At most one row, ever: the CHECK is what makes "single use" a property of the
+-- schema rather than of everyone remembering to delete the old one. Claiming
+-- deletes the row in the same transaction that inserts the account, so the two
+-- cannot come apart -- a server can never end up with an account and a live
+-- token, or with the token spent and no account to show for it.
+--
+-- The token is stored as it is read, not hashed, which is the opposite of every
+-- Credential row and is deliberate. It has to be: the server reprints it at
+-- every boot until it is claimed and "silo setup-token" prints it on demand,
+-- and a hash can do neither. The trade costs nothing, because the row exists
+-- only while the server has no accounts, and anyone who can read this table can
+-- already INSERT INTO Account by hand.
+CREATE TABLE IF NOT EXISTS SetupToken (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  token TEXT    NOT NULL,
+  ctime INTEGER NOT NULL
+);
+
 -- Groups.
 CREATE TABLE IF NOT EXISTS "Group" (group_id INTEGER PRIMARY KEY AUTOINCREMENT, group_name VARCHAR(255), creator_account_id BLOB NOT NULL REFERENCES Account(id), timestamp BIGINT, type VARCHAR(32), parent_group_id INTEGER);
 CREATE TABLE IF NOT EXISTS GroupUser (group_id INTEGER, account_id BLOB NOT NULL REFERENCES Account(id), is_staff tinyint);

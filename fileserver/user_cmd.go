@@ -21,9 +21,10 @@ import (
 
 // RunUser is the account lifecycle, on the host, without a running server.
 //
-// Until now an account could be created two ways -- SILO_ADMIN_EMAIL with a
-// password beside it, or the bootstrap admin the server mints when the table
-// is empty -- and changed no way at all. Everything after the first account
+// The first account is made by claiming the setup token, through the TUI. This
+// is everything after that one, and the reason it exists is that there used to
+// be nothing: an account could be created two ways, both of them at first boot,
+// and changed no way at all. Everything after the first account
 // meant opening silo.db and writing SQL, which is a poor thing to ask of an
 // operator and a worse thing for them to get wrong: the password column wants
 // a hash in a particular format, and the address is a foreign key in nine
@@ -325,11 +326,12 @@ func announceGenerated(password string, generated bool) {
 // readNewPassword gets a password without one ever appearing on a command
 // line.
 //
-// There is deliberately no -password flag. auth.md's finding 9 is about
-// SILO_ADMIN_PASSWORD sitting in docker-compose.yml and in the environment of
-// a running container; a flag would be the same mistake in a shorter-lived
-// place, readable by every other process on the host through /proc and kept
-// in the operator's shell history afterwards.
+// There is deliberately no -password flag. auth.md's finding 9 was about a
+// bootstrap password sitting in docker-compose.yml and in the environment of a
+// running container -- the argument that has since removed SILO_ADMIN_PASSWORD
+// altogether in favour of the setup token. A flag would be the same mistake in
+// a shorter-lived place, readable by every other process on the host through
+// /proc and kept in the operator's shell history afterwards.
 //
 // So: -generate invents one, a terminal is prompted twice with echo off, and
 // anything else reads one line from stdin, which is what a script or a

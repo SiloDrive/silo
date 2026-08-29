@@ -68,7 +68,7 @@ because a client author has to grep for it.
 
 | file | what it covers |
 |---|---|
-| [`auth.md`](auth.md) | **current and plan, in one file, split down the middle.** Part 1 describes the credential model as it runs — the token format, the one `Resolve`, the permission ceiling, password enrolment — and is normative: if the code disagrees with it, one of them is a bug. Part 2 is designed and not built — proof of possession, Argon2id, OIDC — and ends with what is left, in order. The account key material it used to list as unbuilt has landed |
+| [`auth.md`](auth.md) | **current and plan, in one file, split down the middle.** Part 1 describes the credential model as it runs — the token format, the one `Resolve`, the permission ceiling, password enrolment — and is normative: if the code disagrees with it, one of them is a bug. Part 2 is designed and not built — proof of possession, Argon2id, OIDC — and ends with what is left, in order. The account key material and the single-use setup token it used to list as unbuilt have both landed |
 | [`roadmap.md`](roadmap.md) | **plan.** What is built, what is next, and what each thing waits on. It owns **ordering and dependency only** and links to the document that owns each design — where it and an owning document disagree, the owning document wins |
 | [`protocol-gaps.md`](protocol-gaps.md) | **plan.** What the Silo lane would need to be an ideal protocol for a Dropbox-shaped client, ranked, with the reasoning attached |
 | [`encryption.md`](encryption.md) | **plan.** Why Seafile's encrypted libraries are not being adopted, and the sketch of the end-to-end scheme that replaces them. Also the list of things not to build |

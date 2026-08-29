@@ -84,6 +84,14 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	// Local, and it has to have its own case: without one it would fall through
+	// to the default and be sent to a server over HTTP, which is precisely what
+	// it cannot be. See silod.RunSetupToken.
+	case "setup-token":
+		if err := silod.RunSetupToken(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "backup-db":
 		if err := silod.RunBackupDB(rest); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -140,6 +148,7 @@ Usage:
   silo gc [-orphans] [-delete]    Reclaim disk: dead libraries, orphans, old history
   silo backup-db <dir>            Snapshot the databases (server may be running)
   silo sentry-test                Send a test event to $SILO_SENTRY_DSN and report
+  silo setup-token                Print the token that creates the first account
   silo user list [-json]          Show every account (see "silo user -h")
   silo user add <email>           Create an account
   silo user passwd <email>        Set a password
@@ -166,8 +175,6 @@ Server environment:
   SILO_DATA_DIR          Data directory (default: ~/.local/share/silo)
   SILO_HOST              Listen address (default: 127.0.0.1)
   SILO_PORT              Listen port (default: 8082)
-  SILO_ADMIN_EMAIL       Bootstrap admin email (first run)
-  SILO_ADMIN_PASSWORD    Bootstrap admin password (first run)
   SILO_JWT_SECRET        JWT signing key (auto-generated if unset)
   SILO_LOG_LEVEL         Log level: debug, info, warn, error
   SILO_SENTRY_DSN        Send errors, panics and request timings here

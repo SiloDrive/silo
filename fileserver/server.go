@@ -27,6 +27,7 @@ import (
 	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/serversecret"
+	"github.com/dkam/silo/fileserver/setup"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/fileserver/utils"
 	"github.com/dkam/silo/internal/observability"
@@ -330,21 +331,30 @@ func Run(args []string) error {
 	credential.StartCleanup()
 	serversecret.Init(siloPair.Read, siloPair.Write)
 
-	// Create the admin user from the environment if it is set, and invent one
-	// if it is not and there are no users at all. A server nobody can log in
-	// to is not a useful server, and until now that was what `silo serve` gave
-	// anyone who had not set the two variables before the first boot.
-	adminEmail := os.Getenv("SILO_ADMIN_EMAIL")
-	adminPassword := os.Getenv("SILO_ADMIN_PASSWORD")
-	if adminEmail == "" {
-		adminEmail = authmgr.DefaultAdminEmail
-	}
-	generated, err := authmgr.BootstrapAdmin(adminEmail, adminPassword)
+	setup.Init(siloPair.Read, siloPair.Write)
+
+	// Mint the setup token, if this server has never had an account.
+	//
+	// The server no longer invents an account for itself. It used to, because a
+	// server nobody can log in to is not a useful server -- but the account it
+	// invented had an address the operator did not choose and a password only a
+	// log line ever held, and the alternative was a password sitting in
+	// docker-compose.yml forever after the one boot that needed it. The token
+	// replaces both: it proves whoever holds it can read this host, and the
+	// operator picks their own address and password.
+	//
+	// Reprinted on every boot until it is claimed, deliberately. It is the same
+	// token each time, so an operator who scrolled past it does not have to
+	// wonder which of two strings is live.
+	setupCtx, cancelSetup := option.WithDBTimeout(context.Background())
+	setupToken, err := setup.Ensure(setupCtx)
+	cancelSetup()
 	if err != nil {
-		log.Fatalf("Failed to create admin user: %v", err)
+		log.Fatalf("Failed to prepare the setup token: %v", err)
 	}
-	if generated != "" {
-		logGeneratedAdmin(adminEmail, generated)
+	// The zero token is how Ensure says this server already has an account.
+	if !setupToken.IsZero() {
+		logSetupToken(setupToken)
 	}
 
 	metrics.Init()
@@ -403,20 +413,24 @@ func Run(args []string) error {
 	return nil
 }
 
-// logGeneratedAdmin prints the credentials the server just invented for
-// itself.
+// logSetupToken prints the token that creates this server's first account.
 //
-// This is the only time the password is ever legible: it is stored hashed, so
-// nothing on the server can recover it and no later run will print it again.
-// It goes out at warning level and over several lines on purpose — an operator
-// scanning a first boot has to be able to find it, and the line that says
-// "this will not be shown again" is the one that decides whether they write it
-// down now or go looking for it later.
-func logGeneratedAdmin(email, password string) {
-	log.Warn("No users existed and no SILO_ADMIN_PASSWORD was set, so an admin account was created:")
-	log.Warnf("    email:    %s", email)
-	log.Warnf("    password: %s", password)
-	log.Warn("This password is stored hashed and will not be shown again. Save it now.")
+// Several lines at warning level, on purpose. An operator scanning a first boot
+// has to be able to find it, and the sentence saying what it is for is what
+// stops it being mistaken for a password.
+//
+// **Warn, not Error, and that is not a style choice.** The Sentry hook fires on
+// Panic, Fatal and Error only (internal/observability, logrusHook.Levels), so
+// the level is what keeps this string on the machine it was printed on. There
+// is no PII setting that would substitute: the hook builds its event from the
+// log message, and the SDK's scrubbing only ever touches the request. Raising
+// this to Error would ship the token to an error reporter and nothing would
+// fail to compile.
+func logSetupToken(tok setup.Token) {
+	log.Warn("This server has no accounts. Create the first one with this setup token:")
+	log.Warnf("    setup token: %s", tok)
+	log.Warn("Run `silo tui`, enter the email and password you want, and paste it in.")
+	log.Warn("It stops working the moment an account exists. `silo setup-token` reprints it.")
 }
 
 // warnIfExposedWithoutTLS says so when the server is reachable from off the
@@ -540,6 +554,11 @@ func newHTTPRouter() *mux.Router {
 
 	// Management API
 	r.HandleFunc("/api/silo/v1/auth/login", api.LoginHandler).Methods("POST")
+	// Claiming a server that has no accounts. Unauthenticated because there is
+	// nothing yet to authenticate against: this is the request that creates the
+	// first account. It is guarded by the setup token instead, and refuses with
+	// 409 the moment an account exists. See api.SetupHandler.
+	r.HandleFunc("/api/silo/v1/auth/setup", api.SetupHandler).Methods("POST")
 	// The pre-login parameters endpoint, which is unauthenticated because
 	// nothing can be authenticated yet: a client needs these to turn a
 	// password into the value it sends. See api.KDFParamsHandler for the two
