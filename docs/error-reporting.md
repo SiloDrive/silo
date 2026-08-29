@@ -67,8 +67,8 @@ so `net/http` still tears the connection down exactly as it did before.
 
 **Request timings.** A sampled share of requests is reported as a performance
 transaction, which is what feeds the receiving end's latency percentiles and
-endpoint rankings. Request *bodies* are never read: they are file contents, and
-a crash report should not be a copy of somebody's document.
+endpoint rankings. Request *bodies* are not sent — see [Privacy](#privacy) for
+how that is arranged, which is a setting rather than a default.
 
 ## Grouping
 
@@ -117,12 +117,40 @@ report to tell anything they cannot already see.
 
 ## Privacy
 
-`SendDefaultPII` is on, so events carry the request URL, headers, client
-address, and the account behind the request where the SDK can see it. That is
-deliberate: the point of a report is to be able to say whose sync broke. Request
-and response bodies are never captured. If you are pointing Silo at a receiver
-shared with people who should not see that, don't — run your own; that is what
-Splat is for.
+Events carry the request URL, headers, client address, and the account behind
+the request where the SDK can see it. That is deliberate: the point of a report
+is to be able to say whose sync broke.
+
+**Bodies are not collected, and that is stated rather than assumed.** This
+section used to say they were never captured, on the strength of the SDK's
+default. That stopped being true: in sentry-go 0.48, `SendDefaultPII` with no
+`DataCollection` block resolves to `HTTPBodies: allBodyTypes()`, and the scope
+tees up to 10 KiB of every body a handler reads. The SDK's key filter caught
+`password` and `setup_token` by name, so credentials were never the exposure —
+but a library name, a path, or any other key it does not recognise went out
+verbatim, which is exactly what this paragraph promised could not happen.
+
+`clientOptions` now names the collection explicitly:
+`HTTPBodies` empty, cookies off, headers and query parameters on the SDK's
+denylist, user info on. Note that a non-nil `DataCollection` supersedes
+`SendDefaultPII` entirely, so that flag is now a summary of the intent rather
+than the thing doing the work.
+
+**Setup tokens are stripped from event text.** A `BeforeSend` hook redacts
+anything matching the setup token's format from messages, tags, exception values
+and breadcrumbs. It is a backstop: what actually keeps the token out is that
+`logSetupToken` writes at warning level and the logrus hook only fires on error
+and above. The hook exists for the day someone raises that level.
+
+**Path segments are not scrubbed**, only query parameters. That costs nothing
+today — the capability-URL lane that once put a token in a path is gone, and
+nothing has replaced it. It becomes load-bearing if the signed URLs sketched in
+[`capability-urls.md`](capability-urls.md) ever land, and at that point the
+redaction has to happen in `BeforeSend` alongside the setup token, not in the
+collection options, which cannot see the path.
+
+If you are pointing Silo at a receiver shared with people who should not see any
+of this, don't — run your own; that is what Splat is for.
 
 The DSN's public key is never logged. The startup line names only the scheme,
 host and project it is reporting to.

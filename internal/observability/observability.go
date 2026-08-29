@@ -235,13 +235,45 @@ func clientOptions(dsn, environment, release string, rate float64) sentry.Client
 		AttachStacktrace: true,
 		// A Silo request carries the account behind it in a bearer token and
 		// the library behind it in the path, and the whole point of sending
-		// any of this is to be able to say whose sync broke. Bodies are a
-		// different matter: they are file contents, and the SDK's default of
-		// never reading them is what keeps a crash report from turning into a
-		// copy of someone's document.
+		// any of this is to be able to say whose sync broke.
+		//
+		// Bodies are a different matter: they are file contents. This used to
+		// say they were safe because the SDK never reads them, which was true
+		// of an older sentry-go and is not true of 0.48 -- SendDefaultPII with
+		// no DataCollection resolves to HTTPBodies: allBodyTypes()
+		// (legacyDataCollection in the SDK), and the scope tees up to 10 KiB of
+		// every body a handler reads. The SDK's key filter caught "password"
+		// and "token" by name; it does not know that a library name or a path
+		// is somebody's data too.
+		//
+		// So the collection is stated here rather than inherited. Note that a
+		// non-nil DataCollection *supersedes* SendDefaultPII entirely, so the
+		// line above is now a summary rather than a setting -- it is kept
+		// because it is the line a reader looks for, but this block is what
+		// governs.
 		SendDefaultPII: true,
-		EnableTracing:  rate > 0,
-		TracesSampler:  tracesSampler(rate),
+		DataCollection: &sentry.DataCollection{
+			// Not filtered -- not collected. There is no denylist that knows
+			// which of a body's keys are file contents.
+			HTTPBodies: []sentry.BodyType{},
+			// Kept: naming whose sync broke is the point. The SDK's own
+			// denylist redacts Authorization, which is the only sensitive
+			// header Silo reads.
+			HTTPHeaders: &sentry.HeaderCollectionConfig{},
+			QueryParams: &sentry.KeyValueCollectionBehavior{},
+			// Silo authenticates with bearer tokens and sets no cookies, so
+			// anything here arrived from a proxy and is not ours to forward.
+			Cookies:  &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
+			UserInfo: sentry.Set(true),
+		},
+		// Last line rather than the only one. The setup token is the single
+		// secret in this tree whose format a pattern can match without false
+		// positives, and it is printed to the log -- at Warn, below this hook's
+		// level, which is what actually keeps it out. This catches the day
+		// somebody raises that level without noticing what it was holding back.
+		BeforeSend:    redactSecrets,
+		EnableTracing: rate > 0,
+		TracesSampler: tracesSampler(rate),
 		// sentry-go 0.48's telemetry buffer can lose an event that Flush has
 		// already reported as sent — measurably, around one in two hundred,
 		// and more than that when the flush follows the capture closely. The
