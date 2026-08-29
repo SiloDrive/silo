@@ -239,7 +239,24 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The representation is chosen before its validator is computed, not after.
+	// It used to be the other way round: getEntry set the "v1-" tag, answered
+	// the 304 against it, and only then dispatched to serveManifest, which
+	// overwrote the header with a bare id. So the tag a manifest client was
+	// handed was never the tag the 304 compared against — it could not
+	// revalidate at all, and the one endpoint added to save a client from
+	// re-downloading what it holds re-sent the whole manifest every time.
+	// Anything added below the cache layer inherits that; adding it above is
+	// one line.
+	manifest := strings.EqualFold(r.URL.Query().Get("type"), "manifest")
+
 	etag := `"` + etagPrefix + entry.id + `"`
+	if manifest {
+		// Bare, matching objects/{id}: the body IS the object, so the two
+		// addresses must validate identically or a client caching both holds
+		// two entries for one thing.
+		etag = `"` + entry.id + `"`
+	}
 	w.Header().Set("ETag", etag)
 	if entry.mtime > 0 {
 		w.Header().Set("Last-Modified", time.Unix(entry.mtime, 0).UTC().Format(http.TimeFormat))
@@ -252,11 +269,7 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ?type=manifest answers with the file's description instead of its bytes.
-	// It comes after the ETag and the 304, so a client revalidating a manifest
-	// it already holds pays a dirent lookup and no more, exactly as it does
-	// for the content.
-	if strings.EqualFold(r.URL.Query().Get("type"), "manifest") {
+	if manifest {
 		serveManifest(w, r, library, entry)
 		return
 	}
@@ -288,6 +301,13 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 // not its chunk list — able to download a gigabyte to change a byte, and not
 // able to avoid it. This is the same scope the GET beside it already has.
 //
+// **What it must NOT claim is immutability.** objects/{id} may, because the id
+// is in the URL. This URL holds a path, and replacing the file changes what it
+// means — while RFC 8246 immutable tells a cache not to revalidate even on an
+// explicit reload. Promising it here would strand a year-old manifest whose
+// chunks GC has since reclaimed. That is serveStoredBytes's immutable
+// argument, and why it is an argument rather than a constant.
+//
 // **The tag is the bare id**, not the v1- prefixed one the rest of this
 // surface carries, and the difference is not an oversight. The prefix versions
 // the *representation*: a listing's JSON shape can change under a fixed id, so
@@ -310,32 +330,51 @@ func serveManifest(w http.ResponseWriter, r *http.Request, library *libmgr.Libra
 		http.Error(w, "Not a file; a directory has no manifest", http.StatusBadRequest)
 		return
 	}
-	st, err := library.Store()
-	if err != nil {
-		log.Errorf("failed to open store for library %s: %v", library.ID, err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	st, id, ok := storeAndID(w, r, library, entry.id)
+	if !ok {
 		return
 	}
-	id, err := store.ParseID(entry.id)
-	if err != nil {
-		http.Error(w, "Not found", http.StatusNotFound)
+
+	// HEAD wants a length, not the bytes. A manifest runs about 35 bytes per
+	// chunk, so a 1 TiB file's is some 36 MB — read off disk and allocated
+	// only to be thrown away. The same argument ChunkStoredSize already makes
+	// for chunks.
+	if r.Method == http.MethodHead {
+		size, err := st.ObjectSize(id)
+		if err != nil {
+			objectReadError(w, r, err, "manifest", id)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		w.WriteHeader(http.StatusOK)
 		return
 	}
+
 	data, err := st.GetObject(id)
 	if err != nil {
 		objectReadError(w, r, err, "manifest", id)
 		return
 	}
+	serveStoredBytes(w, r, `"`+id.String()+`"`, "application/octet-stream", data, false)
+}
 
-	// Overwrites the v1- tag getEntry set on the way in, per the note above.
-	w.Header().Set("ETag", `"`+id.String()+`"`)
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.WriteHeader(http.StatusOK)
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(data)
+// storeAndID opens a library's store and parses an entry's id, which every
+// content read on this surface needs before it can do anything.
+func storeAndID(w http.ResponseWriter, r *http.Request, library *libmgr.Library, entryID string) (*objmgr.Store, store.ID, bool) {
+	st, err := library.Store()
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for library %s", library.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return nil, store.ID{}, false
 	}
+	id, err := store.ParseID(entryID)
+	if err != nil {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return nil, store.ID{}, false
+	}
+	return st, id, true
 }
 
 // rootFor is the tree this read resolves against: the head's root, or the one a
@@ -538,9 +577,23 @@ func preconditionsHold(w http.ResponseWriter, r *http.Request, library *libmgr.L
 
 	// An empty tag means the path holds nothing right now. That is a state a
 	// precondition can legitimately be asserted about, so it is not an error.
+	//
+	// But only genuine absence may be spelled that way. This used to fold
+	// every resolve failure into "holds nothing", which made it the one caller
+	// resolveErr did not reach — and because it runs before the parent resolve
+	// on the write path, it shadowed that answer. A conditional PUT to an E2EE
+	// library got 412, saying the entry was not in the state asserted, from a
+	// server that cannot read the directory it is in; the same request without
+	// If-Match got the correct 403. Adding a precondition turned a right answer
+	// into a wrong one.
 	var etag string
-	if entry, err := resolve(library, path); err == nil {
+	entry, err := resolve(library, path)
+	switch {
+	case err == nil:
 		etag = `"` + etagPrefix + entry.id + `"`
+	case errors.Is(err, objmgr.ErrNoContentKey):
+		resolveErr(w, err, "Not found")
+		return false
 	}
 
 	if !preconditionResult(etag, ifMatch, ifNoneMatch) {

@@ -22,8 +22,22 @@ import (
 
 var readDB *sql.DB // read handle
 
+// Init points the package at the database, once, as a server starts.
+//
+// It also empties the rate-limit buckets, which is not obviously its job until
+// you ask what Init means: a server instance is beginning against this handle.
+// The limiters are package-level vars, so they outlive any one instance — in
+// production that happens exactly once and clearing empty buckets is a no-op,
+// while in tests a dozen servers share a process and whatever the last one
+// spent is still spent. That was a real failure: a test that exhausts the setup
+// bucket deliberately decided whether its neighbours passed, with a 429 that
+// read like a product bug.
+//
+// Doing it here rather than through an exported reset keeps the seam one every
+// harness already uses, instead of one each new harness has to remember.
 func Init(read, _ *sql.DB) {
 	readDB = read
+	resetRateLimiters()
 }
 
 type siloServerInfo struct {

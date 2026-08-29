@@ -336,6 +336,10 @@ func (c *APIClient) Setup(email, password, setupToken string) error {
 func (c *APIClient) ChangePassword(current, next string) (int, error) {
 	var result struct {
 		Revoked int `json:"revoked"`
+		// Set when the password changed but the sessions it should have
+		// signed out are still live. A success with a caveat, not a failure —
+		// the server reports it as 200 for exactly that reason.
+		SessionsStillLive bool `json:"sessions_still_live"`
 	}
 	if err := c.doRequest("POST", "/api/silo/v1/auth/password", map[string]string{
 		"current_password": current,

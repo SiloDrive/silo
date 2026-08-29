@@ -103,9 +103,21 @@ func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	// signed out.
 	n, err := credential.RevokeKind(ctx, acct.ID, credential.KindSession)
 	if err != nil {
+		// 200, not 500, and the flag is why. The password IS changed by the
+		// time this runs, and a 500 said otherwise: there are two 500s on this
+		// handler — the SetAccountPassword failure above, where nothing
+		// changed, and this one, where everything did — and a client cannot
+		// tell them apart from a status. A client that read this as failure
+		// kept caching the old password while the server held the new one, so
+		// its next token expiry became a re-login that could not succeed. That
+		// is exactly the stranding the caller's own ordering comment says it
+		// avoids, arriving through the one path it did not consider.
+		//
+		// So the operation the caller asked for is reported as what it is —
+		// done — and the part that failed is reported beside it rather than
+		// instead of it. The operator still sees the failure in the log.
 		log.Errorf("Password changed for %s, but revoking their sessions failed: %v", acct.Email, err)
-		http.Error(w, "The password was changed, but signing out other sessions failed",
-			http.StatusInternalServerError)
+		writeJSON(w, http.StatusOK, revokedResponse{Revoked: 0, SessionsStillLive: true})
 		return
 	}
 	log.Infof("Password changed for %s; %d session credential(s) revoked", acct.Email, n)

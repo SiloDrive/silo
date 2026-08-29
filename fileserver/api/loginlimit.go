@@ -76,16 +76,9 @@ func StartLoginLimiterCleanup() {
 	setupIPLimiter.StartCleanup()
 }
 
-// ResetRateLimiters refills every bucket this package keeps.
-//
-// Exported for tests in other packages, which is a cost worth naming: these
-// limiters are package-level state with a lifetime longer than any test, and
-// the wire tests that drive the real router live in fileserver rather than
-// here, so an export_test.go seam cannot reach them. Without it a test that
-// exhausts a bucket deliberately — and one does — decides whether its
-// neighbours pass, and the failure arrives as a 429 that reads like a product
-// bug rather than a leak.
-func ResetRateLimiters() {
+// resetRateLimiters refills every bucket this package keeps. Init calls it; see
+// the reasoning there for why that is the seam rather than an exported reset.
+func resetRateLimiters() {
 	loginIPLimiter.ResetAll()
 	loginAccountLimiter.ResetAll()
 	kdfIPLimiter.ResetAll()

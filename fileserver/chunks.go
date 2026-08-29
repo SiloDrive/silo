@@ -65,23 +65,9 @@ func chunksMissingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ids := make([]store.ID, 0, len(body.Chunks))
-	for _, raw := range body.Chunks {
-		id, err := store.ParseID(raw)
-		if err != nil {
-			// Says what it wanted, because whoever reads this has just been
-			// surprised. The message used to name only what arrived, while
-			// the example three lines above told them to send a SHA-1 — so a
-			// client author who followed the error text was pointed at the
-			// bug rather than away from it. A chunk id is the SHA-256 of the
-			// chunk's bytes; a 40-character SHA-1 is refused here, not
-			// converted.
-			http.Error(w, "Not a chunk id: "+raw+
-				" (want 64 lowercase hex characters, the SHA-256 of the chunk)",
-				http.StatusBadRequest)
-			return
-		}
-		ids = append(ids, id)
+	ids, ok := parseChunkIDs(w, body.Chunks, false)
+	if !ok {
+		return
 	}
 	st, err := library.Store()
 	if err != nil {
@@ -97,6 +83,44 @@ func chunksMissingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeEntryJSON(w, http.StatusOK, map[string]any{"missing": missing})
+}
+
+// parseChunkIDs turns a request's hex ids into store ids, answering 400 itself
+// on the first one that is not an id and reporting false.
+//
+// One copy, because the message is part of the contract. It had already drifted
+// once — the error named only what arrived while the example three lines above
+// it told the reader to send a SHA-1 — and a second endpoint copying the fixed
+// version is how that comes back.
+//
+// dedupe drops repeats, keeping first-asked order. The fetch path wants it: a
+// file with a run of zeroes names one chunk many times, and frames are matched
+// by id rather than by position, so sending those bytes once per mention would
+// spend exactly the bandwidth that endpoint exists to save. The missing path
+// does not, because it answers positionally.
+func parseChunkIDs(w http.ResponseWriter, raw []string, dedupe bool) ([]store.ID, bool) {
+	ids := make([]store.ID, 0, len(raw))
+	var seen map[store.ID]struct{}
+	if dedupe {
+		seen = make(map[store.ID]struct{}, len(raw))
+	}
+	for _, hex := range raw {
+		id, err := store.ParseID(hex)
+		if err != nil {
+			http.Error(w, "Not a chunk id: "+hex+
+				" (want 64 lowercase hex characters, the SHA-256 of the chunk)",
+				http.StatusBadRequest)
+			return nil, false
+		}
+		if dedupe {
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+		}
+		ids = append(ids, id)
+	}
+	return ids, true
 }
 
 // chunkInventory reports which of the offered ids the chunk store does not

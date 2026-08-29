@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -53,12 +54,27 @@ const (
 
 	chunkFramePresent byte = 0
 	chunkFrameAbsent  byte = 1
+	// chunkFrameEnd terminates a stream. Its id is zero and its length is
+	// zero; only its presence carries meaning.
+	//
+	// It exists because a response body is not self-delimiting without it. A
+	// server that fails half way through writes whole frames and then stops,
+	// so the body is K complete frames — which decodes cleanly, under a 200
+	// that was committed before the first byte moved. A client asking for 256
+	// chunks and receiving 3 would see success. There is no way to retract the
+	// status once streaming has begun, so completeness has to be something the
+	// body states rather than something its length implies.
+	chunkFrameEnd byte = 2
 )
 
 // MaxChunkFrameBytes bounds one frame's payload. It is far above any chunker's
-// max_size — the largest this format's parameters admit is 4 MiB — and exists
-// so a decoder sizes an allocation from a bound rather than from the number a
-// stranger sent it.
+// max_size — the largest this format's parameters admit is 4 MiB.
+//
+// It is a policy cap, and on a 32-bit build it is also a safety one: length is
+// a uint32, int is 32 bits signed there, and a declared length above MaxInt32
+// would convert to a negative slice bound. Checking it before the conversion is
+// what makes the conversion safe, so the check is not redundant with the
+// remaining-bytes check below it even though that one looks stricter.
 const MaxChunkFrameBytes = 64 << 20
 
 // ChunkFrame is one decoded frame.
@@ -70,33 +86,71 @@ type ChunkFrame struct {
 	Bytes   []byte
 }
 
-// WriteChunkFrame writes one present chunk. The caller has the bytes in hand,
-// so the frame is written whole and a torn frame is not a state this can
-// reach — which is why the server reads a chunk fully before starting to
-// write it rather than streaming through.
-func WriteChunkFrame(w io.Writer, id ID, chunk []byte) error {
+// AppendChunkFrame appends one present chunk's frame to dst.
+//
+// Appending rather than writing is what lets a caller emit a frame in a single
+// Write. Two Writes per frame costs more than it looks: the ResponseWriter
+// buffers before chunking, so a 37-byte header followed by a megabyte payload
+// leaves as two chunked-transfer records and two syscalls, and at 256 chunks a
+// response that is one flush per chunk becomes two.
+func AppendChunkFrame(dst []byte, id ID, chunk []byte) ([]byte, error) {
 	if len(chunk) > MaxChunkFrameBytes {
-		return fmt.Errorf("store: chunk %s is %d bytes, over the %d frame limit", id, len(chunk), MaxChunkFrameBytes)
+		return dst, fmt.Errorf("store: chunk %s is %d bytes, over the %d frame limit", id, len(chunk), MaxChunkFrameBytes)
 	}
-	var hdr [ChunkFrameHeaderSize]byte
-	copy(hdr[:IDSize], id[:])
-	hdr[IDSize] = chunkFramePresent
-	binary.BigEndian.PutUint32(hdr[IDSize+1:], uint32(len(chunk)))
-	if _, err := w.Write(hdr[:]); err != nil {
+	dst = append(dst, id[:]...)
+	dst = append(dst, chunkFramePresent)
+	dst = binary.BigEndian.AppendUint32(dst, uint32(len(chunk)))
+	return append(dst, chunk...), nil
+}
+
+// AppendAbsentChunkFrame records that the store does not hold this id.
+func AppendAbsentChunkFrame(dst []byte, id ID) []byte {
+	dst = append(dst, id[:]...)
+	dst = append(dst, chunkFrameAbsent)
+	return binary.BigEndian.AppendUint32(dst, 0)
+}
+
+// AppendChunkStreamEnd closes a stream. Every complete response ends with it,
+// and a reader that does not find it has been cut off.
+func AppendChunkStreamEnd(dst []byte) []byte {
+	var zero ID
+	dst = append(dst, zero[:]...)
+	dst = append(dst, chunkFrameEnd)
+	return binary.BigEndian.AppendUint32(dst, 0)
+}
+
+// WriteChunkFrame writes one present chunk.
+//
+// The caller has the bytes in hand, so the frame is written whole and a torn
+// frame is not a state this can reach — which is why the server reads a chunk
+// fully before starting to write it rather than streaming through.
+func WriteChunkFrame(w io.Writer, id ID, chunk []byte) error {
+	buf, err := AppendChunkFrame(make([]byte, 0, ChunkFrameHeaderSize+len(chunk)), id, chunk)
+	if err != nil {
 		return err
 	}
-	_, err := w.Write(chunk)
+	_, err = w.Write(buf)
 	return err
 }
 
 // WriteAbsentChunkFrame records that the store does not hold this id.
 func WriteAbsentChunkFrame(w io.Writer, id ID) error {
-	var hdr [ChunkFrameHeaderSize]byte
-	copy(hdr[:IDSize], id[:])
-	hdr[IDSize] = chunkFrameAbsent
-	_, err := w.Write(hdr[:])
+	_, err := w.Write(AppendAbsentChunkFrame(nil, id))
 	return err
 }
+
+// WriteChunkStreamEnd closes a stream.
+func WriteChunkStreamEnd(w io.Writer) error {
+	_, err := w.Write(AppendChunkStreamEnd(nil))
+	return err
+}
+
+// ErrChunkStreamTruncated reports a stream that ended without its terminator.
+//
+// It is a named error because it is the one failure a caller must not treat as
+// an empty answer: the frames that did arrive are good and can be kept, and the
+// ids that did not are the ones to ask for again.
+var ErrChunkStreamTruncated = errors.New("store: chunk stream ended without its terminator")
 
 // DecodeChunkFrames reads a whole chunk stream, verifying every present frame
 // against the id it arrived under.
@@ -107,15 +161,22 @@ func WriteAbsentChunkFrame(w io.Writer, id ID) error {
 // after an unclean shutdown, a peer, a mirror — legal at all. A decoder that
 // skipped it would hand the caller bytes it had no reason to believe in.
 //
-// It decodes from a slice because a caller with the whole body is the common
-// case and the simplest thing to get right. A client streaming a very large
-// response reads ChunkFrameHeaderSize bytes, then the payload, and does the
-// same check itself; the header is fixed-width so that loop is four lines.
+// Returned frames ALIAS b rather than copying it. That is the right trade for
+// throughput and the wrong one to be surprised by: retaining one 1 MiB frame
+// keeps the whole response body reachable, which at this endpoint's cap is up
+// to a gigabyte. Copy what you keep past the response.
+//
+// It decodes from a slice because a caller holding the whole body is the
+// simplest thing to get right. A caller that does not want to hold a whole
+// response buffers nothing and calls ReadChunkFrame instead, which is the same
+// verification over an io.Reader.
 func DecodeChunkFrames(b []byte) ([]ChunkFrame, error) {
-	var frames []ChunkFrame
+	// The header is fixed-width, so the frame count is bounded by the body
+	// length and one allocation replaces the nine that growing to 256 costs.
+	frames := make([]ChunkFrame, 0, len(b)/ChunkFrameHeaderSize+1)
 	for p := 0; p < len(b); {
 		if len(b)-p < ChunkFrameHeaderSize {
-			return nil, fmt.Errorf("store: chunk stream ends mid-header, %d bytes short", ChunkFrameHeaderSize-(len(b)-p))
+			return frames, fmt.Errorf("%w: %d bytes short of a header", ErrChunkStreamTruncated, ChunkFrameHeaderSize-(len(b)-p))
 		}
 		var f ChunkFrame
 		copy(f.ID[:], b[p:p+IDSize])
@@ -124,31 +185,104 @@ func DecodeChunkFrames(b []byte) ([]ChunkFrame, error) {
 		p += ChunkFrameHeaderSize
 
 		switch status {
+		case chunkFrameEnd:
+			if length != 0 {
+				return frames, fmt.Errorf("store: the terminator declares %d bytes", length)
+			}
+			if p != len(b) {
+				return frames, fmt.Errorf("store: %d bytes follow the terminator", len(b)-p)
+			}
+			return frames, nil
 		case chunkFrameAbsent:
 			if length != 0 {
-				return nil, fmt.Errorf("store: chunk %s is marked absent and declares %d bytes", f.ID, length)
+				return frames, fmt.Errorf("store: chunk %s is marked absent and declares %d bytes", f.ID, length)
 			}
 			frames = append(frames, f)
 			continue
 		case chunkFramePresent:
 		default:
-			return nil, fmt.Errorf("store: chunk %s has unknown frame status %d", f.ID, status)
+			return frames, fmt.Errorf("store: chunk %s has unknown frame status %d", f.ID, status)
 		}
 
 		if length > MaxChunkFrameBytes {
-			return nil, fmt.Errorf("store: chunk %s declares %d bytes, over the %d limit", f.ID, length, MaxChunkFrameBytes)
+			return frames, fmt.Errorf("store: chunk %s declares %d bytes, over the %d limit", f.ID, length, MaxChunkFrameBytes)
 		}
 		if uint64(len(b)-p) < uint64(length) {
-			return nil, fmt.Errorf("store: chunk %s declares %d bytes and %d remain", f.ID, length, len(b)-p)
+			return frames, fmt.Errorf("%w: chunk %s declares %d bytes and %d remain", ErrChunkStreamTruncated, f.ID, length, len(b)-p)
 		}
 		f.Bytes = b[p : p+int(length)]
 		p += int(length)
 
 		if got := ChunkID(f.Bytes); got != f.ID {
-			return nil, fmt.Errorf("store: chunk offered as %s hashes to %s", f.ID, got)
+			return frames, fmt.Errorf("store: chunk offered as %s hashes to %s", f.ID, got)
 		}
 		f.Present = true
 		frames = append(frames, f)
 	}
-	return frames, nil
+	// Ran out of body without meeting the terminator.
+	return frames, ErrChunkStreamTruncated
+}
+
+// ReadChunkFrame reads one frame from r, verifying a present frame against its
+// id, and reports io.EOF only once the terminator has been consumed.
+//
+// It exists because the endpoint this format serves streams: the server flushes
+// per chunk so a client can lay one down while the next is still being read, and
+// a client that can only call DecodeChunkFrames has to buffer a whole response —
+// up to a gigabyte — to use a format designed not to need that. Handing the
+// streaming path to callers in a comment meant every port would re-derive the
+// hash check by hand, and that check is the point rather than a nicety.
+//
+// scratch is reused for the payload when it is large enough; pass the frame's
+// Bytes back in on the next call to read a whole response with one buffer. The
+// returned frame aliases scratch, so copy what you keep.
+func ReadChunkFrame(r io.Reader, scratch []byte) (ChunkFrame, error) {
+	var hdr [ChunkFrameHeaderSize]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		if errors.Is(err, io.EOF) {
+			// A clean EOF here is still truncation: the terminator is a frame,
+			// so a complete stream never ends by simply running out.
+			return ChunkFrame{}, ErrChunkStreamTruncated
+		}
+		return ChunkFrame{}, err
+	}
+	var f ChunkFrame
+	copy(f.ID[:], hdr[:IDSize])
+	status := hdr[IDSize]
+	length := binary.BigEndian.Uint32(hdr[IDSize+1:])
+
+	switch status {
+	case chunkFrameEnd:
+		if length != 0 {
+			return ChunkFrame{}, fmt.Errorf("store: the terminator declares %d bytes", length)
+		}
+		return ChunkFrame{}, io.EOF
+	case chunkFrameAbsent:
+		if length != 0 {
+			return ChunkFrame{}, fmt.Errorf("store: chunk %s is marked absent and declares %d bytes", f.ID, length)
+		}
+		return f, nil
+	case chunkFramePresent:
+	default:
+		return ChunkFrame{}, fmt.Errorf("store: chunk %s has unknown frame status %d", f.ID, status)
+	}
+
+	if length > MaxChunkFrameBytes {
+		return ChunkFrame{}, fmt.Errorf("store: chunk %s declares %d bytes, over the %d limit", f.ID, length, MaxChunkFrameBytes)
+	}
+	if uint32(cap(scratch)) < length {
+		scratch = make([]byte, length)
+	}
+	f.Bytes = scratch[:length]
+	if _, err := io.ReadFull(r, f.Bytes); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return ChunkFrame{}, fmt.Errorf("%w: chunk %s ended early", ErrChunkStreamTruncated, f.ID)
+		}
+		return ChunkFrame{}, err
+	}
+	if got := ChunkID(f.Bytes); got != f.ID {
+		return ChunkFrame{}, fmt.Errorf("store: chunk offered as %s hashes to %s", f.ID, got)
+	}
+	f.Present = true
+	return f, nil
 }

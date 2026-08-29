@@ -34,7 +34,7 @@ import (
 // encrypted library cannot be written chunk by chunk at all.
 
 // Batches are bounded by the server at 1000 operations and a 4 MiB body
-// (fileserver/batch.go). A create op carries 40 hex characters per chunk, so a
+// (fileserver/batch.go). A create op carries 64 hex characters per chunk, so a
 // tree of large files reaches the body limit long before the op limit — both
 // are counted here, with room left for the server's own accounting.
 const (
@@ -43,7 +43,7 @@ const (
 )
 
 // maxIDsPerQuery bounds one "which of these are missing?" request. The server
-// reads up to 16 MiB of block-id list, which is far more than this; the limit
+// reads up to 16 MiB of chunk-id list, which is far more than this; the limit
 // here is about keeping one request's worth of ids a predictable size.
 const maxIDsPerQuery = 5000
 
@@ -268,11 +268,17 @@ func (c *APIClient) applyInBatches(libraryID string, ops []BatchOp, onFile func(
 }
 
 // opBytes is roughly what one operation costs in the request body: a chunk id
-// is 40 hex characters plus its quotes and comma, and everything else is small
+// is 64 hex characters plus its quotes and comma, and everything else is small
 // and fixed. It only has to be close enough to keep a batch under a limit the
 // server measures exactly.
+//
+// It said 43 — 40 hex plus three — until the rename went past it. That is the
+// SHA-1 width, two formats out of date, and it undercounts by a factor of 1.56:
+// a batch this sized at the 3 MiB budget was really 4.66 MiB against a server
+// that refuses at 4 MiB, so the estimate that exists to keep a request under
+// the limit was what pushed it over.
 func opBytes(op BatchOp) int {
-	return 64 + len(op.Path) + len(op.To) + 43*len(op.Chunks)
+	return 64 + len(op.Path) + len(op.To) + 67*len(op.Chunks)
 }
 
 // uploadTreeSerially is the shape that works against any server: a request per

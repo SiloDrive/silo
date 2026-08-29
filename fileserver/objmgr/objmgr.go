@@ -208,6 +208,41 @@ func (s *Store) PutObject(id store.ID, encoded []byte) error {
 	return nil
 }
 
+// GetChunkInto reads a chunk into buf, growing it only when it is too small,
+// and returns the bytes read as a sub-slice of it.
+//
+// GetChunk allocates a fresh bytes.Buffer per call and lets it grow from 512
+// bytes, so a 4 MiB chunk costs about thirteen reallocations and twice its own
+// size in memcpy. That is invisible one chunk at a time and is not invisible on
+// the batch-fetch path, where a single request moves up to 256 of them: one
+// scratch buffer reused down the loop replaces 256 allocations and the copying
+// that comes with growing each of them.
+//
+// The returned slice aliases buf. Callers pass it back in on the next call.
+func (s *Store) GetChunkInto(id store.ID, buf []byte) ([]byte, error) {
+	size, err := s.chunks.Stat(s.storeID, id.String())
+	if err != nil {
+		return nil, err
+	}
+	if int64(cap(buf)) < size {
+		buf = make([]byte, size)
+	}
+	buf = buf[:size]
+	if _, err := s.chunks.ReadAt(s.storeID, id.String(), buf, 0); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// ObjectSize returns an object's stored size without reading it.
+//
+// The sibling of ChunkStoredSize, and it exists for the same reason that one
+// does: a HEAD wants a Content-Length, and reading a manifest to measure it
+// costs the whole object. A 1 TiB file's manifest is some 36 MB.
+func (s *Store) ObjectSize(id store.ID) (int64, error) {
+	return s.objects.Stat(s.storeID, id.String())
+}
+
 // GetObject returns an object's encoded bytes.
 func (s *Store) GetObject(id store.ID) ([]byte, error) {
 	var buf bytes.Buffer

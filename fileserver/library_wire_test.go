@@ -48,10 +48,6 @@ func serveTestAPI(t *testing.T) string {
 	api.Init(siloPair.Read, siloPair.Write)
 	authmgr.Init(siloPair.Read, siloPair.Write)
 	setup.Init(siloPair.Read, siloPair.Write)
-	// The database is fresh; the rate limiters are not. They are package-level
-	// state in fileserver/api and every test here arrives from 127.0.0.1, so
-	// whatever the last test spent is still spent unless this says otherwise.
-	api.ResetRateLimiters()
 
 	srv := httptest.NewServer(newHTTPRouter())
 	t.Cleanup(srv.Close)

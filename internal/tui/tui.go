@@ -385,6 +385,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case watchClosedMsg:
 		m.watcher = nil
 		return m, nil
+
+	// The password change lands here rather than only in the password view,
+	// for the same reason libraryUpdatedMsg does: it arrives whatever is on
+	// screen. Escaping the form does not cancel the request — the command is
+	// already in flight — so routing it by view meant that pressing esc while
+	// it ran dropped the result on the floor. The password had changed, every
+	// session had been revoked, and the user saw neither a confirmation nor an
+	// error.
+	case passwordChangedMsg:
+		if msg.err != nil {
+			m.message = errorStyle.Render(msg.err.Error())
+		} else {
+			m.message = successStyle.Render(passwordChangedSummary(msg.revoked))
+		}
+		if m.view == viewPassword {
+			m.view = viewAccount
+		}
+		return m, nil
 	}
 
 	var (
@@ -1670,14 +1688,6 @@ func (m model) updatePassword(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case passwordChangedMsg:
-		if msg.err != nil {
-			m.message = errorStyle.Render(msg.err.Error())
-			return m, nil
-		}
-		m.view = viewAccount
-		m.message = successStyle.Render(passwordChangedSummary(msg.revoked))
-		return m, nil
 	}
 
 	var cmds []tea.Cmd

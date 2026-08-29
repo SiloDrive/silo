@@ -26,6 +26,22 @@ import (
 // 204.
 type revokedResponse struct {
 	Revoked int64 `json:"revoked"`
+	// SessionsStillLive is set only in the one case that needs saying: the
+	// password changed and the revocation that follows it did not, so other
+	// sessions are still holding live credentials. Omitted everywhere else, so
+	// logout's two routes and a clean password change answer exactly as before.
+	//
+	// It names the exception rather than the norm because that is the shape
+	// omitempty rewards — a bool that is usually false and is worth reading
+	// when it is true. Framing it the other way round ("signed out: false")
+	// would be omitted in precisely the case a client has to notice.
+	//
+	// It exists because that case has to be a success — the password did
+	// change — while still being distinguishable from a clean one. Reporting
+	// it as a 500 made it indistinguishable from the OTHER 500 on that
+	// handler, where nothing changed, and a client cannot cache the right
+	// password without knowing which happened.
+	SessionsStillLive bool `json:"sessions_still_live,omitempty"`
 }
 
 // LogoutHandler handles POST /api/silo/v1/auth/logout: discard the credential

@@ -83,6 +83,46 @@ func objectID(w http.ResponseWriter, r *http.Request) (store.ID, bool) {
 	return id, true
 }
 
+// serveStoredBytes answers a read of content-addressed bytes.
+//
+// Three routes serve the same shape — objects/{id}, chunks/{id}, and the
+// manifest at entries/{path}?type=manifest — and this is the one copy of what
+// that shape promises. The header comment on entries.go states the rule: where
+// an operation already has an implementation, resolve and validate and then
+// delegate rather than reimplement, because two copies drift and the one with
+// fewer callers drifts silently. That is not hypothetical here. The manifest
+// spelling was written as a third copy and lost the If-None-Match branch on the
+// way, so the one endpoint added to save a client from re-downloading what it
+// holds re-sent the whole manifest on every revalidation.
+//
+// immutable is the caller's call and not a constant, because it is a claim
+// about the URL rather than about the bytes. An id in the path can promise it:
+// the id is the content hash, so that URL's representation can never change. A
+// path cannot — replace the file and entries/{path}?type=manifest means
+// something else — and RFC 8246 immutable tells a cache not to revalidate even
+// on an explicit reload, so promising it there strands a stale manifest whose
+// chunks GC may since have reclaimed.
+func serveStoredBytes(w http.ResponseWriter, r *http.Request, etag, mediaType string, data []byte, immutable bool) {
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("ETag", etag)
+	if immutable {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		// Cacheable, but only after asking. The ETag is a content hash, so the
+		// revalidation costs one dirent lookup and reads nothing.
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	if matchesETag(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(data)
+	}
+}
+
 // getObjectHandler serves one object's bytes exactly as stored.
 //
 // Immutable, so the caching is unconditional: the id IS the content hash, so
@@ -106,18 +146,7 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("ETag", `"`+id.String()+`"`)
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	if matchesETag(r.Header.Get("If-None-Match"), `"`+id.String()+`"`) {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
-	w.WriteHeader(http.StatusOK)
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(data)
-	}
+	serveStoredBytes(w, r, `"`+id.String()+`"`, "application/octet-stream", data, true)
 }
 
 // putObjectHandler stores one manifest, directory or commit.
@@ -185,18 +214,7 @@ func getChunkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("ETag", `"`+id.String()+`"`)
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	if matchesETag(r.Header.Get("If-None-Match"), `"`+id.String()+`"`) {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
-	w.WriteHeader(http.StatusOK)
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(data)
-	}
+	serveStoredBytes(w, r, `"`+id.String()+`"`, "application/octet-stream", data, true)
 }
 
 // putChunkHandler stores one chunk, verified against its id.

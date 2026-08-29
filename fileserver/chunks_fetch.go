@@ -8,7 +8,6 @@ import (
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/store"
-	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -40,6 +39,14 @@ import (
 // did not receive is indistinguishable from one the store does not hold.
 const maxFetchChunks = 256
 
+// maxFetchBody bounds the request. maxChunkListBody is 16 MiB, sized for
+// chunks/missing, which caps no count — and decodeJSONBody decodes the whole
+// body before the count check below can refuse it, so borrowing that limit here
+// meant a 16 MiB body decoding to some 390,000 strings on its way to a 400.
+// Sized from the cap instead: 68 bytes per quoted id and comma, plus slack for
+// the envelope.
+const maxFetchBody = maxFetchChunks*68 + 1024
+
 // chunkStreamMediaType names the framing so a proxy or a client library cannot
 // mistake it for an opaque download.
 const chunkStreamMediaType = "application/vnd.silo.chunks"
@@ -59,15 +66,15 @@ func chunksFetchHandler(w http.ResponseWriter, r *http.Request) {
 	// nothing about where the chunk is linked, so a path-scoped credential
 	// cannot be checked against it. Such a client reads a manifest through
 	// entries/{path}?type=manifest and the bytes through the path.
-	library := entryLibrary(w, r, mux.Vars(r)["libraryid"], "", false)
-	if library == nil {
+	library, st, ok := idAddressedLibrary(w, r, false)
+	if !ok {
 		return
 	}
 
 	var body struct {
 		Chunks []string `json:"chunks"`
 	}
-	if !decodeJSONBody(w, r, maxChunkListBody, &body, `Expected a JSON body such as {"chunks":["<64 hex characters>",…]}`) {
+	if !decodeJSONBody(w, r, maxFetchBody, &body, `Expected a JSON body such as {"chunks":["<64 hex characters>",…]}`) {
 		return
 	}
 	if len(body.Chunks) > maxFetchChunks {
@@ -75,33 +82,8 @@ func chunksFetchHandler(w http.ResponseWriter, r *http.Request) {
 			len(body.Chunks), maxFetchChunks), http.StatusBadRequest)
 		return
 	}
-
-	// Deduplicated in the order first asked. A file with a run of zeroes names
-	// one chunk many times, and sending those bytes once per mention would
-	// spend exactly the bandwidth this endpoint exists to save. Safe to drop
-	// the repeats because a frame is matched by its id and not by its
-	// position — see the layout note in store/chunkstream.go.
-	ids := make([]store.ID, 0, len(body.Chunks))
-	seen := make(map[store.ID]struct{}, len(body.Chunks))
-	for _, raw := range body.Chunks {
-		id, err := store.ParseID(raw)
-		if err != nil {
-			http.Error(w, "Not a chunk id: "+raw+
-				" (want 64 lowercase hex characters, the SHA-256 of the chunk)",
-				http.StatusBadRequest)
-			return
-		}
-		if _, dup := seen[id]; dup {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-
-	st, err := library.Store()
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for library %s", library.ID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	ids, ok := parseChunkIDs(w, body.Chunks, true)
+	if !ok {
 		return
 	}
 
@@ -109,11 +91,9 @@ func chunksFetchHandler(w http.ResponseWriter, r *http.Request) {
 	// No Content-Length: the body is streamed, so its size is not known until
 	// it has been sent. That is deliberate — buffering to compute a length
 	// would hold up to maxFetchChunks chunks in memory on the one endpoint
-	// whose purpose is to move a lot of them.
+	// whose purpose is to move a lot of them. What makes a short body legible
+	// instead is the terminator streamChunks writes at the end.
 	w.WriteHeader(http.StatusOK)
-	if r.Method == http.MethodHead {
-		return
-	}
 	streamChunks(w, r, st, library.ID, ids)
 }
 
@@ -126,22 +106,53 @@ func chunksFetchHandler(w http.ResponseWriter, r *http.Request) {
 // bargain serveFile makes and for the same reason.
 func streamChunks(w http.ResponseWriter, r *http.Request, st *objmgr.Store, libraryID string, ids []store.ID) {
 	flusher, _ := w.(http.Flusher)
+	// One scratch buffer for the chunk and one for the frame, both reused down
+	// the loop. Without them a 256-chunk response allocates 256 chunks, each
+	// grown from 512 bytes — some thirteen reallocations and twice the chunk's
+	// own size in memcpy apiece — on the one path whose whole purpose is bulk
+	// transfer.
+	var chunk, frame []byte
 	for _, id := range ids {
-		data, err := st.GetChunk(id)
-		if err != nil {
-			if errors.Is(err, objstore.ErrNotFound) {
-				if err := store.WriteAbsentChunkFrame(w, id); err != nil {
-					return
-				}
-				continue
+		var err error
+		chunk, err = st.GetChunkInto(id, chunk)
+		switch {
+		case errors.Is(err, objstore.ErrNotFound):
+			if _, err := w.Write(store.AppendAbsentChunkFrame(frame[:0], id)); err != nil {
+				return
 			}
+			continue
+		case err != nil:
 			log.WithContext(r.Context()).WithError(err).
 				Errorf("failed to read chunk %s in library %s mid-stream", id, libraryID)
+			// No terminator, so the client reads this as truncation rather
+			// than as a short but complete answer.
 			return
 		}
-		if err := store.WriteChunkFrame(w, id, data); err != nil {
-			// The client hung up, or the write failed. Either way there is
-			// nobody left to tell.
+		// A zero-length chunk is what a publish interrupted before its fsync
+		// leaves behind, and objstore.Exists already calls that absent — so
+		// chunks/missing would ask for it again. Read returns it as a
+		// successful empty read, and framing it as present would fail its hash
+		// check in the client's decoder and discard the whole batch with it.
+		// Answering absent keeps the three spellings of "do you have this"
+		// saying the same thing.
+		if len(chunk) == 0 {
+			if _, err := w.Write(store.AppendAbsentChunkFrame(frame[:0], id)); err != nil {
+				return
+			}
+			continue
+		}
+
+		frame, err = store.AppendChunkFrame(frame[:0], id, chunk)
+		if err != nil {
+			// Not a write failure: the only error here is a chunk over the
+			// frame limit, which is this server's problem and would otherwise
+			// truncate the response with nothing in the log to say why.
+			log.WithContext(r.Context()).WithError(err).
+				Errorf("chunk %s in library %s cannot be framed", id, libraryID)
+			return
+		}
+		if _, err := w.Write(frame); err != nil {
+			// The client hung up. There is nobody left to tell.
 			return
 		}
 		// Flushed per chunk so a client can lay one down while the next is
@@ -149,5 +160,13 @@ func streamChunks(w http.ResponseWriter, r *http.Request, st *objmgr.Store, libr
 		if flusher != nil {
 			flusher.Flush()
 		}
+	}
+	// The terminator is what makes a complete response distinguishable from one
+	// that stopped early. Everything above returns without writing it.
+	if err := store.WriteChunkStreamEnd(w); err != nil {
+		return
+	}
+	if flusher != nil {
+		flusher.Flush()
 	}
 }
