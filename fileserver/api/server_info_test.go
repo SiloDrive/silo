@@ -14,6 +14,10 @@ import (
 // client that has never seen this build can ask what it can call. A version
 // string cannot answer that without a changelog.
 func TestServerInfoAdvertisesFeatures(t *testing.T) {
+	// This handler reads whether any account exists, so it needs a database of
+	// its own rather than whichever one a test that ran earlier left behind.
+	emptyDB(t)
+
 	// Set explicitly: option.Version is stamped at startup, so it is empty in a
 	// test binary and an assertion against it would only prove that.
 	originalVersion := option.Version
@@ -50,6 +54,8 @@ func TestServerInfoAdvertisesFeatures(t *testing.T) {
 // a number that cannot be right for every library the server holds, so the
 // right answer is that there is nothing here to read.
 func TestServerInfoCarriesNoChunkerParameters(t *testing.T) {
+	emptyDB(t)
+
 	w := httptest.NewRecorder()
 	ServerInfoHandler(w, httptest.NewRequest("GET", "/api/silo/v1/server-info", nil))
 

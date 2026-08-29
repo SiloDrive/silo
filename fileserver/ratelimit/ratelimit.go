@@ -108,6 +108,20 @@ func (l *Limiter) Reset(key string) {
 	delete(l.buckets, key)
 }
 
+// ResetAll empties the whole map, so every key starts from a full bucket
+// again.
+//
+// It is here for tests. A limiter outlives any one of them — it is a
+// package-level var, and every test reaches it from the same loopback address
+// — so a test that spends a bucket on purpose hands the next one a throttle it
+// did not earn. Resetting per key is not enough for that, because the harness
+// resetting it does not know which keys the last test touched.
+func (l *Limiter) ResetAll() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	clear(l.buckets)
+}
+
 // refillLocked returns key's bucket, creating a full one if it has none.
 func (l *Limiter) refillLocked(key string) *bucket {
 	b, ok := l.buckets[key]

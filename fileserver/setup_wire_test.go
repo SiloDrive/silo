@@ -250,3 +250,34 @@ func TestSetupIsRateLimited(t *testing.T) {
 		t.Error("twelve wrong tokens from one address were never throttled")
 	}
 }
+
+// A test that exhausts the setup bucket must not leave the next one throttled.
+//
+// The limiter is a package-level var in fileserver/api and every test here
+// reaches it from 127.0.0.1, so it is shared state with a lifetime longer than
+// any single test. TestSetupIsRateLimited spends the bucket on purpose and used
+// to leave it spent; in source order it happened to run late enough not to
+// matter, and under -shuffle it failed four of its neighbours with a 429 that
+// looked like a product bug. This asserts the property directly rather than
+// leaving it to the order tests happen to run in.
+func TestAnExhaustedSetupBucketDoesNotLeakIntoTheNextTest(t *testing.T) {
+	base, _ := unclaimed(t)
+	body := setupBody("nobody@example.com", "a password", "SILO-ZZZZ-ZZZZ-ZZZZ-ZZZZ")
+	for i := 0; i < 12; i++ {
+		resp, err := http.Post(base+"/api/silo/v1/auth/setup", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+		resp.Body.Close()
+	}
+
+	// A second server, as a second test would stand up. Its setup must be
+	// judged on its own merits, not on what the bucket above spent.
+	base2, tok := unclaimed(t)
+	code, out := post(t, base2+"/api/silo/v1/auth/setup",
+		setupBody("first@example.com", "correct horse battery staple", tok.String()))
+	if code != http.StatusCreated {
+		t.Fatalf("setup on a fresh server answered %d (%s); the previous test's "+
+			"exhausted bucket leaked into this one", code, out)
+	}
+}

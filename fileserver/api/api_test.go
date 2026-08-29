@@ -15,6 +15,7 @@ import (
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/setup"
 	"github.com/dkam/silo/fileserver/share"
 )
 
@@ -31,14 +32,22 @@ const (
 // setupPerms wires up an in-package SQLite database and seeds one library owned by
 // ownerUser, shared "rw" with rwShareUser and "r" with roShareUser.
 // strangerUser is left with no relationship to the library at all.
-func setupPerms(t *testing.T) {
+// emptyDB gives this package a database of its own and points account at it.
+//
+// It exists because account's handles are package-level and nil until Init
+// runs, and a nil *sql.DB reaches QueryRowContext through a non-nil interface
+// — so a handler that reads an account does not fail, it panics. Any test
+// calling a handler needs this, including one that only wants the version
+// string, and a test that leaves it out passes only for as long as some other
+// test in the package happens to run first. That is the failure this helper
+// was extracted for: two server-info tests were passing on setupPerms having
+// gone before them, and panicked the moment either was run with -run.
+func emptyDB(t *testing.T) *dbutil.DBPair {
 	t.Helper()
 
 	option.LoadFileServerOptions("") // defaults, incl. a non-zero DBOpTimeout
 
-	dir := t.TempDir()
-
-	siloPair, err := dbutil.OpenSQLite(filepath.Join(dir, "silo.db"))
+	siloPair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -46,8 +55,20 @@ func setupPerms(t *testing.T) {
 	if err := dbutil.CreateSiloTables(siloPair.Write); err != nil {
 		t.Fatalf("create tables: %v", err)
 	}
-
 	account.Init(siloPair.Read, siloPair.Write)
+	// setup keeps its own handles, and Required reads both: account first, then
+	// the setup token. Seeding an account hides the second one, because Required
+	// short-circuits and never reaches Peek — so a test with accounts survives
+	// while the fresh-server path, the only one that answers setup_required at
+	// all, panics. Wire both, the way boot does.
+	setup.Init(siloPair.Read, siloPair.Write)
+	return siloPair
+}
+
+func setupPerms(t *testing.T) {
+	t.Helper()
+
+	siloPair := emptyDB(t)
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	for _, email := range []string{ownerUser, rwShareUser, roShareUser, strangerUser} {

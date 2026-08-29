@@ -28,21 +28,9 @@ const (
 
 var (
 	// fileserver options
-	Host                   string
-	Port                   uint32
-	MaxUploadSize          uint64
-	FsIdListRequestTimeout int64
-	// Block size for indexing uploaded files
-	// Maximum number of goroutines to index uploaded files
-	MaxIndexingThreads uint32
-	WebTokenExpireTime uint32
-	// File mode for temp files
-	ClusterSharedTempFileMode uint32
-	WindowsEncoding           string
-	SkipBlockHash             bool
-	FsCacheLimit              int64
-	VerifyClientBlocks        bool
-	MaxIndexingFiles          uint32
+	Host          string
+	Port          uint32
+	MaxUploadSize uint64
 
 	// general options
 	CloudMode bool
@@ -72,9 +60,6 @@ var (
 	RedisHost       string
 	RedisPasswd     string
 	RedisPort       uint32
-	RedisExpiry     uint32
-	RedisMaxConn    uint32
-	RedisTimeout    time.Duration
 
 	// Build version (set by main)
 	Version string
@@ -159,20 +144,10 @@ func initDefaultOptions() {
 	// loopback cannot be reached through a published port at all.
 	Host = "127.0.0.1"
 	Port = 8082
-	MaxIndexingThreads = 1
-	WebTokenExpireTime = 7200
-	ClusterSharedTempFileMode = 0600
 	DefaultQuota = InfiniteQuota
-	FsCacheLimit = 4 << 30
-	VerifyClientBlocks = true
-	FsIdListRequestTimeout = -1
 	DBOpTimeout = 60 * time.Second
 	RedisHost = "127.0.0.1"
 	RedisPort = 6379
-	RedisExpiry = 24 * 3600
-	RedisMaxConn = 100
-	RedisTimeout = 1 * time.Second
-	MaxIndexingFiles = 10
 	SyncObjectWrites = true
 	VerifyFSObjectHashes = true
 	LoginRateLimit = true
@@ -337,24 +312,6 @@ func parseFileServerSection(section *ini.Section) {
 			MaxUploadSize = uint64(size) * 1000000
 		}
 	}
-	if key, err := section.GetKey("max_indexing_threads"); err == nil {
-		threads, err := key.Uint()
-		if err == nil {
-			MaxIndexingThreads = uint32(threads)
-		}
-	}
-	if key, err := section.GetKey("web_token_expire_time"); err == nil {
-		expire, err := key.Uint()
-		if err == nil {
-			WebTokenExpireTime = uint32(expire)
-		}
-	}
-	if key, err := section.GetKey("cluster_shared_temp_file_mode"); err == nil {
-		fileMode, err := key.Uint()
-		if err == nil {
-			ClusterSharedTempFileMode = uint32(fileMode)
-		}
-	}
 	if key, err := section.GetKey("enable_profiling"); err == nil {
 		EnableProfiling, _ = key.Bool()
 	}
@@ -367,31 +324,6 @@ func parseFileServerSection(section *ini.Section) {
 	}
 	if key, err := section.GetKey("go_log_level"); err == nil {
 		LogLevel = key.String()
-	}
-	if key, err := section.GetKey("fs_cache_limit"); err == nil {
-		fsCacheLimit, err := key.Int64()
-		if err == nil {
-			FsCacheLimit = fsCacheLimit * 1024 * 1024
-		}
-	}
-	// The ratio of physical memory consumption and fs objects is about 4:1,
-	// and this part of memory is generally not subject to GC. So the value is
-	// divided by 4.
-	FsCacheLimit = FsCacheLimit / 4
-	if key, err := section.GetKey("fs_id_list_request_timeout"); err == nil {
-		fsIdListRequestTimeout, err := key.Int64()
-		if err == nil {
-			FsIdListRequestTimeout = fsIdListRequestTimeout
-		}
-	}
-	if key, err := section.GetKey("verify_client_blocks_after_sync"); err == nil {
-		VerifyClientBlocks, _ = key.Bool()
-	}
-	if key, err := section.GetKey("max_indexing_files"); err == nil {
-		threads, err := key.Uint()
-		if err == nil && threads > 0 {
-			MaxIndexingFiles = uint32(threads)
-		}
 	}
 }
 
@@ -459,20 +391,6 @@ func loadCacheOptionFromEnv() {
 	redisPasswd := os.Getenv("REDIS_PASSWORD")
 	if redisPasswd != "" {
 		RedisPasswd = redisPasswd
-	}
-	redisMaxConn := os.Getenv("REDIS_MAX_CONNECTIONS")
-	if redisMaxConn != "" {
-		maxConn, err := strconv.ParseUint(redisMaxConn, 10, 32)
-		if err == nil {
-			RedisMaxConn = uint32(maxConn)
-		}
-	}
-	redisExpiry := os.Getenv("REDIS_EXPIRY")
-	if redisExpiry != "" {
-		expiry, err := strconv.ParseUint(redisExpiry, 10, 32)
-		if err == nil {
-			RedisExpiry = uint32(expiry)
-		}
 	}
 }
 

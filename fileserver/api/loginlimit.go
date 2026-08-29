@@ -76,6 +76,22 @@ func StartLoginLimiterCleanup() {
 	setupIPLimiter.StartCleanup()
 }
 
+// ResetRateLimiters refills every bucket this package keeps.
+//
+// Exported for tests in other packages, which is a cost worth naming: these
+// limiters are package-level state with a lifetime longer than any test, and
+// the wire tests that drive the real router live in fileserver rather than
+// here, so an export_test.go seam cannot reach them. Without it a test that
+// exhausts a bucket deliberately — and one does — decides whether its
+// neighbours pass, and the failure arrives as a 429 that reads like a product
+// bug rather than a leak.
+func ResetRateLimiters() {
+	loginIPLimiter.ResetAll()
+	loginAccountLimiter.ResetAll()
+	kdfIPLimiter.ResetAll()
+	setupIPLimiter.ResetAll()
+}
+
 // allowSetupAttempt reports whether a setup attempt may proceed, writing a 429
 // itself when it may not. Only failures spend a token, matching login: the one
 // success this endpoint ever sees should not leave the operator throttled.

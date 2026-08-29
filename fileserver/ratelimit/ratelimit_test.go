@@ -126,6 +126,28 @@ func TestResetClearsTheBucket(t *testing.T) {
 	}
 }
 
+// ResetAll is what a test harness reaches for, so it has to clear keys the
+// caller cannot name — Reset takes one key, and a harness resetting between
+// tests does not know which keys the last test spent.
+func TestResetAllClearsEveryBucket(t *testing.T) {
+	l, _ := newTestLimiter(2, time.Hour)
+
+	for _, who := range []string{"alice", "bob"} {
+		l.Penalize(who)
+		l.Penalize(who)
+		if ok, _ := l.Allowed(who); ok {
+			t.Fatalf("%s's bucket was not empty", who)
+		}
+	}
+
+	l.ResetAll()
+	for _, who := range []string{"alice", "bob"} {
+		if ok, _ := l.Allowed(who); !ok {
+			t.Errorf("ResetAll left %s throttled", who)
+		}
+	}
+}
+
 // A full bucket carries no information, so forgetting it is free — and it is
 // what stops an attacker cycling through keys from growing the map without
 // bound. A bucket still holding a penalty must survive.
