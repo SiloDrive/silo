@@ -111,9 +111,18 @@ func (r *dirReader) lookup(name string) (store.DirEntry, bool, error) {
 
 // List returns a directory's entries, with names in the clear and in the
 // object's own order — which is bytewise by stored name, so a plain library
-// lists alphabetically and an E2EE one lists in an order that means nothing.
-// A caller wanting a display order sorts; the format will not pretend to
-// provide one it cannot.
+// lists alphabetically. A caller wanting a display order sorts; the format
+// will not pretend to provide one it cannot.
+//
+// It needs the content key, so on the server it serves plain libraries only.
+// The sentence this comment used to carry — that an E2EE library "lists in an
+// order that means nothing" — described the client's view, where the key is
+// present and the ciphertext ordering is what survives; on this side the guard
+// below refuses first and no order is reached at all. docs/storage.md § The
+// wire still describes path-addressed listing working against a sealed library
+// on the strength of deterministic name encryption. That is a design, not this
+// function: nothing sets Config.CK server-side, so HasKey is always false here
+// and every E2EE structural call is refused.
 func (s *Store) List(dirID store.ID) ([]Node, error) {
 	if s.e2ee && !s.HasKey() {
 		return nil, ErrNoContentKey

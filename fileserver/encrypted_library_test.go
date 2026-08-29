@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
@@ -387,4 +388,42 @@ func TestServerInfoAdvertisesEncryptedLibraries(t *testing.T) {
 		}
 	}
 	t.Errorf("server-info does not advertise e2ee-libraries: %v", out.Features)
+}
+
+// Reading an E2EE library by path is refused, and the refusal has to say so.
+//
+// The server holds no content key, so it cannot match a plaintext path segment
+// against the sealed names in a directory object. That much is intended. What
+// is not intended is answering "Not found": the file may well exist, and a
+// client told it does not is being lied to about the library's contents. The
+// comment on resolve says exactly this -- the refusal sits where it does
+// "instead of surfacing as not found, which would be a lie about whether the
+// file exists" -- while getEntry flattened every resolve error to 404.
+//
+// The write path already gets this right: it answers 403 and names the
+// id-addressed surface. A read should be the same shape.
+func TestReadingAnEncryptedLibraryByPathIsNotALie(t *testing.T) {
+	base, token, km := enrolled(t)
+	seed := mintSeed(t, km.Public)
+
+	if code, body := call(t, "POST", base+"/api/silo/v1/libraries", token, seed.body(t, "Sealed")); code != http.StatusOK && code != http.StatusCreated {
+		t.Fatalf("creating the encrypted library: status %d, body %s", code, body)
+	}
+
+	entry := base + "/api/silo/v1/libraries/" + seed.LibraryID + "/entries/notes.txt"
+	code, body := call(t, "GET", entry, token, "")
+
+	if code == http.StatusNotFound {
+		t.Fatalf("a path read on an E2EE library answered 404 %q; "+
+			"the server cannot know whether the file exists, so this is a lie about its contents", strings.TrimSpace(body))
+	}
+	if code != http.StatusForbidden {
+		t.Fatalf("status %d, want 403; body %s", code, body)
+	}
+	if !strings.Contains(strings.ToLower(body), "end-to-end encrypted") {
+		t.Errorf("the refusal does not say why: %q", strings.TrimSpace(body))
+	}
+	if !strings.Contains(strings.ToLower(body), "id") {
+		t.Errorf("the refusal does not name the surface that works: %q", strings.TrimSpace(body))
+	}
 }

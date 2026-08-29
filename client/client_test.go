@@ -171,3 +171,65 @@ func TestChangesPassesSinceAsAQueryParameter(t *testing.T) {
 		t.Errorf("query = %q, want %q", got.query, want)
 	}
 }
+
+// A password change signs out session credentials, and the TUI's own token is
+// one of them -- credential.KindSession is "the TUI, the CLI". So the request
+// that succeeds is also the request that invalidates the caller, and the
+// client has to come back from that on its own: it caches the password it
+// logged in with and replays it on any 401, which after this call is the old
+// one. Left alone, changing a password signs you out of the client you changed
+// it from, and the message you get is a 401 about a password you just proved
+// you knew.
+func TestChangingThePasswordLeavesTheClientSignedIn(t *testing.T) {
+	current := "old-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]string
+		_ = json.Unmarshal(body, &req)
+
+		switch r.URL.Path {
+		case "/api/silo/v1/auth/login":
+			if req["password"] != current {
+				http.Error(w, "Invalid password", http.StatusUnauthorized)
+				return
+			}
+			// A new token each time, so a stale one is refused below rather
+			// than accidentally still working.
+			_, _ = w.Write([]byte(`{"token":"token-for-` + req["password"] + `"}`))
+		case "/api/silo/v1/auth/password":
+			if req["current_password"] != current {
+				http.Error(w, "Invalid password", http.StatusUnauthorized)
+				return
+			}
+			current = req["new_password"]
+			// Every session credential is revoked, this one included.
+			_, _ = w.Write([]byte(`{"revoked":3}`))
+		default:
+			if r.Header.Get("Authorization") != "Bearer token-for-"+current {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL)
+	if err := c.Login("someone@example.com", "old-secret"); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	revoked, err := c.ChangePassword("old-secret", "new-secret")
+	if err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	if revoked != 3 {
+		t.Errorf("revoked = %d, want 3", revoked)
+	}
+
+	// The point of the test. The old token is dead, so this drives the
+	// automatic re-login, which has to present the new password.
+	if _, err := c.ListLibraries(); err != nil {
+		t.Errorf("a call after the change: %v -- the client re-authenticated with the old password", err)
+	}
+}

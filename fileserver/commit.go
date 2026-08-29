@@ -59,6 +59,12 @@ var commitAttempts = 5
 // sentence.
 const errE2EEWriteByID = "This library is end-to-end encrypted; write its objects by id"
 
+// errE2EEReadByID is the same answer for a read. It is a separate sentence
+// rather than a shared one because the two name different halves of the
+// id-addressed surface, and a client told to "write by id" when it asked to
+// read has been given a correct status and a wrong instruction.
+const errE2EEReadByID = "This library is end-to-end encrypted; read its objects by id"
+
 // writeTreeErr answers a failed tree mutation.
 //
 // It exists for the reason writeCommitErr does, one layer up: the objmgr

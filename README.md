@@ -172,6 +172,8 @@ With that loaded, `./silo serve -d /tmp/silo-data` and `./silo tui` both pick up
 
 From the TUI: `n` to create a library, `enter` to open it, `u` to upload a local file or directory, `v` to move, `r` to rename, `x` to delete, `q` to quit. Lists scroll: `j`/`k` or the arrow keys move the cursor, `g`/`G` jump to the top and bottom, and page up/down move a screen at a time.
 
+`a` opens the account menu, which is where you change your password. It asks for the current one as well as the new one — the request is already authenticated, but a credential you handed to a device must not be able to turn itself into the account. Changing it signs your other sessions out and leaves mounted devices alone; the TUI you did it from signs itself back in. An operator who needs to reset a password nobody holds any more uses `silo user passwd <email>`, which revokes everything.
+
 ### Use the CLI
 
 The same binary also exposes non-interactive subcommands for scripting:

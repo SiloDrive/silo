@@ -151,12 +151,17 @@ type resolved struct {
 // its own — nothing contains it — so its id is the commit's root id, which is
 // exactly as good an ETag: it changes whenever anything in the library does.
 //
-// It refuses an E2EE library rather than failing further in. The server has no
-// content key, so it cannot encrypt the path segments it would have to match
-// on — a resolve by path is a client operation there, and the id-addressed
-// surface is how such a library is read. Saying so here keeps the refusal next
-// to the reason instead of surfacing as "not found", which would be a lie
-// about whether the file exists.
+// On an E2EE library it fails, with objmgr.ErrNoContentKey raised by the walk
+// itself: the server has no content key, so it cannot match a plaintext
+// segment against the sealed names a directory object carries. A resolve by
+// path is a client operation there, and the id-addressed surface is how such a
+// library is read.
+//
+// Callers must answer that error on its own terms rather than folding it into
+// "not found" — see resolveErr. The server does not know whether the file
+// exists, and saying it does not is a lie about the library's contents. This
+// comment used to place the refusal here; it is not here, and every caller
+// answered 404 regardless, which is the bug resolveErr was written for.
 func resolve(library *libmgr.Library, path string) (*resolved, error) {
 	return resolveUnder(library, library.RootID, path)
 }
@@ -190,11 +195,28 @@ func resolveUnder(library *libmgr.Library, rootID, path string) (*resolved, erro
 	}, nil
 }
 
+// resolveErr answers a failed path resolution.
+//
+// Every caller used to write its own 404, which is right for a path that is
+// genuinely absent and wrong for the one error that is not about the path at
+// all: an E2EE library refuses the walk before it starts, and the server has no
+// idea whether the named entry exists. That error gets the status the write
+// side has always given it — treeFailure maps the same one to 403 — so both
+// halves of the path-addressed surface now refuse such a library alike, and
+// neither claims a file is missing when it cannot tell.
+func resolveErr(w http.ResponseWriter, err error, notFound string) {
+	if errors.Is(err, objmgr.ErrNoContentKey) {
+		http.Error(w, errE2EEReadByID, http.StatusForbidden)
+		return
+	}
+	http.Error(w, notFound, http.StatusNotFound)
+}
+
 // getEntry answers a read, conditionally.
 //
 // The 304 is the point of the whole design: an object's id is its content
 // hash, so it is already a strong ETag, and validating one costs a single
-// dirent lookup in the parent directory — no blocks are read at all. A client
+// dirent lookup in the parent directory — no chunks are read at all. A client
 // re-checking a materialised file pays almost nothing to learn it is current.
 func getEntry(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -213,7 +235,7 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 
 	entry, err := resolveUnder(library, root, path)
 	if err != nil {
-		http.Error(w, "Not found", http.StatusNotFound)
+		resolveErr(w, err, "Not found")
 		return
 	}
 
@@ -591,7 +613,11 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, libraryID, path string
 	// that wants mkdir -p can ask for it a directory at a time.
 	if parentDir != "/" {
 		parent, err := resolve(library, parentDir)
-		if err != nil || !parent.isDir {
+		if err != nil {
+			resolveErr(w, err, "Parent directory does not exist")
+			return
+		}
+		if !parent.isDir {
 			http.Error(w, "Parent directory does not exist", http.StatusNotFound)
 			return
 		}
@@ -819,7 +845,11 @@ func putEntryFromChunks(w http.ResponseWriter, r *http.Request, libraryID, path 
 	}
 	if parentDir != "/" {
 		parent, err := resolve(library, parentDir)
-		if err != nil || !parent.isDir {
+		if err != nil {
+			resolveErr(w, err, "Parent directory does not exist")
+			return
+		}
+		if !parent.isDir {
 			http.Error(w, "Parent directory does not exist", http.StatusNotFound)
 			return
 		}

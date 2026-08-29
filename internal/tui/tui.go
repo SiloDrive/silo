@@ -29,7 +29,28 @@ const (
 	viewConfirmOverwrite = "confirm_overwrite"
 	viewRename           = "rename"
 	viewMove             = "move"
+	viewAccount          = "account"
+	viewPassword         = "change_password"
 )
+
+// accountItem is one line of the Account menu and the view it opens.
+type accountItem struct {
+	label string
+	view  string
+}
+
+// accountItems is the Account menu.
+//
+// A list rather than a switch on the cursor, because what belongs here is not
+// finished -- signing out, the sessions an account has open, what it is using
+// of its quota -- and each of those should cost one line here and a view of its
+// own, rather than a re-shuffle of this one.
+var accountItems = []accountItem{
+	{label: "Change password", view: viewPassword},
+}
+
+// passwordFields is how many inputs the change-password form has.
+const passwordFields = 3
 
 // Styles
 var (
@@ -64,6 +85,13 @@ type deleteFileDoneMsg struct{ err error }
 type downloadDoneMsg struct{ err error }
 type renameDoneMsg struct{ err error }
 type moveDoneMsg struct{ err error }
+
+// passwordChangedMsg carries the count the server gave back: how many session
+// credentials it signed out, this one included.
+type passwordChangedMsg struct {
+	revoked int
+	err     error
+}
 type movePickerLoadedMsg struct {
 	dirs []client.DirEntry
 	err  error
@@ -131,6 +159,15 @@ type model struct {
 
 	// Rename
 	renameInput textinput.Model
+
+	// Account
+	accountCursor int
+
+	// Change password
+	currentPasswordInput textinput.Model
+	newPasswordInput     textinput.Model
+	confirmPasswordInput textinput.Model
+	passwordFocus        int // 0=current, 1=new, 2=confirm
 
 	// Move (remote directory picker)
 	moveSrcPath      string
@@ -237,6 +274,24 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 	renameIn.Placeholder = "new name"
 	renameIn.CharLimit = 255
 
+	// Masked, unlike the setup token beside them. A password is typed from
+	// memory and confirmed against a second field; a token is copied off a log
+	// line and has nothing to check it against but the operator's own eyes.
+	currentPassword := textinput.New()
+	currentPassword.Placeholder = "current password"
+	currentPassword.EchoMode = textinput.EchoPassword
+	currentPassword.CharLimit = 255
+
+	newPassword := textinput.New()
+	newPassword.Placeholder = "new password"
+	newPassword.EchoMode = textinput.EchoPassword
+	newPassword.CharLimit = 255
+
+	confirmPassword := textinput.New()
+	confirmPassword.Placeholder = "new password again"
+	confirmPassword.EchoMode = textinput.EchoPassword
+	confirmPassword.CharLimit = 255
+
 	m := model{
 		api:             client.NewClient(serverURL),
 		view:            viewLogin,
@@ -247,9 +302,14 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 		uploadInput:     upload,
 		mkdirInput:      mkdirIn,
 		renameInput:     renameIn,
-		autoEmail:       autoEmail,
-		autoPassword:    autoPassword,
-		serverURL:       serverURL,
+
+		currentPasswordInput: currentPassword,
+		newPasswordInput:     newPassword,
+		confirmPasswordInput: confirmPassword,
+
+		autoEmail:    autoEmail,
+		autoPassword: autoPassword,
+		serverURL:    serverURL,
 		// A usable size until the first WindowSizeMsg lands, so the opening
 		// frame is not laid out against a zero-sized terminal.
 		width:  80,
@@ -283,7 +343,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q":
 			// Not on the login view: "q" is a legal character in an email
 			// address, and the form has no other way to type one.
-			if m.view == viewLibraries || m.view == viewBrowse {
+			if m.view == viewLibraries || m.view == viewBrowse || m.view == viewAccount {
 				return m, tea.Quit
 			}
 		}
@@ -354,6 +414,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd = m.updateRename(msg)
 	case viewMove:
 		next, cmd = m.updateMove(msg)
+	case viewAccount:
+		next, cmd = m.updateAccount(msg)
+	case viewPassword:
+		next, cmd = m.updatePassword(msg)
 	default:
 		return m, nil
 	}
@@ -547,6 +611,10 @@ func (m model) updateLibraries(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.view = viewConfirm
 				m.message = ""
 			}
+		case "a":
+			m.view = viewAccount
+			m.message = ""
+			return m, nil
 		case "r":
 			m.message = "Refreshing..."
 			return m, m.loadLibraries
@@ -1244,7 +1312,9 @@ func (m model) renderConfirmOverwrite() string {
 var (
 	loginHelp     = []string{"tab: switch field", "enter: login", "ctrl+c: quit"}
 	setupHelp     = []string{"tab: switch field", "enter: create account", "ctrl+c: quit"}
-	librariesHelp = []string{"j/k: navigate", "g/G: top/bottom", "n: new", "d: delete", "r: refresh", "q: quit"}
+	librariesHelp = []string{"j/k: navigate", "g/G: top/bottom", "n: new", "d: delete", "r: refresh", "a: account", "q: quit"}
+	accountHelp   = []string{"j/k: navigate", "enter: select", "esc: back", "q: quit"}
+	passwordHelp  = []string{"tab: switch field", "enter: change password", "esc: cancel"}
 	browseHelp    = []string{"j/k: navigate", "g/G: top/bottom", "enter: open/download", "u: upload", "m: mkdir", "r: rename", "v: move", "x: delete", "esc: back", "q: quit"}
 	moveHelp      = []string{"j/k: navigate", "enter: open dir", "space: move here", "backspace: up", "esc: cancel"}
 	confirmHelp   = []string{"y: yes", "n: no"}
@@ -1467,6 +1537,205 @@ func (m model) frame(header, body, footer []string) string {
 	return strings.Join(lines, "\n")
 }
 
+// --- Account View ---
+
+// accountEmail is the address this session signed in as.
+//
+// Read back off the login field rather than out of the client, because the
+// field is where it was typed and is also where an auto-login from the
+// environment puts it -- one source, whichever way the session started.
+func (m model) accountEmail() string {
+	return m.emailInput.Value()
+}
+
+func (m model) updateAccount(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if c, _, ok := moveCursor(msg.String(), m.accountCursor, 0, len(accountItems), len(accountItems)); ok {
+			m.accountCursor = c
+			return m, nil
+		}
+		switch msg.String() {
+		case "esc":
+			m.view = viewLibraries
+			m.message = ""
+			return m, nil
+		case "enter":
+			if m.accountCursor >= len(accountItems) {
+				return m, nil
+			}
+			if accountItems[m.accountCursor].view == viewPassword {
+				return m.enterPasswordChange(), textinput.Blink
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m model) renderAccount() string {
+	header := []string{titleStyle.Render("Account"), ""}
+
+	var body []string
+	if email := m.accountEmail(); email != "" {
+		body = append(body, dimStyle.Render("  "+email), "")
+	}
+	for i, item := range accountItems {
+		cursor := "  "
+		label := item.label
+		if i == m.accountCursor {
+			cursor = "> "
+			label = selectedStyle.Render(label)
+		}
+		body = append(body, cursor+label)
+	}
+	return m.frame(header, body, m.footer(headerRows, accountHelp))
+}
+
+// --- Change Password View ---
+
+// enterPasswordChange opens the form with all three fields empty.
+//
+// Emptied on the way in rather than on the way out, so that whatever ends the
+// form -- escape, a success, a quit -- leaves nothing to remember to clear, and
+// so that a password is never sitting in the model waiting to be redrawn on a
+// screen somebody walked away from.
+func (m model) enterPasswordChange() model {
+	m.view = viewPassword
+	m.currentPasswordInput.SetValue("")
+	m.newPasswordInput.SetValue("")
+	m.confirmPasswordInput.SetValue("")
+	m.passwordFocus = 0
+	m.focusPasswordField()
+	m.message = ""
+	return m
+}
+
+// focusPasswordField moves the cursor to whichever field passwordFocus names,
+// and blurs the rest -- for the reason focusLoginField gives: two focused
+// inputs each get every rune.
+func (m *model) focusPasswordField() {
+	m.currentPasswordInput.Blur()
+	m.newPasswordInput.Blur()
+	m.confirmPasswordInput.Blur()
+
+	switch m.passwordFocus {
+	case 0:
+		m.currentPasswordInput.Focus()
+	case 1:
+		m.newPasswordInput.Focus()
+	case 2:
+		m.confirmPasswordInput.Focus()
+	}
+}
+
+func (m model) updatePassword(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc":
+			m.view = viewAccount
+			m.message = ""
+			return m, nil
+
+		case "tab", "down":
+			m.passwordFocus = (m.passwordFocus + 1) % passwordFields
+			m.focusPasswordField()
+			return m, nil
+
+		case "shift+tab", "up":
+			m.passwordFocus = (m.passwordFocus + passwordFields - 1) % passwordFields
+			m.focusPasswordField()
+			return m, nil
+
+		case "enter":
+			current := m.currentPasswordInput.Value()
+			next := m.newPasswordInput.Value()
+			if current == "" || next == "" {
+				m.message = errorStyle.Render("The current and new passwords are both required")
+				return m, nil
+			}
+			// The confirmation field is not politeness. Both fields are
+			// masked, so a mistyped new password is a password nobody knows:
+			// the change succeeds, the server signs every session out, and
+			// getting back in needs an operator with shell access and
+			// `silo user passwd`.
+			if next != m.confirmPasswordInput.Value() {
+				m.message = errorStyle.Render("The new passwords do not match")
+				return m, nil
+			}
+			m.message = "Changing the password..."
+			return m, func() tea.Msg {
+				revoked, err := m.api.ChangePassword(current, next)
+				return passwordChangedMsg{revoked: revoked, err: err}
+			}
+		}
+
+	case passwordChangedMsg:
+		if msg.err != nil {
+			m.message = errorStyle.Render(msg.err.Error())
+			return m, nil
+		}
+		m.view = viewAccount
+		m.message = successStyle.Render(passwordChangedSummary(msg.revoked))
+		return m, nil
+	}
+
+	var cmds []tea.Cmd
+	var cmd tea.Cmd
+	m.currentPasswordInput, cmd = m.currentPasswordInput.Update(msg)
+	cmds = append(cmds, cmd)
+	m.newPasswordInput, cmd = m.newPasswordInput.Update(msg)
+	cmds = append(cmds, cmd)
+	m.confirmPasswordInput, cmd = m.confirmPasswordInput.Update(msg)
+	cmds = append(cmds, cmd)
+	return m, tea.Batch(cmds...)
+}
+
+// passwordChangedSummary counts this session out of the number the server gave.
+//
+// The server revokes every session credential with no carve-out for the one
+// that asked, and its count says so. Reported as it stands, it would tell
+// somebody who is still looking at a working library list that they have been
+// signed out of it -- they have, and the client signed straight back in, which
+// is not a thing worth explaining on a status row. Device credentials are
+// untouched and go unmentioned for the same reason: nothing happened to them.
+func passwordChangedSummary(revoked int) string {
+	others := revoked - 1
+	switch {
+	case others < 1:
+		return "Password changed"
+	case others == 1:
+		return "Password changed; 1 other session signed out"
+	default:
+		return fmt.Sprintf("Password changed; %d other sessions signed out", others)
+	}
+}
+
+func (m model) renderPassword() string {
+	header := []string{titleStyle.Render("Change password"), ""}
+
+	body := wrapText(
+		"Your current password is asked for even though you are signed in, so that a "+
+			"credential somebody else is holding cannot turn itself into the account.",
+		m.width)
+	body = append(body, "")
+	body = append(body, wrapText(
+		"Other sessions are signed out. A mounted device stays mounted.", m.width)...)
+
+	body = append(body,
+		"",
+		"Current password:",
+		m.currentPasswordInput.View(),
+		"",
+		"New password:",
+		m.newPasswordInput.View(),
+		"",
+		"Confirm new password:",
+		m.confirmPasswordInput.View(),
+	)
+	return m.frame(header, body, m.footer(headerRows, passwordHelp))
+}
+
 // --- Status bar ---
 
 func (m model) renderStatusBar() string {
@@ -1502,6 +1771,10 @@ func (m model) View() string {
 		return m.renderRename()
 	case viewMove:
 		return m.renderMove()
+	case viewAccount:
+		return m.renderAccount()
+	case viewPassword:
+		return m.renderPassword()
 	}
 	return ""
 }
