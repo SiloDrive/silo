@@ -253,6 +253,6 @@ waits for evidence anyone needs it.
   answer to "what did it touch first".
 - `docs/plans/sharing.md` — share phase 1 acceptance includes
   `share.created` / `share.opened` / `share.revoked` events.
-- `docs/future-features.md` — activity feed and webhooks move from
+- `docs/roadmap.md` — activity feed and webhooks move from
   hand-waving to "read the EventLog table", with this plan as the
   reference.

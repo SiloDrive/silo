@@ -157,7 +157,7 @@ default.
 | **`POST {"op":"move"}` is not idempotent** | a move whose response is lost `404`s on retry, or moves the wrong thing if something was created at the source meanwhile | recommend `If-Match` on the source in the brief; consider an idempotency key |
 | **24h JWT, no refresh** | the client must keep the account password to survive expiry, and there is no server-side device revocation | the device-grant design in [`auth.md`](auth.md) gives revocable per-device credentials as a side effect |
 | **Encrypted libraries are unreadable over this lane, at all** | a whole class of library the client can only grey out | see [`encryption.md`](encryption.md) — the format is being replaced, not patched |
-| **No search of any kind** | acknowledged in [`future-features.md`](future-features.md) | — |
+| **No search of any kind** | designed in [`plans/search.md`](plans/search.md), parked | — |
 | **A big directory is still read whole server-side** | paging bounds the response and the client's loop, not the read: dirents are one JSON object addressed by the hash of all of them, so a range of one cannot be read without changing what a directory *is*. The same holds a level up — a Merkle diff is proportional to what changed and cannot be resumed part-way, so `changes` recomputes per page | store-level, much larger than it sounds, and nobody is asking |
 | **No compression negotiation** | blocks are raw on disk, so per-connection zstd is available for free and is not offered | see [`compression.md`](compression.md) |
 
@@ -186,5 +186,5 @@ half of this protocol is done, and the bulk-transfer half is not.
 
 Sharing, groups, multi-user permissions, file locking and federation are out of
 scope here — they are product surface, not protocol shape, and they live in
-[`future-features.md`](future-features.md). A protocol gap is something a
+[`roadmap.md`](roadmap.md). A protocol gap is something a
 single-user Dropbox-shaped client would feel on day one.

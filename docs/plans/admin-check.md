@@ -10,7 +10,7 @@ request already carries, and the snippets below are the pre-split spelling.
 
 ## Context
 
-Silo's management API at `/api/silo/v1/` treats every authenticated user as equal — there is no way to gate endpoints behind an admin role. This blocks upcoming work on user management, library sharing admin views, and "view-only" accounts (see [`future-features.md`](../future-features.md)).
+Silo's management API at `/api/silo/v1/` treats every authenticated user as equal — there is no way to gate endpoints behind an admin role. This blocks upcoming work on user management, library sharing admin views, and "view-only" accounts (see [`roadmap.md`](../roadmap.md)).
 
 The groundwork is already in place: the `EmailUser` table has an `is_staff` column, `Account` has one beside it, and the bootstrap admin is written with it set. What's missing is (a) a helper that reads `is_staff` for an authenticated user, and (b) a middleware that refuses non-admin requests. This plan adds both as a minimal, surgical change — no existing behaviour is altered.
 

@@ -151,7 +151,7 @@ nothing in this target may be shaped around them before they are.
 Replication with a single authority (a primary, some number of read-only
 replicas, a minimum copy count that makes dropping safe) is a genuine stretch
 goal rather than a non-goal. It is described in
-[`future-features.md`](future-features.md) and nothing in this target should
+[`roadmap.md`](roadmap.md) and nothing in this target should
 make it harder later.
 
 ## Open

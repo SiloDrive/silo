@@ -40,7 +40,7 @@ written*.
 The management API is in `docs/protocol.md`; it is not a full replacement for
 the 174 RPC handlers and was never meant to be. Sharing, user management, quota
 administration, trash/restore and history remain unimplemented — see
-`docs/future-features.md`.
+`docs/roadmap.md`.
 
 ## Standing constraints
 

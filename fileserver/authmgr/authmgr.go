@@ -262,7 +262,7 @@ func EnsureAdmin(email, password string) error {
 //
 // The account package only ever sees hashes. That is the invariant this
 // function exists to hold, and it holds it for the CLI, for the bootstrap
-// admin, and for the admin HTTP endpoint docs/future-features.md means to
+// admin, and for the admin HTTP endpoint docs/roadmap.md means to
 // build on these calls rather than beside them.
 //
 // created is false when the address was already claimed, in which case

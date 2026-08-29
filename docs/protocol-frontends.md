@@ -73,7 +73,7 @@ in-binary, which is the whole point of the rewrite.
 Gotchas:
 
 - `LOCK`/`UNLOCK` can start as an in-memory no-op that satisfies clients. It
-  becomes real once file locking lands (see `future-features.md`).
+  becomes real once file locking lands (see [`plans/locking.md`](plans/locking.md)).
 - Finder sprays `._*` and `.DS_Store` at any mount. `shouldIgnoreFile`
   (`fileop.go:2458`) already exists for exactly this.
 - The Windows client is fussy about Basic auth and `Depth` handling. Budget a
@@ -152,7 +152,7 @@ trash/restore, no history or revision endpoints).
 Federation, Syncthing's block exchange protocol, CalDAV/CardDAV, gRPC and
 GraphQL. None buy reach that the tier-1 three don't already cover, and the
 first two contradict the one-binary-one-node non-goal in
-[`future-features.md`](future-features.md).
+[`roadmap.md`](roadmap.md).
 
 ## Cross-cutting work every frontend needs
 

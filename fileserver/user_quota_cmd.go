@@ -20,7 +20,7 @@ import (
 // is only the fallback for an account with no row of its own, so a server-wide
 // figure in silo.conf sets the floor and this sets the exception.
 //
-// A CLI rather than an API for the reasons RunUser gives. docs/future-features.md
+// A CLI rather than an API for the reasons RunUser gives. docs/roadmap.md
 // wants GET/PUT /users/{email}/quota, and they are meant to be these functions
 // over HTTP once there is an admin role to gate them with.
 

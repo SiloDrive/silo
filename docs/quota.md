@@ -436,7 +436,7 @@ on describing the world it replaced.
 | `fileserver/dbutil/schema.go:180` | the column comment |
 | `fileserver/objmgr/measure.go:5` | what `Usage` is |
 | `docs/porter-brief.md:166,186,1122` | the wire contract clients are written against |
-| `docs/future-features.md:210` | the roadmap entry |
+| [`docs/roadmap.md`](roadmap.md) | the roadmap entry |
 | [`docs/storage.md`](storage.md) § What the numbers mean | "cutting history reclaims disk, never quota" |
 | `fileserver/quota_test.go:102` | the test pinning "freeing space makes room" |
 

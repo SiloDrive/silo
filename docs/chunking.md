@@ -214,7 +214,7 @@ deadness is local there; a chunk carries nothing, so Silo's mark half is a
 tracing garbage collector and only its sweep half is a vacuum.
 
 **Compaction and the per-library GC in
-[`future-features.md`](future-features.md) are the same project.** Both need
+[`roadmap.md`](roadmap.md) are the same project.** Both need
 the mark phase; the dirty index is derived from it. Build them together or
 build the mark twice.
 

@@ -35,7 +35,7 @@ import (
 // the IdP is down, or the only password is lost. Anyone who can run this
 // already owns the data directory, so it grants nothing they did not have.
 //
-// docs/future-features.md's admin API is the same operations over HTTP, and
+// docs/roadmap.md's admin API is the same operations over HTTP, and
 // is meant to be built on these functions rather than beside them.
 func RunUser(args []string) error {
 	flags := commandFlags("user")

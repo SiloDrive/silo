@@ -115,7 +115,7 @@ Guessing wrong is worse than not saying.
 
 ## If we ever want signed URLs
 
-We might. `future-features.md` keeps a web UI on the table — "a small SPA
+We might. `roadmap.md` keeps a web UI on the table — "a small SPA
 served from the same Go binary" — and the moment a browser renders a thumbnail
 or plays a video, we are back to a consumer that cannot set a header. Third-party
 integrations and public share links would do the same.

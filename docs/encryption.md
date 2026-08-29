@@ -116,20 +116,26 @@ stores without reading it.
 The format is specified with test vectors. The server side already treats an
 E2EE library as opaque in the ways that matter — the store hashes what it
 stores, and the changes feed works on a library the server cannot read, which
-is the point of the design. What does not exist yet:
+is the point of the design.
 
-- **The account key schema** — the four items in
-  [`auth.md`](auth.md#the-accounts-key-material):
-  `client_kdf_params`, `AccountIdentityKey`, `AccountRecoveryWrap`, and the
-  pre-login parameters endpoint. That endpoint is the sharp piece: it is
-  unauthenticated by necessity, must answer unknown addresses with stable
-  plausible parameters or it enumerates accounts, and its answer is
-  attacker-influenced input to the client's KDF — the parameter ceiling in the
-  store package is what makes that safe, and it must stay load-bearing.
-- **A client.** Creating an E2EE library is a client operation — the initial
-  commit is sealed under a key the server never holds — so
-  `CreateLibraryHandler` mints server-readable libraries only, deliberately,
-  until a client exists to do the sealing.
+**The server half is built.** The account key schema landed — the four items in
+[`auth.md`](auth.md#the-accounts-key-material): `client_kdf_params`,
+`AccountIdentityKey`, `AccountRecoveryWrap`, and the pre-login parameters
+endpoint, `POST auth/kdf`. That endpoint was the sharp piece and its
+constraints remain load-bearing rather than historical: it is unauthenticated
+by necessity, answers unknown addresses with stable plausible parameters so it
+cannot be used to ask which addresses exist, and its answer is
+attacker-influenced input to the client's KDF — which is what the parameter
+ceiling in the store package exists to bound. Creating an encrypted library
+landed with it: `POST /libraries` with `"e2ee": true`, and
+`GET /libraries/{id}/key`, behind the `account-keys` and `e2ee-libraries`
+feature names. See [`storage.md`](storage.md) § What the server can read for
+the request shape and why the library id comes from the client.
+
+What is left is **a client that does the sealing**, and one server-side
+sequencing item: the split-derivation login, where the password is stretched
+under the parameters `auth/kdf` serves and only the auth half goes up. Both are
+tracked in [`roadmap.md`](roadmap.md).
 
 ## Guardrails — what not to build
 

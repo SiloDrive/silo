@@ -33,7 +33,8 @@ The credential model is auth.md's; this plan adds what sits around it.
 **Roles.** A `role` column on the account: `admin` / `user` / `guest`, plus
 the existing `is_staff` semantics folding into `admin`. Guest cannot create
 libraries and sees only what is shared to them — the "consumer deployment"
-shape from [`future-features.md`](../future-features.md). A config key
+shape, where the admin curates the libraries and everybody else syncs what
+they have been given. A config key
 `allow_user_create_library` gates creation for `user` as well, for installs where
 the admin curates everything.
 
@@ -94,7 +95,7 @@ or are read through it — decided at implementation, but the invariant is that
 a *ceiling* over the grant, never a grant itself (auth.md's rule).
 
 - **User/group shares** are `user:`/`group:` grants, exposed on the endpoints
-  future-features.md already lists (`/libraries/{id}/shares`, `shared-with-me`).
+  this plan defines below (`/libraries/{id}/shares`, `shared-with-me`).
 - **Public-read-only** is `('anon', library, '/', 'r')` plus a `listed` column
   on the grant row (meaningful only for `anon` principals) for
   discovery: `GET /api/silo/v1/public-libraries` enumerates listed anonymous
@@ -400,7 +401,7 @@ and per-file share manifests; file links first).
 
 ## Doc changes
 
-- `future-features.md` — the sharing and public-links sections point here;
+- `roadmap.md` — the sharing and public-links sections point here;
   the `/d/{token}/` + tokenstore sketch under "Public / link shares" is
   superseded by the credential-backed design.
 - `capability-urls.md` — status note: the predicted browser-shaped consumer

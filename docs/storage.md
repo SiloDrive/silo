@@ -135,6 +135,21 @@ root and parents, a directory its entries, a manifest its chunk list and
 `file_size`. Everything else returns `ErrNoContentKey` rather than
 half-working.
 
+**Creating one is a client operation, and it is built.** `POST /libraries` with
+`"e2ee": true` is a different request from creating a plain library rather than
+a flag on the same one: the initial root directory and the initial commit are
+both sealed under a key the server never holds, so they arrive *with* the
+request, along with the library id and the content key wrapped to the creator.
+The id comes from the client because `store.WrapCK` binds it into the wrap as
+associated data — so it has to exist before the key can be wrapped to anybody,
+and the alternative of creating the library and publishing its key in two
+requests leaves a window holding a library whose key nobody stored.
+`GET /libraries/{id}/key` hands a member their wrap back. Both are behind the
+`e2ee-libraries` feature name, and the account key material they depend on is
+behind `account-keys`; a client that cannot see those names must not offer the
+option, because a `POST` without those fields silently makes a server-readable
+library.
+
 | fact | plain | E2EE |
 |---|---|---|
 | chunk and object ids | public | public |
@@ -517,15 +532,6 @@ gets the change they asked for rather than a usage message.
 
 ## What Part 1 does not do
 
-- **E2EE libraries cannot be created.** `CreateLibrary` refuses one outright,
-  and the refusal is honest rather than a stub: a content key is wrapped to
-  each member's X25519 public key, that key is an account column that does not
-  exist, and the wrap has no table. Creating one now would produce a library
-  whose key dies with the device that made it, which is data loss wearing a
-  feature's clothes. Everything else about E2EE — the codecs, the key-free
-  readers, the three store states, the name encryption, the wrap primitives and
-  their vectors — is built and tested. What is missing is the account side. See
-  Part 2, and [`auth.md`](auth.md#the-accounts-key-material).
 - **There is no cache in front of the store.** A read is a read.
 - **Objects are stored raw**, unencrypted and uncompressed.
 - **The id-addressed surface has no `server-info` feature name.** `blocks`
@@ -743,10 +749,105 @@ about storage layout differs.
 
 ## Durable tiers
 
-The same pack format byte-for-byte on three backends: server-local disk as the
-hot tier, a filesystem on a NAS mount as a durable tier, and S3 as a durable
-tier — one PUT per sealed pack, since request count is what object storage
-bills, and a chunk read is one ranged GET.
+The same pack format byte-for-byte on every backend: server-local disk as the
+hot tier, a filesystem on a NAS mount, and S3 — one PUT per sealed pack, since
+request count is what object storage bills, and a chunk read is one ranged GET.
+
+**A NAS and an S3 bucket are the same object logically**, and the interface
+already says so: write-and-seal, ranged read, whole read, stat, list, remove,
+remove-library, with absence normalised to one `ErrNotFound` at the seam.
+Everything that differs between them is operational rather than semantic — S3
+gives all-or-nothing PUT for free where a filesystem needs write-temp-then-
+rename or a crash leaves a half pack that LIST reports; S3 bills requests and
+egress where a NAS bills nothing, which is why reading back to verify is the
+NAS's cheap option and the checksum header is S3's; a NAS fills up and object
+storage effectively does not; and the latency difference decides read
+preference and nothing about correctness. Trust is deliberately not on that
+list. Packs are ciphertext on every tier including local disk, so no backend is
+trusted and there is no per-backend trust taxonomy to keep true.
+
+One consequence worth stating plainly, because it is the deployment people
+reach for first: **running Silo on the NAS is not this feature.** Then the NAS
+*is* local disk, there is one copy, and every property below that starts "the
+other copy" does not exist. A tier is the two-copy arrangement — write locally,
+seal, copy, verify, and only then let the local copy become evictable.
+
+### A tier is a row, not a special case
+
+Local disk is not a different kind of thing from a durable backend; it is the
+same interface with different attributes. Naming the attributes collapses two
+special cases into one table, and makes a multi-tier deployment expressible
+without a policy matrix:
+
+| attribute | what it decides |
+|---|---|
+| **backend** | which implementation; the four-verb floor below is the contract |
+| **capacity** | a byte target, or unbounded. Bounded means it evicts |
+| **counts toward copies** | whether a verified copy here satisfies the durability requirement, and so whether it may gate eviction elsewhere |
+| **writable** | whether this server writes it, or only reads it |
+
+**Bounded does not force uncountable — autonomous eviction does.** A bounded
+tier evicted *by the writer that knows the global copy count* can still count,
+because eviction and compaction-delete become the same operation gated by the
+same check: never drop below the required number of copies. It is a tier that
+manages its own disk on its own schedule — a replica trimming its cache — that
+must be excluded, because the accounting and the deletion would be in two
+places that can disagree. So the rule is about control rather than about size:
+
+> **Only a tier whose eviction the copy count controls may gate eviction
+> elsewhere.**
+
+That gives two roles. An **authoritative** tier counts toward required copies.
+A **cache** tier never does, is lossy at any moment, and falls through on a
+miss — which means a read chain must always terminate in a reachable
+authoritative tier, or a miss is a hard failure rather than a slow read.
+
+Local disk is then a row like any other: bounded, cache, not counting. What
+stays specific to it is the never-evictable floor — the open pack,
+sealed-but-unverified packs, pack indexes, the catalog and `storage.key` —
+because that floor is about what a running server needs, not about durability.
+A cache tier should hold *all* pack indexes and evict only pack bodies, which
+is the same rule local disk already follows, generalised for free: a few
+hundred KB against 512 MB, and losing it means re-downloading packs to rebuild
+by scan.
+
+**Resist adding attributes.** The uniform-encryption rule exists because a
+per-backend trust taxonomy decays, and a per-tier policy matrix decays the same
+way for the same reason. Four attributes and one sentence of rule, or this
+becomes the thing it was written to avoid.
+
+### More than one durable tier
+
+N sinks is structurally the easy case, and that is a payoff of write-once
+rather than luck: packs are immutable once sealed, byte-identical everywhere,
+named by ids that never collide, with one writer. Fan-out needs no
+coordination, no ordering between tiers, and no consensus.
+
+Four things generalise, and only the last is new work.
+
+- **`verified` becomes per (pack, tier)** rather than a boolean — a set of
+  tiers each pack has been verified on. Still derivable by scan, which is what
+  keeps it safe to lose.
+- **The upload queue becomes per tier.** An S3 outage and a NAS outage are
+  independent, and the queue-depth alert has to name which one is behind.
+- **Reads get a preference order** — nearest and cheapest first, falling
+  through on a miss or an outage.
+- **Deletions have to fan out, and that is the genuinely new piece.**
+  Compaction deletes packs. With one tier a failed delete is a retry; with N,
+  a tier that is offline when a delete happens accumulates garbage no mark
+  phase will ever revisit, because the pack is gone from the catalog and
+  nothing knows to look. So the upload queue grows a delete counterpart, and a
+  periodic LIST-against-catalog reconciliation per tier is what catches the
+  drift. Design this before building fan-out, not after.
+
+The reason to be sparing is cost rather than architecture: N tiers is N times
+the storage bill and N times the PUTs, and two buckets in one provider's region
+buy much less failure independence than they look like they do.
+
+**The one-writer invariant now has to hold per tier.** Exactly one Silo server
+writes a given bucket-prefix or NAS path, nothing in the feature floor can
+enforce it, and a read-only tier on a replica is how that stays true while more
+than one server reads the same bytes.
 
 **The S3 feature floor is PUT, ranged GET, DELETE, LIST. Nothing else.** Every
 additional API a backend is assumed to have is a backend that stops working,
@@ -793,10 +894,14 @@ exists once.
 
 ### The cache has a size, and zero is one of them
 
-One knob: **a byte target for evictable local pack data.** Bytes, not a
-fraction of the disk — disks are shared, and a fraction of a disk something
-else is also filling means something different every day. Over target, evict
-verified packs least-recently-read first.
+One knob per bounded tier: **a byte target for evictable pack data.** Bytes,
+not a fraction of the disk — disks are shared, and a fraction of a disk
+something else is also filling means something different every day. Over
+target, evict verified packs least-recently-read first.
+
+Local disk is the tier that always has this knob; a remote tier has it when it
+is configured as a cache rather than as authoritative, and the mechanism is the
+same code against a different backend.
 
 - **Zero is the limit case, not a mode.** It means seal → upload → verify →
   evict immediately, and needs no separate code path. What stops it deleting
@@ -814,6 +919,73 @@ verified packs least-recently-read first.
   is why there is **no force-evict flag, ever** — one would be the only way to
   reach that outcome, and its existence is the entire risk.
 
+### Evicting history before live data
+
+Pure LRU already approximates this, since history-only chunks are not read. The
+explicit signal earns its keep after a large history read — a restore, a
+`.snapshot` browse — pollutes the cache, which is exactly when a naive LRU
+evicts the working set instead.
+
+It costs one more field in a mark that is already running:
+**`head_bytes` beside `live_bytes` in `PackStats`** — reachable from the
+current head, rather than reachable at all. That is a second bit in the same
+walk, not a second walk. Eviction then orders by
+`(head_bytes / total_bytes, last_read)` rather than by recency alone.
+
+The precise version falls out of compaction rather than needing anything of its
+own: compaction is already rewriting packs, so it can sort live frames into
+head-reachable and history-only packs, at which point eviction is exact instead
+of statistical. Treat that as a scheduling input like locality and undersize —
+one more reason to rewrite a pack, not a second mechanism.
+
+### Migrating between tiers
+
+Adding a tier and demoting one are ordinary operations, and the order matters
+because one direction is safe and the other is not. The worked case: a 1 TB NAS
+that fills, an S3 bucket added beside it, and the NAS kept afterwards as a
+cache.
+
+1. Add S3 as authoritative and unbounded, and put it in the required set.
+2. Backfill every sealed pack not yet there, verifying each as it lands. This
+   is the existing upload-and-verify queue pointed at already-sealed packs; it
+   is restartable at any point, because packs are immutable and verification is
+   idempotent.
+3. **Wait for a predicate, not an event.** Not "replication finished" but *the
+   count of packs not verified on S3 is zero*, evaluated against the per-tier
+   verified set — derivable by scan, and therefore checkable rather than
+   trusted.
+4. Flip the NAS to cache with a byte target. Nothing moves and nothing is
+   deleted at the flip; it is a metadata change, and the NAS's existing
+   contents become a warm working set rather than a cold cache.
+
+Three things to get right:
+
+- **The capacity bound must be inert until the gate passes.** A NAS that starts
+  evicting while it still holds the only durable copy of some pack races the
+  backfill and deletes it. Same shape as the rule that the local knob is inert
+  with no durable tier configured.
+- **The backfill must tolerate packs vanishing.** Compaction running alongside
+  it can delete a pack mid-upload. That is safe, since ids are never reused,
+  but "no longer in the catalog" has to be a normal skip rather than an error
+  that stalls the queue.
+- **Demotion is cheap and promotion is not.** A cache has holes by definition,
+  so turning one back into an authoritative tier means proving completeness,
+  which means a full backfill anyway. The flag is easy to lower and expensive
+  to raise.
+
+None of this re-encrypts, re-chunks, or changes an id. Every tier holds
+byte-identical ciphertext under `storage.key`, so a tier migration is `cp` —
+which is the payoff of the uniform-encryption decision, and the same property
+that makes a replica's copy of a pack legal.
+
+**The state before the new tier is added is the one to alert on.** A full
+authoritative tier stalls uploads, the unverified backlog grows, and nothing
+unverified is ever evictable — so local disk grows until it fills and writes
+stop. The design's answer is deliberately "alert on queue depth, never refuse
+writes, never evict unverified", which makes the queue-depth alert the only
+thing standing between a full NAS and a wedged server. The sequence above is
+the recovery path; it has to start before local disk fills.
+
 ## The tracing mark, and compaction
 
 The three CLI reclaimers in Part 1 are the shape of this without packs. With
@@ -822,9 +994,11 @@ packs it becomes one mark phase feeding a scheduler.
 - **Mark is a tracing collector.** Liveness is global reachability from live
   commits; it cannot be maintained incrementally and **must never be
   refcounted**.
-- Mark output is `PackStats(pack_id, total_bytes, live_bytes, gc_id)` in the
-  catalog — a scheduling input, stale by construction, re-verified before any
-  sweep.
+- Mark output is `PackStats(pack_id, total_bytes, live_bytes, head_bytes,
+  gc_id)` in the catalog — a scheduling input, stale by construction,
+  re-verified before any sweep. `live_bytes` drives compaction and `head_bytes`
+  drives eviction order, and the two are one walk: the difference between them
+  is what history is keeping alive in that pack.
 - Compact a pack when its dead fraction crosses a threshold (default 0.5),
   rate-limited autovacuum-style: a threshold and an I/O budget, not "quiet
   hours". Rewrite live frames into a new pack, fsync, swap index entries

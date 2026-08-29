@@ -48,7 +48,7 @@ because a client author has to grep for it.
 | writing a client | [`protocol.md`](protocol.md) → [`porter-brief.md`](porter-brief.md) → [`responses.md`](responses.md) |
 | changing the server | [`notes.md`](notes.md), then [`plan.md`](plan.md) for the constraints that bind every change |
 | choosing a status code | [`responses.md`](responses.md). Before writing the handler, not after |
-| deciding what to build next | [`future-features.md`](future-features.md), then the plans below |
+| deciding what to build next | [`roadmap.md`](roadmap.md), then the plans below |
 
 ## The server as it is
 
@@ -61,15 +61,15 @@ because a client author has to grep for it.
 | [`backup.md`](backup.md) | **current.** Why `cp silo.db` is not a backup, the order the two halves are captured in, restore and verification |
 | [`error-reporting.md`](error-reporting.md) | **current.** Sentry-compatible error reporting: what is sent, how issues group, how to turn it off |
 | [`sync-design.md`](sync-design.md) | **current.** The reasoning behind the storage and sync model — the *why* behind `protocol.md` |
-| [`storage.md`](storage.md) | **current and plan, in one file, split down the middle.** Part 1 is the store as it runs — objects, keyed content-defined chunking, what the server can read of a library it holds no key for, the numbers and what reclaims them — and is normative. Part 2 is designed and not built: packs, durable tiers, compaction, and the account half of end-to-end encryption. Byte layouts are not here; they are `spec/store-format.md` |
+| [`storage.md`](storage.md) | **current and plan, in one file, split down the middle.** Part 1 is the store as it runs — objects, keyed content-defined chunking, what the server can read of a library it holds no key for, the numbers and what reclaims them — and is normative. Part 2 is designed and not built: packs, durable tiers and their attributes, and compaction. Byte layouts are not here; they are `spec/store-format.md` |
 | [`../test/README.md`](../test/README.md) | **current.** The Ruby integration harness that runs against a live server |
 
 ## Plans — where we are going
 
 | file | what it covers |
 |---|---|
-| [`auth.md`](auth.md) | **current and plan, in one file, split down the middle.** Part 1 describes the credential model as it runs — the token format, the one `Resolve`, the permission ceiling, password enrolment — and is normative: if the code disagrees with it, one of them is a bug. Part 2 is designed and not built — proof of possession, Argon2id, OIDC, E2EE libraries — and ends with what is left, in order |
-| [`future-features.md`](future-features.md) | **plan.** The roadmap: user management, sharing, groups, locking, trash, quota, search. Loosely ordered, nothing committed |
+| [`auth.md`](auth.md) | **current and plan, in one file, split down the middle.** Part 1 describes the credential model as it runs — the token format, the one `Resolve`, the permission ceiling, password enrolment — and is normative: if the code disagrees with it, one of them is a bug. Part 2 is designed and not built — proof of possession, Argon2id, OIDC — and ends with what is left, in order. The account key material it used to list as unbuilt has landed |
+| [`roadmap.md`](roadmap.md) | **plan.** What is built, what is next, and what each thing waits on. It owns **ordering and dependency only** and links to the document that owns each design — where it and an owning document disagree, the owning document wins |
 | [`protocol-gaps.md`](protocol-gaps.md) | **plan.** What the Silo lane would need to be an ideal protocol for a Dropbox-shaped client, ranked, with the reasoning attached |
 | [`encryption.md`](encryption.md) | **plan.** Why Seafile's encrypted libraries are not being adopted, and the sketch of the end-to-end scheme that replaces them. Also the list of things not to build |
 | [`native-client.md`](native-client.md) | **plan, partly landed.** Three tiers between the CLI and a real sync agent; two have landed |
@@ -78,9 +78,13 @@ because a client author has to grep for it.
 | [`protocol-frontends.md`](protocol-frontends.md) | **plan.** A survey of what else could front the same store — WebDAV, S3, SFTP — and what each costs |
 | [`spec/store-format.md`](spec/store-format.md) | **specification, complete.** The normative byte-level contract between the Go `store/` package and porter-mac's Swift port — ids, chunking, the manifest/directory/commit codecs, the content crypto, AES-SIV names and key wrapping. Test vectors live beside it in `store/testdata/vectors`; a port is conforming when it reproduces them |
 | [`plans/sharing.md`](plans/sharing.md) | **plan.** Accounts, roles and invites, public read-only libraries, and share links — including links out of E2EE libraries, which wrap keys rather than re-encrypting content |
-| [`target.md`](target.md) | **plan.** The end state Silo is aiming at — no steps, no dates. Where `future-features.md` is the route, this is the destination |
+| [`target.md`](target.md) | **plan.** The end state Silo is aiming at — no steps, no dates. Where `roadmap.md` is the route, this is the destination |
 | [`plans/events.md`](plans/events.md) | **plan.** An append-only log for the control plane and access, for the questions the schema forgets |
 | [`plans/admin-check.md`](plans/admin-check.md) | **plan.** The `is_staff` gate, which nothing yet consumes |
+| [`plans/locking.md`](plans/locking.md) | **plan, parked.** Per-file advisory locks, and why they should not ship without the push event |
+| [`plans/search.md`](plans/search.md) | **plan, parked.** A filename index on SQLite FTS5; populating it is the hard part, not querying it |
+| [`plans/replication.md`](plans/replication.md) | **plan, parked.** Primary plus read-only secondaries, what a secondary needs beyond bytes, and where parity would fit |
+| [`plans/distributable-library.md`](plans/distributable-library.md) | **plan, parked.** A plain library as a casync-shaped read-only store: a signed head, an export, a verifying consumer |
 | [`quota.md`](quota.md) | **plan, partly landed.** Whose ceiling, what it counts, and when the things it counts stop counting. Enforcement and the CLI are built; charging blocks rather than logical size, date-based history expiry and a server-wide ceiling are argued here and not written |
 
 ## Records — decided, done, or superseded

@@ -379,7 +379,7 @@ Silo is a lean rewrite focused on the sync path and a minimal management API. Th
   be supported. See [`docs/encryption.md`](docs/encryption.md) for why, and for
   the sketch of what replaces it
 
-See [`docs/future-features.md`](docs/future-features.md) for the rough roadmap.
+See [`docs/roadmap.md`](docs/roadmap.md) for the rough roadmap.
 
 ## Directory layout
 
