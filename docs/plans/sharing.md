@@ -89,7 +89,7 @@ CREATE TABLE Grant (
 );
 ```
 
-The existing Seafile share tables (`SharedLibrary`, `LibraryGroup`) fold into this
+The existing inherited share tables (`SharedLibrary`, `LibraryGroup`) fold into this
 or are read through it — decided at implementation, but the invariant is that
 **`CheckPerm` consults one model**, and the credential's `perm` column remains
 a *ceiling* over the grant, never a grant itself (auth.md's rule).

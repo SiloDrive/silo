@@ -3,11 +3,11 @@
 This document is the server's **contract with the clients**. It lists the
 HTTP endpoints the Go fileserver implements.
 
-**The Seafile/SeaDrive sync lane — `/repo/*`, `/api2/*`, `/api/v2.1/*`,
-`/files/{token}/*`, `/seafhttp/*` — was deleted in `5d4baa0` (0.5.0).** Every
+**The legacy sync lane — `/repo/*`, `/api2/*`, `/api/v2.1/*`,
+`/files/{token}/*` and their prefixed variants — was deleted in `5d4baa0` (0.5.0).** Every
 one of those paths answers 404 now; nothing here still stubs or shims them.
 See [`docs/target.md`](target.md) for why, and
-[`porter-brief.md`](porter-brief.md#the-seafile-lanes-are-gone) for the
+[`porter-brief.md`](porter-brief.md#the-legacy-lanes-are-gone) for the
 one-paragraph version. This document now covers the one lane that remains.
 
 It says which endpoints exist. For what the *status codes* mean — and which are
@@ -414,10 +414,27 @@ Encrypted libraries are excluded (`400`). Their blocks are ciphertext, so a
 client cannot name one without performing the encryption itself; `PUT` of the
 file content still works there, and the server encrypts from the cached key.
 
-The limit worth knowing: fixed-offset chunking means inserting a byte near the
-front of a file shifts every boundary after it and nothing dedups. Appends and
-unchanged regions are free; edits in the middle are not.
-[`protocol-gaps.md`](protocol-gaps.md) has what that would cost to fix.
+Edits in the middle of a file are cheap, and this is the paragraph that used to
+say the opposite. Chunking is `fastcdc-gear64/v1` (`store/params.go`) —
+content-defined, 256 KiB minimum, 1 MiB target, 4 MiB maximum. An edit shifts
+the boundaries around it and the rolling hash re-syncs within a chunk or two, so
+a change in the middle of a 1 GB file re-transfers single-digit megabytes rather
+than the file. Appends and unchanged regions cost nothing, as before.
+
+The claim this replaces — that a byte inserted near the front reshapes every
+boundary after it and nothing dedups — was true of the fixed offsets this
+surface started with, and stopped being true when store-v2 landed
+content-defined chunking. It is worth naming as a correction rather than
+silently deleting: a client author who read it would reasonably have decided the
+block surface was not worth implementing for edit-heavy content, which is the
+workload it helps most.
+
+What remains true is narrower. Dedup depends on both sides cutting at the same
+places, so a client that uploads without reading the library's `chunker`
+parameters produces ids that match nothing already stored — see above. And no
+amount of block negotiation helps a file whose bytes are rewritten wholesale on
+every save, which is what [`protocol-gaps.md`](protocol-gaps.md) means when it
+separates a photo library from a library of VM images.
 
 #### Reading `changes`
 
@@ -542,7 +559,7 @@ for every request and flags 404s as `WARN`. Off by default.
 
 Anything outside `/api/silo/v1/*` and `/notification` is a 404, including
 every path listed in older revisions of this document under the
-Seafile/SeaDrive sync lane — see the note at the top. That includes
+legacy sync lane — see the note at the top. That includes
 `/protocol-version` itself: `handleProtocolVersion` (`server.go:577`) still
 exists but nothing mounts it, so it's dead code rather than a live route.
 

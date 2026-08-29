@@ -18,7 +18,7 @@ the index; `docs/bugs/fixed/` is the reasoning.
 |---|---|---|---|
 | **Silo** | `/api/silo/v1/…` | porter-fuse, the File Provider extension, `client/`, anything new | standard HTTP, documented below |
 
-The Seafile sync (`/repo/…`) and Seahub-compat (`/api2/…`) lanes this section
+The legacy sync (`/repo/…`) and web-compat (`/api2/…`) lanes this section
 used to describe were deleted in `5d4baa0` (0.5.0); everything under them is
 now a 404. See [`protocol.md`](protocol.md) and
 [`docs/target.md`](target.md).
@@ -192,8 +192,8 @@ It is a WebDAV code, but a WebDAV frontend would use it inside a `207
 Multi-Status` body rather than as a response of its own, so the two do not
 collide.
 
-The Seafile sync lane's non-standard `44x` codes (`fileserver/http_code.go`,
-`seafHTTPRes*`) went with the lane itself in `5d4baa0`; nothing on the current
+The legacy sync lane's non-standard `44x` codes (`fileserver/http_code.go`,
+since deleted) went with the lane itself in `5d4baa0`; nothing on the current
 server returns them.
 
 ## Rules for adding a code

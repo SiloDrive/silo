@@ -4,11 +4,14 @@ Licensed under AGPLv3 (see LICENSE.txt)
 
 This project began as a fork of Seafile Server
 (https://github.com/haiwen/seafile-server), originally developed by
-Seafile Ltd. The Go implementation, standalone runtime, SeaDrive
-compatibility shims, and TUI client are new work; the file sync
-protocol and on-disk format remain compatible with Seafile clients.
+Seafile Ltd., and parts of the Go server descend from it. The AGPL
+requires that attribution be preserved, which is why this paragraph and
+the additional permission in LICENSE.txt are kept verbatim.
 
-The Seafile name and logo are trademarks of Seafile Ltd. and are not
-used by this project. "Silo" is a separate project that speaks the
-Seafile sync protocol; it is not affiliated with or endorsed by
-Seafile Ltd.
+Nothing else of the upstream project survives. The C daemon, the Python
+web layer, the sync protocol and the on-disk object format have all been
+replaced; Silo is a single Go binary speaking its own HTTP API over its
+own store format, and no upstream client can talk to it.
+
+The Seafile name and logo are trademarks of Seafile Ltd. Silo does not
+use them and is not affiliated with or endorsed by Seafile Ltd.

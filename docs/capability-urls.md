@@ -20,18 +20,16 @@ The token was a UUID in a `sync.Map` (`fileserver/tokenstore`, since deleted), c
 `oneTime=true` at `api_handlers.go`, and redeemed by `QueryToken` with a
 `LoadAndDelete`. Uploads mirrored it: `POST /api/silo/v1/access-tokens` then
 `POST /upload-api/{token}`. At the time this was written both stayed exactly
-as they were for the Seafile lane, which was the lane that needed them; that
-lane — `/upload-api/`, `/files/{token}/...` and the rest — was deleted
+as they were for the legacy sync lane, which was the lane that needed them;
+that lane — `/upload-api/`, `/files/{token}/...` and the rest — was deleted
 outright in `5d4baa0`, after the "Do not touch" note below was written and
 before it was corrected.
 
 ## Why it exists — and it is a good design, for something else
 
-It was inherited from upstream Seafile, whose web layer was **Seahub**, a Django
-app. Silo replaced Seahub outright and does not run it; the source at
-`../seafile/seahub` is reference material, not a component. The call sites there
-are still the clearest statement of what the pattern is for.
-`seahub/utils/__init__.py`:
+It was inherited from upstream, whose web layer was a Django app. Silo replaced
+that layer outright and does not run it. Its call sites are still the clearest
+statement of what the pattern is for — the URL builder read:
 
 ```python
 # Format: http://<domain:port>/files/<token>/<filename>
@@ -41,9 +39,9 @@ return '%s/files/%s/%s' % (get_fileserver_root(), token, quote(filename))
 Its consumers are things that **can only be handed a URL**:
 
 - a browser navigating a download link, or an `<img>` / `<video>` src
-- `seahub/wiki/views.py`, building an `href` for a page
-- `seahub/onlyoffice/views.py`, handing an upload URL to OnlyOffice — a
-  *separate document server* that will POST the edited file back
+- a wiki view, building an `href` for a page
+- an office-integration view, handing an upload URL to a *separate document
+  server* that will POST the edited file back
 - public share links, given to someone with no account at all
 
 None of those can set an `Authorization` header. A URL is the only thing you can
@@ -54,7 +52,7 @@ chat pastes, screenshots. A header dies with the request; a URL gets written
 down.
 
 So this is not junk in its original context. It is junk **in ours** — and note
-that every one of those consumers lived in Seahub. The wiki, the OnlyOffice
+that every one of those consumers lived in that web layer. The wiki, the office
 integration and the share-link pages are all gone along with it. The mechanism
 outlived every caller that justified it.
 
@@ -63,8 +61,8 @@ outlived every caller that justified it.
 `/api/silo/v1` has no browser-shaped consumer. There is no web UI in this
 binary — no templates, no `http.FileServer`, no embedded assets — and the share
 link and web file-access routes (`/f/`, `/u/`, `/d/`, `/libraries/{id}/files/{path}`)
-were already removed for exactly this reason: each authorized by POSTing to
-Seahub, so with Seahub gone they could only ever fail.
+were already removed for exactly this reason: each authorized by POSTing to the
+web layer, so with that layer gone they could only ever fail.
 
 Every caller of this lane is a programmatic HTTP client that sets a bearer
 header on every request: the TUI, the CLI, and the sync clients being written
@@ -74,7 +72,7 @@ offset costs a redirect plus a ranged GET. Two round trips per read.
 
 ## What was done instead
 
-Both changes are additive and neither touches the Seafile lane.
+Both changes were additive and neither touched the legacy sync lane.
 
 **Reads — bytes come from `entries/`.** `serveFile` in `fileserver/entries.go`
 streams the content on the authenticated request, honouring `Range`, instead of
@@ -91,7 +89,7 @@ doFile(rsp, r, library, fileID, fileName, op, cryptKey, user, textCharset)
 len(byteRanges) != 0`, otherwise whole-file with the crypt key.
 
 **Writes — `PUT entries/{path}` takes the body.** It replaces, which is what
-PUT means and is deliberately unlike the Seafile upload's "rename the
+PUT means and is deliberately unlike the legacy upload's "rename the
 collision" behaviour. The body is spooled to a temp file before indexing:
 `chunkFile` seeks to each block boundary, so the source has to be seekable, and
 `indexFileWorker` already accepted a `filePath` with a nil multipart handler for
@@ -105,13 +103,13 @@ always has.
 
 ### The charset wart, also fixed
 
-`setCommonHeaders` labelled every `text/*` file `charset=gbk` — a Seafile
-inheritance, and wrong for anything not actually GBK. It sits in the shared
-streaming path, so rather than duplicate `doFile` (the drift worth avoiding) it
-now takes the charset as a parameter. The Seafile lane passes `"gbk"` and is
-byte-identical to before; the Silo lane passes `""` and declares no charset at
-all, because the server does not know how a file it is handing back is encoded.
-Guessing wrong is worse than not saying.
+`setCommonHeaders` labelled every `text/*` file `charset=gbk` — inherited, and
+wrong for anything not actually GBK. It sat in the shared streaming path, so
+rather than duplicate `doFile` (the drift worth avoiding) it took the charset as
+a parameter: the legacy lane passed `"gbk"` and stayed byte-identical, the Silo
+lane passed `""` and declared no charset at all, because the server does not
+know how a file it is handing back is encoded. Guessing wrong is worse than not
+saying. With the legacy lane deleted, only the second half survives.
 
 ## If we ever want signed URLs
 
@@ -146,17 +144,17 @@ own bytes.
 
 ## Do not touch — superseded
 
-**This section no longer applies.** It said not to touch the Seafile lane —
+**This section no longer applies.** It said not to touch the legacy sync lane —
 `/files/`, `/upload-api/`, `/update-api/`, `/blks/`, `/zip/` and the token
-store — because SeaDrive and Seafile Desktop used it and it was frozen for
-compatibility. That compatibility promise was dropped on purpose and the whole
-lane was deleted in `5d4baa0`; every one of those paths now answers 404. See
+store — because upstream clients used it and it was frozen for compatibility.
+That compatibility promise was dropped on purpose and the whole lane was deleted
+in `5d4baa0`; every one of those paths now answers 404. See
 [`docs/target.md`](target.md) for the decision and
 [`docs/protocol.md`](protocol.md) for what the server serves today.
 
-Original text, kept for the record: *"The Seafile lane. `/files/`,
+Original text, kept for the record: *"The legacy lane. `/files/`,
 `/upload-api/`, `/update-api/`, `/blks/`, `/zip/` and the token store stay
-exactly as they are: SeaDrive and Seafile Desktop use them, they are frozen
-for compatibility, and Silo's reason for existing is that unmodified clients
-keep working. This note is about which lane the new API should live in, not
-about deleting the old one."*
+exactly as they are: the upstream clients use them, they are frozen for
+compatibility, and Silo's reason for existing is that unmodified clients keep
+working. This note is about which lane the new API should live in, not about
+deleting the old one."*

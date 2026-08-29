@@ -10,7 +10,7 @@ chunker to be compatible with.
 
 This document is the orientation, the reasoning that survives, and the design
 notes for the parts not yet built (packing, compaction). It used to be the
-case *for* CDC against the fixed 8 MiB chunking inherited from Seafile; that
+case *for* CDC against the fixed 8 MiB chunking inherited from upstream; that
 argument won, the fixed path is deleted, and the long version lives in git
 history.
 

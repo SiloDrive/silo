@@ -40,10 +40,13 @@ through the API, which for a sync client is the same thing.
 replace enabled:
 
 ```go
-newDent := fsmgr.NewDirent(srcEntry.ID, dstName, srcEntry.Mode, ...)
+// Shape as it stood in 0.4.2. The tree layer has since been rewritten and
+// the package these types came from no longer exists; the argument that
+// mattered is the one marked below.
+newDent := NewDirent(srcEntry.ID, dstName, srcEntry.Mode, ...)
 rootAfterAdd, err := DoPostMultiFiles(library, head.RootID, dstDir,
-    []*fsmgr.SeafDirent{newDent}, user, true, &names)
-                                    // ^^^^ replace existing
+    []*Dirent{newDent}, user, true, &names)
+                              // ^^^^ replace existing
 ```
 
 Nothing between parsing the request and that call looked at the destination. The

@@ -21,7 +21,7 @@ The question splits, and the two halves score very differently.
 | Full bidirectional sync of large libraries — the actual Dropbox case | not close. The distance is concentrated in bulk writes and in enumeration at scale |
 
 The coordination layer is done, and the first half of bulk writes now works on
-this lane rather than requiring a crossing to the Seafile lane. What remains is
+this lane rather than requiring a crossing to the legacy lane. What remains is
 narrower than it was: one request per block on the wire, and no delta for an
 edit in the middle of a file.
 
@@ -59,14 +59,23 @@ thing.
 Resumable, dedup-aware upload landed — see the closed list below. What it did
 not fix, and could not, is the shift problem.
 
-Silo chunks at fixed offsets, so inserting a byte near the front of a file
-shifts every boundary after it and nothing downstream dedups. Fixed chunking
-wins on unchanged and append-only files and loses on edits in the middle — VM
-images, databases, video projects. `blocks/missing` inherits that limit exactly:
-it will happily tell a client that every block of a file it has uploaded before
-is missing, because every one of them is, under a new name.
+> **Largely closed.** This section was written when Silo chunked at fixed 8 MiB
+> offsets, so inserting a byte near the front of a file shifted every boundary
+> after it and `blocks/missing` would report every block of an already-uploaded
+> file as missing, each under a new name. Chunking is now
+> `fastcdc-gear64/v1` (`store/params.go`) — content-defined, 256 KiB minimum,
+> 1 MiB target, 4 MiB maximum — so boundaries re-sync within a chunk or two of
+> an edit and a change in the middle of a large file re-transfers single-digit
+> megabytes. [`chunking.md`](chunking.md) is the decision and the measurements.
+>
+> What is left is narrower than the heading, and is kept because it is real: CDC
+> gives chunk-level dedup, not a delta. A file whose bytes are rewritten
+> wholesale on every save — a VM image, a database file — still moves in full,
+> because no boundary survives to dedup against. The rdiff analysis below is
+> what would close that, and it is ranked against everything else in the tier
+> list rather than assumed.
 
-There are two ways out, and they are not equally priced.
+There were two ways out, and they were not equally priced.
 
 > **Superseded.** The verdict below — prefer the wire delta, reject
 > content-defined chunking — is no longer the position.
@@ -78,7 +87,7 @@ There are two ways out, and they are not equally priced.
 
 **Content-defined chunking** fixes it at the source and costs the store. New
 boundaries mean new block ids, which means the same file carries two names, a
-SeaDrive upload stops deduping against a Silo one, and both lanes share one
+legacy-lane upload stops deduping against a Silo one, and both lanes share one
 object store. That is the same argument `sync-design.md` makes about changing
 the address hash, and it lands the same way: not a migration, a second store.
 
@@ -124,12 +133,26 @@ of block negotiation helps.
 
 ### 2. One request per block, still
 
-A 1 GB file is roughly 128 `PUT`s, one per block. That is the right trade
-against an unresumable single request, and it is still 128 round trips.
-`sync-design.md` calls a `pack-blocks` that streams N blocks in one response the
-highest-value change available on the download side, and the same argument
-applies going up: a `POST blocks` taking several blocks in one framed body,
-which is also where zstd-on-the-wire would earn its keep.
+A 1 GB file is roughly a thousand `PUT`s, one per block: the chunker targets
+1 MiB (`store/params.go`), so the count follows from the file size. That is the
+right trade against an unresumable single request, and it is still a thousand
+round trips. `sync-design.md` calls a `pack-blocks` that streams N blocks in one
+response the highest-value change available on the download side, and the same
+argument applies going up: a `POST blocks` taking several blocks in one framed
+body, which is also where zstd-on-the-wire would earn its keep.
+
+This paragraph said 128, a figure carried over from the 8 MiB fixed blocks this
+surface started with. The correction makes the case stronger rather than weaker,
+which is the reason to fix it rather than round it off: an eightfold undercount
+of the round trips is an eightfold undercount of what batching buys.
+
+Two things soften it, and neither removes it. Concurrent requests on one HTTP/2
+connection recover much of the latency with no protocol work, so this is an
+optimisation rather than a blocker — `sync-design.md` says as much. And a client
+reading a file it has nothing cached for should not be on this surface at all:
+`GET entries/{path}` is ranged and the server assembles, so a cold read is one
+request. The block surface earns its keep when a client holds a previous version
+and wants only what moved.
 
 Commit batching is done — see the closed list — so what is left here is purely
 the transfer, not the history.
@@ -169,7 +192,7 @@ records what came off it.
 | | what changed |
 |---|---|
 | **Capability discovery** | `server-info` now returns a `features` array beside the version. Names are added when a capability ships and never removed or reused, so a client tests for a name instead of a version range. `notifications` is conditional on how the server was started |
-| **`409` is no longer overloaded** | a GC conflict answers `503` with `Retry-After`, which is what it always meant — retry the identical request. `409` is now only a destination collision or an attempt to create the library root, and both want the same handling. (The Seafile lane's own `409` usage, mentioned here originally, is moot — that lane was deleted in `5d4baa0`.) |
+| **`409` is no longer overloaded** | a GC conflict answers `503` with `Retry-After`, which is what it always meant — retry the identical request. `409` is now only a destination collision or an attempt to create the library root, and both want the same handling. (The legacy lane's own `409` usage, mentioned here originally, is moot — that lane was deleted in `5d4baa0`.) |
 | **Copy** | `POST entries/{path}` with `{"op":"copy","to":…}`. The new dirent names the object the source already names, so a copy costs one dirent and one commit at any size and moves no content. `201` with the source's `ETag` |
 | **Library rename on this lane** | `PATCH /libraries/{libraryid}` with `{"name":…}`. `PATCH` because the body names only what changes, so it keeps meaning the same thing when a second mutable field arrives. No more crossing to `/api2/` with a second credential to rename a library you can already create and delete |
 | **`Accept-Ranges` tells the truth** | an encrypted library answers `Accept-Ranges: none` rather than advertising `bytes` and then ignoring `Range`. Ignoring a range is allowed; promising to honour one and then ignoring it is what breaks a client that seeks |

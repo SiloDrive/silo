@@ -1,8 +1,9 @@
 # Encryption
 
-**Decision, 2026-08-18: Silo will not support Seafile's encrypted libraries.**
-We built our own end-to-end scheme instead. The audit that forced that decision
-is kept [at the end of this document](#why-not-seafiles-scheme); it is history
+**Decision, 2026-08-18: Silo will not support the encrypted libraries it
+inherited from upstream.** We built our own end-to-end scheme instead. The
+audit that forced that decision is kept
+[at the end of this document](#why-not-the-inherited-scheme); it is history
 now, and reading it is optional.
 
 **This document is no longer the design.** It began as the sketch that
@@ -39,8 +40,8 @@ else:
   deletes its row and leaves the other nine valid — the server never learns a
   code; redemption is the client fetching the set and trying each blob.
 
-Seafile bound the library to a password, so sharing meant telling someone the
-password and revocation was impossible. Wrapping to identities means sharing is
+The inherited scheme bound the library to a password, so sharing meant telling
+someone the password and revocation was impossible. Wrapping to identities means sharing is
 "wrap CK for one more public key", and a passphrase change re-wraps only the
 user's *own private key* — CK is untouched and not one byte of content is
 re-encrypted. Recovery protects exactly one secret, the identity key, and
@@ -79,9 +80,9 @@ Ranged reads fall out for free, and this is worth being explicit about: the
 server is not decrypting anything, so a range request is a plain byte range
 over stored bytes. Manifests carry a mandatory per-chunk plaintext size, so
 the client maps a plaintext range onto chunk indices, asks for the ciphertext
-covering them, decrypts, and trims. The old Seafile scheme could not serve
-ranges on encrypted libraries; this one serves them the same way it serves
-everything else.
+covering them, decrypts, and trims. The inherited scheme could not serve ranges
+on encrypted libraries; this one serves them the same way it serves everything
+else.
 
 ### Names and metadata
 
@@ -178,8 +179,8 @@ because the designed one is not implemented yet.
 
 **Keep client-supplied library ids possible.** Key wrapping binds to the
 library id, so the client has to be able to create a library with a UUID it
-chose. Seafile's `magic` had the same constraint for worse reasons; the
-constraint outlived `magic`.
+chose. The inherited scheme's `magic` value had the same constraint for worse
+reasons; the constraint outlived `magic`.
 
 **Do not ship features that require plaintext.** Full-text search, thumbnails,
 office preview, virus scanning, server-side folder zip. Each is defensible on
@@ -209,10 +210,10 @@ sketch's version from history:
 - **"Delete `keycache/` and `parseCryptKey`" → done**, along with the entire
   lane they were wired into.
 
-## Why not Seafile's scheme
+## Why not the inherited scheme
 
-Audited against `../seafile/seafile-server/common/seafile-crypt.c`, not from
-memory or documentation.
+Audited against upstream's C crypt implementation as it stood in August 2026,
+not from memory or documentation.
 
 | ver | cipher | KDF | salt |
 |---|---|---|---|
@@ -221,8 +222,8 @@ memory or documentation.
 | 3 | AES-128-**ECB** | PBKDF2-HMAC-SHA256, 1000 iters | per-library, 32 bytes |
 | 4 | AES-256-CBC | PBKDF2-HMAC-SHA256, 1000 iters | per-library, 32 bytes |
 
-The hardcoded salt for v1 and v2 is eight bytes shared by every Seafile
-installation in existence. The comment directly above its declaration reads
+The hardcoded salt for v1 and v2 is eight bytes shared by every installation of
+that server in existence. The comment directly above its declaration reads
 `/* Should generate random salt for each library. */`.
 
 Four problems, worst first. Any one is arguable; together they are a scheme
@@ -240,8 +241,8 @@ any account that could call download-info — got an offline verifier at a work
 factor a single GPU chews through at millions of guesses per second.
 
 **One key and one IV for the entire library, forever.** After unwrapping
-`random_key`, both the file key and the IV come from `seafile_derive_key` over
-that same value and the library salt. They never vary. Every block is AES-256-CBC
+`random_key`, both the file key and the IV come from one derivation over that
+same value and the library salt. They never vary. Every block is AES-256-CBC
 under an identical (key, IV) pair, which makes the encryption deterministic:
 identical blocks produce identical ciphertext, and two files sharing a prefix
 share a ciphertext prefix up to the byte they diverge. That is most of ECB's
@@ -255,31 +256,31 @@ matters most in principle.
 Metadata is not protected at all: filenames, directory structure, file sizes
 and block boundaries are all plaintext. Only content is encrypted.
 
-Upstream knows. `pwd_hash` / `pwd_hash_algo` / `pwd_hash_params` in the commit
-format are their replacement for `magic`, backed by argon2id in
-`common/password-hash.c`. It is a serious fix to one of the four. Silo carried
-those fields through and computed none of them.
+Upstream knows. A trio of `pwd_hash` fields in their commit format is their
+replacement for `magic`, backed by argon2id. It is a serious fix to one of the
+four. Silo carried those fields through and computed none of them.
 
-This file previously also held a plan for *creating* Seafile-format encrypted
-libraries from the TUI. That plan is withdrawn, and it was wrong on a
-load-bearing detail: it claimed `enc_version=4` was AES-128-ECB and
-"crypto-identical to v3". v4 is AES-256-CBC. Implementing it as written would
-have produced libraries no Seafile client could open. Do not resurrect it from
-git history.
+This file previously also held a plan for *creating* libraries in that format
+from the TUI. That plan is withdrawn, and it was wrong on a load-bearing
+detail: it claimed `enc_version=4` was AES-128-ECB and "crypto-identical to
+v3". v4 is AES-256-CBC. Implementing it as written would have produced
+libraries no client of that server could open. Do not resurrect it from git
+history.
 
 ## Why we could walk away
 
-Silo has never been able to create an encrypted library — `libmgr.CreateLibrary`
-writes `is_encrypted=0` and no endpoint accepts a password. Upstream only ever
-created them through Seahub's browser JavaScript, and we have no Seahub.
+For as long as the question was open, Silo could not create an encrypted
+library at all — the old `CreateLibrary` wrote `is_encrypted=0` and no endpoint
+accepted a password. Upstream only ever created them from browser JavaScript in
+a web layer Silo does not run.
 
-So there is no installed base. No Silo user has an encrypted library that Silo
+So there was no installed base. No Silo user had an encrypted library that Silo
 made, and the only way to have one at all was to import it from an upstream
-Seafile install. Refusing the format cost us nothing we offered, and bought a
-free hand.
+install. Refusing the format cost us nothing we offered, and bought a free hand
+— which is what `POST /libraries` with `"e2ee": true` now spends.
 
-As for any imported Seafile encrypted library that might still sit in a data
-directory: the sync lane that could read one was deleted whole (`5d4baa0`),
-and the server-side decryption stubs (`keycache/`, `parseCryptKey`) with it.
-Such a library is unreadable through Silo today, and the listing's `encrypted`
-flag is how a client knows to say so rather than discovering it per file.
+As for any library in the old format that might still sit in a data directory:
+the sync lane that could read one was deleted whole (`5d4baa0`), and the
+server-side decryption stubs (`keycache/`, `parseCryptKey`) with it. Such a
+library is unreadable through Silo today, and the listing's `encrypted` flag is
+how a client knows to say so rather than discovering it per file.

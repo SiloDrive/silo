@@ -15,7 +15,7 @@ guesses is worse than a short one.
 every machine you use, browsable in full without downloading any of it, with
 content fetched when something reads it and evicted when space runs short.
 
-The comparison is Dropbox's selective sync or SeaDrive, and the difference is
+The comparison is Dropbox's selective sync or any virtual drive, and the difference is
 that the server is yours and the format is not a vendor's. It is explicitly
 *not* a sync product: nothing maintains a complete second copy of a library on
 a client's disk as its normal mode of operation.
@@ -129,10 +129,10 @@ these speeds and because the assumption is much easier to keep than to add back.
 
 ## Deliberately not
 
-- **Seafile wire compatibility.** Given up on purpose. It was the constraint
+- **Upstream wire compatibility.** Given up on purpose. It was the constraint
   that pinned the hash, the chunking, the object encoding and the on-disk
   compression all at once, and every one of those is a decision worth making on
-  merit. `seafile-compat-end` is the tag to revert to.
+  merit. `compat-end` is the tag to revert to.
 - **A sync agent that maintains a full local mirror.** Different product; the
   mount is the goal.
 - **Peer-to-peer anything.** A mesh of instances agreeing on shared state is

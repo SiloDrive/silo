@@ -4,7 +4,7 @@ Plan for a native macOS selective-sync ("files on demand") client that mounts Si
 libraries into Finder, using Apple's File Provider framework.
 
 Scope: macOS client + the Silo-side endpoints it needs. Nothing about Linux,
-Windows, or the existing SeaDrive GUI beyond what we can reuse.
+Windows, or the incumbent client's GUI beyond what we can reuse.
 
 > The server side of this plan has since been built. For the current wire
 > contract — request shapes, real responses, and the gaps that are still gaps —
@@ -21,11 +21,11 @@ configuration, so no amount of server work fixes it. (WebDAV *behind* a File
 Provider extension would be fine, but we own both ends, so there is no reason to
 add the indirection.)
 
-**Reusing SeaDrive's extension** — `SeaDrive File Provider.appex` is closed
-source and signed by Seafile's team. We can re-sign it to test GUI changes, but
-we cannot build or modify it.
+**Reusing the incumbent client's extension** — its File Provider appex is
+closed source and signed by its vendor. We can re-sign it to test GUI changes,
+but we cannot build or modify it.
 
-**Porting seadrive-fuse's engine** — ~43.6k lines of C, of which ~11.4k is
+**Porting the incumbent FUSE engine** — ~43.6k lines of C, of which ~11.4k is
 bidirectional merge logic that the File Provider model makes unnecessary (see
 below). Wrong tool.
 
@@ -68,10 +68,10 @@ directly out of content-addressing being *correct*:
 
 **Therefore something must maintain a synthetic, persistent identifier layer.**
 The open question is which side of the wire it lives on — see "Identifier
-design" below. It is *not* Silo: SeaDrive proved it can be done entirely in the
-client, back when the Seafile sync lane it depended on still existed (removed
-`5d4baa0`) — the identity design below still learns from that, even though
-SeaDrive itself can no longer reach a current Silo server.
+design" below. It is *not* Silo: the incumbent client proved it can be done
+entirely in the client, back when the legacy sync lane it depended on still
+existed (removed `5d4baa0`) — the identity design below still learns from that,
+even though that client can no longer reach a current Silo server.
 
 ### Where content-addressing pays off instead
 
@@ -79,7 +79,7 @@ Content hashes are exactly right for `NSFileProviderItemVersion`:
 
 ```swift
 NSFileProviderItemVersion(
-    contentVersion:  fileObjectID.data,   // SHA-1 of the Seafile object
+    contentVersion:  fileObjectID.data,   // id of the file's manifest object
     metadataVersion: metadataHash.data    // hash of (name, parent, mode, mtime)
 )
 ```
@@ -119,24 +119,24 @@ content hash is unchanged appearing at a new path is almost certainly a rename.
 ```
 
 **One domain per account**, with libraries as the top-level entries under
-`.rootContainer`. (SeaDrive does the same; it keeps the Finder sidebar to one
-entry per server.)
+`.rootContainer`. (The incumbent client does the same; it keeps the Finder
+sidebar to one entry per server.)
 
 Crucially, **macOS owns the local replica**. It tracks local edits, decides what
 to materialise and evict, and calls us with discrete item operations. We do not
 implement a sync loop, a merge algorithm, or conflict naming. That is why this is
 a few thousand lines rather than forty.
 
-We use Silo's **file-level REST API**, not the Seafile block sync protocol. Block
+We use Silo's **file-level REST API**, not the legacy block sync protocol. Block
 sync (`/repo/{id}/check-fs`, `/recv-fs`, `/block/{id}`, …) exists to keep two
 independent replicas convergent — a problem File Provider has already solved.
 
 ## Identifier design
 
-### Prior art: how SeaDrive already solves this
+### Prior art: how the incumbent client already solves this
 
-Recovered from the shipped `SeaDrive File Provider.appex` binary (`strings`, so
-the schema is verbatim; the surrounding logic is inferred):
+Recovered from its shipped File Provider appex binary (`strings`, so the schema
+is verbatim; the surrounding logic is inferred):
 
 ```sql
 CREATE TABLE IdMap (
@@ -177,8 +177,8 @@ Two details worth stealing:
   per-subtree rather than per-file. **Do not steal this one** — see below.
 
 **This lives entirely in the client.** Silo never sees an item identifier. That
-is why unmodified Silo used to work with SeaDrive without either side doing
-extra identity work — while the Seafile sync lane it rode on still existed.
+is why unmodified Silo used to work with that client without either side doing
+extra identity work — while the legacy sync lane it rode on still existed.
 
 ### Our design
 
@@ -190,9 +190,9 @@ There is no reason to invent something different — this schema has survived
 production contact, and matching it keeps the option of running both clients
 against the same server without surprises.
 
-**Except `policy`. Drop that column.** SeaDrive is a `NSFileProviderExtension`
-of the older generation and had to build pinning itself; a replicated extension
-does not. `NSFileProviderItem.contentPolicy` (macOS 13.0, comfortably under our
+**Except `policy`. Drop that column.** The incumbent is a
+`NSFileProviderExtension` of the older generation and had to build pinning
+itself; a replicated extension does not. `NSFileProviderItem.contentPolicy` (macOS 13.0, comfortably under our
 14.0 floor) is a declarative property on the item:
 
 | `NSFileProviderContentPolicy` | Meaning |
@@ -222,8 +222,8 @@ makes dropping and rebuilding `IdMap` dangerous.
 
 Whichever side holds the map, it has to be maintained when *someone else*
 commits — another client (a porter-fuse mount, the CLI, a future sync agent;
-SeaDrive and Seafile Desktop at the time this was written, before the Seafile
-lane was removed) writes to Silo, and commits whole trees. Given a new commit,
+the upstream clients at the time this was written, before the legacy lane was
+removed) writes to Silo, and commits whole trees. Given a new commit,
 we must diff against its parent and classify:
 
 - path in both, same content hash → unchanged
@@ -239,7 +239,7 @@ content.
 
 The genuine architectural choice is **how the client learns what changed**:
 
-| | **A. Local tree state** (SeaDrive's way) | **B. Server delta endpoint** |
+| | **A. Local tree state** (the incumbent's way) | **B. Server delta endpoint** |
 |---|---|---|
 | Client walks commits/fs objects itself | yes — needs a local object store | no |
 | Silo changes | none | one new endpoint |
@@ -247,9 +247,9 @@ The genuine architectural choice is **how the client learns what changed**:
 | Offline enumeration | works | degraded |
 | Bandwidth | fetches fs objects | one small response |
 
-SeaDrive takes **A**, which is precisely why the appex embeds all 43k lines of
-the engine and why its container holds `commits/`, `fs/`, `storage/` and
-`deleted_store/` directories. It is self-sufficient, and it is a lot of machinery.
+The incumbent takes **A**, which is precisely why its appex embeds all 43k
+lines of the engine and why its container holds `commits/`, `fs/`, `storage/`
+and `deleted_store/` directories. It is self-sufficient, and it is a lot of machinery.
 
 **Recommendation: B.** We own the server. Reimplementing tree diffing in Swift to
 avoid one Go endpoint is a bad trade. A shows what is possible without server
@@ -308,9 +308,9 @@ revalidating a materialised item reads no blocks. See the brief.
 
 Note that identifiers never cross the wire: every request is expressed in
 `(library_id, path)`, resolved client-side from `IdMap`. Silo's request logs and
-Sentry traces will therefore look the same as SeaDrive's — a useful property,
-since it means SeaDrive itself is a working reference for what correct traffic
-looks like.
+Sentry traces will therefore look the same as the incumbent's — a useful
+property, since it means that client is a working reference for what correct
+traffic looks like.
 
 ### Error mapping
 
@@ -711,5 +711,5 @@ simply never read back.
 
 ## Explicitly out of scope
 
-Block-level dedup on upload, the Seafile sync protocol, encrypted libraries, Linux
-and Windows clients, and any change to `seadrive-gui`.
+Block-level dedup on upload, the legacy sync protocol, encrypted libraries,
+Linux and Windows clients, and any change to the incumbent client's GUI.

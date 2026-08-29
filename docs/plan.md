@@ -4,8 +4,8 @@
 >
 > This file said "these hold for anything added from here on", and then three
 > of the four stopped holding without anything here changing. An agent reading
-> it to learn what binds its work would have been bound to a Seafile lane that
-> no longer exists, an on-disk format that has been replaced, and a source file
+> it to learn what binds its work would have been bound to a sync lane that no
+> longer exists, an on-disk format that has been replaced, and a source file
 > that has been deleted.
 >
 > Each false claim is annotated below with the commit that ended it. What
@@ -27,12 +27,12 @@ written*.
 
 | Upstream dependency | Replacement |
 |---|---|
-| searpc `seafile_web_query_access_token` | ~~`fileserver/tokenstore/`~~ — **gone**; deleted with the routes that redeemed its tokens |
-| searpc `seafile_get_decrypt_key` | ~~`fileserver/keycache/`~~ — **gone**; the package was deleted with the Seafile lanes (5d4baa0) |
-| searpc `publish_event` | logrus, plus `fileserver/notif/` over WebSocket |
-| searpc client, `-p` flag, Unix socket | removed outright |
+| RPC: mint a web access token | ~~`fileserver/tokenstore/`~~ — **gone**; deleted with the routes that redeemed its tokens |
+| RPC: fetch a library's decrypt key | ~~`fileserver/keycache/`~~ — **gone**; the package was deleted with the legacy lanes (5d4baa0) |
+| RPC: publish an event | logrus, plus `fileserver/notif/` over WebSocket |
+| RPC client, `-p` flag, Unix socket | removed outright |
 | Web-layer login | `POST /api/silo/v1/auth/login` → a `Credential` row, `fileserver/credential/` |
-| Web-layer API tokens for sync clients | ~~`POST /api2/auth-token/`~~ — the `/api2` lane is **gone** (5d4baa0), and `apitokenstore` with it; every credential is a `Credential` row now ([`auth.md`](auth.md)) |
+| Web-layer API tokens for sync clients | ~~the legacy token endpoint~~ — that lane is **gone** (5d4baa0), and `apitokenstore` with it; every credential is a `Credential` row now ([`auth.md`](auth.md)) |
 | 174 C RPC handlers for library operations | `/api/silo/v1/` handlers in `fileserver/api/` |
 | Separate notification-server binary | in-process, `/notification` |
 | Separate controller process | none needed — one process |
@@ -48,15 +48,15 @@ administration, trash/restore and history remain unimplemented — see
 commit that ended each, because deleting them would lose the reason the code
 was shaped around them for as long as it was.
 
-- ~~**Client compatibility.**~~ **Ended by 5d4baa0.** The Seafile lanes were
-  deleted outright; `fileserver/server.go` registers no such route. Nothing
-  requires SeaDrive or Seafile Desktop to keep working, and the header below is
-  a name this server no longer reads. Original text:
-  <br>**Client compatibility.** SeaDrive and Seafile Desktop must keep working. The
-  sync HTTP API (`/repo/{id}/commit`, `/repo/{id}/block`, `/repo/{id}/fs-id-list`,
-  and the rest) does not change, and neither does the `Seafile-Repo-Token`
-  header. New surface goes in the Silo lane (`/api/silo/v1/`), which is free to
-  differ — see `docs/sync-design.md`.
+- ~~**Client compatibility.**~~ **Ended by 5d4baa0.** The legacy sync lanes were
+  deleted outright; `fileserver/server.go` registers no such route. No upstream
+  client is required to keep working, and the request header the original text
+  named is one this server no longer reads. Original text:
+  <br>**Client compatibility.** The upstream desktop and virtual-drive clients
+  must keep working. The sync HTTP API (`/repo/{id}/commit`, `/repo/{id}/block`,
+  `/repo/{id}/fs-id-list`, and the rest) does not change, and neither does the
+  library-token header. New surface goes in the Silo lane (`/api/silo/v1/`),
+  which is free to differ — see `docs/sync-design.md`.
 - ~~**Data compatibility.**~~ **Ended twice.** The object layout was replaced by
   the current store format — SHA-256 ids, `fastcdc-gear64/v1` content-defined chunking, binary
   manifests (c9d5b92, 2efc3dd) — and the two-database guard this bullet
@@ -66,7 +66,7 @@ was shaped around them for as long as it was.
   migration to preserve. Original text:
   <br>**Data compatibility.** Same table definitions, same on-disk object layout.
   No migrations of row contents. The one exception is where the tables *live*:
-  `ccnet.db` and `seafile.db` became a single `silo.db`. No table was
+  the two inherited SQLite files became a single `silo.db`. No table was
   redefined, so the two files concatenate — a server that finds the old pair
   refuses to start and prints the commands, rather than silently creating an
   empty database beside them. See `docs/backup.md`.
@@ -79,7 +79,7 @@ was shaped around them for as long as it was.
 - ~~**Encryption compatibility.**~~ **Ended by 5d4baa0.** `fileserver/crypt.go`
   does not exist. Encryption at rest is the store's per-library E2EE, which is a
   different scheme with different guarantees — see `storage.md`,
-  not the text below. Original text:
+  not the text below. Original text refers to the inherited scheme:
   <br>**Encryption compatibility.** AES-CBC for library versions 1, 2 and 4, and
   AES-128-ECB for version 3, matching what clients already write
   (`fileserver/crypt.go`). See `docs/encryption.md`.

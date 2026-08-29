@@ -1,7 +1,7 @@
 # Compression
 
 > **Stale as of the current store format.** Everything below reasons about `fsmgr` (zlib on
-> `Seafile`/`SeafDir` JSON objects) and `blockmgr` (raw blocks) — both deleted
+> the old JSON file and directory objects) and `blockmgr` (raw blocks) — both deleted
 > in `5d4baa0` along with the rest of the object format it belonged to. The
 > current format
 > compresses client-side, before encryption (ciphertext doesn't compress),
@@ -25,7 +25,7 @@ imports `compress/zlib`.
 |---|---|---|
 | Blocks — file content | **no** | 8 MiB each; the bulk of any library |
 | Commit objects | **no** | small JSON |
-| fs objects — `SeafDir`, `Seafile` | zlib, default level (`fsmgr.go:492`) | small JSON |
+| fs objects — directories and file manifests | zlib, default level (`fsmgr.go:492`) | small JSON |
 
 So compression currently covers **metadata only**. The file bytes themselves
 travel and rest uncompressed.
@@ -54,10 +54,10 @@ coexist in one store **with no migration pass at all**.
 
 `recvFSCB` stores the bytes the client sent, verbatim — `WriteRawIngested`
 (`fsmgr.go:658`) verifies against the id and hands the same buffer to
-`WriteRaw`. So the on-disk format is whatever the client chose, which for a
-Seafile client is always zlib.
+`WriteRaw`. So the on-disk format is whatever the client chose, which for an
+upstream client is always zlib.
 
-Getting zstd on disk from a Seafile client therefore means inflating and
+Getting zstd on disk from such a client therefore means inflating and
 recompressing on ingest: spending CPU on the write path to save it on reads.
 That is only worth it if reads dominate writes by a wide margin, and it works
 against the "one hash, one inflate" tidying already done on that path.
@@ -82,7 +82,7 @@ Worth being honest about the payoff:
 - **Text, code, documents, VM images, logs** — a large win.
 - **Music, photos, video** — approximately nothing, because the content is
   already compressed, and you burn CPU to discover that. This is very likely
-  why Seafile left blocks raw: the median sync workload is media.
+  why upstream left blocks raw: the median sync workload is media.
 
 If built, it wants a cheap incompressibility check — zstd's own early-exit
 heuristic, or simply "if the compressed form is not meaningfully smaller,

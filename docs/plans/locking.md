@@ -1,7 +1,7 @@
 # Plan: file locking
 
 **Status: not built, and parked.** Per-file advisory locks, so two clients
-editing the same document do not clobber each other — a feature Seafile had,
+editing the same document do not clobber each other — a feature upstream had,
 and one Porter would want for the same reason.
 
 Moved here from `future-features.md` when that file was replaced by

@@ -17,8 +17,8 @@ inside per-library commit trees, not as rows in a table, so there is nothing to
 `WHERE filename LIKE` against — finding a file means the *client* walking the
 current tree itself.
 
-Seafile Pro's answer is an external Elasticsearch-backed indexer
-(`seafevents`). That is commercial-only, and an operational dependency this
+Upstream's paid edition answered this with an external Elasticsearch-backed indexer
+(a separate indexing daemon). That was commercial-only, and an operational dependency this
 project should not force on a single self-hosted binary.
 
 ## Endpoints

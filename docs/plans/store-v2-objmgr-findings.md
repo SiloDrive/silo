@@ -212,7 +212,7 @@ These are not cleanups; they are about where a rule lives.
 ## 8. Smaller
 
 - `ObjectStore.ready()` is a method that returns a field, called at eight sites.
-- `objstore.New` still takes `seafileConfPath` but ignores it in the body — the
+- `objstore.New` still takes a config-path argument but ignores it in the body — the
   new `objmgr` callers passing `""` are the tell.
 - `ObjectStore.ObjType` has no reader anywhere.
 - The `ObjType` field comment and `New`'s doc still say "one of TypeCommits,

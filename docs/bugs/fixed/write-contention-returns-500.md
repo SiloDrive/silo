@@ -31,8 +31,9 @@ is not broken. The write lost a race for the branch head ten times running.
 
 ## Cause
 
-`GenNewCommit` (`fileserver/fileop.go:1951`) retries a lost race up to ten
-times, sleeping a random 100–3000 ms between attempts:
+`GenNewCommit` — the commit path as it stood in 0.4.2, since rewritten —
+retries a lost race up to ten times, sleeping a random 100–3000 ms between
+attempts:
 
 ```go
 if retryCnt < maxRetryCnt {
@@ -129,7 +130,7 @@ would describe it better than 404.
 ## What was done
 
 **Contention is a sentinel, not an ordinary error.** `ErrRetriesExhausted`
-joins `ErrConflict` and `ErrGCConflict` in `fileserver/fileop.go`, returned
+joins `ErrConflict` and `ErrGCConflict` beside the commit path, returned
 (wrapped, so the library id and attempt count survive) from both places a write
 gives up: `GenNewCommit` after its ten merges, and `postFilesAndGenCommit`
 after its ten re-walks. The second one used to return a bare `ErrConflict`,
@@ -176,13 +177,6 @@ herd; the doubling is what stops a persistent loser hammering. `maxRetryCnt`
 became `genNewCommitRetries`, a package var, only so a test can set it to zero.
 
 ### Left alone, deliberately
-
-**The legacy upload and download paths in `fileop.go` still answer 500.** Same
-error, same wrongness, but they are the Seafile lane's and are entangled with
-the 444/445 codes the upstream client understands — the same reason
-`missing-object-reports-library-not-found.md` left `fileop.go`'s 400 "Bad library id"
-alone. `fastForwardOrMerge`'s own three-retry exhaustion is in the same
-category. Worth a separate pass, with a Seafile client to test against.
 
 **409 is now overloaded, and that is a decision, not an oversight.** A GC
 conflict still answers 409 `GC conflict; retry` on the Silo lane, while a

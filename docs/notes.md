@@ -9,29 +9,31 @@ objects, and file objects at deduplicated blocks.
 
 ## Where it came from
 
-Silo is a fork of `haiwen/seafile-server`. Upstream ran four processes — a C
-daemon holding all business logic behind 174+ libsearpc calls, a Python/Django
-web layer, a Go fileserver for sync traffic, and a controller to supervise them.
-Silo collapsed that into one process: the C daemon and the web layer are gone,
-the notification server was ported into `fileserver/notif/`, and the RPC socket
-no longer exists. What survives from upstream is the part clients can see — the
-sync wire protocol, the on-disk object layout, and the database schema.
+Silo began as a fork of an AGPL server that ran four processes — a C daemon
+holding all business logic behind 174+ RPC calls, a Python/Django web layer, a
+Go fileserver for sync traffic, and a controller to supervise them. Silo
+collapsed that into one process: the C daemon and the web layer are gone, the
+notification server was ported into `fileserver/notif/`, and the RPC socket no
+longer exists.
 
-Two consequences worth knowing:
+Nothing client-visible survives that inheritance. The sync wire protocol was
+deleted in `5d4baa0`, the on-disk object layout was replaced by the store
+format in [`spec/store-format.md`](spec/store-format.md), and the database
+schema diverged early. The fork is why the package layout looks the way it
+does, and it is no longer why anything else does.
 
-- Anything that used to be authorized by the web layer is simply absent. The
-  share-link routes (`/f/`, `/u/`, `/d/`) and the web file-access route were
-  removed rather than ported, because every one of them authorized by calling
-  out to a service Silo does not run. See `docs/capability-urls.md`.
-- Names on disk and on the wire still read "seafile" in places
-  (`Seafile-Repo-Token`, `seafile.conf`). The database is now `silo.db`; the
-  wire header is fixed by client compatibility and will not change.
+One consequence worth knowing: anything that used to be authorized by the web
+layer is simply absent. The share-link routes (`/f/`, `/u/`, `/d/`) and the web
+file-access route were removed rather than ported, because every one of them
+authorized by calling out to a service Silo does not run. See
+`docs/capability-urls.md`.
 
 ## Authentication — one path
 
-> The two-path section that stood here described `/api2/auth-token/`,
-> `Seafile-Repo-Token` and `LibraryUserToken`. All three were deleted with the
-> sync lanes (`5d4baa0`); it was describing a server that no longer existed.
+> The two-path section that stood here described a second auth lane — its own
+> token endpoint, its own request header and its own token table. All three
+> were deleted with the sync lanes (`5d4baa0`); it was describing a server that
+> no longer existed.
 
 ```
 Client  → POST /api/silo/v1/auth/login    {email, password}
@@ -53,21 +55,22 @@ carries a credential, is deliberate — see `docs/capability-urls.md`.
 
 ## Replaced RPC calls
 
-The three calls the Go fileserver used to make into the C server are now local:
+The three calls the Go fileserver used to make into the C server are gone, two
+of them without a replacement:
 
 | Was | Now |
 |---|---|
-| `seafile_web_query_access_token` | ~~`fileserver/tokenstore/`~~ — **gone**; the capability URLs it minted for went with the legacy lanes, and a signed URL is what replaces them ([`capability-urls.md`](capability-urls.md)) |
-| `seafile_get_decrypt_key` | `sync.Map` with TTL in `fileserver/keycache/` |
-| `publish_event` | logrus, plus the WebSocket notification server in `fileserver/notif/` |
+| mint a web access token | ~~`fileserver/tokenstore/`~~ — **gone**; the capability URLs it minted for went with the legacy lanes, and a signed URL is what replaces them ([`capability-urls.md`](capability-urls.md)) |
+| fetch a library's decrypt key | ~~`fileserver/keycache/`~~ — **gone**; the server holds no key for an encrypted library at all, by design ([`storage.md`](storage.md)) |
+| publish an event | logrus, plus the WebSocket notification server in `fileserver/notif/` |
 
 ## Database
 
 One database, `<data-dir>/silo.db`. SQLite is the only engine — embedded, WAL
 mode, one serialized write connection and a read-only read pool. Users and
-groups used to live in a second file (`ccnet.db`) because upstream ran two
-server processes; Silo runs one, so they are one database. `docs/backup.md`
-has the upgrade recipe for a data directory that still has the old pair.
+groups used to live in a second file because upstream ran two server processes;
+Silo runs one, so they are one database. There is no upgrade path from the old
+pair — `docs/backup.md` says why, and what a current server checks instead.
 
 ### Users and groups
 - `Account` / `AccountEmail` / `AccountIdentity` / `AccountPassword` — the
@@ -114,12 +117,13 @@ which is why the path component is a store ID, not a library ID.
 Library (UUID)
   -> Branch (name, commit_id)
     -> Commit (SHA1, root_id, parent_id, creator, description)
-      -> Dir / Seafile objects (content-addressable tree)
-        -> Blocks (variable-size, Rabin CDC chunked, 4KB-8MB)
+      -> Directory / manifest objects (content-addressable tree)
+        -> Chunks (content-defined, `fastcdc-gear64/v1`)
 ```
 
-("Seafile object" here is the on-disk name for a file object — a list of block
-IDs. It is the format's term, not a reference to the upstream server.)
+A manifest is the file object: the list of chunk ids that reconstitutes one
+file. [`spec/store-format.md`](spec/store-format.md) is normative for all of
+it.
 
 **The block line is unverified and contradicts the rest of the docs.**
 `native-client.md` and `protocol.md` both state that chunking is at fixed 8 MiB
@@ -147,17 +151,16 @@ type appHandler func(http.ResponseWriter, *http.Request) *appError
 ### Packages
 
 - `libmgr` — library queries and writes
-- `fsmgr` / `commitmgr` / `blockmgr` — object read/write with caching
+- `objmgr` — object read/write over the store format
 - `objstore` — storage backend abstraction
 - `share` — permission checking (owner, direct share, group share, virtual library)
-- `keycache` — in-memory decrypt key cache
 - `credential` — the one credential store: minting, resolving, scoping, revoking
 - `account` — accounts, addresses and external identities
 - `authmgr` — password validation and hashing
 - `middleware` — credential resolution and the permission ceiling, transaction naming
 - `api` — management API handlers (`/api/silo/v1/`)
 - `notif` — WebSocket notification server
-- `option` — config loading (`seafile.conf`, env vars)
+- `option` — config loading (`silo.conf`, env vars)
 - `dbutil` — connection management, schema, query helpers
 - `ratelimit`, `workerpool`, `metrics`, `diff`, `utils`
 
@@ -176,9 +179,9 @@ type appHandler func(http.ResponseWriter, *http.Request) *appError
 `go build ./cmd/silo` from the project root. One binary, one `go.mod`: server, TUI
 and CLI together.
 
-## Client repositories
+## Clients
 
-- **seadrive-fuse** (https://github.com/haiwen/seadrive-fuse) — FUSE filesystem,
-  the actual sync engine
-- **seadrive-gui** (https://github.com/haiwen/seadrive-gui) — Qt frontend for it
-- **seafile-client** — desktop sync client (Qt)
+- **Silo TUI** (`cmd/silo`) — ships in this repository, same binary as the server
+- **porter-fuse** — a FUSE filesystem over `/api/silo/v1/`
+- **Porter** — the macOS File Provider client; see
+  [`porter-brief.md`](porter-brief.md) for the wire contract both of them use

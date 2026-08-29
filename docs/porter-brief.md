@@ -68,7 +68,7 @@ using it. Neither needs write permission, and a credential scoped to one
 library can still sign *itself* out.
 
 There is one surface and one credential now. The `Authorization: Token …` that
-`/api2/…` and `/api/v2.1/…` took, and the `Seafile-Repo-Token` on `/repo/…`,
+`/api2/…` and `/api/v2.1/…` took, and the per-library token header on `/repo/…`,
 were deleted along with the lanes that read them.
 
 Missing or bad token → **401**. No permission on the library → **403**.
@@ -435,7 +435,7 @@ cost two round trips. That is gone from this lane. See
 it does not belong here.
 
 No charset is declared on text files. The server does not know how a file it is
-handing back is encoded, and the Seafile lane's inherited `charset=gbk` is a
+handing back is encoded, and the legacy lane's inherited `charset=gbk` was a
 guess that mangles anything else. Do not trust a charset you did not put there.
 
 ### HEAD, and how to get attributes cheaply
@@ -507,8 +507,8 @@ useless for identity.
 | rename a library | `PATCH libraries/{libraryid}` with `{"name":"New name"}` |
 
 **`PUT` replaces.** That is what PUT means, and it is deliberately unlike the
-Seafile lane's upload, which is modelled on a person dragging files into a
-folder and so renames a collision to `notes (1).txt`. PUT the same path three
+legacy lane's upload, which was modelled on a person dragging files into a
+folder and so renamed a collision to `notes (1).txt`. PUT the same path three
 times here and you get one file with the last body:
 
 ```
@@ -846,19 +846,20 @@ file in an encrypted library is
 400  Library is encrypted. Please provide password to view it.
 ```
 
-and no endpoint accepts one. Silo cannot create such a library either — the only
-way to have one is to import it from an upstream Seafile install, and Seafile's
-format will not be supported going forward (`docs/encryption.md` has the audit).
-A future Silo-native scheme is sketched there and would serve ranges normally,
-since the server would not be decrypting anything.
+and no endpoint accepts one. The only way to have a library in that old format
+is to import it from an upstream install, and that format will not be supported
+going forward (`docs/encryption.md` has the audit).
 
-For Porter: `encrypted: true` in the library listing means unusable. Grey it out
-at enumeration rather than discovering it one 400 per file.
+For Porter: a library in the old format is unusable. Grey it out at enumeration
+rather than discovering it one 400 per file.
 
-That is true of today's server and of Seafile-format libraries permanently. The
-Silo-native scheme mentioned above is no longer a sketch — it is specified,
-implemented as a Go package, and being wired in now. *What store-v2 changes*,
-below, is what to build against.
+That is true of libraries in the old format permanently. The Silo-native scheme
+that replaces it is no longer a sketch — it is specified in
+[`spec/store-format.md`](spec/store-format.md), implemented, and now reachable
+on the wire: `POST /libraries` with `"e2ee": true` creates one, and
+`GET /libraries/{id}/key` returns the caller's wrapped content key. The server
+holds no key and decrypts nothing, so ranges work there the same way they work
+everywhere else. *What store-v2 changes*, below, is what to build against.
 
 ## What store-v2 changes — read this before writing anything you would hate to unwind
 
@@ -1081,14 +1082,14 @@ whole path: `DeriveCredentials`, `OpenIdentityWithPassword`, `UnwrapCK`.
 - **No chunk-parameter renegotiation.** A library's parameters are frozen at
   creation; changing them is a full rewrite, done deliberately or not at all.
 
-### The Seafile lanes are gone
+### The legacy lanes are gone
 
 `/repo/…`, `/api2/…` and `/api/v2.1/…` have been deleted, along with the
 credentials that authenticated them. Every one of those paths answers **404**
 now. Nothing in this brief depended on them, but if anything in porter still
 reaches for one — `check-blocks` and `commit/HEAD` are the two that used to be
 tempting — it is broken today and the replacement is on `/api/silo/v1`.
-`seafile-compat-end` is the tag to revert to if that turns out to be wrong,
+`compat-end` is the tag to revert to if that turns out to be wrong,
 and [`target.md`](target.md) records why it will not be.
 
 ## The delta endpoint
@@ -1286,8 +1287,7 @@ exercised against a running server.
 
 Identifiers never cross the wire: every request is `(library_id, path)`, resolved
 client-side from `IdMap`. Silo's logs and Sentry traces therefore look like
-SeaDrive's, which makes SeaDrive a working reference for what correct traffic
-looks like.
+those of any virtual-drive client working the same way.
 
 ## Push invalidation
 
@@ -1382,7 +1382,7 @@ handle it everywhere else.
 **Older servers.** `notify-token` landed after 0.4.3. Against a server without
 it the request 404s the same way a disabled notification server does. There is
 no longer a fallback: the library-token pair that used to serve as one
-(`POST libraries/{id}/sync-token` then `GET /repo/{id}/jwt-token`) was the Seafile
+(`POST libraries/{id}/sync-token` then `GET /repo/{id}/jwt-token`) was the legacy
 lane's own auth and went with that lane. Treat a 404 as "poll".
 
 ## Checking your work against the server
@@ -1419,8 +1419,8 @@ path directly on it.
 That is worth stating plainly because it was not true a day ago, and the
 workarounds it used to require are no longer worth their cost:
 
-- **You do not need the block lane.** `seadrive-fuse` reached bytes at an
-  offset by fetching a file's fs object for its block list and reassembling,
+- **You do not need the block lane.** The upstream FUSE client reached bytes at
+  an offset by fetching a file's fs object for its block list and reassembling,
   because it had no better option. That put it partway to replicating the
   object store, and blocks defaulted to 8MB, so a 4KB read pulled a whole
   block. That lane no longer exists; `entries/` with a `Range` serves the same
@@ -1442,9 +1442,9 @@ What is worth doing:
 Encrypted libraries are the exception, and a harder one than "no ranges": they
 are unreadable over this API entirely. See the gaps section above.
 
-`../seafile/seadrive-fuse` remains a useful reference for FUSE mechanics —
-inode allocation, handle lifetime, writeback — even though its network layer is
-not the one to copy.
+The upstream FUSE client remains a useful reference for FUSE mechanics — inode
+allocation, handle lifetime, writeback — even though its network layer is not
+the one to copy.
 
 ## Asking for server changes
 
@@ -1457,5 +1457,5 @@ and conditional writes — has been built. What is left:
 
 If Porter wants something else, ask rather than working around it in Swift.
 Reimplementing server logic client-side is what makes sync clients enormous —
-SeaDrive carries tens of thousands of lines to answer questions we can answer
-with a GET.
+the clients that do it carry tens of thousands of lines to answer questions we
+can answer with a GET.

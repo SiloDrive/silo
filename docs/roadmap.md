@@ -236,6 +236,6 @@ surface to get wrong, and a reverse proxy doing header auth stays acceptable),
 and mobile apps from this repository — a mobile client would be a Porter-family
 project against `/api/silo/v1`, not a server feature.
 
-Seafile wire compatibility is gone deliberately and `seafile-compat-end` is the
+Upstream wire compatibility is gone deliberately and `compat-end` is the
 tag to revert to. There is no compat surface left to have gaps in; where the
 Silo lane itself is thin, [`protocol-gaps.md`](protocol-gaps.md) is the list.

@@ -17,7 +17,7 @@ because answering any of them alone produces a number nobody can act on.
 | | where | state |
 |---|---|---|
 | Per-account ceiling (`UserQuota` row) | `libmgr.AccountQuota` | built |
-| Config fallback for accounts with no row | `[quota] default`, `option.go:344` | built |
+| Config fallback for accounts with no row | `[quota] default`, `option.go:302` | built |
 | Admission on the write path, serialized per owner | `checkQuota` / `refuseOverQuota`, `quota.go` | built |
 | Refusal status **507 Insufficient Storage** | `quota.go:20` | built |
 | Setting a cap from the shell | `silo user quota <email> [size\|none]` | built (`5f5ed23`) |

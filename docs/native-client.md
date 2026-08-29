@@ -2,7 +2,7 @@
 
 > **Partly stale as of `5d4baa0` and the current store format.** Two things below no longer hold.
 > The `/repo/*` sync-protocol table in "What the CLI does today" describes
-> routes deleted with the Seafile lane in `5d4baa0` — nothing to cross to
+> routes deleted with the legacy lane in `5d4baa0` — nothing to cross to
 > any more. And "Tier 2" describes the block surface as it worked under fixed
 > 8 MiB SHA-1 chunking (`fileop.go`, `blockmgr/blockmgr.go` — both deleted in
 > the same commit); the current format replaced it with content-defined SHA-256
@@ -15,9 +15,9 @@
 
 Silo ships a CLI and a TUI, but neither of them syncs on its own — they drive
 the management API (`/api/silo/v1/`) one file at a time. Early revisions of
-this document compared that to what SeaDrive and Seafile Desktop did over the
-Seafile sync protocol; that protocol no longer exists (`5d4baa0`), so the
-comparison is now historical.
+this document compared that to what the upstream desktop and virtual-drive
+clients did over the legacy sync protocol; that protocol no longer exists
+(`5d4baa0`), so the comparison is now historical.
 
 This document is about closing the sync gap, in three tiers that can be built
 independently and in order. Nothing here is committed.
@@ -125,14 +125,14 @@ mostly-unchanged tree sends almost nothing.
   degrades a dedup-aware upload to "upload everything".
 - **Encrypted libraries need the library key.** `writeChunk` encrypts and then hashes
   (`fileop.go:2731`), so the block id is the SHA-1 of the ciphertext. Without
-  the key a client cannot compute matching ids. Moot in practice: Silo cannot
-  create encrypted libraries and will not support Seafile's format — see
-  `docs/encryption.md`. Worth noting that hashing *after* encrypting is the
-  right order and a constraint any future scheme keeps.
+  the key a client cannot compute matching ids. That was written when Silo could
+  not create an encrypted library at all; it can now, and the constraint became
+  the design — see `docs/encryption.md`. Hashing *after* encrypting is the right
+  order and the current scheme keeps it.
 - **Fixed chunking is weak against insertions.** Insert one byte at the front
   of a file and every subsequent boundary shifts, so nothing dedups. Fixed
   wins on unchanged and append-only files, loses on edits in the middle. This
-  is inherited from Seafile; content-defined chunking would fix it and would
+  is inherited from upstream; content-defined chunking would fix it and would
   also change every block id in existence, so it is not a change to make
   casually. It is nonetheless the change now being argued for — a wire delta
   saves bandwidth and stores the file twice regardless. See
@@ -143,13 +143,13 @@ mostly-unchanged tree sends almost nothing.
 
 `silo sync <library-id> <local-dir>`.
 
-The full write path: build `Seafile` and `SeafDir` objects, `recv-fs` them,
+The full write path: build the manifest and directory objects, upload them,
 mint a commit, advance HEAD, and handle the read direction and conflicts.
 
 This is real work, but it is not speculative — the server side is complete and
 documented in `protocol.md`, and the tier-2 pieces are prerequisites of it.
 What it would give a NAS deployment is a sync agent with no GUI dependency and
-no virtual filesystem, which neither SeaDrive nor Seafile Desktop offers.
+no virtual filesystem, which none of the upstream clients offered.
 
 The hard parts are the ones every sync client has: tree diffing against the
 last known commit, deletion and rename detection, conflict resolution when the
@@ -165,7 +165,7 @@ the contained afternoon that is left, and it is worth more than it was: a
 recursive `put` over the block surface skips everything the server already
 holds, so re-running it over a mostly-unchanged tree is cheap rather than a
 full re-upload. Tier 3 should not start until someone actually wants a headless
-agent badly enough to maintain it — Seafile Desktop is no longer a fallback
-for ongoing sync, since it can no longer reach a current Silo server at all;
+agent badly enough to maintain it. No upstream client is a fallback for ongoing
+sync any more, since none of them can reach a current Silo server at all;
 porter-fuse and Porter (the File Provider client) are the answer today, and
 neither offers headless, GUI-free sync to a NAS.

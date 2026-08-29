@@ -111,7 +111,7 @@ to produce one where a response wants it, and `credential.load` joins
 commit records as its author.
 
 **One place an address is permanent, and it must stay that way.**
-`Commit.CreatorName` and `SeafDirent.Modifier` are fed into the object ids that
+`Commit.CreatorName` and the directory entry's `Modifier` are fed into the object ids that
 name them, so rewriting either means rewriting every object in every library.
 That is correct rather than a defect — it is the git model, where an author
 string is display data recording the address in use at the time. Silo must simply

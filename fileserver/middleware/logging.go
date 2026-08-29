@@ -54,7 +54,7 @@ func DebugLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		// Capture the original path before any downstream middleware
-		// (e.g. StripSeafhttpPrefix) mutates r.URL.
+		// mutates r.URL.
 		path := r.URL.Path
 		if r.URL.RawQuery != "" {
 			path = path + "?" + r.URL.RawQuery

@@ -20,11 +20,11 @@ one leaves the lane:
 
 ```
 POST /api/silo/v1/libraries/{id}/sync-token   Authorization: Bearer …   → {"token":…}
-GET  /repo/{id}/jwt-token                 Seafile-Repo-Token: …     → {"jwt_token":…}
+GET  /repo/{id}/jwt-token                 <library-token header>: …  → {"jwt_token":…}
 ```
 
 `porter-brief.md` is upfront that this is history: the notification endpoint
-predates the Silo lane and authenticates the way the Seafile client does.
+predates the Silo lane and authenticates the way the upstream client does.
 Porter implements it exactly as documented, and it works — verified against a
 live 0.4.2, push landing in tens of milliseconds.
 
@@ -34,8 +34,8 @@ credential model.
 Porter now presents **no credential by default**, for a server that asks for
 none. Every call it makes works that way for free, because they all go through
 one authorizer and an anonymous authorizer stamps nothing. This one does not:
-it needs a *library token*, and a library token exists because the Seafile client
-needs one. The only part of Porter that cannot be made credential-agnostic is
+it needs a *library token*, and a library token exists because the upstream
+client needs one. The only part of Porter that cannot be made credential-agnostic is
 the part that speaks the credential model `auth.md` proposes replacing.
 
 That is the argument. It is not "two requests instead of one" — it is that the
@@ -50,7 +50,7 @@ credentials land unless this exists.
 check in front:
 
 ```go
-// notifyTokenTTL matches what the Seafile-lane endpoint issues, because it is
+// notifyTokenTTL matches what the legacy-lane endpoint issues, because it is
 // the same token. A holder is expected to re-mint rather than keep one for the
 // life of a process.
 const notifyTokenTTL = 72 * time.Hour
@@ -111,9 +111,10 @@ it is the same `utils.GenNotifJWTToken` call. Decoded from the prototype:
 {"library_id": "bc0a62c4-…", "username": "test@test.com", "aud": ["silo:notif"], "exp": 1787312025}
 ```
 
-**`getJWTTokenCB` and the `/repo/{id}/jwt-token` route.** The upstream Seafile
-client still needs them. Nothing is removed by this; the Silo lane simply stops
-depending on them.
+**`getJWTTokenCB` and the `/repo/{id}/jwt-token` route.** The upstream client
+still needs them. Nothing is removed by this; the Silo lane simply stops
+depending on them. (Both went with that lane in `5d4baa0`, after this was
+written.)
 
 What *does* change is who may ask for a token: `share.CheckPerm` on the
 authenticated user, instead of possession of a library token. That is strictly
@@ -157,7 +158,7 @@ Handler behaviour:
 | with `EnableNotification` off | `404 Notification server is not enabled` |
 | claims in the issued token | `library_id`, `username`, `aud: [silo:notif]`, `exp` — identical to `getJWTTokenCB` |
 
-Then Porter mounted through a logging proxy, so "no Seafile calls" could be
+Then Porter mounted through a logging proxy, so "no legacy-lane calls" could be
 counted rather than asserted. Every request it made over a mount, a read, a
 poll and a push:
 
@@ -182,9 +183,9 @@ about 70 lines, and with them the only place in Porter that builds its own
 `http.Request` in order to avoid the function that attaches credentials.
 
 Porter is already written for it: `NotifyToken` asks for `notify-token` first,
-falls back to the Seafile pair on a 404, and logs `lane=seafile` when it does,
-so the compatibility path stays visible rather than becoming a habit. The day
-the endpoint exists Porter uses it with no change at all.
+falls back to the legacy pair on a 404, and tags the log line with the lane it
+used, so the compatibility path stays visible rather than becoming a habit. The
+day the endpoint exists Porter uses it with no change at all.
 
 The patch is kept at `porter-fuse/docs/silo-notify-token.patch`.
 
@@ -215,5 +216,5 @@ A stranger and an absent library both answer 403, matching
 library ids.
 
 **Documented** in `docs/protocol.md` and `docs/porter-brief.md`, where the
-two-call Seafile-lane recipe has been replaced by the one call and demoted to a
+two-call legacy recipe has been replaced by the one call and demoted to a
 paragraph about older servers.

@@ -173,29 +173,20 @@ removes the fast, clear refusal in favour of whatever error the schema
 statements produce on their own, which is where every version predating this
 check already stood.
 
-## Upgrading from a two-database install
+## Upgrading from an install older than 0.5.0
 
-Every release up to and including 0.4.4 kept two SQLite files, `ccnet.db`
-(users, groups) and `seafile.db` (libraries, shares, tokens). The merge into one
-`silo.db` landed in 0.5.0. Note that 0.4.5 and 0.4.6 were bumped in source but
-never tagged, so a build can report either and be on either side of the merge —
-go by what is in the data directory rather than by the version string.
+There is no upgrade path, and the guard that used to describe one is gone.
 
-A server started on a data directory that still has the old pair refuses to
-start rather than creating an empty `silo.db` beside them, and prints the
-commands to fold them together. No table name is shared between the two, so
-they concatenate:
+Releases up to and including 0.4.4 kept two SQLite files inherited from
+upstream — one for users and groups, one for libraries, shares and tokens —
+which 0.5.0 merged into a single `silo.db`. A server used to refuse to start on
+a directory holding the old pair and print the `sqlite3` commands that
+concatenate them; that check was deleted in `d644f8f`, because the object
+format, the wire protocol and the schema have all been replaced since, and a
+database that merged cleanly would still hold objects this server cannot read.
 
-```sh
-sqlite3 <data-dir>/ccnet.db   'PRAGMA wal_checkpoint(TRUNCATE)'
-sqlite3 <data-dir>/seafile.db 'PRAGMA wal_checkpoint(TRUNCATE)'
-{ sqlite3 <data-dir>/ccnet.db .dump
-  sqlite3 <data-dir>/seafile.db .dump; } | sqlite3 <data-dir>/silo.db
-```
-
-The checkpoints are not optional: both files run in WAL mode, so a dump taken
-without one silently omits every transaction since the last checkpoint.
-
-The next start adds any table or column the schema has gained since. Keep the
-old files until you have confirmed the server comes up with your users and
-libraries intact.
+What a current server does check is `PRAGMA user_version`. A mismatch is
+refused outright with a message saying to delete the data directory and
+recreate it. That is sanctioned rather than regretted: there are no
+deployments, so there is nothing to migrate — see
+[`storage.md`](storage.md).

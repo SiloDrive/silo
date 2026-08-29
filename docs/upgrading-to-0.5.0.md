@@ -52,7 +52,7 @@ as two builds that disagree.
 
 ## What did not change
 
-Seafile's own names. It shipped `Seafile-Repo-Token` and an `/api2/repos` lane,
+upstream's own names. It shipped a `…-Repo-Token` header and an `/api2/repos` lane,
 and those keep their spelling wherever this project quotes them, because
 renaming another product's header would document one that never existed. The
 lanes themselves were deleted from the server before this release.

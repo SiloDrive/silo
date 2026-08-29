@@ -2,9 +2,10 @@
 // tests asserting it is gone can name it without saying it.
 //
 // Silo calls the thing an account owns a library. It called it a repo for as
-// long as it was Seafile-derived, and for a while it called it both: the prose
-// in fileserver/api/api.go said "library" in every sentence while the struct
-// beside the sentence said Repo and the route under it said /repos.
+// long as it carried its upstream's vocabulary, and for a while it called it
+// both: the prose in fileserver/api/api.go said "library" in every sentence
+// while the struct beside the sentence said Repo and the route under it said
+// /repos.
 //
 // There used to be a guard here that scanned the whole tree for the old word,
 // and it did its job: the rename it was written for is finished and the word
@@ -21,18 +22,6 @@
 package lexicon
 
 import "strings"
-
-// foreign are another product's names, which this project quotes and must not
-// rewrite. Seafile called the thing a repo and shipped that word in a header
-// and a URL lane, and a client-facing string naming one of those is not this
-// project saying the old word.
-var foreign = []string{
-	"Seafile-Repo-Token",
-	"/api2/repos",
-	"/api/v2.1/repos",
-	"/seafhttp/repo",
-	"repo-tokens",
-}
 
 // english are the words that begin with the same four letters and are not the
 // noun being retired, given as what follows "repo".
@@ -52,8 +41,13 @@ var english = []string{
 // SaysOldWord reports whether s contains the retired noun, in any case, in any of
 // the shapes it takes: Repo, repos, repoID, repo_id, repomgr, /repos,
 // {repoid}, RepoOwner.
+//
+// It used to strip a set of another product's route and header names first,
+// because those quoted the old word without this project saying it. Those
+// lanes were deleted in 5d4baa0 and nothing quotes them any more, so the
+// exemption went with them: every remaining hit is this project's own.
 func SaysOldWord(s string) bool {
-	low := strings.ToLower(stripForeign(s))
+	low := strings.ToLower(s)
 	for i := 0; i+4 <= len(low); i++ {
 		if low[i:i+4] != "repo" {
 			continue
@@ -73,24 +67,6 @@ func startsWithAny(s string, prefixes []string) bool {
 		}
 	}
 	return false
-}
-
-// stripForeign removes the other product's names before the scan.
-//
-// "/repo" is Seafile's sync lane and comes out; "/repos" was ours and stays
-// in, because that is the spelling this whole sweep is about and a rule that
-// pardoned it would pardon the thing it exists to find. The placeholder is
-// what keeps the shorter token from eating the longer one.
-func stripForeign(s string) string {
-	const keep = "\x01"
-	for _, f := range foreign {
-		s = strings.ReplaceAll(s, f, "")
-	}
-	s = strings.ReplaceAll(s, "/repos", keep)
-	s = strings.ReplaceAll(s, "/Repos", keep)
-	s = strings.ReplaceAll(s, "/repo", "")
-	s = strings.ReplaceAll(s, "/Repo", "")
-	return strings.ReplaceAll(s, keep, "/repos")
 }
 
 // RetiredNoun and RetiredSegment are the old word itself, published so that the

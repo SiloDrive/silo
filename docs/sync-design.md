@@ -1,7 +1,7 @@
 # Sync design notes
 
 > **The first four sections below are stale as of `5d4baa0` and store-v2.**
-> "Two lanes, one store" describes the Seafile sync lane (`/repo/…`, `/api2/…`)
+> "Two lanes, one store" describes the legacy sync lane (`/repo/…`, `/api2/…`)
 > as a live, frozen surface; it was deleted outright in `5d4baa0`, so there is
 > now one lane, not two. "SHA-1 is the address" and "Compression is a wire
 > encoding" both reason from that lane's existence and from the pre-store-v2
@@ -10,7 +10,7 @@
 > and the object encoding entirely; see
 > [`storage.md`](storage.md) for what's current. "The change
 > that actually makes sync fast" proposes a `pack-blocks` alongside `pack-fs`,
-> both Seafile-lane calls that no longer exist. Kept because the reasoning —
+> both legacy-lane calls that no longer exist. Kept because the reasoning —
 > why a content hash is the right address, why compression is per-lane, why
 > batching beats a faster codec — outlived the specific lane and format it was
 > argued against, even though none of those sections describe the server as it
@@ -28,16 +28,15 @@ Silo serves two kinds of client, and only one of them is ours to change.
 
 | Surface | Auth | Owner |
 |---|---|---|
-| `/repo/…`, `/seafhttp/repo/…` | `Seafile-Repo-Token` | upstream — frozen |
+| `/repo/…`, `/…/repo/…` | a per-library token header | upstream — frozen |
 | `/api2/…`, `/api/v2.1/…` | `Authorization: Token` | upstream — frozen |
 | `/api/silo/v1/…` | `Authorization: Bearer` (JWT) | ours |
 
 The frozen lanes exist because Silo's reason for being is that unmodified
-Seafile and SeaDrive clients keep working. They are never extended and never
-"improved" — a change there is a compatibility break with software we do not
-ship.
+upstream clients keep working. They are never extended and never "improved" — a
+change there is a compatibility break with software we do not ship.
 
-Everything new goes in the Silo lane. It is not versioned against Seahub's
+Everything new goes in the Silo lane. It is not versioned against upstream's
 numbering: `/api/v3` would read as the successor to `/api/v2.1`, which is
 exactly the confusion the `silo` path segment exists to prevent. Version
 numbers only need to be unique within a namespace.
@@ -63,7 +62,7 @@ fall out of that and are not separable from it:
 
 Changing the address hash is not a migration, it is a second store. The same
 file would carry two ids, be stored twice, and dedup would break *across* lanes
-— a SeaDrive upload would be invisible to a Silo-native client. That cost is
+— an upload on the legacy lane would be invisible to a Silo-native client. That cost is
 enormous and the benefit is theoretical.
 
 It also isn't a performance problem. Measured on one 8MB block (the default
@@ -120,7 +119,7 @@ Where compression sits today:
   served raw
 - **fs and commit objects are zlib**, and are stored *in the exact compressed
   form they arrived in* (`WriteRawIngested` → `WriteRaw`), so they can be handed
-  back to Seafile clients byte-for-byte with no transcode
+  back to upstream clients byte-for-byte with no transcode
 
 That pass-through is why the server is cheap, and it is why changing the storage
 codec is not free: every fs object served to a legacy client would need
@@ -128,7 +127,7 @@ re-compressing.
 
 So zstd goes on the wire, not on disk. Because blocks are raw on disk, the Silo
 lane can zstd them per-connection with zero storage change and zero impact on
-SeaDrive — a negotiated `Content-Encoding`, not a format change.
+the frozen lane — a negotiated `Content-Encoding`, not a format change.
 
 The rule: **shared identity, per-lane encoding.** Ids and canonical bytes are
 common to both lanes; compression and framing are per-protocol. Negotiate how
@@ -144,8 +143,8 @@ file costs ~128 round trips. `pack-fs` batches fs objects; there is no
 equivalent for blocks.
 
 A `pack-blocks` that streams N blocks in one response is the highest-value
-change available: additive, invisible to SeaDrive, and it dwarfs any compression
-win. It is also what zstd-on-the-wire should apply to.
+change available: additive, invisible to the frozen lane, and it dwarfs any
+compression win. It is also what zstd-on-the-wire should apply to.
 
 This is an optimisation, not a prerequisite. A new client can speak today's sync
 protocol and negotiate `pack-blocks` later.
@@ -156,9 +155,9 @@ protocol and negotiate `pack-blocks` later.
 differs between a commit and the current head, plus the new anchor.
 
 It exists so a sync client doesn't have to replicate the object store to learn
-what moved. The server already holds both trees and already has the diff;
-SeaDrive carries tens of thousands of lines to answer this question without
-server cooperation, and we have server cooperation.
+what moved. The server already holds both trees and already has the diff; a
+client that has to answer this question without server cooperation carries tens
+of thousands of lines to do it, and we have server cooperation.
 
 An unresolvable `since` is `410 Gone`, not an error — the commit isn't wrong, it
 is merely unreachable (garbage collected, or the library was reset), and the

@@ -50,7 +50,7 @@ unrelated reasons:
 | SQL prepare/query/scan failed | 85, 92, 105 | the database is unavailable |
 | no row | 109 | the library really does not exist |
 | `HeadCommitID == ""` | 113 | the row is corrupt |
-| `commitmgr.Load` failed | 136 | the object store is missing an object |
+| loading the head commit failed | 136 | the object store is missing an object |
 
 Every caller then does the same thing with that `nil`:
 
@@ -64,7 +64,8 @@ if library == nil {
 
 — `entryLibrary` in `fileserver/entries.go:113`, and the same shape at
 `fileserver/api/api.go:316` and `:355`, `fileserver/api_handlers.go:31` and
-`:206`, `fileserver/api/changes.go:116`, `fileserver/api/seadrive.go:289`.
+`:206`, `fileserver/api/changes.go:116`, and the compatibility lane's
+download-info handler (since deleted with that lane).
 
 Three of those four conditions are the server's own failures. All four are
 reported to the client as the one condition that is a statement about *the
@@ -103,8 +104,8 @@ is thrown away at the `return nil`.
 1. Have `libmgr.Get` return `(*Library, error)` with distinguishable errors, or add
    a `GetWithReason`. Absent row is one thing; a commit that will not load is
    another.
-2. Map them: no row → **404**. Empty `HeadCommitID`, `commitmgr.Load` failure, or
-   a database error → **500**, with a body that says the library exists and its
+2. Map them: no row → **404**. Empty `HeadCommitID`, a head commit that will not
+   load, or a database error → **500**, with a body that says the library exists and its
    storage is damaged. `503` is defensible for the database case, since that one
    is expected to recover on its own.
 3. Say it once. The error currently logs per request with no suppression —
@@ -144,7 +145,8 @@ the sentinels rather than in either HTTP package, because both `silod` and
 Converted: `entryLibrary` (`entries.go` — the Silo v1 surface porter-fuse and the
 File Provider extension read), `loadLibraryAndCommit` and the download handler
 (`api_handlers.go`), `ListDirHandler` (`api/api.go`), `ChangesHandler`
-(`api/changes.go`), and `SeaDriveDownloadInfoHandler` (`api/seadrive.go`).
+(`api/changes.go`), and the compatibility lane's download-info handler, which
+was deleted outright in `5d4baa0` along with the rest of that lane.
 
 **It is said once.** A fault is logged on first sight and then suppressed for
 five minutes per (library, condition); a successful load clears the entry, so a
@@ -160,11 +162,6 @@ Detecting it means loading every head commit on every listing, which is the cost
 the handler exists to avoid. The disagreement between the two surfaces is now
 harmless — one lists the library, the other says its storage is damaged — where
 before it was one listing it and the other saying it was deleted.
-
-**`fileop.go` still answers 400 "Bad library id"** on the legacy upload and
-download paths. Wrong for the same reason, but 400 carries no instruction to
-delete anything, and those paths are entangled with the 444/445 codes the
-Seafile client already understands. Worth a separate pass.
 
 **No integrity check.** Walking `Branch` and confirming each head loads is still
 the natural companion, and still separate work.

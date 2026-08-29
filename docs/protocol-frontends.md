@@ -1,16 +1,22 @@
 # Protocol Frontends
 
-Silo speaks the Seafile sync protocol plus two HTTP APIs (`/api/silo/v1/`,
-`/api2/`). This document is a survey of what *else* could be bolted onto the
-front of the same store, what each one buys, and what it costs.
+Silo speaks one HTTP API, `/api/silo/v1/`. This document is a survey of what
+*else* could be bolted onto the front of the same store, what each one buys, and
+what it costs.
+
+> Written while the legacy sync lane and its two compatibility APIs still
+> existed; they were deleted in `5d4baa0`. The line numbers below name
+> `fileop.go` and `fsmgr`, which went with them. The survey's reasoning — what
+> each frontend buys, and that all of them need a protocol-neutral core first —
+> is what survives.
 
 Nothing here is committed. It exists so the decision is made once, on the
 architecture, rather than re-argued per protocol.
 
 ## The constraint that decides every answer
 
-Silo is a git-shaped store: commits point at `SeafDir` trees, which point at
-`Seafile` objects, which are lists of content-addressed blocks. Every mutation
+Silo is a git-shaped store: commits point at directory trees, which point at
+file manifests, which are lists of content-addressed chunks. Every mutation
 goes through `GenNewCommit` (`fileserver/fileop.go:1951`) and `updateBranch`
 (`fileop.go:2104`), with `fastForwardOrMerge` (`fileop.go:1991`) resolving
 contention. There is no partial-file update anywhere in the model: changing one
@@ -35,7 +41,7 @@ Pick from the first pile unless there's a specific reason not to.
 The operations are currently welded to `http.ResponseWriter`. `accessCB`
 (`fileop.go:155`), `doUpload` (`fileop.go:1048`) and `postMultiFiles`
 (`fileop.go:1616`) all take `(rsp, r)` and write status codes inline. The
-reusable layer beneath them — `fsmgr.GetObjIDByPath`, `fsmgr.GetSeafdirByPath`,
+reusable layer beneath them — the object-id and directory lookups by path,
 `DoPostMultiFiles` (`fileop.go:2201`), `DelFileFromTree` (`fileop.go:2218`) —
 sits one level too low to build a protocol on.
 
@@ -67,8 +73,8 @@ The highest ratio of reach to effort. `PROPFIND`, `GET`, `PUT`, `MKCOL`,
 already exist. It buys macOS Finder, Windows Explorer, GVFS/Dolphin, iOS file
 apps, davfs2 and rclone in a single step.
 
-Upstream ships this as a separate Python daemon (seafdav); Silo would have it
-in-binary, which is the whole point of the rewrite.
+Upstream shipped this as a separate Python daemon; Silo would have it in-binary,
+which is the whole point of the rewrite.
 
 Gotchas:
 
@@ -121,8 +127,7 @@ write sequentially from zero. `SETSTAT`/`chmod`/times are safely ignorable.
   document. Viable if scoped **read-mostly**: mount a library read-only and
   write through another protocol.
 - **Nextcloud/ownCloud chunked upload API.** WebDAV plus extensions. Only worth
-  it to pick up the Nextcloud mobile and desktop client fleet, and Silo already
-  has Seafile's.
+  it to pick up the Nextcloud mobile and desktop client fleet.
 - **Public share links** (`/d/{token}/`). Already on the roadmap. The
   "protocol" is just a browser; it needs the signed URL
   [`capability-urls.md`](capability-urls.md) specifies and a short-code
@@ -139,7 +144,7 @@ write sequentially from zero. `SETSTAT`/`chmod`/times are safely ignorable.
 
 **Read-only git smart-HTTP.** `git clone http://silo/git/{library-id}` is
 philosophically almost free: the commits, trees and blobs already exist. The
-catch is that Seafile object IDs and git object IDs hash different bytes, so
+catch is that Silo object ids and git object ids hash different bytes, so
 none of the existing IDs can be reused. It means computing git SHA-1s, building
 packfiles, and caching the ID mapping — real work.
 
@@ -205,7 +210,7 @@ frontend *implies* a permission model richer than the one actually enforced.
 ## Recommendation
 
 **WebDAV first.** It forces the `core` extraction, which is the real
-prerequisite, and it is the shortest path from "Seafile clients only" to
+prerequisite, and it is the shortest path from "our own clients only" to
 "mounts on every operating system".
 
 **S3 second.** It unlocks the entire backup-tool ecosystem and fits the

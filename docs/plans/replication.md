@@ -31,7 +31,7 @@ over parent pointers.
   is permission to write. **This is the piece actually worth building, and it
   needs none of the merge machinery above.**
 - **Two people mirroring each other is collaboration.** That one is genuinely
-  bidirectional, and Seafile's answer is already implemented and is the right
+  bidirectional, and upstream's answer is already implemented and is the right
   one: never block. Both edits survive and one is renamed
   `foo (SFConflict user time)` (`merge.go:348`) — convergence by making the
   conflict visible rather than by choosing a winner.

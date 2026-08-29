@@ -6,9 +6,9 @@ Status: pre-1.0 and young, but no longer reckless with your data. Object writes 
 
 ## What is Silo?
 
-Silo started as a Go rewrite of the Seafile server architecture. Where upstream Seafile ships a C daemon (`seaf-server`), a Python/Django web layer (Seahub), and a process manager to tie them together, Silo collapses all of that into a single Go binary that speaks HTTP directly and talks directly to its database.
+Silo is one Go binary. It speaks HTTP directly and talks directly to its database — no daemon to supervise, no web application beside it, no process manager tying the two together.
 
-Early releases kept full wire compatibility with existing Seafile clients — Seafile desktop, mobile, and SeaDrive worked against Silo without modification. That compatibility was dropped on purpose in favour of Silo's own protocol and object format (`/api/silo/v1/`, content-defined chunking, per-library E2EE); a Seafile-family client can no longer talk to a current Silo server at all. See [`docs/target.md`](docs/target.md) for why, and [`docs/porter-brief.md`](docs/porter-brief.md) for the wire contract that replaced it.
+It began as a rewrite of an older server built that way, and for its first releases it kept wire compatibility with that server's clients. That compatibility was dropped on purpose in favour of Silo's own protocol and object format — `/api/silo/v1/`, content-defined chunking, per-library E2EE — and no client of the old kind can talk to a current Silo server. See [`docs/target.md`](docs/target.md) for why, and [`docs/porter-brief.md`](docs/porter-brief.md) for the wire contract that replaced it.
 
 Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.com/charmbracelet/bubbletea) for interactive file management without a browser.
 
@@ -353,10 +353,10 @@ restores the user's devices rather than making everyone log in again.
 
 ## Client compatibility
 
-Silo speaks its own protocol (`/api/silo/v1/`) rather than Seafile's. Seafile
-and SeaDrive clients could talk to early Silo releases; that compatibility was
-dropped on purpose and a Seafile-family client gets a 404 on every route
-today — see [`docs/target.md`](docs/target.md).
+Silo speaks one protocol, `/api/silo/v1/`, and nothing else. The legacy sync
+lanes that early releases carried for compatibility with an older server's
+clients were deleted in 0.5.0, and every route they used now answers 404 — see
+[`docs/target.md`](docs/target.md).
 
 Tested clients:
 
@@ -378,9 +378,10 @@ Silo is a lean rewrite focused on the sync path and a minimal management API. Th
 - No `is_staff` / admin privilege check in the API layer — all authenticated users have equal permissions
 - No web UI — use the TUI
 - No trash / restore or history / revision endpoints
-- No encrypted libraries — Silo cannot create them, and Seafile's format will not
-  be supported. See [`docs/encryption.md`](docs/encryption.md) for why, and for
-  the sketch of what replaces it
+- Encrypted libraries are new and thin: a client can create one and fetch its
+  wrapped content key, but sharing one, rotating its key and recovering it are
+  not built. See [`docs/encryption.md`](docs/encryption.md) for the scheme and
+  [`docs/storage.md`](docs/storage.md) for what is left
 
 See [`docs/roadmap.md`](docs/roadmap.md) for the rough roadmap.
 
@@ -410,6 +411,12 @@ reading one as a description is the mistake it exists to prevent.
 
 ## Origin and license
 
-Silo started as a fork of [haiwen/seafile-server](https://github.com/haiwen/seafile-server). Early releases reused the on-disk object format and the wire protocol to keep upstream clients working; both have since been replaced by Silo's own (see [`docs/target.md`](docs/target.md)), and nothing about compatibility with upstream depends on the database schema, which diverged early and was never part of the promise.
+Silo began as a fork of an existing AGPL server. Early releases reused its
+on-disk object format and its wire protocol so that its clients kept working;
+both have since been replaced by Silo's own (see
+[`docs/target.md`](docs/target.md)), and the database schema diverged early and
+was never part of that promise.
 
-Licensed under **AGPLv3**, inherited from the upstream project. See [`NOTICE`](NOTICE) for attribution and [`LICENSE.txt`](LICENSE.txt) for the full license text.
+Licensed under **AGPLv3**, inherited from the upstream project. [`NOTICE`](NOTICE)
+names it, as the licence requires; [`LICENSE.txt`](LICENSE.txt) has the full
+text and the additional permission that travels with it.
