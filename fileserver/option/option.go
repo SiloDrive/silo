@@ -55,12 +55,6 @@ var (
 	// upgraded it would be deleting data nobody asked it to.
 	DefaultKeepDays int
 
-	// redis options
-	HasRedisOptions bool
-	RedisHost       string
-	RedisPasswd     string
-	RedisPort       uint32
-
 	// Build version (set by main)
 	Version string
 
@@ -129,9 +123,6 @@ var (
 	TrustProxyHeaders bool
 
 	JWTPrivateKey string
-
-	// metric
-	NodeName string
 )
 
 func initDefaultOptions() {
@@ -146,8 +137,6 @@ func initDefaultOptions() {
 	Port = 8082
 	DefaultQuota = InfiniteQuota
 	DBOpTimeout = 60 * time.Second
-	RedisHost = "127.0.0.1"
-	RedisPort = 6379
 	SyncObjectWrites = true
 	VerifyFSObjectHashes = true
 	LoginRateLimit = true
@@ -278,16 +267,9 @@ func LoadFileServerOptions(configFile string) {
 		}
 	}
 
-	loadCacheOptionFromEnv()
-
 	GroupTableName = os.Getenv("SILO_GROUP_TABLE_NAME")
 	if GroupTableName == "" {
 		GroupTableName = "Group"
-	}
-
-	NodeName = os.Getenv("NODE_NAME")
-	if NodeName == "" {
-		NodeName = "default"
 	}
 
 	if lvl := os.Getenv("SILO_LOG_LEVEL"); lvl != "" {
@@ -367,31 +349,6 @@ func parseQuota(quotaStr string) int64 {
 	}
 
 	return quota
-}
-
-func loadCacheOptionFromEnv() {
-	cacheProvider := os.Getenv("CACHE_PROVIDER")
-	if cacheProvider != "redis" {
-		return
-	}
-
-	HasRedisOptions = true
-
-	redisHost := os.Getenv("REDIS_HOST")
-	if redisHost != "" {
-		RedisHost = redisHost
-	}
-	redisPort := os.Getenv("REDIS_PORT")
-	if redisPort != "" {
-		port, err := strconv.ParseUint(redisPort, 10, 32)
-		if err == nil {
-			RedisPort = uint32(port)
-		}
-	}
-	redisPasswd := os.Getenv("REDIS_PASSWORD")
-	if redisPasswd != "" {
-		RedisPasswd = redisPasswd
-	}
 }
 
 func LoadJWTConfig() error {

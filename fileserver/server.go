@@ -22,7 +22,6 @@ import (
 	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/metrics"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/option"
@@ -357,8 +356,6 @@ func Run(args []string) error {
 		logSetupToken(setupToken)
 	}
 
-	metrics.Init()
-
 	notif.Init()
 
 	router := newHTTPRouter()
@@ -468,7 +465,6 @@ func handleSignals() {
 
 	checkpointAndClose(siloPair)
 
-	metrics.Stop()
 	if err := removePidfile(pidFilePath); err != nil {
 		log.Warnf("Failed to remove pid file: %v", err)
 	}
@@ -612,9 +608,6 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/libraries/{libraryid}/entries/{path:.*}", entriesHandler)
 	apiRouter.HandleFunc("/libraries/{libraryid}/notify-token", api.CreateNotifyTokenHandler).Methods("POST")
 
-	if option.HasRedisOptions {
-		r.Use(metrics.MetricMiddleware)
-	}
 	return r
 }
 
