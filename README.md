@@ -27,12 +27,12 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
         ▼           ▼
      SQLite     Filesystem
                 (content-addressable
-                blocks / commits / fs)
+                 chunks / objects)
 ```
 
 - One process. No RPC, no Python, no controller.
 - One embedded SQLite database, `silo.db`, in the data directory: users, groups, libraries, shares and tokens together.
-- Content-addressable object store under `{data-dir}/storage/` with separate trees for blocks, commits, and filesystem objects.
+- Content-addressable object store under `{data-dir}/storage/` with two trees: `chunks/` for content and `objects/` for the manifests, directories and commits that describe it.
 
 ## Features
 
@@ -216,7 +216,7 @@ not reclaim unreferenced history inside a library that still exists.
 | `SILO_JWT_SECRET` | JWT signing key | auto-generated (ephemeral) |
 | `SILO_LOG_LEVEL` | Log level: debug, info, warn, error | — |
 | `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
-| `SILO_VERIFY_FS_OBJECT_HASHES` | Check uploaded fs objects hash to their id (costs a decompress each; blocks and commits are always checked) | `true` |
+| `SILO_VERIFY_FS_OBJECT_HASHES` | Check uploaded fs objects hash to their id (costs a decompress each; chunks and commits are always checked) | `true` |
 | `SILO_ENABLE_NOTIFICATIONS` | Serve the WebSocket notification endpoint. `false` turns it off, and `notify-token` then answers `404` | `true` |
 | `SILO_GROUP_TABLE_NAME` | Name of the groups table, for a database inherited from a deployment that renamed it | `Group` |
 | `SILO_LOGIN_RATE_LIMIT` | Throttle failed logins per address and per account | `true` |

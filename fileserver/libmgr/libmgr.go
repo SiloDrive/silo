@@ -48,7 +48,7 @@ type Library struct {
 	// Set when library is virtual
 	VirtualInfo *VLibraryInfo
 
-	// ID for fs and block store
+	// ID for fs and chunk store
 	StoreID string
 
 	// store is this library's objects, opened at most once. See Store.
@@ -610,7 +610,7 @@ func insertLibraryRows(ctx context.Context, tx *sql.Tx, r libraryRows) error {
 }
 
 // DeleteLibrary removes a repository and all associated DB records.
-// Filesystem objects (commits, blocks, fs) are NOT deleted — GC handles that.
+// Filesystem objects (commits, chunks, fs) are NOT deleted — GC handles that.
 func DeleteLibrary(libraryID string) error {
 	// Virtual libraries derived from this one go first. Deleting only the origin
 	// removed their VirtualLibrary rows but left their Library and Branch rows

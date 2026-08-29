@@ -36,7 +36,7 @@ const (
 
 	// defaultTracesSampleRate keeps a tenth of requests as performance
 	// transactions. A sync client polls every few seconds and a single large
-	// upload is thousands of block PUTs, so tracing everything would bury the
+	// upload is thousands of chunk PUTs, so tracing everything would bury the
 	// receiving end under data that says the same thing ten thousand times.
 	defaultTracesSampleRate = 0.1
 
@@ -437,7 +437,7 @@ var (
 )
 
 // normalizeMessage strips the varying parts out of a log message so that the
-// same failing statement groups as one issue however many libraries, blocks or
+// same failing statement groups as one issue however many libraries, chunks or
 // accounts it fires for.
 func normalizeMessage(msg string) string {
 	msg = reQuoted.ReplaceAllString(msg, `"<str>"`)

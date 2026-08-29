@@ -246,10 +246,11 @@ in [`responses.md`](responses.md).
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Read a file's bytes, or list a directory. Ranged; `ETag`/`304` |
+| GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=manifest` | The file's manifest — the same object `objects/{id}` serves, reachable with a path-scoped credential. See the chunk surface below |
 | HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | The same headers as `GET`, no body. On a directory `Content-Length` is the size of the listing, not of its contents |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Store a file — body is the content |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter) |
-| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=blocks` | Store a file from blocks already uploaded — body is `{"blocks":[sha256,…]}`, no content. See the block surface below |
+| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=chunks` | Store a file from chunks already uploaded — body is `{"chunks":[sha256,…]}`, no content. See the chunk surface below |
 | POST | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"op":"move","to":"/dst"}` — moving covers renaming |
 | POST | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"op":"copy","to":"/dst"}` — server-side copy; `201` and the source's `ETag`, no content transferred |
 | DELETE | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Delete a file or directory |
@@ -281,7 +282,7 @@ Feature name `batch`.
 POST /api/silo/v1/libraries/{library}/batch
 {"ops":[
   {"op":"mkdir",  "path":"/reports"},
-  {"op":"create", "path":"/reports/q3.txt", "blocks":["<sha256>", …]},
+  {"op":"create", "path":"/reports/q3.txt", "chunks":["<sha256>", …]},
   {"op":"move",   "path":"/old.txt", "to":"/reports/old.txt"},
   {"op":"copy",   "path":"/tpl.txt", "to":"/reports/tpl.txt"},
   {"op":"delete", "path":"/stale.txt"}
@@ -299,9 +300,9 @@ which half.
 **Ordered.** Each operation sees the ones before it, which is what makes a
 `mkdir` followed by writes into it a single request rather than two.
 
-**`create` takes blocks, not bytes.** Upload them to the block surface first;
+**`create` takes chunks, not bytes.** Upload them to the chunk surface first;
 this is the call that makes them a file. That pairing is the point: five hundred
-files become five hundred block uploads — only for content the server does not
+files become five hundred chunk uploads — only for content the server does not
 already hold — and one commit, instead of five hundred commits and five hundred
 rounds of branch-head contention.
 
@@ -368,15 +369,25 @@ the server to do less should ask more often, not for smaller pages.
 `GET /libraries` does not page. A library count is bounded by how many an account
 has, which is tens, not by anything a client can grow without noticing.
 
-#### The block surface
+#### The chunk surface
 
-Feature name `blocks`. Three calls, and the shape of every resumable upload:
+Feature name `chunks`. Three calls, and the shape of every resumable upload:
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/silo/v1/libraries/{libraryid}/blocks/missing` | `{"blocks":[id,…]}` → `{"missing":[id,…]}` — which of these do you not already have? |
-| PUT | `/api/silo/v1/libraries/{libraryid}/blocks/{id}` | Upload one chunk. `201` when stored, `200` when it was already there — re-sending is what a resumed upload does, so it succeeds rather than conflicts. `400` if the bytes do not hash to the id |
-| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=blocks` | `{"blocks":[id,…]}` — create the file from them. `201` and an `ETag`, as any other write |
+| POST | `/api/silo/v1/libraries/{libraryid}/chunks/missing` | `{"chunks":[id,…]}` → `{"missing":[id,…]}` — which of these do you not already have? |
+| PUT | `/api/silo/v1/libraries/{libraryid}/chunks/{id}` | Upload one chunk. `201` when stored, `200` when it was already there — re-sending is what a resumed upload does, so it succeeds rather than conflicts. `400` if the bytes do not hash to the id |
+| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=chunks` | `{"chunks":[id,…]}` — create the file from them. `201` and an `ETag`, as any other write |
+| GET, HEAD | `/api/silo/v1/libraries/{libraryid}/chunks/{id}` | One chunk, as stored. `ETag` is the bare id and `Cache-Control` is a year and `immutable`, because the id *is* the content hash and this representation can never change |
+| POST | `/api/silo/v1/libraries/{libraryid}/chunks/fetch` | `{"chunks":[id,…]}` → a chunk stream: many chunks in one framed response. Feature name `chunks-fetch` |
+| GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=manifest` | A file's chunk list, addressed by path. Feature name `entries-manifest` |
+
+The first three are the upload half and were built first. The last three are
+the download half, and the gap between them is worth naming because it is the
+one a client feels: a write has been able to ask "which of these do you hold?"
+and send only the answer since 0.4.5, while a read had no equivalent, so a
+client holding a previous version of a 1 GiB file uploaded a few chunks and
+downloaded the whole file to build them.
 
 An id is the SHA-256 of the chunk's bytes, so a client computes the names the
 server would without asking. Where the cuts fall is the other half, and that
@@ -394,23 +405,23 @@ front of a file shifted every boundary after it, so a re-upload matched nothing
 and sent the whole file again.
 
 The id is not taken on trust in either direction. The server hashes what
-arrives and refuses a block that does not match the id it was offered under
+arrives and refuses a chunk that does not match the id it was offered under
 (`400`), which makes a successful `PUT` an end-to-end integrity check of the
 transfer as well as a store.
 
-**Nothing exists until the last call.** Blocks are immutable and addressed by
+**Nothing exists until the last call.** Chunks are immutable and addressed by
 content, so uploading them commits to nothing: no path changes, no commit is
 minted, and the destination is untouched. Upload in any order, in parallel,
 across restarts, over days. An interrupted upload leaves the library exactly as
-it was, and the retry is the same three calls — `blocks/missing` simply returns
+it was, and the retry is the same three calls — `chunks/missing` simply returns
 a shorter list the second time. That is what makes it resumable; there is no
 session, no offset and no upload id to keep.
 
-A commit naming a block the server does not hold is `424 Failed Dependency`,
+A commit naming a chunk the server does not hold is `424 Failed Dependency`,
 with the missing ids in the body. It is not `400`: the request is not wrong and
-the identical one succeeds once the blocks are up.
+the identical one succeeds once the chunks are up.
 
-Encrypted libraries are excluded (`400`). Their blocks are ciphertext, so a
+Encrypted libraries are excluded (`400`). Their chunks are ciphertext, so a
 client cannot name one without performing the encryption itself; `PUT` of the
 file content still works there, and the server encrypts from the cached key.
 
@@ -426,15 +437,128 @@ boundary after it and nothing dedups — was true of the fixed offsets this
 surface started with, and stopped being true when store-v2 landed
 content-defined chunking. It is worth naming as a correction rather than
 silently deleting: a client author who read it would reasonably have decided the
-block surface was not worth implementing for edit-heavy content, which is the
+chunk surface was not worth implementing for edit-heavy content, which is the
 workload it helps most.
 
 What remains true is narrower. Dedup depends on both sides cutting at the same
 places, so a client that uploads without reading the library's `chunker`
 parameters produces ids that match nothing already stored — see above. And no
-amount of block negotiation helps a file whose bytes are rewritten wholesale on
+amount of chunk negotiation helps a file whose bytes are rewritten wholesale on
 every save, which is what [`protocol-gaps.md`](protocol-gaps.md) means when it
 separates a photo library from a library of VM images.
+
+#### The chunk stream — `POST chunks/fetch`
+
+Feature name `chunks-fetch`. `{"chunks":[id,…]}` in, and a body of framed
+chunks out, `Content-Type: application/vnd.silo.chunks`. One frame is
+
+```
+id      32 bytes   the chunk's id
+status   1 byte    0 present, 1 absent
+length   4 bytes   big-endian, the chunk's stored length; 0 when absent
+bytes    length    the chunk exactly as stored
+```
+
+The framing is `store.WriteChunkFrame` / `store.DecodeChunkFrames`
+(`store/chunkstream.go`), in the shared module for the same reason the chunker
+and the manifest codec are: one expression of the format, so two sides cannot
+name the same bytes differently. A JSON envelope with base64 bodies would have
+been the second expression.
+
+Three things the layout decides, each on purpose:
+
+- **The id leads, so a frame is self-describing.** A reader matches frames by
+  id and not by position, which is what lets the server drop a repeated id —
+  a file with a run of zeroes names one chunk many times, and sending it once
+  per mention would spend exactly the bandwidth this endpoint saves.
+- **Absence is a status byte, not a zero length.** A zero-length chunk cannot
+  occur today, since a file with no bytes inlines instead. Inferring absence
+  from a length is a rule that holds until it does not, and it fails silently.
+- **The length is fixed-width.** Everything else in this format that counts
+  uses a varint; a frame header wants to be a fixed offset a port can read
+  without a loop, and the saving would be two bytes per megabyte.
+
+At most **256 chunks** in one request, and over that is `400` rather than a
+short answer — for the reason pagination is opt-in with no default, sharpened
+by the fact that a client here cannot tell a chunk it was not sent from one the
+store does not hold. There is no cursor: the frames are id-labelled and
+verifiable, so a stream that dies part-way is resumed by asking for what did
+not arrive.
+
+Read permission, which is the opposite of `chunks/missing` beside it. That one
+takes **write** because answering "yes, I hold that" to any reader is an oracle
+for whether a given file exists somewhere on the server. This one hands over
+the bytes, so a caller who can use the answer can already read the library and
+there is no oracle left to close — `GET chunks/{id}` makes the same disclosure
+one chunk at a time.
+
+`GET chunks/{id}` remains the right call for one chunk: it is cacheable by any
+intermediary, immutable, and needs no body. This is the same answer for many.
+
+#### The manifest — `GET entries/{path}?type=manifest`
+
+Feature name `entries-manifest`. The body is the encoded `store.Manifest` —
+byte for byte what `GET objects/{id}` returns for the same id, which is the
+point: a client implements `store.DecodeManifest` once and reaches it two ways.
+
+**The reason both spellings exist is scope**, not convenience. The id-addressed
+surface is library-level, because an id says nothing about where it is linked
+and so cannot be checked against a narrowed credential. Without this route a
+folder-scoped credential could read a file's bytes and not its chunk list —
+able to download a gigabyte to change a byte, and not able to avoid it.
+
+**The `ETag` is the bare id**, not the `v1-` prefixed tag the rest of the
+entries surface carries, and that is deliberate. The prefix versions the
+*representation*: a listing's JSON shape can change under a fixed id, so a
+cached listing needs a tag that moves with it. A manifest cannot — the id is
+the hash of exactly these bytes, so a different encoding is a different id — and
+the same object at `objects/{id}` has to validate identically or a client
+caching both spellings holds two entries for one thing. `Cache-Control` is a
+year and `immutable` for the same reason.
+
+**The trap, stated because it is silent:** do not feed this tag back as
+`If-Match` on `entries/{path}`. That precondition compares against the `v1-`
+form, so it would fail every time for a reason nothing in a log would explain.
+Send back only tags you were given for the resource you are writing.
+
+A directory answers `400` — it is a real entry that has no manifest, and `404`
+would be a claim about the library rather than about the request. Under 64 KiB
+the bytes *are* the manifest (`store.Inlined`), so the fetch that would have
+been a round trip of overhead is the read.
+
+#### The id-addressed surface
+
+Feature name `objects`. How a client reads and writes a library the server
+cannot read — and, on a plain library, the second of the
+[two read paths](chunking.md#two-read-paths-both-correct).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET, HEAD | `/api/silo/v1/libraries/{libraryid}/objects/{id}` | One manifest, directory or commit, exactly as stored |
+| PUT | `/api/silo/v1/libraries/{libraryid}/objects/{id}` | The same, verified against its id and checked to decode. `201` stored, `200` already there |
+| GET, HEAD | `/api/silo/v1/libraries/{libraryid}/chunks/{id}` | One chunk, as stored |
+| PUT | `/api/silo/v1/libraries/{libraryid}/chunks/{id}` | One chunk, verified against its id |
+| PUT | `/api/silo/v1/libraries/{libraryid}/head` | Compare-and-swap on the branch head; `If-Match` the current commit id |
+
+It exists because of one fact: the server holds no content key for an E2EE
+library, so it cannot chunk a file, build a manifest or name an entry. Every
+write there is something the client computes and the server merely stores. The
+surface is deliberately the same for both library types, so a client that
+implements it needs no second implementation for the plain case.
+
+What the server verifies is short because it is everything it can: that an
+object's id is the SHA-256 of the bytes offered under it, and that those bytes
+decode as one of the store's object kinds. It cannot check that a manifest
+describes a real file or that a commit says anything true. The decode check
+earns its place by refusing to store something that would break the server's
+own later walks — GC's mark and `changes?since=` both read public sections.
+
+`ETag` is the bare id and `Cache-Control` is a year and `immutable` on both
+`GET`s, for the reason given under the manifest above.
+
+**Refused to a folder-scoped credential**, as every id-addressed call is. Such a
+client reads structure through `entries/{path}` and a chunk list through
+`?type=manifest`.
 
 #### Reading `changes`
 

@@ -73,12 +73,12 @@ func laneClient(t *testing.T) (*client.APIClient, string, *atomic.Int64) {
 // chunkPutPath reports whether a path addresses one chunk, as opposed to the
 // "missing" query that shares the prefix.
 func chunkPutPath(p string) bool {
-	i := len("/blocks/")
+	i := len("/chunks/")
 	if len(p) < i {
 		return false
 	}
 	base := p[len(p)-64:]
-	if len(p) < 64+i || p[len(p)-64-i:len(p)-64] != "/blocks/" {
+	if len(p) < 64+i || p[len(p)-64-i:len(p)-64] != "/chunks/" {
 		return false
 	}
 	for _, ch := range base {

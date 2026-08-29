@@ -50,7 +50,7 @@ func TestALibraryCanBeWrittenEntirelyByID(t *testing.T) {
 	content := bytes.Repeat([]byte("id-addressed. "), 8192)
 	chunkID := store.ChunkID(content)
 
-	w := idReq(t, putChunkHandler, acct, http.MethodPut, "/blocks/"+chunkID.String(),
+	w := idReq(t, putChunkHandler, acct, http.MethodPut, "/chunks/"+chunkID.String(),
 		merge(vars, "id", chunkID.String()), content, nil)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("PUT chunk = %d (%s), want 201", w.Code, w.Body.String())

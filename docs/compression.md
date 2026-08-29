@@ -70,7 +70,7 @@ That is the case where the swap is free.
 
 Blocks are uncompressed, and blocks are where the data is.
 
-The enabling fact is the same one as above, one level down. A block id is the
+The enabling fact is the same one as above, one level down. A chunk id is the
 SHA-1 of the plaintext the *client* computed and named the block with. Nothing
 in the protocol requires the server's **stored** form to be those same bytes —
 the server currently stores them verbatim as an implementation choice, not a
@@ -93,7 +93,7 @@ have to become "hash the plaintext, then compress". `blockmgr.WriteBytes`
 the same split.
 
 **Measure before building.** The measurement is easy and needs no code: run
-zstd over a sample of `{data-dir}/storage/blocks/` and look at the ratio for
+zstd over a sample of `{data-dir}/storage/chunks/` and look at the ratio for
 the workload actually stored there. If it is 1.02, stop.
 
 ## Practical notes

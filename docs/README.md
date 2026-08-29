@@ -85,7 +85,7 @@ because a client author has to grep for it.
 | [`plans/search.md`](plans/search.md) | **plan, parked.** A filename index on SQLite FTS5; populating it is the hard part, not querying it |
 | [`plans/replication.md`](plans/replication.md) | **plan, parked.** Primary plus read-only secondaries, what a secondary needs beyond bytes, and where parity would fit |
 | [`plans/distributable-library.md`](plans/distributable-library.md) | **plan, parked.** A plain library as a casync-shaped read-only store: a signed head, an export, a verifying consumer |
-| [`quota.md`](quota.md) | **plan, partly landed.** Whose ceiling, what it counts, and when the things it counts stop counting. Enforcement and the CLI are built; charging blocks rather than logical size, date-based history expiry and a server-wide ceiling are argued here and not written |
+| [`quota.md`](quota.md) | **plan, partly landed.** Whose ceiling, what it counts, and when the things it counts stop counting. Enforcement and the CLI are built; charging chunks rather than logical size, date-based history expiry and a server-wide ceiling are argued here and not written |
 
 ## Records — decided, done, or superseded
 

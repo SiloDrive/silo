@@ -162,7 +162,7 @@ func prepBatch(w http.ResponseWriter, st *objmgr.Store, ops []batchOp) ([]prepOp
 		}
 
 		if op.Op == "create" {
-			id, size, missing, fail := chunkManifest(st, op.Blocks)
+			id, size, missing, fail := chunkManifest(st, op.Chunks)
 			if len(missing) > 0 {
 				// The same instruction as the single-file path: upload these,
 				// then send the identical request again. A batch is

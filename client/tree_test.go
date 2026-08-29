@@ -21,7 +21,7 @@ type treeServer struct {
 
 	batches   [][]BatchOp // one entry per batch request
 	chunksPut []string
-	asked     [][]string // one entry per blocks/missing request
+	asked     [][]string // one entry per chunks/missing request
 	puts      []string   // whole-file PUTs, the fallback path
 	mkdirs    []string
 }
@@ -39,21 +39,21 @@ func newTreeServer(t *testing.T, features ...string) (*treeServer, *APIClient) {
 		case path == "/api/silo/v1/libraries":
 			_ = json.NewEncoder(w).Encode([]Library{{ID: "r1", Name: "Library", Chunker: testChunker()}})
 
-		case strings.HasSuffix(path, "/blocks/missing"):
+		case strings.HasSuffix(path, "/chunks/missing"):
 			var body struct {
-				Blocks []string `json:"blocks"`
+				Chunks []string `json:"chunks"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			ts.asked = append(ts.asked, body.Blocks)
+			ts.asked = append(ts.asked, body.Chunks)
 			missing := []string{}
-			for _, id := range body.Blocks {
+			for _, id := range body.Chunks {
 				if !ts.held[id] {
 					missing = append(missing, id)
 				}
 			}
 			_ = json.NewEncoder(w).Encode(map[string][]string{"missing": missing})
 
-		case strings.Contains(path, "/blocks/"):
+		case strings.Contains(path, "/chunks/"):
 			id := path[strings.LastIndex(path, "/")+1:]
 			_, _ = io.Copy(io.Discard, r.Body)
 			ts.chunksPut = append(ts.chunksPut, id)
@@ -161,9 +161,9 @@ func TestWalkTreeReportsWhatItWillNotFollow(t *testing.T) {
 	}
 }
 
-func TestUploadDirSendsBlocksOnceAndCommitsInOneBatch(t *testing.T) {
+func TestUploadDirSendsChunksOnceAndCommitsInOneBatch(t *testing.T) {
 	root := sampleTree(t)
-	ts, c := newTreeServer(t, "batch", "blocks")
+	ts, c := newTreeServer(t, "batch", "chunks")
 
 	up, err := c.UploadDir("r1", "/", root, nil)
 	if err != nil {
@@ -173,13 +173,13 @@ func TestUploadDirSendsBlocksOnceAndCommitsInOneBatch(t *testing.T) {
 	// "alpha" appears twice in the tree and is one block, asked about once and
 	// sent once. Dedup is across the tree, not within a file.
 	if len(ts.asked) != 1 {
-		t.Fatalf("asked %d times about missing blocks, want 1", len(ts.asked))
+		t.Fatalf("asked %d times about missing chunks, want 1", len(ts.asked))
 	}
 	if len(ts.asked[0]) != 2 {
-		t.Errorf("offered %d distinct blocks, want 2 (alpha, beta)", len(ts.asked[0]))
+		t.Errorf("offered %d distinct chunks, want 2 (alpha, beta)", len(ts.asked[0]))
 	}
 	if len(ts.chunksPut) != 2 {
-		t.Errorf("uploaded %d blocks, want 2", len(ts.chunksPut))
+		t.Errorf("uploaded %d chunks, want 2", len(ts.chunksPut))
 	}
 
 	// One commit for the whole tree, with every mkdir ahead of every create.
@@ -203,15 +203,15 @@ func TestUploadDirSendsBlocksOnceAndCommitsInOneBatch(t *testing.T) {
 	}
 
 	if up.Files != 3 || up.Dirs != 3 || up.Commits != 1 || up.ChunksSent != 2 || up.ChunksHeld != 0 {
-		t.Errorf("summary = %+v, want 3 files, 3 dirs, 1 commit, 2 blocks sent, 0 held", up)
+		t.Errorf("summary = %+v, want 3 files, 3 dirs, 1 commit, 2 chunks sent, 0 held", up)
 	}
 }
 
-// The point of the block surface: a second run of the same tree transfers no
+// The point of the chunk surface: a second run of the same tree transfers no
 // content at all.
 func TestUploadDirSecondRunSendsNothing(t *testing.T) {
 	root := sampleTree(t)
-	ts, c := newTreeServer(t, "batch", "blocks")
+	ts, c := newTreeServer(t, "batch", "chunks")
 
 	if _, err := c.UploadDir("r1", "/", root, nil); err != nil {
 		t.Fatal(err)
@@ -223,7 +223,7 @@ func TestUploadDirSecondRunSendsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(ts.chunksPut) != sentFirst {
-		t.Errorf("the second run uploaded %d more blocks, want 0", len(ts.chunksPut)-sentFirst)
+		t.Errorf("the second run uploaded %d more chunks, want 0", len(ts.chunksPut)-sentFirst)
 	}
 	if up.ChunksSent != 0 || up.ChunksHeld != 2 {
 		t.Errorf("second run: sent %d, held %d; want 0 sent and 2 held", up.ChunksSent, up.ChunksHeld)
@@ -241,7 +241,7 @@ func TestUploadDirFallsBackToOneRequestPerEntry(t *testing.T) {
 	}
 
 	if len(ts.batches) != 0 || len(ts.chunksPut) != 0 {
-		t.Error("the fallback used the batch or block surface")
+		t.Error("the fallback used the batch or chunk surface")
 	}
 	wantMkdirs := "[/tree /tree/empty /tree/sub]"
 	if fmt.Sprint(ts.mkdirs) != wantMkdirs {
@@ -258,7 +258,7 @@ func TestUploadDirFallsBackToOneRequestPerEntry(t *testing.T) {
 
 func TestUploadDirCallsBackWithEveryCommittedFile(t *testing.T) {
 	root := sampleTree(t)
-	_, c := newTreeServer(t, "batch", "blocks")
+	_, c := newTreeServer(t, "batch", "chunks")
 
 	var landed []string
 	if _, err := c.UploadDir("r1", "/", root, func(remote string) {
@@ -275,7 +275,7 @@ func TestUploadDirCallsBackWithEveryCommittedFile(t *testing.T) {
 
 func TestUploadDirRefusesAFile(t *testing.T) {
 	root := sampleTree(t)
-	_, c := newTreeServer(t, "batch", "blocks")
+	_, c := newTreeServer(t, "batch", "chunks")
 
 	_, err := c.UploadDir("r1", "/", filepath.Join(root, "a.txt"), nil)
 	if err == nil || !strings.Contains(err.Error(), "not a directory") {
@@ -286,7 +286,7 @@ func TestUploadDirRefusesAFile(t *testing.T) {
 // A tree bigger than one batch is split, and the split still puts every mkdir
 // ahead of the creates that depend on it.
 func TestApplyInBatchesSplitsOnTheOperationLimit(t *testing.T) {
-	ts, c := newTreeServer(t, "batch", "blocks")
+	ts, c := newTreeServer(t, "batch", "chunks")
 
 	ops := make([]BatchOp, 0, maxOpsPerBatch+10)
 	for i := 0; i < maxOpsPerBatch+10; i++ {
@@ -309,17 +309,17 @@ func TestApplyInBatchesSplitsOnTheOperationLimit(t *testing.T) {
 }
 
 // The body limit bites before the op limit when files are large, because a
-// create op carries an id per block.
+// create op carries an id per chunk.
 func TestApplyInBatchesSplitsOnTheBodyLimit(t *testing.T) {
-	ts, c := newTreeServer(t, "batch", "blocks")
+	ts, c := newTreeServer(t, "batch", "chunks")
 
-	blocks := make([]string, 20000) // ~860 KB of ids in one op
-	for i := range blocks {
-		blocks[i] = strings.Repeat("a", 40)
+	chunks := make([]string, 20000) // ~860 KB of ids in one op
+	for i := range chunks {
+		chunks[i] = strings.Repeat("a", 40)
 	}
 	var ops []BatchOp
 	for i := 0; i < 8; i++ {
-		ops = append(ops, BatchOp{Op: "create", Path: fmt.Sprintf("/big%d", i), Blocks: blocks})
+		ops = append(ops, BatchOp{Op: "create", Path: fmt.Sprintf("/big%d", i), Chunks: chunks})
 	}
 
 	if err := c.applyInBatches("r1", ops, nil, &TreeUpload{}); err != nil {

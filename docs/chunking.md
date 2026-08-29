@@ -84,7 +84,7 @@ reader cannot map a byte offset to a chunk any other way. **Files under
 The inherited chunker read fixed 8 MiB runs from computed offsets, so a
 boundary was a function of *where you are*, not *what is there*. Insert or
 remove one byte and every boundary downstream lands on different content;
-every block id after the edit changes; `blocks/missing` honestly reports a
+every chunk id after the edit changes; `chunks/missing` honestly reports a
 file the server has held for months as entirely absent, because under the new
 names it is.
 
@@ -241,3 +241,11 @@ first byte is fine for backup and unusable for a mount.
   cache after an unclean shutdown — and verification is what makes a source
   other than the server (a peer, a mirror, a cache of uncertain provenance)
   legal at all.
+
+The second path is `GET entries/{path}?type=manifest` (or `GET objects/{id}`,
+the same bytes addressed the other way), then `GET chunks/{id}` for one chunk
+or `POST chunks/fetch` for many; see
+[`protocol.md`](protocol.md#the-chunk-stream--post-blocksfetch). It is worth
+saying which endpoints these are, because for a long time this section
+described both paths as available while `features` named only the first, and a
+client reading the endpoint list concluded the second did not exist.

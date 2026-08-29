@@ -137,7 +137,7 @@ func TestTheLibraryRoutesAnswer(t *testing.T) {
 		{"GET", "/api/silo/v1/libraries/" + id + "/changes"},
 		{"PATCH", "/api/silo/v1/libraries/" + id},
 		{"POST", "/api/silo/v1/libraries/" + id + "/batch"},
-		{"POST", "/api/silo/v1/libraries/" + id + "/blocks/missing"},
+		{"POST", "/api/silo/v1/libraries/" + id + "/chunks/missing"},
 
 		{"GET", "/api/silo/v1/libraries/" + id + "/entries/"},
 		{"PUT", "/api/silo/v1/libraries/" + id + "/head"},
@@ -150,7 +150,7 @@ func TestTheLibraryRoutesAnswer(t *testing.T) {
 	}
 }
 
-// TestTheIDAddressedRoutesAnswer covers /blocks/{id} and /objects/{id}, which
+// TestTheIDAddressedRoutesAnswer covers /chunks/{id} and /objects/{id}, which
 // every other test in this package reaches by calling the handler with a vars
 // map — so nothing asserted they were on the router at all. porter does not
 // exercise either, so its strict fake cannot catch it either.
@@ -172,7 +172,7 @@ func TestTheIDAddressedRoutesAnswer(t *testing.T) {
 	const hexID = "0000000000000000000000000000000000000000000000000000000000000000"
 
 	for _, path := range []string{
-		"/api/silo/v1/libraries/" + id + "/blocks/" + hexID,
+		"/api/silo/v1/libraries/" + id + "/chunks/" + hexID,
 		"/api/silo/v1/libraries/" + id + "/objects/" + hexID,
 	} {
 		code, _ := call(t, "POST", base+path, token, "")
@@ -245,7 +245,7 @@ func TestTheRetiredRoutesAreGone(t *testing.T) {
 		{"POST", gone},
 		{"GET", gone + "/" + id + "/changes"},
 		{"POST", gone + "/" + id + "/batch"},
-		{"POST", gone + "/" + id + "/blocks/missing"},
+		{"POST", gone + "/" + id + "/chunks/missing"},
 		{"GET", gone + "/" + id + "/entries/"},
 		{"PUT", gone + "/" + id + "/head"},
 	} {

@@ -105,8 +105,8 @@ One lane, `/api/silo/v1`, and two ways to read.
 - **Ranged reads.** `GET entries/{path}` with a `Range`; the server resolves
   offset to chunk to pack and returns bytes. The client needs to know nothing
   about chunking. Right for anything read once.
-- **Chunk-addressed reads.** `GET entries/{path}?type=blocks` for the ordered
-  list of `(id, size)`, then `GET blocks/{id}`. Right for anything the client
+- **Chunk-addressed reads.** `GET entries/{path}?type=chunks` for the ordered
+  list of `(id, size)`, then `GET chunks/{id}`. Right for anything the client
   means to keep, because a cache keyed by chunk id survives edits, dedups across
   files and libraries, and can verify what it was handed.
 

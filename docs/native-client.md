@@ -3,10 +3,10 @@
 > **Partly stale as of `5d4baa0` and the current store format.** Two things below no longer hold.
 > The `/repo/*` sync-protocol table in "What the CLI does today" describes
 > routes deleted with the legacy lane in `5d4baa0` — nothing to cross to
-> any more. And "Tier 2" describes the block surface as it worked under fixed
+> any more. And "Tier 2" describes the chunk surface as it worked under fixed
 > 8 MiB SHA-1 chunking (`fileop.go`, `blockmgr/blockmgr.go` — both deleted in
 > the same commit); the current format replaced it with content-defined SHA-256
-> chunking, so the mechanism `blocks/missing` uses today is not the one
+> chunking, so the mechanism `chunks/missing` uses today is not the one
 > described here. Kept because the *reasoning* — ask before you send, dedup
 > is a network problem not a storage one — is what tier 2 actually shipped on,
 > and still holds under the new chunker. See
@@ -25,7 +25,7 @@ independently and in order. Nothing here is committed.
 ## What the CLI does today, and why it is not sync
 
 `silo put` maps to `client.UploadFile`: one `PUT libraries/{id}/entries/{path}`
-with the whole file as the request body for a small file, or the block surface
+with the whole file as the request body for a small file, or the chunk surface
 for anything over one block. (It used to mint an upload access token and POST a
 multipart body; that was the pre-0.4.0 shape and this document described it for
 longer than it was true.) `cmdPut` (`internal/cli/cli.go:148`) takes exactly one
@@ -66,7 +66,7 @@ The plan here was a `filepath.WalkDir` over `client.Mkdir` and
 `client.UploadFile` — no protocol work, and nothing incremental, so a re-run
 would re-upload everything. By the time it was built, tier 2 and the batch
 surface were already there, so it went straight to composing them
-(`client/tree.go`): hash every file in the tree, ask `blocks/missing` about all
+(`client/tree.go`): hash every file in the tree, ask `chunks/missing` about all
 of it at once, send only what is new, then create every directory and file in
 one `batch`. A folder of five hundred photos is one commit rather than five
 hundred, and a re-run transfers nothing.
@@ -103,7 +103,7 @@ can compute the same ids the server would with stdlib SHA-1 and a loop.
 That makes this flow available:
 
 1. Chunk locally at the server's `block_size`, SHA-1 each block.
-2. `POST /api/silo/v1/libraries/{id}/blocks/missing` — the server replies with the
+2. `POST /api/silo/v1/libraries/{id}/chunks/missing` — the server replies with the
    ids it needs.
 3. Upload only those, then name the whole list in one call.
 
@@ -162,7 +162,7 @@ server half of the merge story.
 Tier 2 is built and was the one with the interesting payoff-to-effort ratio;
 its prerequisite — reporting the block size — went in with it. Tier 1 is now
 the contained afternoon that is left, and it is worth more than it was: a
-recursive `put` over the block surface skips everything the server already
+recursive `put` over the chunk surface skips everything the server already
 holds, so re-running it over a mostly-unchanged tree is cheap rather than a
 full re-upload. Tier 3 should not start until someone actually wants a headless
 agent badly enough to maintain it. No upstream client is a fallback for ongoing

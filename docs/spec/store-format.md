@@ -482,7 +482,7 @@ cross-user dedup end for E2EE libraries, since a different CK gives a different
 frame; that was always the price of E2EE.
 
 Note the asymmetry it creates for clients: in an E2EE library a chunk cannot be
-*named* without being encrypted first, so `blocks/missing` skips uploads but
+*named* without being encrypted first, so `chunks/missing` skips uploads but
 never crypto.
 
 ### Chunker seed

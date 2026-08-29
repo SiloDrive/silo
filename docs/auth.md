@@ -813,7 +813,7 @@ only where the body is small and is not already named by its hash.**
 
 Nonce and digest are two different jobs, and conflating them produces something
 that does neither. Replay protection needs *uniqueness*, and a content hash is
-not unique — uploading the same block twice is legitimate and common. Content
+not unique — uploading the same chunk twice is legitimate and common. Content
 binding needs the digest, which need not be unique at all.
 
 P-256 verification costs around a hundred microseconds, roughly twice Ed25519's

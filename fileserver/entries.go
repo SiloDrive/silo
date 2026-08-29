@@ -29,7 +29,7 @@ import (
 //	GET    /api/silo/v1/libraries/{library}/entries/{path}   dir -> listing, file -> bytes
 //	HEAD   /api/silo/v1/libraries/{library}/entries/{path}   headers only
 //	PUT    /api/silo/v1/libraries/{library}/entries/{path}   body -> file, ?type=dir,
-//	                                                  or ?type=blocks (blocks.go)
+//	                                                  or ?type=chunks (chunks.go)
 //	DELETE /api/silo/v1/libraries/{library}/entries/{path}
 //	POST   /api/silo/v1/libraries/{library}/entries/{path}   {"op":"move"|"copy","to":"/x/y"}
 //
@@ -230,6 +230,15 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ?type=manifest answers with the file's description instead of its bytes.
+	// It comes after the ETag and the 304, so a client revalidating a manifest
+	// it already holds pays a dirent lookup and no more, exactly as it does
+	// for the content.
+	if strings.EqualFold(r.URL.Query().Get("type"), "manifest") {
+		serveManifest(w, r, library, entry)
+		return
+	}
+
 	// Both branches take the id resolved above rather than the path, so neither
 	// re-walks the tree from the root — the listing and the file body are read
 	// straight from the object the ETag was just computed from.
@@ -238,6 +247,73 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serveFile(w, r, library, entry.id, upath.Base(path))
+}
+
+// serveManifest answers a file's manifest, addressed by the path the client
+// already has.
+//
+// **The bytes are the object, not a rendering of it.** This returns exactly
+// what GET objects/{id} returns for the same id — the encoded store.Manifest
+// that store.DecodeManifest parses — so a client implements one decoder and
+// reaches it two ways. A JSON chunk list would have been a second expression
+// of a format both sides already agree on, which is a way for the two of them
+// to name the same bytes differently without either finding out.
+//
+// **The reason to have the path spelling at all is scope.** The id-addressed
+// surface is library-level, because a chunk or object id says nothing about
+// where it is linked and so cannot be checked against a narrowed credential.
+// Without this, a credential scoped to a subtree could read a file's bytes and
+// not its chunk list — able to download a gigabyte to change a byte, and not
+// able to avoid it. This is the same scope the GET beside it already has.
+//
+// **The tag is the bare id**, not the v1- prefixed one the rest of this
+// surface carries, and the difference is not an oversight. The prefix versions
+// the *representation*: a listing's JSON shape can change under a fixed id, so
+// a cached listing needs a tag that changes with it. A manifest cannot — the
+// id is the hash of these exact bytes, so a different encoding is a different
+// id — and the same object served at objects/{id} must validate identically or
+// a client caching both spellings holds two entries for one thing.
+//
+// The trap that falls out, stated because it is silent: this tag must not be
+// fed back as If-Match on entries/{path}. That precondition compares against
+// the v1- form, so it would fail every time, for a reason nothing in a log
+// would explain. A client should send back only tags it was given for the
+// resource it is writing.
+func serveManifest(w http.ResponseWriter, r *http.Request, library *libmgr.Library, entry *resolved) {
+	// A directory is a real entry that has no manifest, so this is the
+	// caller asking the wrong question rather than a path that is not there.
+	// 404 would say the file is missing, which is a claim about the library
+	// and not about the request.
+	if entry.isDir {
+		http.Error(w, "Not a file; a directory has no manifest", http.StatusBadRequest)
+		return
+	}
+	st, err := library.Store()
+	if err != nil {
+		log.Errorf("failed to open store for library %s: %v", library.ID, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	id, err := store.ParseID(entry.id)
+	if err != nil {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+	data, err := st.GetObject(id)
+	if err != nil {
+		objectReadError(w, r, err, "manifest", id)
+		return
+	}
+
+	// Overwrites the v1- tag getEntry set on the way in, per the note above.
+	w.Header().Set("ETag", `"`+id.String()+`"`)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(data)
+	}
 }
 
 // rootFor is the tree this read resolves against: the head's root, or the one a
@@ -377,10 +453,10 @@ func putEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ?type=blocks is a file too, but one whose content is already on the
-	// server: the body names blocks rather than carrying bytes.
-	if strings.EqualFold(r.URL.Query().Get("type"), "blocks") {
-		putEntryBlocks(w, r, vars["libraryid"], path)
+	// ?type=chunks is a file too, but one whose content is already on the
+	// server: the body names chunks rather than carrying bytes.
+	if strings.EqualFold(r.URL.Query().Get("type"), "chunks") {
+		putEntryFromChunks(w, r, vars["libraryid"], path)
 		return
 	}
 
@@ -605,7 +681,7 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, libraryID, path string
 // server, named in order by the client.
 //
 // This is the resumable upload's second half, and it transfers no content: the
-// chunks went up one at a time through the block surface, and this names them.
+// chunks went up one at a time through the chunk surface, and this names them.
 //
 // The size is never taken from the request. A client-supplied length that
 // disagreed with the chunks would produce a file whose recorded size is a lie,
@@ -674,9 +750,9 @@ func putEntryChunks(w http.ResponseWriter, r *http.Request, library *libmgr.Libr
 // The upload bound stays here rather than in objmgr because it is server
 // policy and not a rule about the format: another deployment sets it
 // differently, and a manifest that is legal is legal at any size.
-func chunkManifest(st *objmgr.Store, blocks []string) (store.ID, int64, []store.ID, *batchFailure) {
-	ids := make([]store.ID, 0, len(blocks))
-	for _, raw := range blocks {
+func chunkManifest(st *objmgr.Store, chunks []string) (store.ID, int64, []store.ID, *batchFailure) {
+	ids := make([]store.ID, 0, len(chunks))
+	for _, raw := range chunks {
 		id, err := store.ParseID(raw)
 		if err != nil {
 			return store.ID{}, 0, nil, &batchFailure{http.StatusBadRequest, "Not a chunk id: " + raw}
@@ -714,19 +790,19 @@ func idStrings(ids []store.ID) []string {
 	return out
 }
 
-// putEntryBlocks commits a file whose content is already in the store, named
-// by the block ids the client uploaded to the block surface. It transfers no
+// putEntryFromChunks commits a file whose content is already in the store, named
+// by the chunk ids the client uploaded to the chunk surface. It transfers no
 // content: everything this reads is a few dozen bytes of JSON.
 //
 // This is the second half of a resumable upload, and it is the half that makes
-// the first half safe to interrupt. Blocks are immutable and content-addressed,
+// the first half safe to interrupt. Chunks are immutable and content-addressed,
 // so uploading them commits to nothing — the file does not exist, and no path
 // changes, until this call names them in order. A client can therefore upload
-// blocks over hours, across restarts, in any order and in parallel, and still
+// chunks over hours, across restarts, in any order and in parallel, and still
 // produce exactly one commit at the end.
 //
-// See blocks.go for the surface as a whole.
-func putEntryBlocks(w http.ResponseWriter, r *http.Request, libraryID, path string) {
+// See chunks.go for the surface as a whole.
+func putEntryFromChunks(w http.ResponseWriter, r *http.Request, libraryID, path string) {
 	library := entryLibrary(w, r, libraryID, path, true)
 	if library == nil {
 		return
@@ -750,13 +826,13 @@ func putEntryBlocks(w http.ResponseWriter, r *http.Request, libraryID, path stri
 	}
 
 	var body struct {
-		Blocks []string `json:"blocks"`
+		Chunks []string `json:"chunks"`
 	}
-	if !decodeJSONBody(w, r, maxBlockListBody, &body, `Expected a JSON body such as {"blocks":["<64 hex characters>",…]}`) {
+	if !decodeJSONBody(w, r, maxChunkListBody, &body, `Expected a JSON body such as {"chunks":["<64 hex characters>",…]}`) {
 		return
 	}
 
-	putEntryChunks(w, r, library, path, fileName, body.Blocks)
+	putEntryChunks(w, r, library, path, fileName, body.Chunks)
 }
 
 // boundedBody applies the upload size limit to a request body, answering the

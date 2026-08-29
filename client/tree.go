@@ -20,21 +20,21 @@ import (
 // has, then create every directory and file in one ordered, all-or-nothing
 // request:
 //
-//	POST libraries/{id}/blocks/missing   which of these do you not have?
-//	PUT  libraries/{id}/blocks/{id}      only the ones it asked for
+//	POST libraries/{id}/chunks/missing   which of these do you not have?
+//	PUT  libraries/{id}/chunks/{id}      only the ones it asked for
 //	POST libraries/{id}/batch            mkdir …, create …  -> one commit
 //
-// Dedup is across the tree, not just within a file: a block claimed by one
+// Dedup is across the tree, not just within a file: a chunk claimed by one
 // file is not offered again by the next, so a directory holding the same
 // export twice transfers it once.
 //
 // A server that advertises neither surface still works. uploadTreeSerially is
 // the old shape — a request per directory, a request per file — kept because
 // the client ships separately from the server it is pointed at, and because an
-// encrypted library cannot be written block by block at all.
+// encrypted library cannot be written chunk by chunk at all.
 
 // Batches are bounded by the server at 1000 operations and a 4 MiB body
-// (fileserver/batch.go). A create op carries 40 hex characters per block, so a
+// (fileserver/batch.go). A create op carries 40 hex characters per chunk, so a
 // tree of large files reaches the body limit long before the op limit — both
 // are counted here, with room left for the server's own accounting.
 const (
@@ -47,7 +47,7 @@ const (
 // here is about keeping one request's worth of ids a predictable size.
 const maxIDsPerQuery = 5000
 
-// TreeUpload is the account of what UploadDir did. Blocks held is the part
+// TreeUpload is the account of what UploadDir did. Chunks held is the part
 // worth reporting: it is the content the server already had, which is the
 // difference between this and a loop over UploadFile.
 type TreeUpload struct {
@@ -107,7 +107,7 @@ func (c *APIClient) UploadDir(libraryID, parentDir, localDir string, onFile func
 	result := &TreeUpload{Skipped: skipped}
 
 	server := c.capabilities()
-	if server.Has("batch") && server.Has("blocks") {
+	if server.Has("batch") && server.Has("chunks") {
 		if p, ok := c.chunkerFor(libraryID); ok {
 			return result, c.uploadTreeBatched(libraryID, dirs, files, p, onFile, result)
 		}
@@ -198,7 +198,7 @@ func (c *APIClient) uploadTreeBatched(libraryID string, dirs []string, files []t
 		ops = append(ops, BatchOp{Op: "mkdir", Path: dir})
 	}
 	for _, f := range files {
-		ops = append(ops, BatchOp{Op: "create", Path: f.remote, Blocks: f.chunks})
+		ops = append(ops, BatchOp{Op: "create", Path: f.remote, Chunks: f.chunks})
 	}
 	return c.applyInBatches(libraryID, ops, onFile, result)
 }
@@ -267,18 +267,18 @@ func (c *APIClient) applyInBatches(libraryID string, ops []BatchOp, onFile func(
 	return nil
 }
 
-// opBytes is roughly what one operation costs in the request body: a block id
+// opBytes is roughly what one operation costs in the request body: a chunk id
 // is 40 hex characters plus its quotes and comma, and everything else is small
 // and fixed. It only has to be close enough to keep a batch under a limit the
 // server measures exactly.
 func opBytes(op BatchOp) int {
-	return 64 + len(op.Path) + len(op.To) + 43*len(op.Blocks)
+	return 64 + len(op.Path) + len(op.To) + 43*len(op.Chunks)
 }
 
 // uploadTreeSerially is the shape that works against any server: a request per
 // directory, a request per file, and a commit for each. It is what a server
-// without the batch or block surfaces gets, and what an encrypted library
-// gets, since that cannot be assembled from blocks server-side at all.
+// without the batch or chunk surfaces gets, and what an encrypted library
+// gets, since that cannot be assembled from chunks server-side at all.
 func (c *APIClient) uploadTreeSerially(libraryID string, dirs []string, files []treeFile, onFile func(string), result *TreeUpload) error {
 	for _, dir := range dirs {
 		if dir == "/" {

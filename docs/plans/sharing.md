@@ -109,7 +109,7 @@ a *ceiling* over the grant, never a grant itself (auth.md's rule).
 - The anonymous principal is **never writable** in this plan. Upload links
   will change that deliberately, later, with their own abuse story.
 
-**Write paths check too.** `blocks/missing`, chunk PUT, and manifest commit
+**Write paths check too.** `chunks/missing`, chunk PUT, and manifest commit
 must consult the same model — read-only means the sync surface refuses
 writes, not just `entries/`.
 
@@ -221,7 +221,7 @@ ciphertext they decrypt a shared chunk wherever it appears. The chunk route
 being code-gated to the link's manifest narrows that in practice, but that
 is access control, not cryptography, and the claim must not quietly upgrade.
 For the compatible flavor it means the server durably holds keys that can
-reach shared blocks — one more reason that flavor is the labeled exception,
+reach shared chunks — one more reason that flavor is the labeled exception,
 never the default. (On the measured workload, cross-file dedup inside media
 libraries is near zero, so the gap between "one file" and the honest claim
 is usually empty — but usually is not a security property.)

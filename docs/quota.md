@@ -29,7 +29,7 @@ because answering any of them alone produces a number nobody can act on.
 | Collecting objects no commit reaches | `silo gc -orphans`, `objmgr.Unreferenced` | built (`e56a270`) |
 | Date-based history expiry | `silo gc -expire-history`, `expireHistory` | built (`c99b745`) |
 | Server-wide ceiling | — | not built |
-| Charging blocks rather than logical size | — | not built |
+| Charging chunks rather than logical size | — | not built |
 | Date-based history expiry | — | not built |
 | Collecting history-only objects | — | not built (`gc.go:37`) |
 | Admin API to read or set another account's cap | — | not built, and gated on there being an admin role at all (`plans/admin-check.md`) |
@@ -107,14 +107,14 @@ immediately, and that property is what `quota_test.go:102` exists to pin.
 
 ### What it should count
 
-**The blocks you actually occupy.** A user's charge is the unique blocks their
+**The chunks you actually occupy.** A user's charge is the unique chunks their
 libraries hold, which is very nearly the bytes their libraries cost the disk.
 
 The argument for it is that logical-at-head charges for something the user does
 not consume. Store two copies of the same 4 GB video and content-defined
 chunking stores one; logical-at-head bills 8 GB. The dedup that Silo's whole
 object model exists to provide accrues to the operator and is invisible to the
-person paying for the space. Charging blocks hands the saving to the user who
+person paying for the space. Charging chunks hands the saving to the user who
 earned it, and — more importantly — makes the number the user sees and the
 number the operator has to buy disk for the same number. Two accounting systems
 that disagree is how a server runs out of space while every account is under
@@ -123,17 +123,17 @@ quota.
 **Cross-library sharing is not a problem here, and that is what makes this
 clean.** Objects live at `storage/{type}/{storeID}/`, one store per library
 (`objstore.go:78`, `091e22f`), and E2EE libraries have per-library keys anyway,
-so identical bytes in two libraries are two blocks. A block therefore belongs
+so identical bytes in two libraries are two chunks. A chunk therefore belongs
 to exactly one library, which is owned by exactly one account. There is no
-question of who pays for a shared block, no split that changes when somebody
+question of who pays for a shared chunk, no split that changes when somebody
 else deletes their copy, and no first-writer rule to be arbitrary about. Every
-block has one payer.
+chunk has one payer.
 
 ### What it costs to change
 
 Three consequences, and none is a surprise once stated:
 
-1. **Deleting a file no longer frees space immediately.** The blocks stay
+1. **Deleting a file no longer frees space immediately.** The chunks stay
    reachable from older commits, so they stay charged until history expires.
    This is exactly ZFS and NetApp semantics, and users of both already expect
    it, but it is a behaviour change and it must be *said* — a client that
@@ -154,10 +154,10 @@ Three consequences, and none is a surprise once stated:
 ### On the wire
 
 `kind` was put on `/account/usage` for exactly this day. The new charge gets a
-new kind — `blocks-occupied` — rather than quietly redefining `logical-at-head`
+new kind — `chunks-occupied` — rather than quietly redefining `logical-at-head`
 under clients that already parse it. Reporting both together is worth doing:
 `logical-at-head` is what the user's files add up to and is the number that
-matches what they see in a file manager, `blocks-occupied` is what they are
+matches what they see in a file manager, `chunks-occupied` is what they are
 billed for, and the gap between them is dedup and compression doing their job.
 A client that shows both can explain itself. A client that shows one can pick.
 
@@ -309,7 +309,7 @@ client that re-reads usage on that event, with the TTL as a floor rather than
 the only clock, gets a number that changes when the user's own writes land
 instead of up to thirty seconds later.
 
-### What changes under `blocks-occupied`
+### What changes under `chunks-occupied`
 
 The client-side shape does not, which is the point of having put `kind` on the
 wire. Three things do:
@@ -394,7 +394,7 @@ Consequences the client should know:
 
 - **Reading history costs nothing against quota** under today's charge, because
   usage is logical size at head and history is by definition not at head. Under
-  `blocks-occupied` it still costs nothing to *read* — but the history being
+  `chunks-occupied` it still costs nothing to *read* — but the history being
   read is now part of what the owner is charged for, which is the whole point of
   the retention lever.
 - **The listing ends where history ends; it does not 410.** That is the opposite
@@ -517,7 +517,7 @@ deleted.
    and is deliberately not here yet — it would be the first thing in Silo that
    deletes user data with nobody watching, and it wants a kill switch and an
    interval before it wants code.
-4. **Switch the charge to `blocks-occupied`**, reporting both kinds, with every
+4. **Switch the charge to `chunks-occupied`**, reporting both kinds, with every
    site in the table above moving together. This is fourth on purpose: it is the
    step users feel, and it should not land until the space it makes chargeable
    can also be released.

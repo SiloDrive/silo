@@ -109,7 +109,7 @@ not already been replaced.
 GET /api/silo/v1/server-info        (no auth)
 ```
 ```json
-{"version":"0.5.0","features":["libraries","entries","entries-copy","conditional-writes","ranged-reads","changes","library-rename","blocks","pagination","batch","usage","notifications"]}
+{"version":"0.5.0","features":["libraries","entries","entries-copy","conditional-writes","ranged-reads","changes","library-rename","chunks","objects","chunks-fetch","entries-manifest","pagination","batch","usage","logout","password-change","account-keys","e2ee-libraries","setup","notifications"]}
 ```
 
 **`version` is semver with no leading `v`**, and that is a contract, not an
@@ -129,7 +129,7 @@ the difference between a clear failure and a silent one if this ever regresses.
 Check it at domain setup. **This surface changed materially in 0.4.0** — reads
 stopped redirecting, `PUT` started accepting file content — **0.4.1** added
 conditional writes, **0.4.3** stopped reporting a damaged library as a
-deleted one, **0.4.4** added copy, library rename by `PATCH`, block-by-block
+deleted one, **0.4.4** added copy, library rename by `PATCH`, chunk-by-chunk
 upload, and this feature list itself, and **0.4.5** added pagination and
 batching. **0.4.6** changed nothing here — a server-bootstrap and client
 release — and was never tagged.
@@ -228,7 +228,7 @@ might compare with `du`, label it.
 allowed and to stop, where the truth is to free some space and retry. It can
 come back from `PUT entries/{path}` (before the body is read, if you sent a
 `Content-Length`, and again after), from `POST batch` (before anything is
-applied — the batch is still all-or-nothing), and from `PUT blocks/{id}`.
+applied — the batch is still all-or-nothing), and from `PUT chunks/{id}`.
 Treat it as a user-facing condition with an actionable message, not a
 transport error to retry blindly: retrying without freeing space returns 507
 again.
@@ -241,7 +241,7 @@ always holding.
 ### `kind` is going to change, which is why it is there
 
 `logical-at-head` is not the last word on what quota counts. The plan on the
-table — [`quota.md`](quota.md) — is to charge the **blocks an account actually
+table — [`quota.md`](quota.md) — is to charge the **chunks an account actually
 occupies** instead: dedup and compression mean two identical 5 MB files are
 billed as 10 MB today while costing 5 MB of disk, and the number the user is
 charged for and the number the operator buys disk for should be the same
@@ -253,19 +253,19 @@ value of `kind`, which is on the wire for exactly this reason.
 **So: branch on `kind`, or display it. Never hard-code the string, and never
 assume the number means what it meant last release.** A client that ignores it
 shows an account halving overnight and calls it a bug in the server. Concretely,
-when `blocks-occupied` arrives:
+when `chunks-occupied` arrives:
 
 - **The figure becomes what the account is billed for**, not what its files add
   up to. Those coincide only when nothing is deduplicated or compressed.
 - **You cannot estimate it locally by summing listing sizes.** Any optimistic
   "will this fit" check computed client-side has to become a request instead.
-- **Deleting a file stops freeing space immediately.** The blocks stay reachable
+- **Deleting a file stops freeing space immediately.** The chunks stay reachable
   from older commits until history retention expires them — ZFS and NetApp
   semantics. A UI that re-reads usage after a delete to show the space coming
   back needs to stop promising that.
 
 Both kinds may be reported together, and a client that shows both can explain
-itself: `logical-at-head` is what a file manager would total, `blocks-occupied`
+itself: `logical-at-head` is what a file manager would total, `chunks-occupied`
 is the bill, and the gap between them is dedup and compression doing their job.
 
 ### If you are filling in `df`
@@ -475,7 +475,7 @@ Two things that matter more than HEAD itself:
 
 Every GET and HEAD sets `ETag: "v1-{id}"`, where `{id}` is the object's content
 hash. Send it back as `If-None-Match` and an unchanged object answers **304**
-having read no blocks at all — the check costs one dirent lookup in the parent
+having read no chunks at all — the check costs one dirent lookup in the parent
 directory. This is the cheapest question in the API; ask it often.
 
 ```
@@ -699,7 +699,7 @@ Check `features` for `batch`.
 
 ```
 POST /api/silo/v1/libraries/{library}/batch
-{"ops":[{"op":"mkdir","path":"/a"},{"op":"create","path":"/a/x.txt","blocks":[…]}]}
+{"ops":[{"op":"mkdir","path":"/a"},{"op":"create","path":"/a/x.txt","chunks":[…]}]}
 → 200 {"commit_id":"…","ops":2,"changed":true}
 ```
 
@@ -712,9 +712,9 @@ code that operation would have answered alone. Retry the whole batch after
 fixing it — there is no partial state to reconcile, which is the reason to use
 this rather than a loop.
 
-**`create` names blocks you already uploaded.** This is the other half of the
-block surface, and together they are the answer to a large drop: upload the
-blocks, skipping everything the server holds, then create every file in one
+**`create` names chunks you already uploaded.** This is the other half of the
+chunk surface, and together they are the answer to a large drop: upload the
+chunks, skipping everything the server holds, then create every file in one
 commit. Doing it a file at a time costs one commit each, and the user's history
 becomes five hundred entries deep for one drag.
 
@@ -761,14 +761,14 @@ one. `limit` is capped at 10,000 and a bad value is a **400**, not a clamp.
 `GET /libraries` does not page — the count is bounded by how many libraries the
 account has.
 
-## Uploading in blocks
+## Uploading in chunks
 
-Check `features` for `blocks` first. Three calls:
+Check `features` for `chunks` first. Three calls:
 
 ```
-POST /api/silo/v1/libraries/{library}/blocks/missing      {"blocks":[id,…]} → {"missing":[id,…]}
-PUT  /api/silo/v1/libraries/{library}/blocks/{id}         the chunk's bytes
-PUT  /api/silo/v1/libraries/{library}/entries/{path}?type=blocks   {"blocks":[id,…]}
+POST /api/silo/v1/libraries/{library}/chunks/missing      {"chunks":[id,…]} → {"missing":[id,…]}
+PUT  /api/silo/v1/libraries/{library}/chunks/{id}         the chunk's bytes
+PUT  /api/silo/v1/libraries/{library}/entries/{path}?type=chunks   {"chunks":[id,…]}
 ```
 
 **You can compute the ids yourself, and that is the point.** An id is the
@@ -794,11 +794,11 @@ surface. Our own client had this bug: it cut at fixed 8 MiB offsets and hashed
 SHA-1, and files under the threshold hid it because they never took the
 chunked path at all.
 
-**Nothing exists until the third call.** Blocks are immutable and named by
+**Nothing exists until the third call.** Chunks are immutable and named by
 their content, so uploading them changes no path, mints no commit and touches
 nothing at the destination. Upload in parallel, in any order, across app
 launches. If the transfer dies, run the same three calls again — the second
-`blocks/missing` returns a shorter list. There is no session, no upload id and
+`chunks/missing` returns a shorter list. There is no session, no upload id and
 no offset to persist; the server's answer *is* your resume state.
 
 **The last call is the write**, so it behaves like any other: `If-Match` and
@@ -808,16 +808,16 @@ only point at which another client can see anything.
 **424 means upload first, then send the same request again.** The body carries
 `{"missing":[…]}`. It is not a 400 — nothing about the request is wrong.
 
-**A rejected block is a corrupt transfer.** The server hashes what arrives and
+**A rejected chunk is a corrupt transfer.** The server hashes what arrives and
 answers **400** if it does not match the id you sent it under, so a successful
 PUT is an end-to-end integrity check and not merely an acknowledgement.
 
-**Already-present blocks answer 200 before reading the body**, where a stored
+**Already-present chunks answer 200 before reading the body**, where a stored
 one answers 201. Send `Expect: 100-continue` and you skip the transfer
-entirely, which matters when a `blocks/missing` answer has gone stale under
+entirely, which matters when a `chunks/missing` answer has gone stale under
 you.
 
-**Encrypted libraries are excluded** (**400**). Their blocks are ciphertext, so
+**Encrypted libraries are excluded** (**400**). Their chunks are ciphertext, so
 you cannot name one without doing the encryption yourself. Under store-v2 that
 stops being an exclusion and becomes the normal case — the client *does* do the
 encryption, and names the ciphertext. See *What store-v2 changes* below.
@@ -827,7 +827,7 @@ encryption, and names the ciphertext. See *What store-v2 changes* below.
 Short list, and shorter than it was.
 
 **A plain PUT that dies partway has to start over.** For anything large, use
-the block surface above instead — that is what it is for.
+the chunk surface above instead — that is what it is for.
 
 This paragraph used to end by saying chunking was at fixed offsets, so a byte
 inserted near the front of a file shifted every boundary after it and nothing
@@ -861,6 +861,78 @@ on the wire: `POST /libraries` with `"e2ee": true` creates one, and
 holds no key and decrypts nothing, so ranges work there the same way they work
 everywhere else. *What store-v2 changes*, below, is what to build against.
 
+## Downloading in chunks
+
+Check `features` for `chunks-fetch` and `entries-manifest`. This is the mirror
+of the section above, and it landed later, so a client written against the
+upload half alone will have the asymmetry this closes: a one-byte edit to a
+1 GiB file **uploads** one chunk and **downloads** the whole file to build it.
+
+```
+GET  /api/silo/v1/libraries/{library}/entries/{path}?type=manifest  → the encoded manifest
+GET  /api/silo/v1/libraries/{library}/chunks/{id}                   → one chunk
+POST /api/silo/v1/libraries/{library}/chunks/fetch   {"chunks":[id,…]} → a chunk stream
+```
+
+**The manifest id is already in your hand — this is not an extra round trip.**
+A directory listing carries each child's `id`, and for a file that id *is* the
+manifest id, unprefixed. So one `readdir` gives you every manifest id in the
+directory, and `?type=manifest` is a fetch you make when you decide to read the
+file, not a lookup you make first. Under 64 KiB the bytes *are* the manifest,
+so on a small file that one request is the whole read.
+
+**Decode it with `store.DecodeManifest`, not with a JSON parser.** It is an
+ordered `[]ChunkRef` of `{ID, Size}` with the file's size. `ChunkRef.Size` is
+the **plaintext** length, specified that way precisely because mapping a read
+offset to a chunk needs it — which is the arithmetic that replaces dividing by
+a window size.
+
+**Key your content cache on the chunk id, not on the file.** That is the whole
+prize, and a cache keyed by `(file-id, window)` collects none of it: one byte
+changing on the server invalidates every window of that file, and two files
+sharing a gigabyte share nothing. Keyed by chunk id, an append invalidates one
+chunk and identical content is stored once however many files hold it.
+
+**Ask by id rather than by range, even though a range would work.** A range is
+addressed by `(path, offset, length)`, and that triple only means anything
+relative to a version — between fetching a manifest and fetching its
+four-hundredth chunk the file can change, and the read then returns new content
+at old offsets, assembling a file that matches no version of anything.
+`If-Match` on every range defends against it; content addressing does not have
+the problem to defend.
+
+**Verify every chunk on arrival.** `store.DecodeChunkFrames` does it for a
+whole stream. It is not a nicety: the hash check is exactly what makes a source
+other than this server — a cache of uncertain provenance after an unclean
+shutdown, a peer, a mirror — legal to read from at all.
+
+**Splicing an edit is where this pays, and it is the one dangerous part.**
+Fetch the chunks around an edit, re-chunk from there until the boundaries
+re-sync with the manifest you already hold, and reuse every id on either side
+without reading those bytes. Content-defined cutting is what makes that sound.
+But a re-sync that is wrong by one chunk produces *valid chunks* and a manifest
+that reproduces nothing, and it surfaces at `close(2)` looking like a corrupt
+transfer with nothing naming the cause. Ship it with a verifier that re-chunks
+the whole file and asserts the result — on in tests, behind a flag in
+production. Two cheaper guards worth having anyway: assert the manifest's
+`FileSize` equals the sum of its `ChunkRef.Size` before you `PUT` it, and treat
+`chunks/missing` returning a *shorter* list than the ids you spliced in as free
+evidence the reused ids were real.
+
+**`GET chunks/{id}` for one, `POST chunks/fetch` for many.** The single form is
+cacheable by any intermediary and immutable; the batch takes at most 256 ids,
+answers `400` rather than truncating above that, and streams frames as it reads
+them. A stream that dies part-way is resumed by asking for what did not arrive
+— the frames are id-labelled, so you always know which those are. See
+[`protocol.md`](protocol.md#the-chunk-stream--post-blocksfetch) for the frame
+layout.
+
+**A folder-scoped credential is refused `chunks/` and `objects/` entirely**, and
+that is why `?type=manifest` exists beside `objects/{id}`: an id says nothing
+about where it is linked, so it cannot be checked against a narrowed scope.
+Such a client reads the chunk list through the path and the bytes through the
+path too.
+
 ## What store-v2 changes — read this before writing anything you would hate to unwind
 
 **Status, honestly — and this paragraph has been wrong in both directions.** It
@@ -877,7 +949,10 @@ What actually answers on a running server today:
 - **Content-defined boundaries, per library.** The `chunker` object on the
   library's row in `GET /libraries`, frozen at creation.
 - **Manifests, directories and commits by content id**, over `/objects/{id}`
-  and `/head`.
+  and `/head`, plus `GET chunks/{id}` for one chunk and `POST chunks/fetch` for
+  many. Feature names `objects` and `chunks-fetch`.
+- **A file's manifest by path**, `GET entries/{path}?type=manifest`. Feature
+  name `entries-manifest`.
 
 **Per-library E2EE now answers.** An encrypted library can be created —
 `POST /libraries` with `"e2ee": true`, the sealed root, the sealed initial
@@ -890,7 +965,7 @@ back the wrap. The account has to publish an identity key first
 What still does not answer:
 
 - **Path-addressed writes on an encrypted library**, deliberately and
-  permanently: `PUT entries/{path}` and `?type=blocks` answer **403** telling
+  permanently: `PUT entries/{path}` and `?type=chunks` answer **403** telling
   you to write by id, because the server cannot chunk what it cannot read.
   That is the design, not a gap.
 
@@ -909,7 +984,7 @@ second thing to keep in step with the vectors for no gain.
 ### The four wire changes
 
 **Ids become 64 hex characters.** SHA-256 of the stored bytes, everywhere a
-40-character SHA-1 appears today: blocks, objects, commits, `head_commit_id`,
+40-character SHA-1 appears today: chunks, objects, commits, `head_commit_id`,
 `since` anchors, ETags. Anything holding a width of 40 — a route regex, a
 column, a validator, a fixed-size buffer — breaks.
 
@@ -943,7 +1018,7 @@ End-to-end encryption is **on by default** for new libraries, and it splits the
 API in a way worth designing for now.
 
 - **A plain library** works exactly as documented above. `entries/{path}`,
-  ranged GETs, conditional writes, the block surface, the delta endpoint.
+  ranged GETs, conditional writes, the chunk surface, the delta endpoint.
 - **An E2EE library keeps `entries/{path}` for structure and loses it for
   content.** The line is not where you might guess, so it is worth stating
   precisely.
@@ -972,10 +1047,19 @@ file*, *write these bytes* — rather than branching on `e2ee` at each call site
 **Reading an E2EE library:**
 
 ```
-GET  libraries/{library}/entries/{ct-path}              → listing, names as ciphertext
-GET  libraries/{library}/entries/{ct-path}?type=blocks  → the ordered chunk list
-GET  libraries/{library}/blocks/{id}                    → chunk ciphertext → decrypt
+GET  libraries/{library}/entries/{ct-path}                 → listing, names as ciphertext
+GET  libraries/{library}/entries/{ct-path}?type=manifest  → the ordered chunk list
+GET  libraries/{library}/chunks/{id}                      → chunk ciphertext → decrypt
+POST libraries/{library}/chunks/fetch                     → many chunks, one framed response
 ```
+
+**This block used to say `?type=blocks`, which never existed.** The spelling is
+`?type=manifest`, and the body is the encoded manifest rather than a JSON list
+— the same object `objects/{id}` serves. `?type=blocks` is a **`PUT`**
+parameter, on the write side, and nothing answers it on a `GET`. Worth naming
+as a correction rather than quietly fixing: a client author following this line
+would have written a decoder for a response shape that does not exist and found
+out at runtime.
 
 or straight down the object graph, which is what a cold start does:
 
@@ -997,8 +1081,8 @@ not on a plain library.
 **Writing, and this shape is the same for both library types:**
 
 ```
-POST libraries/{library}/blocks/missing       {"blocks":[id,…]} → {"missing":[id,…]}
-PUT  libraries/{library}/blocks/{id}          the chunk's bytes  (or batched pack-blocks)
+POST libraries/{library}/chunks/missing       {"chunks":[id,…]} → {"missing":[id,…]}
+PUT  libraries/{library}/chunks/{id}          the chunk's bytes
 PUT  libraries/{library}/objects/{id}         manifest, then each directory up the spine,
                                        then the commit
 PUT  libraries/{library}/head                 If-Match: <current head commit id>
@@ -1241,7 +1325,7 @@ Two properties fall out of that, both useful:
 
 - **It costs nothing against quota**, today. Usage is logical size at head;
   history is by definition not at head, and nothing was special-cased to make
-  that true. Note the "today": under the `blocks-occupied` charge described
+  that true. Note the "today": under the `chunks-occupied` charge described
   above, *reading* history still costs nothing, but the history being read is
   part of what its owner is billed for — which is what makes retention a lever
   rather than a preference.
@@ -1277,7 +1361,9 @@ exercised against a running server.
 | `modifyItem` (rename) | `POST /api/silo/v1/libraries/{id}/entries/{path}` `{"op":"move",…}` |
 | `modifyItem` (reparent) | the same call — a move is a move |
 | duplicate an item | `POST /api/silo/v1/libraries/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
-| upload a large file | `POST blocks/missing`, `PUT blocks/{id}` for each, then `PUT entries/{path}?type=blocks` |
+| upload a large file | `POST chunks/missing`, `PUT chunks/{id}` for each, then `PUT entries/{path}?type=chunks` |
+| download a large file you hold a version of | `GET entries/{path}?type=manifest`, then `POST chunks/fetch` for the ids your chunk cache lacks |
+| read a file once, nothing cached | `GET entries/{path}` — one request, the server assembles |
 | enumerate a huge directory | `GET entries/{path}?limit=1000`, then follow `Link: …; rel="next"` |
 | write many things at once | `POST /api/silo/v1/libraries/{id}/batch` — one commit, all or nothing |
 | `deleteItem` | `DELETE /api/silo/v1/libraries/{id}/entries/{path}` |
@@ -1432,15 +1518,20 @@ workarounds it used to require are no longer worth their cost:
 What is worth doing:
 
 1. **Cache attributes**, keyed by path, revalidated with `If-None-Match`. A 304
-   reads no blocks, so `getattr` storms are nearly free.
+   reads no chunks, so `getattr` storms are nearly free.
 2. **Invalidate from `/changes`** rather than by polling paths. One request tells
    you everything that moved since your last anchor.
-3. **Read through to `entries/` with `Range`**, and cache block-aligned chunks
-   locally if the workload rereads. The server does not care how you align; it
-   will serve any range.
+3. **Read through to `entries/` with `Range`** for anything read once, and go
+   through the manifest for anything you mean to keep — see *Downloading in
+   chunks*. Key that cache on the chunk id the server named, not on a window
+   size of your own: a window cache keyed by file id loses everything when one
+   byte changes, and two files sharing a gigabyte share nothing.
 
-Encrypted libraries are the exception, and a harder one than "no ranges": they
-are unreadable over this API entirely. See the gaps section above.
+Encrypted libraries are not the exception this paragraph used to call them.
+They were unreadable over this API when it was written; they now read and write
+by id — `objects/{id}`, `chunks/{id}`, `chunks/fetch`, `PUT head` — with
+structure still routed by ciphertext path. What is refused there, permanently,
+is a path-addressed write and a ranged content read.
 
 The upstream FUSE client remains a useful reference for FUSE mechanics — inode
 allocation, handle lifetime, writeback — even though its network layer is not
@@ -1452,8 +1543,15 @@ The server is ours and additive endpoints are cheap. Every ask from the first dr
 document — ranged reads without a capability URL, `PUT` accepting file content,
 and conditional writes — has been built. What is left:
 
-1. Resumable upload, if whole-file PUT turns out to be painful over flaky links
-2. A batch block fetch (`pack-blocks`), if per-object round trips dominate
+1. ~~Resumable upload~~ — built, as the chunk surface: `chunks/missing`,
+   `PUT chunks/{id}`, `PUT entries/{path}?type=chunks`.
+2. ~~A batch chunk fetch~~ — built, as `POST chunks/fetch`. It was proposed here
+   under the name `pack-blocks`, which was a legacy-lane spelling for a
+   legacy-lane call; the thing that shipped is on this lane and framed, not
+   packed.
+3. A batch chunk *upload* — the same frames read rather than written. This is
+   the one that is genuinely still open, and it is ranked in
+   [`protocol-gaps.md`](protocol-gaps.md).
 
 If Porter wants something else, ask rather than working around it in Swift.
 Reimplementing server logic client-side is what makes sync clients enormous —

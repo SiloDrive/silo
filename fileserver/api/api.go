@@ -83,10 +83,20 @@ func features() []string {
 		"ranged-reads",       // Range on GET entries, unencrypted libraries
 		"changes",            // GET libraries/{id}/changes?since=
 		"library-rename",     // PATCH libraries/{id}
-		"blocks",             // blocks/missing, PUT blocks/{id}, PUT entries?type=blocks
-		"pagination",         // ?limit on changes and directory listings, Link: rel="next"
-		"batch",              // POST libraries/{id}/batch — many operations, one commit
-		"usage",              // GET account/usage, and size/file_count on the libraries listing
+		"chunks",             // chunks/missing, PUT chunks/{id}, PUT entries?type=chunks
+		// The read half of the store, and the three names below exist because
+		// of one failure worth not repeating. All of this was built and none
+		// of it was named, so porter-fuse asked for `GET chunks/{id}` and for
+		// a way to read a manifest — both of which had been answering for a
+		// release. A capability a client cannot discover is a capability that
+		// does not exist to it, and the chunk surface's own name says only
+		// what a client may write.
+		"objects",          // GET/PUT objects/{id}, GET/HEAD chunks/{id}, PUT head
+		"chunks-fetch",     // POST chunks/fetch — many chunks, one framed response
+		"entries-manifest", // GET entries/{path}?type=manifest
+		"pagination",       // ?limit on changes and directory listings, Link: rel="next"
+		"batch",            // POST libraries/{id}/batch — many operations, one commit
+		"usage",            // GET account/usage, and size/file_count on the libraries listing
 		// Credential self-service. A client cannot discover these by version
 		// number and should not learn them from a 404: a 404 on logout reads
 		// as a broken route rather than as an older server, and a client that

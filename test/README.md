@@ -17,7 +17,7 @@ things `wire()` cannot do:
   `RunUser` passed every Go test and would have panicked in production; it was
   caught by running the binary.
 - **It cannot tell `null` from `[]`.** Go unmarshals both into the same nil
-  slice. `blocks_test.rb` asserts `missing` is `[]`, with the comment *"null
+  slice. `chunks_test.rb` asserts `missing` is `[]`, with the comment *"null
   here breaks every client that is not Go"* — that assertion is unwritable in
   the language the server is written in.
 
@@ -45,7 +45,7 @@ SILO_URL=http://localhost:8099 SILO_EMAIL=admin@example.com SILO_PASSWORD=testpa
 `SILO_PASSWORD` is required; the other two have defaults
 (`http://localhost:8082`, `admin@example.com`).
 
-Run one file with `ruby blocks_test.rb`, and one test with `-n
+Run one file with `ruby chunks_test.rb`, and one test with `-n
 test_a_chunk_that_does_not_hash_to_its_id_is_refused`.
 
 **Use a throwaway data directory.** The tests create libraries and delete them
@@ -58,7 +58,7 @@ careful about a directory you keep things in.
 |---|---|
 | `auth_test.rb` | login returning a session credential, refusals, protected routes |
 | `libraries_test.rb` | create, list, delete |
-| `blocks_test.rb` | `blocks/missing`, `PUT blocks/{sha256}`, `?type=blocks`, hash refusal, resume |
+| `chunks_test.rb` | `chunks/missing`, `PUT chunks/{sha256}`, `?type=chunks`, hash refusal, resume |
 | `batch_test.rb` | many operations as one commit, all-or-nothing, `If-Match` on the root |
 | `pagination_test.rb` | `?limit`, the `Link` header, and the anchor withheld until the last page |
 

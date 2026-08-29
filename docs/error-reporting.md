@@ -73,13 +73,13 @@ how that is arranged, which is a setting rather than a default.
 ## Grouping
 
 A receiver that has no fingerprint to go on groups events by hashing the
-message, and almost every message Silo logs has a library id, a block hash, a
+message, and almost every message Silo logs has a library id, a chunk hash, a
 path or an account in it. Left alone that files one issue per file, which is
 the same as having no issue list at all.
 
 So Silo sends its own fingerprint: the function that logged, plus the message
 with its variable parts replaced — ids, hashes, numbers, addresses and quoted
-strings. `failed to read block a94a8f…` and `failed to read block da39a3…`
+strings. `failed to read chunk a94a8f…` and `failed to read chunk da39a3…`
 become one issue that has happened twice, which is the thing you actually want
 to know.
 
@@ -90,14 +90,14 @@ response context itself — without it every transaction arrives with a blank
 status and a page of 500s is indistinguishable from a page of 200s.
 
 Transactions get the same treatment from the other direction. Named by URL,
-`/libraries/{libraryid}/blocks/{id}` would arrive as hundreds of thousands of distinct
+`/libraries/{libraryid}/chunks/{id}` would arrive as hundreds of thousands of distinct
 endpoints of one request each; a middleware renames each transaction after the
 route mux matched, so they aggregate.
 
 ## Sampling
 
 `SILO_SENTRY_TRACES_SAMPLE_RATE` defaults to `0.1`. A sync client polls every
-few seconds and a single large upload is thousands of block PUTs, so tracing
+few seconds and a single large upload is thousands of chunk PUTs, so tracing
 everything sends a great deal of data that says the same thing repeatedly. Set
 it to `1` while you are looking at something specific, and to `0` to turn
 tracing off and keep only the errors.

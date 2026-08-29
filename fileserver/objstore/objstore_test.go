@@ -123,11 +123,11 @@ func TestObjStore(t *testing.T) {
 // never made durable — the failure mode the fsync in write() exists to
 // prevent, and the one already on disk in stores written before it. Exists has
 // to report it absent: /check-blocks answers the client from Exists, so
-// calling it present tells the client the block is already uploaded and it is
+// calling it present tells the client the chunk is already uploaded and it is
 // never sent again, which is what turns a lost write into permanent damage.
 func TestObjStoreZeroLengthObjectIsAbsent(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	bend := New(confPath, dataDir, "blocks")
+	bend := New(confPath, dataDir, "chunks")
 
 	if err := bend.Write(libraryID, objID, strings.NewReader(""), true); err != nil {
 		t.Fatalf("Write() returned %v", err)
@@ -146,7 +146,7 @@ func TestObjStoreZeroLengthObjectIsAbsent(t *testing.T) {
 // not an error, and no failure reports the object as present.
 func TestObjStoreExistsOnMissingObject(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	bend := New(confPath, dataDir, "blocks")
+	bend := New(confPath, dataDir, "chunks")
 
 	exists, err := bend.Exists(libraryID, objID)
 	if err != nil {
@@ -163,7 +163,7 @@ func TestObjStoreExistsOnMissingObject(t *testing.T) {
 func TestObjStoreSyncWriteIntoNewLibraryDir(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 
-	for _, objType := range []string{"blocks", "commit", "fs"} {
+	for _, objType := range []string{"chunks", "commit", "fs"} {
 		bend := New(confPath, dataDir, objType)
 		if err := bend.Write(libraryID, objID, strings.NewReader("payload"), true); err != nil {
 			t.Fatalf("Write(%s) into a new library dir returned %v", objType, err)
@@ -491,7 +491,7 @@ func TestAStoreWithNoBackendReportsWhy(t *testing.T) {
 
 // Nothing mints a forty-character id any more. The routes pin their id
 // variable to sixty-four hex characters, store.ParseID refuses anything
-// narrower, and the format that produced SHA-1 commits, fs objects and blocks
+// narrower, and the format that produced SHA-1 commits, fs objects and chunks
 // is gone. A backend that still builds a path from one is a second id parser
 // waiting to disagree with the first.
 func TestOnlyTheSHA256WidthIsStorable(t *testing.T) {

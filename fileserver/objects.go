@@ -21,8 +21,8 @@ import (
 //
 //	GET  /api/silo/v1/libraries/{library}/objects/{id}   manifest, directory or commit
 //	PUT  /api/silo/v1/libraries/{library}/objects/{id}   the same, verified and stored
-//	GET  /api/silo/v1/libraries/{library}/blocks/{id}    a chunk, as stored
-//	PUT  /api/silo/v1/libraries/{library}/blocks/{id}    a chunk, verified and stored
+//	GET  /api/silo/v1/libraries/{library}/chunks/{id}    a chunk, as stored
+//	PUT  /api/silo/v1/libraries/{library}/chunks/{id}    a chunk, verified and stored
 //	PUT  /api/silo/v1/libraries/{library}/head           If-Match: <current head>
 //
 // This exists because of one fact and its consequences. The server holds no
@@ -57,7 +57,7 @@ const maxObjectBody = store.MaxManifestBytes + (1 << 20)
 // idAddressedLibrary loads a library and its store for the id-addressed surface.
 func idAddressedLibrary(w http.ResponseWriter, r *http.Request, write bool) (*libmgr.Library, *objmgr.Store, bool) {
 	// Addressed by object id rather than by path, so library-level -- see the
-	// note in blocks.go.
+	// note in chunks.go.
 	library := entryLibrary(w, r, mux.Vars(r)["libraryid"], "", write)
 	if library == nil {
 		return nil, nil, false

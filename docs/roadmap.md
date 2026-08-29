@@ -182,20 +182,23 @@ client's `.snapshot` directory from possible into usable, and it is cheap for
 the server (compare ids, skip unchanged subtrees unread) and expensive for
 everyone else, which is the whole case for it living here.
 
-**Bulk transfer on the wire**, which is where the protocol is thinnest. One
-request per block is still the shape — roughly 128 round trips for a 1 GB file
-— and a framed multi-block `POST` going up with a `pack-blocks` response coming
-down is the highest-value change available. Beneath it, no delta exists for an
-edit in the middle of a file: rdiff semantics on this lane, a signature out and
-a delta in, explicitly not an rsyncd. Both are ranked with their reasoning in
+**Bulk transfer on the wire**, which is where the protocol is thinnest *going
+up*. Coming down it is done: `POST chunks/fetch` takes up to 256 ids and
+answers with one framed body. Uploads are still one request per chunk —
+roughly a thousand round trips for a 1 GB file, since the chunker targets
+1 MiB — and a framed multi-chunk `POST` reusing the same frames is the
+highest-value change left. (This paragraph said 128, the figure for the fixed
+8 MiB blocks the surface started with; an eightfold undercount of the round
+trips is an eightfold undercount of what batching buys.) Beneath it, no delta
+exists for a file whose bytes are rewritten wholesale: rdiff semantics on this
+lane, a signature out and a delta in, explicitly not an rsyncd. Both are ranked
+with their reasoning in
 [`protocol-gaps.md`](protocol-gaps.md), which also raises the one decision that
 gets harder to change later — whether files get a stable identity that survives
 a move, or whether that stays reconstructed client-side forever.
 
 **Small things that are each an afternoon.** A persistent JWT keyfile at mode
-0600, so a restart stops disconnecting every watching client. A `server-info` feature name for the id-addressed surface, which is
-undiscoverable today — `blocks` covers the chunk half and `objects/{id}` and
-`PUT head` have no name. Structured logs behind a flag, expanded metrics
+0600, so a restart stops disconnecting every watching client. Structured logs behind a flag, expanded metrics
 coverage, and a `/healthz` that actually pings the database handles.
 
 **One scheduler nobody has written on purpose.** `expireHistoryByPolicy` takes

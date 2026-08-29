@@ -932,7 +932,7 @@ func (m model) renderUpload() string {
 	return m.frame(header, body, m.footer(headerRows, uploadHelp))
 }
 
-// uploadSummary says what a directory upload did in one line. Blocks held back
+// uploadSummary says what a directory upload did in one line. Chunks held back
 // is the number worth showing: it is the content the server already had, and
 // the reason a re-run of a large tree finishes in seconds.
 func uploadSummary(up *client.TreeUpload) string {

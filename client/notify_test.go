@@ -178,7 +178,7 @@ func TestWatcherStopsWhenTheServerOffersNoNotifications(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/silo/v1/server-info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"version":"0.5.0","features":["batch","blocks"]}`))
+		_, _ = w.Write([]byte(`{"version":"0.5.0","features":["batch","chunks"]}`))
 	})
 	mux.HandleFunc("/notification", func(w http.ResponseWriter, r *http.Request) {
 		dials++

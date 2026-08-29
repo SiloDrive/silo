@@ -273,9 +273,9 @@ PATCH  /libraries/{id}                               rename
 DELETE /libraries/{id}
 GET    /libraries/{id}/changes?since=                the diff, paginated
 GET    /libraries/{id}/commits                       history
-POST   /libraries/{id}/blocks/missing                which of these chunks do you lack?
-PUT    /libraries/{id}/blocks/{id}                   a chunk, verified against its id
-GET    /libraries/{id}/blocks/{id}                   a chunk, as stored
+POST   /libraries/{id}/chunks/missing                which of these chunks do you lack?
+PUT    /libraries/{id}/chunks/{id}                   a chunk, verified against its id
+GET    /libraries/{id}/chunks/{id}                   a chunk, as stored
 PUT    /libraries/{id}/objects/{id}                  a manifest, directory or commit
 GET    /libraries/{id}/objects/{id}                  the same
 PUT    /libraries/{id}/head                          If-Match: <current head commit id>
@@ -331,7 +331,7 @@ and `entries/{path}?at=` answers the same way for the same reason.
 one commit, so a refusal halfway would refuse operations carrying no bytes at
 all. It is weighed against quota once, before the tree is touched.
 
-`server-info` advertises `blocks`, `batch`, `changes`, `entries`,
+`server-info` advertises `chunks`, `batch`, `changes`, `entries`,
 `entries-copy`, `conditional-writes`, `ranged-reads`, `pagination`,
 `library-rename`, `libraries` and `usage`, so clients feature-detect rather
 than version-sniff.
@@ -385,7 +385,7 @@ row raw would under-charge a burst of writes for the length of the burst.
 `Content-Length` before the body is read, because receiving forty gigabytes and
 then declining them wastes the transfer on both ends, and again on the size the
 bytes actually were, because a chunked request declares nothing and a lying one
-declares whatever it likes. `PUT blocks/{id}` gets a soft ceiling: it refuses an
+declares whatever it likes. `PUT chunks/{id}` gets a soft ceiling: it refuses an
 account already over, and any single chunk that would alone carry one over. It
 does not bound an account just under its ceiling pushing chunks no head names —
 that needs a per-account tally of unreferenced bytes, which is the mark phase's
@@ -534,7 +534,7 @@ gets the change they asked for rather than a usage message.
 
 - **There is no cache in front of the store.** A read is a read.
 - **Objects are stored raw**, unencrypted and uncompressed.
-- **The id-addressed surface has no `server-info` feature name.** `blocks`
+- **The id-addressed surface has no `server-info` feature name.** `chunks`
   covers the chunk half; `objects/{id}` and `PUT head` are undiscoverable.
 - **Nothing creates a `VirtualLibrary` row**, and several queries still join
   the table.

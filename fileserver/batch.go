@@ -19,8 +19,8 @@ import (
 // root id and returns a new one — so the whole change is threading that root
 // through a list instead of committing after every step.
 //
-// Paired with the block surface it covers the case it was built for: upload the
-// blocks of five hundred files, which skips everything the server already
+// Paired with the chunk surface it covers the case it was built for: upload the
+// chunks of five hundred files, which skips everything the server already
 // holds, then create all five hundred in one commit.
 //
 // **All or nothing.** Operations apply to a working tree that exists only in
@@ -44,7 +44,7 @@ type batchOp struct {
 	Op     string   `json:"op"`
 	Path   string   `json:"path"`
 	To     string   `json:"to,omitempty"`
-	Blocks []string `json:"blocks,omitempty"`
+	Chunks []string `json:"chunks,omitempty"`
 }
 
 // batchFailure is an operation's refusal, carrying where in the list it

@@ -91,7 +91,7 @@ len(byteRanges) != 0`, otherwise whole-file with the crypt key.
 **Writes — `PUT entries/{path}` takes the body.** It replaces, which is what
 PUT means and is deliberately unlike the legacy upload's "rename the
 collision" behaviour. The body is spooled to a temp file before indexing:
-`chunkFile` seeks to each block boundary, so the source has to be seekable, and
+`chunkFile` seeks to each chunk boundary, so the source has to be seekable, and
 `indexFileWorker` already accepted a `filePath` with a nil multipart handler for
 exactly that reason. Spooling is the requirement, not a shortcut around it.
 

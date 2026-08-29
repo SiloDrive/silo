@@ -594,12 +594,15 @@ func newHTTPRouter() *mux.Router {
 	// because relying on a regex to keep two routes apart is the kind of thing
 	// that stops being true when someone loosens the regex.
 	apiRouter.HandleFunc("/libraries/{libraryid}/batch", batchHandler).Methods("POST")
-	apiRouter.HandleFunc("/libraries/{libraryid}/blocks/missing", blocksMissingHandler).Methods("POST")
+	apiRouter.HandleFunc("/libraries/{libraryid}/chunks/missing", chunksMissingHandler).Methods("POST")
+	// "fetch" is subject to the same note as "missing": it cannot collide with
+	// a chunk id, and it is listed before the id route regardless.
+	apiRouter.HandleFunc("/libraries/{libraryid}/chunks/fetch", chunksFetchHandler).Methods("POST")
 	// The id-addressed surface. A chunk id is sixty-four hex characters, so
 	// the id and the route regex cannot collide — the width is the format, not
 	// a convention. See objects.go.
-	apiRouter.HandleFunc("/libraries/{libraryid}/blocks/{id:[0-9a-f]{64}}", getChunkHandler).Methods("GET", "HEAD")
-	apiRouter.HandleFunc("/libraries/{libraryid}/blocks/{id:[0-9a-f]{64}}", putChunkHandler).Methods("PUT")
+	apiRouter.HandleFunc("/libraries/{libraryid}/chunks/{id:[0-9a-f]{64}}", getChunkHandler).Methods("GET", "HEAD")
+	apiRouter.HandleFunc("/libraries/{libraryid}/chunks/{id:[0-9a-f]{64}}", putChunkHandler).Methods("PUT")
 	apiRouter.HandleFunc("/libraries/{libraryid}/objects/{id:[0-9a-f]{64}}", getObjectHandler).Methods("GET", "HEAD")
 	apiRouter.HandleFunc("/libraries/{libraryid}/objects/{id:[0-9a-f]{64}}", putObjectHandler).Methods("PUT")
 	apiRouter.HandleFunc("/libraries/{libraryid}/head", putHeadHandler).Methods("PUT")

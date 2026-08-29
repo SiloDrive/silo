@@ -14,7 +14,7 @@ and on every call.
     /api/silo/v1/repos/{repoid}            ->  /api/silo/v1/libraries/{libraryid}
 
 and the same substitution on every sub-path: `/changes`, `/batch`,
-`/blocks/missing`, `/blocks/{id}`, `/objects/{id}`, `/head`, `/entries/{path}`,
+`/chunks/missing`, `/chunks/{id}`, `/objects/{id}`, `/head`, `/entries/{path}`,
 `/notify-token`.
 
 `/api/silo/v1/server-info`, `/api/silo/v1/auth/login` and the `/notification`
@@ -25,8 +25,8 @@ WebSocket are unscoped and did not move.
     "repo_id"      ->  "library_id"     every payload that carries one
     "repos"        ->  "libraries"      the notification subscribe body's array
 
-Inside that array, `id` and `jwt_token` are **unchanged**. The block surface's
-bodies never named a library at all — `{"blocks":[…]}` out, `{"missing":[…]}`
+Inside that array, `id` and `jwt_token` are **unchanged**. The chunk surface's
+bodies never named a library at all — `{"chunks":[…]}` out, `{"missing":[…]}`
 back — so they are covered entirely by the path change.
 
 ## The notification frame type

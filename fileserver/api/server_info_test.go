@@ -36,7 +36,7 @@ func TestServerInfoAdvertisesFeatures(t *testing.T) {
 	// Named individually rather than compared as a set: a new capability must
 	// not have to edit this test, but a removed one must break it, because
 	// removing a feature name breaks every client that checked for it.
-	for _, want := range []string{"entries", "entries-copy", "conditional-writes", "changes", "library-rename", "blocks"} {
+	for _, want := range []string{"entries", "entries-copy", "conditional-writes", "changes", "library-rename", "chunks"} {
 		if !slices.Contains(got.Features, want) {
 			t.Errorf("feature %q is missing from %v", want, got.Features)
 		}

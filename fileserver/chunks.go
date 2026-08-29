@@ -12,12 +12,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// The block surface: the Silo lane's answer to "don't send what the server
+// The chunk surface: the Silo lane's answer to "don't send what the server
 // already has, and don't start over when a transfer dies".
 //
-//	POST /api/silo/v1/libraries/{library}/blocks/missing              {"blocks":[…]} -> {"missing":[…]}
-//	PUT  /api/silo/v1/libraries/{library}/blocks/{id}                 the chunk's bytes
-//	PUT  /api/silo/v1/libraries/{library}/entries/{path}?type=blocks  {"blocks":[…]}
+//	POST /api/silo/v1/libraries/{library}/chunks/missing              {"chunks":[…]} -> {"missing":[…]}
+//	PUT  /api/silo/v1/libraries/{library}/chunks/{id}                 the chunk's bytes
+//	PUT  /api/silo/v1/libraries/{library}/entries/{path}?type=chunks  {"chunks":[…]}
 //
 // Whole-file PUT still exists and is still the right call for one small file:
 // it is one request, and it needs no hashing on the client. What it cannot do
@@ -36,20 +36,20 @@ import (
 // did not: inserting a byte near the front of a file used to shift every
 // boundary after it, so nothing matched and the whole file went up again.
 
-// maxBlockListBody bounds a block-id list. At roughly 43 bytes per quoted id
-// and comma this is some 380,000 blocks, which at the default block size is
+// maxChunkListBody bounds a chunk-id list. At roughly 43 bytes per quoted id
+// and comma this is some 380,000 chunks, which at the default chunk size is
 // several terabytes in one file — far past any real request, which is what a
 // limit is for.
-const maxBlockListBody = 16 << 20
+const maxChunkListBody = 16 << 20
 
-// blocksMissingHandler answers which of the offered blocks the store does not
+// chunksMissingHandler answers which of the offered chunks the store does not
 // already hold, in the order they were offered.
 //
 // Write permission, not read, even though this only reads. Its whole purpose
-// is to precede an upload, and a store's block ids are content: answering
+// is to precede an upload, and a store's chunk ids are content: answering
 // "yes, I have that one" to anyone with read access to any library turns this
 // into an oracle for whether a given file exists somewhere on the server.
-func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
+func chunksMissingHandler(w http.ResponseWriter, r *http.Request) {
 	// A chunk is addressed by its content hash, not by a path, so this is a
 	// library-level check: a path-scoped credential cannot use the chunk
 	// surface, because a chunk id says nothing about where it will be linked.
@@ -59,14 +59,14 @@ func blocksMissingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Blocks []string `json:"blocks"`
+		Chunks []string `json:"chunks"`
 	}
-	if !decodeJSONBody(w, r, maxBlockListBody, &body, `Expected a JSON body such as {"blocks":["<64 hex characters>",…]}`) {
+	if !decodeJSONBody(w, r, maxChunkListBody, &body, `Expected a JSON body such as {"chunks":["<64 hex characters>",…]}`) {
 		return
 	}
 
-	ids := make([]store.ID, 0, len(body.Blocks))
-	for _, raw := range body.Blocks {
+	ids := make([]store.ID, 0, len(body.Chunks))
+	for _, raw := range body.Chunks {
 		id, err := store.ParseID(raw)
 		if err != nil {
 			// Says what it wanted, because whoever reads this has just been

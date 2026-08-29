@@ -5,7 +5,7 @@
 Silo is a single Go binary that serves file sync over HTTP and talks directly to
 its database and object store. The store is content-addressable, like Git: libraries
 point at branches, branches at commits, commits at a tree of directory and file
-objects, and file objects at deduplicated blocks.
+objects, and file objects at deduplicated chunks.
 
 ## Where it came from
 
@@ -103,10 +103,15 @@ Content-addressable filesystem under `{data-dir}/storage/`:
 
 ```
 storage/
-  blocks/{store-id}/{first-2-chars}/{remaining-38-chars}
-  commits/{store-id}/{first-2-chars}/{remaining-38-chars}
-  fs/{store-id}/{first-2-chars}/{remaining-38-chars}
+  chunks/{store-id}/{first-2-chars}/{remaining-62-chars}
+  objects/{store-id}/{first-2-chars}/{remaining-62-chars}
 ```
+
+Two types, not three (`objstore.Types`): a chunk is content and an object is a
+manifest, directory or commit. Ids are 64 hex characters — SHA-256 — so the
+shard is two and the leaf sixty-two. This block named `blocks/`, `commits/` and
+`fs/` at forty hex, which was the layout before store-v2 and has not been on
+disk since.
 
 Virtual libraries share the storage of their origin library, via the StoreID mapping —
 which is why the path component is a store ID, not a library ID.
@@ -116,7 +121,7 @@ which is why the path component is a store ID, not a library ID.
 ```
 Library (UUID)
   -> Branch (name, commit_id)
-    -> Commit (SHA1, root_id, parent_id, creator, description)
+    -> Commit (SHA-256, root_id, parent_id, creator, description)
       -> Directory / manifest objects (content-addressable tree)
         -> Chunks (content-defined, `fastcdc-gear64/v1`)
 ```
@@ -125,15 +130,13 @@ A manifest is the file object: the list of chunk ids that reconstitutes one
 file. [`spec/store-format.md`](spec/store-format.md) is normative for all of
 it.
 
-**The block line is unverified and contradicts the rest of the docs.**
-`native-client.md` and `protocol.md` both state that chunking is at fixed 8 MiB
-offsets, which is certainly true of everything *Silo* writes — `chunkFile`
-(`fileop.go:2684`) reads `FixedBlockSize` bytes from a computed offset. "Rabin
-CDC chunked, 4KB-8MB" would be a claim about what upstream *clients* produce,
-and nobody has checked it. Silo's read path does assume variable sizes
-(`doFileRange`, `fileop.go:355`, stats every block rather than dividing), which
-is suggestive but not proof. Which document is wrong matters: see the test in
-[`chunking.md`](chunking.md).
+**Settled.** This paragraph used to record an open question — whether chunking
+was at fixed 8 MiB offsets, as `native-client.md` and `protocol.md` then said,
+or content-defined — and cited `chunkFile`/`FixedBlockSize` in `fileop.go` as
+evidence for the fixed answer. store-v2 answered it by replacing both: chunking
+is `fastcdc-gear64/v1`, the parameters are per library, and every file it named
+was deleted in `5d4baa0`. [`chunking.md`](chunking.md) is the decision and the
+measurements.
 
 ## Go internals
 

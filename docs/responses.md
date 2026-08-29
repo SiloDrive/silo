@@ -45,8 +45,8 @@ variable.
 | code | means | notes |
 |---|---|---|
 | `200 OK` | done | |
-| `201 Created` | the entry, library or block now exists | `PUT libraries/{libraryid}/entries/{path}` (content or `?type=blocks`), `PUT libraries/{libraryid}/blocks/{sha256}`, `POST /libraries`, and `POST entries/{path}` with `{"op":"copy"}`. Carries the new `ETag` on a write, so a client can record the version without a follow-up `GET`. A copy carries the *source's* `ETag`, because a copy shares its id — so a client that already holds the content knows it does |
-| `200 OK` | the chunk is already here | `PUT libraries/{libraryid}/blocks/{sha256}`, answered instead of `201`. Re-sending a chunk is what an interrupted upload does on retry, so it must succeed rather than conflict. (This row said `204 No Content` until 2026-08-26 and the server has answered `200`; the claim that it is answered before the body is read was part of the same stale entry.) |
+| `201 Created` | the entry, library or chunk now exists | `PUT libraries/{libraryid}/entries/{path}` (content or `?type=chunks`), `PUT libraries/{libraryid}/chunks/{sha256}`, `POST /libraries`, and `POST entries/{path}` with `{"op":"copy"}`. Carries the new `ETag` on a write, so a client can record the version without a follow-up `GET`. A copy carries the *source's* `ETag`, because a copy shares its id — so a client that already holds the content knows it does |
+| `200 OK` | the chunk is already here | `PUT libraries/{libraryid}/chunks/{sha256}`, answered instead of `201`. Re-sending a chunk is what an interrupted upload does on retry, so it must succeed rather than conflict. (This row said `204 No Content` until 2026-08-26 and the server has answered `200`; the claim that it is answered before the body is read was part of the same stale entry.) |
 | `206 Partial Content` | range request satisfied | `GET libraries/{libraryid}/entries/{path}` advertises `Accept-Ranges: bytes` and honours `Range`. An encrypted library cannot be ranged and says so up front with `Accept-Ranges: none` — see the note below |
 | `302 Found` | **not emitted on this lane.** `GET libraries/{libraryid}/entries/{path}` streams on the same response — one request, no redirect. There is no capability URL to redirect to: `/files/{token}/…` and the `POST /access-tokens` that minted for it are both gone, and a signed URL is what replaces them if a browser ever needs one — see [`capability-urls.md`](capability-urls.md) |
 | `304 Not Modified` | your `If-None-Match` matched | the entry is unchanged; use your copy |
@@ -55,7 +55,7 @@ variable.
 
 | code | means | what a client should do |
 |---|---|---|
-| `400 Bad Request` | malformed or contradictory request — missing `path`, moving the library root, a `src` equal to its `dst`, a block whose bytes do not hash to the id it was sent under, `?type=blocks` on an encrypted library, a `limit` that is not a positive integer within range, a `cursor` this server did not issue | fix the request; never retry unchanged |
+| `400 Bad Request` | malformed or contradictory request — missing `path`, moving the library root, a `src` equal to its `dst`, a chunk whose bytes do not hash to the id it was sent under, `?type=chunks` on an encrypted library, a `limit` that is not a positive integer within range, a `cursor` this server did not issue | fix the request; never retry unchanged |
 | `401 Unauthorized` | no `Authorization` header, a malformed one, or an expired session token | re-authenticate, then retry once. Do not loop |
 | `403 Forbidden` | authenticated, but not permitted — including libraries you cannot see | surface it; do not retry. A library you cannot see and a library that does not exist both answer `403` from the token endpoints on purpose, so they cannot be used to probe for valid ids |
 | `404 Not Found` | the named thing does not exist — see the overload note below | depends on *what* was not found |
@@ -65,7 +65,7 @@ variable.
 | `412 Precondition Failed` | your `If-Match` did not match; someone else wrote first | re-read, reapply your change, write again. Not an error — it is the mechanism working |
 | `413 Payload Too Large` | body over the limit, or a batch over 1000 operations | do not retry; split it |
 | `416 Range Not Satisfiable` | the range is outside the entry | |
-| `424 Failed Dependency` | the write names blocks the server does not hold | `PUT entries/{path}?type=blocks` and a `create` inside `POST batch`. The body is `{"error":…,"missing":[sha256,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
+| `424 Failed Dependency` | the write names chunks the server does not hold | `PUT entries/{path}?type=chunks` and a `create` inside `POST batch`. The body is `{"error":…,"missing":[sha256,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
 | `429 Too Many Requests` | rate limiting; carries `Retry-After` | wait the stated time. Three sources. Where a password is verified — the login endpoints, and `POST auth/password`, which spends the same buckets because a credential is not a throttle. And `POST auth/kdf`, which has its own per-address bucket at sixty a minute and spends a token on every request rather than only on failures, because it has no failures. And `POST auth/setup`, per address only at five a minute — there is no account to count against, since the address in the request is one the operator is inventing |
 
 ### The server could not do it
@@ -80,7 +80,7 @@ succeed later; `429` and `503` are the only two that do.
 
 ### Ranged reads on an encrypted library
 
-An encrypted library cannot be ranged — the stored blocks are ciphertext, so a
+An encrypted library cannot be ranged — the stored chunks are ciphertext, so a
 byte range of the plaintext is not a byte range of what is stored — and `Range`
 against one is ignored: the whole file arrives with `200`.
 
@@ -148,7 +148,7 @@ not delete — so this one is safe, but read the body before reporting it.
 
 `POST libraries/{libraryid}/batch` answers a failure with the status code the failing
 operation would have answered on its own — `404` for a missing source, `409` for
-a destructive collision, `424` for blocks that are not up — and a body naming
+a destructive collision, `424` for chunks that are not up — and a body naming
 where it happened:
 
 ```json
@@ -162,17 +162,17 @@ operation and send the whole batch again.
 ## `424` — retry, but do something first
 
 Every other code splits into "your request is wrong, fix it" and "the server is
-having a moment, send it again". A commit naming blocks that are not on the
+having a moment, send it again". A commit naming chunks that are not on the
 server is neither. The request is exactly right, and it will succeed unchanged
 — once its dependency exists.
 
 Answering `400` would tell a client never to retry, which is wrong. Answering
 `503` would tell it to retry immediately and forever, which is worse: nothing
 changes on its own. `424` says what is actually true, and the body says which
-blocks, so the fix is exact rather than a re-upload of the whole file.
+chunks, so the fix is exact rather than a re-upload of the whole file.
 
-In practice a client sees this only after `blocks/missing` and its uploads
-disagree — a skipped upload, or a block that went missing between the two. The
+In practice a client sees this only after `chunks/missing` and its uploads
+disagree — a skipped upload, or a chunk that went missing between the two. The
 recovery is the same either way: ask again, upload what it names, retry.
 
 ## Reserved, and not yet used
@@ -187,7 +187,7 @@ returning it.
 | `428 Precondition Required` | forcing conditional writes | only if Silo ever refuses unconditional writes; it does not today |
 | `507 Insufficient Storage` | quota exhausted | `macos-fileprovider-plan.md` already maps it to `.insufficientQuota` alongside `413` |
 
-`424` used to belong here and no longer does — the block surface claimed it.
+`424` used to belong here and no longer does — the chunk surface claimed it.
 It is a WebDAV code, but a WebDAV frontend would use it inside a `207
 Multi-Status` body rather than as a response of its own, so the two do not
 collide.

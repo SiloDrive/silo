@@ -304,7 +304,7 @@ moved onto them without any change to its method signatures.
 
 One capability was added that this plan did not anticipate: **GET carries an
 `ETag` of the content hash and honours `If-None-Match` with a 304**, so
-revalidating a materialised item reads no blocks. See the brief.
+revalidating a materialised item reads no chunks. See the brief.
 
 Note that identifiers never cross the wire: every request is expressed in
 `(library_id, path)`, resolved client-side from `IdMap`. Silo's request logs and

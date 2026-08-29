@@ -186,18 +186,18 @@ func TestChunksNamedInOrderBecomeTheFile(t *testing.T) {
 		id := store.ChunkID(p)
 		ids = append(ids, id.String())
 		whole = append(whole, p...)
-		w := idReq(t, putChunkHandler, acct, http.MethodPut, "/blocks/"+id.String(),
+		w := idReq(t, putChunkHandler, acct, http.MethodPut, "/chunks/"+id.String(),
 			map[string]string{"libraryid": libraryID, "id": id.String()}, p, nil)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("PUT chunk = %d (%s)", w.Code, w.Body.String())
 		}
 	}
 
-	body, _ := json.Marshal(map[string]any{"blocks": ids})
-	w := do(t, putEntry, acct, http.MethodPut, "/entries/joined.dat?type=blocks",
+	body, _ := json.Marshal(map[string]any{"chunks": ids})
+	w := do(t, putEntry, acct, http.MethodPut, "/entries/joined.dat?type=chunks",
 		map[string]string{"libraryid": libraryID, "path": "joined.dat"}, body)
 	if w.Code != http.StatusCreated {
-		t.Fatalf("PUT ?type=blocks = %d (%s), want 201", w.Code, w.Body.String())
+		t.Fatalf("PUT ?type=chunks = %d (%s), want 201", w.Code, w.Body.String())
 	}
 
 	rr := do(t, getEntry, acct, http.MethodGet, "/entries/joined.dat",
@@ -215,9 +215,9 @@ func TestChunksNamedInOrderBecomeTheFile(t *testing.T) {
 func TestNamingAnAbsentChunkIsRefused(t *testing.T) {
 	libraryID, acct := testLibrary(t)
 	absent := store.ChunkID([]byte("never uploaded")).String()
-	body, _ := json.Marshal(map[string]any{"blocks": []string{absent}})
+	body, _ := json.Marshal(map[string]any{"chunks": []string{absent}})
 
-	w := do(t, putEntry, acct, http.MethodPut, "/entries/holey.dat?type=blocks",
+	w := do(t, putEntry, acct, http.MethodPut, "/entries/holey.dat?type=chunks",
 		map[string]string{"libraryid": libraryID, "path": "holey.dat"}, body)
 	if w.Code != http.StatusFailedDependency {
 		t.Fatalf("naming an absent chunk = %d (%s), want 424", w.Code, w.Body.String())

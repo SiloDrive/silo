@@ -205,7 +205,7 @@ func moveHandler(w http.ResponseWriter, r *http.Request) { moveOrCopy(w, r, fals
 
 // copyHandler serves {"op":"copy"}. Copying is the same tree edit as moving
 // with the delete left off: the new dirent points at the object the source
-// already names, so no bytes are read, nothing new reaches the block store, and
+// already names, so no bytes are read, nothing new reaches the chunk store, and
 // a copy costs one dirent and one commit whether it is an empty file or a
 // hundred-gigabyte subtree. A client emulating it with a download followed by an
 // upload pays the entire content twice for the one operation the store gives

@@ -11,7 +11,7 @@ class BatchTest < Minitest::Test
   # SHA-256, sixty-four hex characters. store-v2 changed the address hash, and
   # this file computed SHA-1 for long enough afterwards that four of its tests
   # were failing against a route whose regex simply does not match a forty-hex
-  # id. See blocks_test.rb for the surface itself.
+  # id. See chunks_test.rb for the surface itself.
   def chunk_id(bytes)
     Digest::SHA256.hexdigest(bytes)
   end
@@ -26,10 +26,10 @@ class BatchTest < Minitest::Test
 
     contents = 3.times.map { "file #{SecureRandom.hex(8)}" }
     ids = contents.map { |c| chunk_id(c) }
-    contents.each_with_index { |c, i| client.put_block(library_id, ids[i], c) }
+    contents.each_with_index { |c, i| client.put_chunk(library_id, ids[i], c) }
 
     ops = [{ op: "mkdir", path: "/reports" }]
-    ids.each_with_index { |id, i| ops << { op: "create", path: "/reports/f#{i}.txt", blocks: [id] } }
+    ids.each_with_index { |id, i| ops << { op: "create", path: "/reports/f#{i}.txt", chunks: [id] } }
 
     resp = client.batch(library_id, ops)
     assert resp.ok?, resp.to_s
@@ -61,12 +61,12 @@ class BatchTest < Minitest::Test
   def test_an_operation_sees_the_ones_before_it
     library_id = create_test_library
     content = "nested #{SecureRandom.hex(8)}"
-    client.put_block(library_id, chunk_id(content), content)
+    client.put_chunk(library_id, chunk_id(content), content)
 
     resp = client.batch(library_id, [
       { op: "mkdir", path: "/a" },
       { op: "mkdir", path: "/a/b" },
-      { op: "create", path: "/a/b/c.txt", blocks: [chunk_id(content)] }
+      { op: "create", path: "/a/b/c.txt", chunks: [chunk_id(content)] }
     ])
     assert resp.ok?, resp.to_s
     assert client.get(client.entries_url(library_id, "/a/b/c.txt")).ok?

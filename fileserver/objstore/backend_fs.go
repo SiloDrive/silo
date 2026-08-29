@@ -136,8 +136,8 @@ func (b *fsBackend) readAt(libraryID string, packID string, p []byte, off int64)
 // That ordering is not optional for correctness. The branch head lives in
 // SQLite, which fsyncs its WAL, so a head-commit UPDATE can survive a power cut
 // that the objects it references do not — leaving a head pointing at a
-// zero-length or absent block. Nothing repairs that afterwards: the client
-// believes it has already uploaded those blocks, so a resync does not send them
+// zero-length or absent chunk. Nothing repairs that afterwards: the client
+// believes it has already uploaded those chunks, so a resync does not send them
 // again.
 //
 // The temp-file-then-rename is what publishing means here, and it is worth

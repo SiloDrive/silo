@@ -14,7 +14,7 @@ import (
 // It has to run here rather than in the outer handler because the template is
 // only known once matching has happened, and it matters because every sync
 // route embeds a library id and most embed an object id too: named by URL,
-// "GET /libraries/{libraryid}/blocks/{id}" would arrive as a few hundred thousand
+// "GET /libraries/{libraryid}/chunks/{id}" would arrive as a few hundred thousand
 // distinct endpoints of one request each, which is a lot of rows and no
 // percentiles.
 //

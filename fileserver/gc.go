@@ -29,7 +29,7 @@ type garbageLibrary struct {
 // DeleteLibrary removes a library's database rows and records its ID in
 // GarbageLibraries, but nothing has ever reclaimed the objects, so deleted
 // libraries leak disk indefinitely. This walks GarbageLibraries and removes each
-// dead library's directory from the commit, fs and block stores.
+// dead library's directory from the commit, fs and chunk stores.
 //
 // It is deliberately not a mark-and-sweep over live libraries: it never inspects
 // or deletes anything belonging to a library that still exists, which is what

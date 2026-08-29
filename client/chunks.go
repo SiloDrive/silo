@@ -10,7 +10,7 @@ import (
 	"github.com/dkam/silo/store"
 )
 
-// The client half of the chunk surface. See fileserver/blocks.go for the
+// The client half of the chunk surface. See fileserver/chunks.go for the
 // server's side and docs/protocol.md for the endpoints.
 //
 // The whole arrangement rests on one property: a chunk's id is the SHA-256 of
@@ -141,8 +141,8 @@ func (c *APIClient) MissingChunks(libraryID string, chunks []string) ([]string, 
 	var result struct {
 		Missing []string `json:"missing"`
 	}
-	err := c.doRequest("POST", "/api/silo/v1/libraries/"+libraryID+"/blocks/missing",
-		map[string][]string{"blocks": chunks}, &result)
+	err := c.doRequest("POST", "/api/silo/v1/libraries/"+libraryID+"/chunks/missing",
+		map[string][]string{"chunks": chunks}, &result)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ func (c *APIClient) MissingChunks(libraryID string, chunks []string) ([]string, 
 // it does not match chunkID, so a successful call is also proof the bytes
 // crossed intact.
 func (c *APIClient) PutChunk(libraryID, chunkID string, newBody func() (io.ReadCloser, int64, error)) error {
-	resp, err := c.doStream("PUT", "/api/silo/v1/libraries/"+libraryID+"/blocks/"+chunkID,
+	resp, err := c.doStream("PUT", "/api/silo/v1/libraries/"+libraryID+"/chunks/"+chunkID,
 		"application/octet-stream", newBody)
 	if err != nil {
 		return err
@@ -170,8 +170,8 @@ func (c *APIClient) PutChunk(libraryID, chunkID string, newBody func() (io.ReadC
 // CommitChunks creates or replaces a file from chunks already uploaded. It
 // transfers no content: the body is the ordered list of ids.
 func (c *APIClient) CommitChunks(libraryID, remotePath string, chunks []string) error {
-	return c.doRequest("PUT", entriesURL(libraryID, remotePath)+"?type=blocks",
-		map[string][]string{"blocks": chunks}, nil)
+	return c.doRequest("PUT", entriesURL(libraryID, remotePath)+"?type=chunks",
+		map[string][]string{"chunks": chunks}, nil)
 }
 
 // chunkSource is a place the bytes of a chunk can be read from. Any one

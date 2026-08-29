@@ -486,7 +486,7 @@ func (c *APIClient) DownloadFile(libraryID, libraryPath, localPath string) error
 // takes the whole-file path, which always works.
 func (c *APIClient) UploadFile(libraryID, parentDir, localPath string) error {
 	if st, err := os.Stat(localPath); err == nil && st.Size() > chunkLaneThreshold {
-		if c.capabilities().Has("blocks") {
+		if c.capabilities().Has("chunks") {
 			if p, ok := c.chunkerFor(libraryID); ok {
 				return c.uploadChunks(libraryID, parentDir, localPath, p)
 			}
@@ -565,12 +565,12 @@ func (c *APIClient) GetServerInfo() (ServerInfo, error) {
 }
 
 // BatchOp is one operation in a batch. Op is "mkdir", "delete", "move",
-// "copy" or "create"; To is for move and copy, Blocks for create.
+// "copy" or "create"; To is for move and copy, Chunks for create.
 type BatchOp struct {
 	Op     string   `json:"op"`
 	Path   string   `json:"path"`
 	To     string   `json:"to,omitempty"`
-	Blocks []string `json:"blocks,omitempty"`
+	Chunks []string `json:"chunks,omitempty"`
 }
 
 // BatchResult is what the server did with a batch.
@@ -589,7 +589,7 @@ type BatchResult struct {
 // creates inside it is a single request. If any fails, nothing is written and
 // the error names the index that stopped it.
 //
-// Pair it with the block surface for a bulk upload: send the blocks first,
+// Pair it with the chunk surface for a bulk upload: send the chunks first,
 // which skips everything the server already holds, then create every file in
 // one commit rather than one commit per file.
 func (c *APIClient) Batch(libraryID string, ops []BatchOp) (*BatchResult, error) {

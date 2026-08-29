@@ -437,7 +437,7 @@ func (s *Store) WriteFile(r io.Reader) (*store.Manifest, error) {
 //
 // This is WriteFile's other half: the same verb — content in, manifest out —
 // for a resumable upload, where the bytes arrived one chunk at a time through
-// the block surface and all that is left is to say what order they go in. It
+// the chunk surface and all that is left is to say what order they go in. It
 // lives beside WriteFile because it answers the same format questions, and
 // answering them twice is how two writers come to disagree about a 30 KB file
 // and mint two ids for identical content.

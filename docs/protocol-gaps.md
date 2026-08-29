@@ -20,10 +20,10 @@ The question splits, and the two halves score very differently.
 | Read, browse, on-demand file access — the File Provider / FUSE case | close. The coordination primitives are all present and several are better than what the same client would get from a commercial API |
 | Full bidirectional sync of large libraries — the actual Dropbox case | not close. The distance is concentrated in bulk writes and in enumeration at scale |
 
-The coordination layer is done, and the first half of bulk writes now works on
-this lane rather than requiring a crossing to the legacy lane. What remains is
-narrower than it was: one request per block on the wire, and no delta for an
-edit in the middle of a file.
+The coordination layer is done, and bulk transfer is now negotiated in both
+directions rather than only on the way up. What remains is narrower than it
+was: one request per chunk *going up*, and no delta for a file whose bytes are
+rewritten wholesale.
 
 ## What is already right
 
@@ -31,7 +31,7 @@ Stated because a gap list read on its own is misleading about the shape of the
 thing.
 
 - **`ETag` is the content hash.** A revalidation costs one dirent lookup and
-  reads no blocks. Cheap revalidation is a sync client's largest single lever,
+  reads no chunks. Cheap revalidation is a sync client's largest single lever,
   and it falls out of the store for free. The `v1-` prefix versions the
   representation rather than the object, which is the part most implementations
   get wrong.
@@ -61,7 +61,7 @@ not fix, and could not, is the shift problem.
 
 > **Largely closed.** This section was written when Silo chunked at fixed 8 MiB
 > offsets, so inserting a byte near the front of a file shifted every boundary
-> after it and `blocks/missing` would report every block of an already-uploaded
+> after it and `chunks/missing` would report every chunk of an already-uploaded
 > file as missing, each under a new name. Chunking is now
 > `fastcdc-gear64/v1` (`store/params.go`) — content-defined, 256 KiB minimum,
 > 1 MiB target, 4 MiB maximum — so boundaries re-sync within a chunk or two of
@@ -86,7 +86,7 @@ There were two ways out, and they were not equally priced.
 > keeping; the conclusion it feeds is not.
 
 **Content-defined chunking** fixes it at the source and costs the store. New
-boundaries mean new block ids, which means the same file carries two names, a
+boundaries mean new chunk ids, which means the same file carries two names, a
 legacy-lane upload stops deduping against a Silo one, and both lanes share one
 object store. That is the same argument `sync-design.md` makes about changing
 the address hash, and it lands the same way: not a migration, a second store.
@@ -101,7 +101,7 @@ shifts by construction, and it lands on machinery that already exists here:
   reconstruct-to-a-seekable-file step is what `PUT` already does — `spoolBody`
   exists because `chunkFile` needs a seekable source.
 - **pull**: the client sends signatures, the server rolls a checksum over the
-  old file streaming out of blocks and emits a delta.
+  old file streaming out of chunks and emits a delta.
 
 Worth being precise about what is being borrowed. rsync's **algorithm** fits;
 rsync's **protocol** does not. The protocol is defined by the C implementation
@@ -120,26 +120,30 @@ public-key auth. It does not buy rsync.
 
 So the shape worth building is rdiff semantics on this lane — a signature on the
 way out, a delta on the way in — and not an rsyncd. It is a refinement of the
-block surface, not a substitute, and the block surface was the right half to
+chunk surface, not a substitute, and the chunk surface was the right half to
 build first: it is smaller, and it covers the traffic most clients actually
 generate. And if what is wanted is rsync's ergonomics rather than its wire
 efficiency, rclone over a WebDAV frontend supplies that with no protocol work at
 all.
 
 How much this matters depends entirely on the library. A photo and document
-library is append-mostly and the block surface already handles it. A library of
+library is append-mostly and the chunk surface already handles it. A library of
 VM images or database files re-uploads whole files on every edit, and no amount
-of block negotiation helps.
+of chunk negotiation helps.
 
-### 2. One request per block, still
+### 2. One request per chunk, going up
 
-A 1 GB file is roughly a thousand `PUT`s, one per block: the chunker targets
+> **Half closed.** The download side has it: `POST chunks/fetch` takes up to
+> 256 ids and answers with one framed body, `store/chunkstream.go`. The heading
+> used to read *still*, when neither direction had a batch. The upload side is
+> what remains, and the framing to send is already written.
+
+A 1 GB file is roughly a thousand `PUT`s, one per chunk: the chunker targets
 1 MiB (`store/params.go`), so the count follows from the file size. That is the
 right trade against an unresumable single request, and it is still a thousand
-round trips. `sync-design.md` calls a `pack-blocks` that streams N blocks in one
-response the highest-value change available on the download side, and the same
-argument applies going up: a `POST blocks` taking several blocks in one framed
-body, which is also where zstd-on-the-wire would earn its keep.
+round trips. The same argument that produced `chunks/fetch` applies going up: a
+`POST chunks` taking several chunks in one framed body — the same frames, read
+rather than written — which is also where zstd-on-the-wire would earn its keep.
 
 This paragraph said 128, a figure carried over from the 8 MiB fixed blocks this
 surface started with. The correction makes the case stronger rather than weaker,
@@ -151,7 +155,7 @@ connection recover much of the latency with no protocol work, so this is an
 optimisation rather than a blocker — `sync-design.md` says as much. And a client
 reading a file it has nothing cached for should not be on this surface at all:
 `GET entries/{path}` is ranged and the server assembles, so a cold read is one
-request. The block surface earns its keep when a client holds a previous version
+request. The chunk surface earns its keep when a client holds a previous version
 and wants only what moved.
 
 Commit batching is done — see the closed list — so what is left here is purely
@@ -179,10 +183,10 @@ default.
 | **No trash, restore or history** | deletion is unrecoverable from a client's point of view, and it is the capability users most associate with the word Dropbox | the data is already there — immutable commits and no GC |
 | **`POST {"op":"move"}` is not idempotent** | a move whose response is lost `404`s on retry, or moves the wrong thing if something was created at the source meanwhile | recommend `If-Match` on the source in the brief; consider an idempotency key |
 | **24h JWT, no refresh** | the client must keep the account password to survive expiry, and there is no server-side device revocation | the device-grant design in [`auth.md`](auth.md) gives revocable per-device credentials as a side effect |
-| **Encrypted libraries are unreadable over this lane, at all** | a whole class of library the client can only grey out | see [`encryption.md`](encryption.md) — the format is being replaced, not patched |
+| ~~**Encrypted libraries are unreadable over this lane, at all**~~ | **stale.** They read and write by id — `objects/{id}`, `chunks/{id}`, `chunks/fetch`, `PUT head` — and `entries/{path}` still routes on ciphertext names, so structure is by path and content is by id. What is refused, deliberately and permanently, is a path-addressed *write* and a ranged content read: the server cannot chunk what it cannot read | — |
 | **No search of any kind** | designed in [`plans/search.md`](plans/search.md), parked | — |
 | **A big directory is still read whole server-side** | paging bounds the response and the client's loop, not the read: dirents are one JSON object addressed by the hash of all of them, so a range of one cannot be read without changing what a directory *is*. The same holds a level up — a Merkle diff is proportional to what changed and cannot be resumed part-way, so `changes` recomputes per page | store-level, much larger than it sounds, and nobody is asking |
-| **No compression negotiation** | blocks are raw on disk, so per-connection zstd is available for free and is not offered | see [`compression.md`](compression.md) |
+| **No compression negotiation** | chunks are raw on disk, so per-connection zstd is available for free and is not offered | see [`compression.md`](compression.md) |
 
 ## Closed since this list was written
 
@@ -197,9 +201,11 @@ records what came off it.
 | **Library rename on this lane** | `PATCH /libraries/{libraryid}` with `{"name":…}`. `PATCH` because the body names only what changes, so it keeps meaning the same thing when a second mutable field arrives. No more crossing to `/api2/` with a second credential to rename a library you can already create and delete |
 | **`Accept-Ranges` tells the truth** | an encrypted library answers `Accept-Ranges: none` rather than advertising `bytes` and then ignoring `Range`. Ignoring a range is allowed; promising to honour one and then ignoring it is what breaks a client that seeks |
 | **Upload integrity is now a contract** | `PUT` always returned the new id, and a client chunking at the same fixed 8 MiB offsets can compute that id itself — so comparing the two is a complete end-to-end check on the transfer. It was true and documented nowhere; `porter-brief.md` now says so |
-| **Batching** | `POST libraries/{id}/batch` applies many operations as one commit: mkdir, delete, move, copy, and create from already-uploaded blocks. Ordered, so an operation sees the ones before it, and all-or-nothing, so a failure names the index that stopped it and writes nothing. Five hundred files dragged into a folder is one commit and one round of branch-head contention rather than five hundred of each. The tree operations were already the right shape — each takes a root id and returns a new one — so the change was threading that root through a list instead of committing after every step |
+| **Batching** | `POST libraries/{id}/batch` applies many operations as one commit: mkdir, delete, move, copy, and create from already-uploaded chunks. Ordered, so an operation sees the ones before it, and all-or-nothing, so a failure names the index that stopped it and writes nothing. Five hundred files dragged into a folder is one commit and one round of branch-head contention rather than five hundred of each. The tree operations were already the right shape — each takes a root id and returns a new one — so the change was threading that root through a list instead of committing after every step |
 | **Pagination** | `?limit=N` on `changes` and on directory listings, with the next page in a `Link: …; rel="next"` header so the body shape did not change. Opt-in with no default, because a truncated answer that looks complete is worse than a large one. A cursor pins the commit or directory object the first page came from, so a sequence of pages is a consistent snapshot. On `changes` the anchor is absent until the last page, which makes "record it whenever you see it" the correct client behaviour rather than a rule to remember |
-| **Resumable, dedup-aware upload** | the block surface: `POST blocks/missing`, `PUT blocks/{sha1}`, `PUT entries/{path}?type=blocks`. A client computes block ids itself — fixed offsets, SHA-1 of the bytes — so it can ask what the server holds before sending anything. Nothing exists at the destination until the last call, which is what makes an interrupted upload resumable with no session, offset or upload id to keep: ask again and the answer is shorter. `server-info` reports `block_size` so the chunking is not a guess. No more minting a sync token to reach `check-blocks` on the frozen lane |
+| **Resumable, dedup-aware upload** | the chunk surface: `POST chunks/missing`, `PUT chunks/{sha1}`, `PUT entries/{path}?type=chunks`. A client computes chunk ids itself — fixed offsets, SHA-1 of the bytes — so it can ask what the server holds before sending anything. Nothing exists at the destination until the last call, which is what makes an interrupted upload resumable with no session, offset or upload id to keep: ask again and the answer is shorter. `server-info` reports `block_size` so the chunking is not a guess. No more minting a sync token to reach `check-blocks` on the frozen lane |
+| **The read half of the chunk surface** | `GET chunks/{id}` answers one chunk and `POST chunks/fetch` answers up to 256 in one framed body (`application/vnd.silo.chunks`, layout in `store/chunkstream.go`), and `GET entries/{path}?type=manifest` hands over a file's chunk list at a path a narrowed credential can reach. Together they close the asymmetry this list did not name for a long time: the write side had been able to ask "which of these do you hold?" and send only the answer since 0.4.5, while the read side had no equivalent, so a client editing one byte of a 1 GiB file uploaded a few chunks and downloaded the whole file to build them |
+| **The id-addressed surface has a name** | `GET/PUT objects/{id}`, `GET chunks/{id}` and `PUT head` all shipped with store-v2 and none of them appeared in `features`. porter-fuse asked for two of them as if they were unbuilt, which is what an undiscoverable capability costs — it is not merely unused, it gets asked for again. The names are `objects`, `chunks-fetch` and `entries-manifest` |
 | **`HEAD` is in the contract** | it was implemented, and in `porter-brief.md`, but missing from the endpoint table in [`protocol.md`](protocol.md) |
 
 None of these are Tier 1. Nothing above changes the verdict: the coordination

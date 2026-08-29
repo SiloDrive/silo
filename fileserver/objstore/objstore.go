@@ -26,7 +26,7 @@ import (
 
 // ErrContentMismatch is returned by a verified write whose bytes do not hash
 // to the id they were offered under. It is a sentinel because the caller's
-// answer depends on who supplied the bytes: an ingest path handed a bad block
+// answer depends on who supplied the bytes: an ingest path handed a bad chunk
 // by a remote client owes that client a 4xx, not the 500 an anonymous error
 // would produce.
 var ErrContentMismatch = errors.New("content does not match its object id")
@@ -221,7 +221,7 @@ func (s *ObjectStore) Write(libraryID string, objID string, r io.Reader, sync bo
 //
 // The check runs before the publish, not after the write, which matters: the
 // object may already exist with the correct content, and a verify-then-delete
-// would let one bad upload destroy a good block.
+// would let one bad upload destroy a good chunk.
 func (s *ObjectStore) WriteVerified(libraryID string, objID string, r io.Reader, sync bool) error {
 	if err := s.ready(); err != nil {
 		return err
@@ -235,7 +235,7 @@ func (s *ObjectStore) WriteVerified(libraryID string, objID string, r io.Reader,
 // encoding, so a zero-length file is the signature of a write that was
 // published but never made durable — the pre-fsync failure mode. Calling it
 // present is what made that damage permanent: /check-blocks would answer that
-// the client already uploaded the block, so it would never be sent again.
+// the client already uploaded the chunk, so it would never be sent again.
 func (s *ObjectStore) Exists(libraryID string, objID string) (bool, error) {
 	size, err := s.Stat(libraryID, objID)
 	if errors.Is(err, ErrNotFound) {

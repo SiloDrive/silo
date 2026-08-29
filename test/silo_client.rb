@@ -57,18 +57,18 @@ class SiloClient
     request(:put, entries_url(library_id, path), raw_body: content)
   end
 
-  # --- Blocks ---
+  # --- Chunks ---
 
-  def missing_blocks(library_id, blocks)
-    post("/api/silo/v1/libraries/#{library_id}/blocks/missing", { blocks: blocks })
+  def missing_chunks(library_id, chunks)
+    post("/api/silo/v1/libraries/#{library_id}/chunks/missing", { chunks: chunks })
   end
 
-  def put_block(library_id, block_id, content)
-    request(:put, "/api/silo/v1/libraries/#{library_id}/blocks/#{block_id}", raw_body: content)
+  def put_chunk(library_id, chunk_id, content)
+    request(:put, "/api/silo/v1/libraries/#{library_id}/chunks/#{chunk_id}", raw_body: content)
   end
 
-  def create_from_blocks(library_id, path, blocks)
-    request(:put, "#{entries_url(library_id, path)}?type=blocks", body: { blocks: blocks })
+  def create_from_chunks(library_id, path, chunks)
+    request(:put, "#{entries_url(library_id, path)}?type=chunks", body: { chunks: chunks })
   end
 
   # --- Batch ---
