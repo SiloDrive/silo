@@ -149,16 +149,6 @@ var (
 	NodeName string
 )
 
-// EnvWithFallback returns the first non-empty value from the named env vars.
-func EnvWithFallback(names ...string) string {
-	for _, name := range names {
-		if v := os.Getenv(name); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 func initDefaultOptions() {
 	// Loopback by default. Silo speaks plaintext unless given a certificate,
 	// and every credential it uses is a bearer token in a header, so a
@@ -487,7 +477,11 @@ func loadCacheOptionFromEnv() {
 }
 
 func LoadJWTConfig() error {
-	JWTPrivateKey = EnvWithFallback("SILO_JWT_SECRET", "JWT_PRIVATE_KEY")
+	// One name, no fallback. This read used to also accept JWT_PRIVATE_KEY,
+	// the unprefixed spelling from before the rename, and a fallback like that
+	// never ends: nothing expires it and nothing tells an operator which of the
+	// two names their server is actually signing with.
+	JWTPrivateKey = os.Getenv("SILO_JWT_SECRET")
 	if JWTPrivateKey == "" {
 		// Auto-generate a key. Tokens won't survive server restarts,
 		// which is fine for a single-server deployment.
