@@ -48,11 +48,20 @@ func RunSetupToken(args []string) error {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
-	// Ensure rather than a plain read, so an existing but never-claimed
-	// install -- one upgraded to this version, say -- can be given a token
-	// without starting the server first. It is idempotent, so running this
-	// twice prints the same string rather than invalidating the one the
-	// operator already copied.
+	return reportSetupToken(ctx)
+}
+
+// reportSetupToken is everything the command does once the stores are open.
+//
+// Split out so the tests exercise the shipped code rather than a copy of it:
+// openStores reopens the process-wide database, which the test harness has
+// already pointed at a temp directory.
+//
+// Ensure rather than a plain read, so an existing but never-claimed install --
+// one upgraded to this version, say -- can be given a token without starting
+// the server first. It is idempotent, so running this twice prints the same
+// string rather than invalidating the one the operator already copied.
+func reportSetupToken(ctx context.Context) error {
 	tok, err := setup.Ensure(ctx)
 	if err != nil {
 		return err

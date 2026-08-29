@@ -131,10 +131,11 @@ func TestTheRequestItselfIsStillReported(t *testing.T) {
 func TestSetupTokenIsRedactedFromAMessage(t *testing.T) {
 	// Minted rather than pasted, so this test fails if the token format and
 	// the pattern that redacts it ever drift apart.
-	tok, err := newSetupTokenForTest()
+	minted, err := setup.Generate()
 	if err != nil {
 		t.Fatalf("minting a token: %v", err)
 	}
+	tok := minted.String()
 
 	event := eventFrom(t,
 		func(*sentry.Scope) {},
@@ -159,15 +160,4 @@ func TestTheSentryHookIgnoresWarnings(t *testing.T) {
 			t.Fatal("the Sentry hook now fires on warnings, which is the level the setup token is printed at")
 		}
 	}
-}
-
-// newSetupTokenForTest mints one through the same codec the server uses, so the
-// redaction pattern is tested against the real format rather than a literal
-// that could go stale.
-func newSetupTokenForTest() (string, error) {
-	tok, err := setup.Generate()
-	if err != nil {
-		return "", err
-	}
-	return tok.String(), nil
 }

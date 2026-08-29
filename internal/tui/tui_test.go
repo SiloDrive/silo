@@ -100,10 +100,23 @@ func browseModel(n, width, height int) model {
 	}
 }
 
+// key spells a keystroke the way Update's own switch does, so a test presses
+// "shift+tab" rather than assembling a tea.KeyMsg. The named keys need a Type;
+// everything else is the runes it looks like.
 func key(s string) tea.KeyMsg {
 	switch s {
 	case "pgdown":
 		return tea.KeyMsg{Type: tea.KeyPgDown}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}

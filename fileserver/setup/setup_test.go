@@ -14,6 +14,12 @@ import (
 	"github.com/dkam/silo/fileserver/option"
 )
 
+// storedHash stands in for whatever authmgr.HashPassword produces. Claim takes
+// a hash it never inspects, so these tests should not restate the KDF's own
+// encoding -- doing so put the storage format in a third package and would have
+// made a change to it fail here, in tests about a token.
+const storedHash = "not-a-real-hash"
+
 func testDB(t *testing.T) *dbutil.DBPair {
 	t.Helper()
 
@@ -49,7 +55,7 @@ func addAccount(t *testing.T, email string) account.ID {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
-	id, created, err := account.Create(ctx, email, "PBKDF2SHA256$1$00$00", false)
+	id, created, err := account.Create(ctx, email, storedHash, false)
 	if err != nil {
 		t.Fatalf("creating %s: %v", email, err)
 	}
@@ -169,7 +175,7 @@ func TestRequiredTracksWhetherAnAccountExists(t *testing.T) {
 		t.Errorf("Required with a live token = %v, %v; want true", req, err)
 	}
 
-	if _, err := Claim(ctx(t), tok, "me@example.com", "PBKDF2SHA256$1$00$00"); err != nil {
+	if _, err := Claim(ctx(t), tok, "me@example.com", storedHash); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	if req, err := Required(ctx(t)); err != nil || req {
@@ -189,7 +195,7 @@ func TestClaimCreatesTheFirstAccountAsStaff(t *testing.T) {
 		t.Fatalf("minting: %v", err)
 	}
 
-	id, err := Claim(ctx(t), tok, "Chosen@Example.COM", "PBKDF2SHA256$1$00$00")
+	id, err := Claim(ctx(t), tok, "Chosen@Example.COM", storedHash)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -220,11 +226,11 @@ func TestClaimConsumesTheToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("minting: %v", err)
 	}
-	if _, err := Claim(ctx(t), tok, "first@example.com", "PBKDF2SHA256$1$00$00"); err != nil {
+	if _, err := Claim(ctx(t), tok, "first@example.com", storedHash); err != nil {
 		t.Fatalf("first Claim: %v", err)
 	}
 
-	_, err = Claim(ctx(t), tok, "second@example.com", "PBKDF2SHA256$1$00$00")
+	_, err = Claim(ctx(t), tok, "second@example.com", storedHash)
 	if !errors.Is(err, ErrAlreadySetUp) {
 		t.Errorf("second Claim gave %v, want ErrAlreadySetUp", err)
 	}
@@ -246,7 +252,7 @@ func TestAWrongTokenDoesNotBurnTheRealOne(t *testing.T) {
 		t.Fatalf("generating a wrong token: %v", err)
 	}
 
-	if _, err := Claim(ctx(t), wrong, "attacker@example.com", "PBKDF2SHA256$1$00$00"); !errors.Is(err, ErrBadToken) {
+	if _, err := Claim(ctx(t), wrong, "attacker@example.com", storedHash); !errors.Is(err, ErrBadToken) {
 		t.Fatalf("Claim with a wrong token gave %v, want ErrBadToken", err)
 	}
 	if n := countAccounts(t, pair); n != 0 {
@@ -256,7 +262,7 @@ func TestAWrongTokenDoesNotBurnTheRealOne(t *testing.T) {
 		t.Fatalf("a refused claim left %d token rows, want 1", n)
 	}
 
-	if _, err := Claim(ctx(t), real, "owner@example.com", "PBKDF2SHA256$1$00$00"); err != nil {
+	if _, err := Claim(ctx(t), real, "owner@example.com", storedHash); err != nil {
 		t.Errorf("the real token stopped working after a wrong guess: %v", err)
 	}
 }
@@ -272,7 +278,7 @@ func TestClaimRefusesOnceAnAccountExists(t *testing.T) {
 	}
 	addAccount(t, "someone@example.com")
 
-	if _, err := Claim(ctx(t), tok, "second@example.com", "PBKDF2SHA256$1$00$00"); !errors.Is(err, ErrAlreadySetUp) {
+	if _, err := Claim(ctx(t), tok, "second@example.com", storedHash); !errors.Is(err, ErrAlreadySetUp) {
 		t.Errorf("Claim against a stale row gave %v, want ErrAlreadySetUp", err)
 	}
 	if n := countAccounts(t, pair); n != 1 {
@@ -299,7 +305,7 @@ func TestClaimDoesNotDeadlockOnTheSingleWriteConnection(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Claim(deadline, tok, "me@example.com", "PBKDF2SHA256$1$00$00")
+		_, err := Claim(deadline, tok, "me@example.com", storedHash)
 		done <- err
 	}()
 
@@ -335,7 +341,7 @@ func TestConcurrentClaimsCreateOneAccount(t *testing.T) {
 			c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			<-start
-			_, errs[i] = Claim(c, tok, fmt.Sprintf("claimer%d@example.com", i), "PBKDF2SHA256$1$00$00")
+			_, errs[i] = Claim(c, tok, fmt.Sprintf("claimer%d@example.com", i), storedHash)
 		}(i)
 	}
 	close(start)

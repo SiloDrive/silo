@@ -292,9 +292,11 @@ func (c *APIClient) Login(email, password string) error {
 //
 // The credentials are kept exactly as Login keeps them, because the session it
 // returns expires in twenty-four hours like any other and the automatic
-// re-login on a 401 needs something to present. They are cleared again if the
-// request fails: leaving them set for an account that was never created would
-// turn every later 401 into a re-login that cannot succeed.
+// re-login on a 401 needs something to present. Unlike Login they are stored
+// only once the request has succeeded: Login is re-authenticating an account
+// that exists, whereas a refused setup names an account that was never created,
+// and holding those would turn every later 401 into a re-login that cannot
+// succeed.
 func (c *APIClient) Setup(email, password, setupToken string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

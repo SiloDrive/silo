@@ -15,6 +15,7 @@ import (
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/notif"
+	"github.com/dkam/silo/fileserver/setup"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/internal/lexicon"
 )
@@ -33,24 +34,38 @@ import (
 // shipped, so there is no shim and no second vocabulary: a client built for
 // the old spelling gets 404, loudly, on its first call.
 
-// wire stands the server up and returns its base URL and a bearer token.
-func wire(t *testing.T) (base, token string) {
+// serveTestAPI points every store the router reaches at a fresh database and
+// runs the real router over it, returning the base URL.
+//
+// Shared with unclaimed (setup_wire_test.go), which needs the same server
+// without the account. A store left out here is a nil *sql.DB that panics on
+// first use rather than failing to compile, so the list is worth having in one
+// place: a new dependency of the router is then one edit, not two.
+func serveTestAPI(t *testing.T) string {
 	t.Helper()
 	sqliteTestDB(t)
 	share.Init(siloPair.Read, "Group", false)
 	api.Init(siloPair.Read, siloPair.Write)
 	authmgr.Init(siloPair.Read, siloPair.Write)
+	setup.Init(siloPair.Read, siloPair.Write)
+
+	srv := httptest.NewServer(newHTTPRouter())
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// wire stands the server up and returns its base URL and a bearer token.
+func wire(t *testing.T) (base, token string) {
+	t.Helper()
+	base = serveTestAPI(t)
 
 	const email, password = "wire@example.com", "correct horse battery staple"
 	if _, err := authmgr.CreateAccount(context.Background(), email, password, false); err != nil {
 		t.Fatalf("create account: %v", err)
 	}
 
-	srv := httptest.NewServer(newHTTPRouter())
-	t.Cleanup(srv.Close)
-
 	body := strings.NewReader(`{"email":"` + email + `","password":"` + password + `"}`)
-	resp, err := http.Post(srv.URL+"/api/silo/v1/auth/login", "application/json", body)
+	resp, err := http.Post(base+"/api/silo/v1/auth/login", "application/json", body)
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
@@ -64,7 +79,7 @@ func wire(t *testing.T) (base, token string) {
 	if out.Token == "" {
 		t.Fatal("login returned no token")
 	}
-	return srv.URL, out.Token
+	return base, out.Token
 }
 
 func call(t *testing.T, method, url, token, body string) (int, string) {

@@ -2,17 +2,12 @@ package silod
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/api"
-	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/setup"
-	"github.com/dkam/silo/fileserver/share"
 )
 
 // unclaimed stands up a server that has never had an account, and returns its
@@ -22,11 +17,7 @@ import (
 // a server under test here must not have.
 func unclaimed(t *testing.T) (base string, tok setup.Token) {
 	t.Helper()
-	sqliteTestDB(t)
-	share.Init(siloPair.Read, "Group", false)
-	api.Init(siloPair.Read, siloPair.Write)
-	authmgr.Init(siloPair.Read, siloPair.Write)
-	setup.Init(siloPair.Read, siloPair.Write)
+	base = serveTestAPI(t)
 
 	tok, err := setup.Ensure(t.Context())
 	if err != nil {
@@ -35,22 +26,15 @@ func unclaimed(t *testing.T) (base string, tok setup.Token) {
 	if tok.IsZero() {
 		t.Fatal("a fresh database says it does not need setting up")
 	}
-
-	srv := httptest.NewServer(newHTTPRouter())
-	t.Cleanup(srv.Close)
-	return srv.URL, tok
+	return base, tok
 }
 
-// post sends an unauthenticated JSON request, which is all setup ever is.
+// post sends the unauthenticated JSON request that setup always is. The empty
+// bearer token is what makes it unauthenticated: setup and login are registered
+// on the bare router, outside RequireCredential, so the header is ignored.
 func post(t *testing.T, url, body string) (int, string) {
 	t.Helper()
-	resp, err := http.Post(url, "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST %s: %v", url, err)
-	}
-	defer resp.Body.Close()
-	out, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(out)
+	return call(t, "POST", url, "", body)
 }
 
 func setupBody(email, password, token string) string {

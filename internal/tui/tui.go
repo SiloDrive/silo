@@ -292,10 +292,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-	// Asked twice now: once from Init, so the login screen knows whether it is
-	// really a setup screen, and again after login for the version in the
-	// status bar. It stays here rather than in the login view's update because
-	// the second answer arrives once the library list is already on screen.
+	// Asked from Init, so the login screen knows whether it is really a setup
+	// screen, and asked again after a login only if that first answer never
+	// arrived. It stays here rather than in the login view's update because a
+	// retry's answer lands once the library list is already on screen.
 	case serverInfoMsg:
 		m.serverVersion = msg.version
 		// Only while the login screen is still up. The post-login answer must
@@ -449,7 +449,14 @@ func (m model) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// a notification endpoint is not an error: the watcher asks, finds
 		// none, and stops, leaving the views to load when they are entered.
 		m.watcher = m.api.Watch()
-		return m, tea.Batch(m.loadLibraries, m.fetchServerInfo, m.awaitUpdate())
+		cmds := []tea.Cmd{m.loadLibraries, m.awaitUpdate()}
+		// Only if Init's fetch did not answer. It asks for the same two facts,
+		// neither of which a login can have changed; asking again is a round
+		// trip for a version string already on screen.
+		if m.serverVersion == "" {
+			cmds = append(cmds, m.fetchServerInfo)
+		}
+		return m, tea.Batch(cmds...)
 	}
 
 	var cmds []tea.Cmd
@@ -1246,52 +1253,48 @@ var (
 	renameHelp    = []string{"enter: rename", "esc: cancel"}
 )
 
-// wrapText breaks a sentence to width, at spaces.
+// wrapWords packs items into lines no wider than width, joined by sep and
+// broken only between whole items.
 //
-// wrapHelp cannot do this: it breaks only between whole items, because
-// breaking inside "r: rename" would read as two bindings. Prose has the
-// opposite requirement, and frame clips rather than wraps, so a sentence handed
-// through unbroken loses its tail rather than gaining a line.
-func wrapText(s string, width int) []string {
-	if width < 1 {
-		width = 1
-	}
-	words := strings.Fields(s)
-	if len(words) == 0 {
-		return []string{""}
-	}
-
-	lines := []string{}
-	line := words[0]
-	for _, w := range words[1:] {
-		if lipgloss.Width(line)+1+lipgloss.Width(w) > width {
-			lines = append(lines, line)
-			line = w
-			continue
-		}
-		line += " " + w
-	}
-	return append(lines, line)
-}
-
-// wrapHelp packs bindings into lines no wider than width, breaking only
-// between them. A general-purpose word wrap breaks inside "r: rename", which
-// then reads as two bindings.
-func wrapHelp(items []string, width int) []string {
+// The two callers below differ in what an item is and how they are joined,
+// which is all they ever differed in: help lines break between bindings because
+// breaking inside "r: rename" would read as two of them, and prose breaks
+// between words. A width of zero -- the login screen before its first
+// WindowSizeMsg -- wraps nothing, because a clipped line reads better than a
+// column one word wide.
+func wrapWords(items []string, sep string, width int) []string {
 	if len(items) == 0 {
 		return nil
 	}
 	var lines []string
 	line := items[0]
 	for _, item := range items[1:] {
-		if width > 0 && lipgloss.Width(line)+2+lipgloss.Width(item) > width {
+		if width > 0 && lipgloss.Width(line)+lipgloss.Width(sep)+lipgloss.Width(item) > width {
 			lines = append(lines, line)
 			line = item
 			continue
 		}
-		line += "  " + item
+		line += sep + item
 	}
 	return append(lines, line)
+}
+
+// wrapText breaks a sentence to width, at spaces. frame clips rather than
+// wraps, so a sentence handed through unbroken loses its tail rather than
+// gaining a line.
+func wrapText(s string, width int) []string {
+	lines := wrapWords(strings.Fields(s), " ", width)
+	if lines == nil {
+		// One empty line rather than none: a caller rendering prose is holding
+		// a row for it either way.
+		return []string{""}
+	}
+	return lines
+}
+
+// wrapHelp packs bindings into lines no wider than width.
+func wrapHelp(items []string, width int) []string {
+	return wrapWords(items, "  ", width)
 }
 
 // How many rows each screen spends on chrome above its body. The renderers

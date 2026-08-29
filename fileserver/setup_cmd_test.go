@@ -21,31 +21,12 @@ func setupCmdStore(t *testing.T) {
 	setup.Init(siloPair.Read, siloPair.Write)
 }
 
-// seedAccount creates one the way `silo user add` does -- without going near
-// the setup token, which is the case the command has to cope with.
-func seedAccount(t *testing.T, email string) {
-	t.Helper()
-	if _, err := authmgr.CreateAccount(t.Context(), email, "correct horse battery staple", false); err != nil {
-		t.Fatalf("seeding %s: %v", email, err)
-	}
-}
-
-// runSetupToken is RunSetupToken's body without openStores, which would reopen
-// the process-wide database the harness has already pointed at a temp dir.
+// runSetupToken calls the command's own body, skipping only openStores -- which
+// would reopen the process-wide database the harness has already pointed at a
+// temp dir.
 func runSetupToken(t *testing.T) (out string, err error) {
 	t.Helper()
-	out = captureStdout(t, func() {
-		var tok setup.Token
-		tok, err = setup.Ensure(t.Context())
-		if err != nil {
-			return
-		}
-		if tok.IsZero() {
-			err = errSetupAlreadyDone
-			return
-		}
-		printSetupToken(tok)
-	})
+	out = captureStdout(t, func() { err = reportSetupToken(t.Context()) })
 	return out, err
 }
 
@@ -99,7 +80,7 @@ func TestSetupTokenCommandIsIdempotent(t *testing.T) {
 // could be mistaken for a token.
 func TestSetupTokenCommandRefusesOnceAnAccountExists(t *testing.T) {
 	setupCmdStore(t)
-	seedAccount(t, "someone@example.com")
+	mintAccount(t, "someone@example.com")
 
 	out, err := runSetupToken(t)
 	if err == nil {

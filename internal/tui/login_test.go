@@ -4,49 +4,14 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
-// loginModel is the login view as initialModel builds it, without a server.
+// loginModel is the login view as the product builds it, without a server.
+// initialModel is used rather than a hand-rolled struct so that a change to how
+// a field is configured -- or a fourth one -- reaches these tests instead of
+// leaving them passing against a shape nothing ships.
 func loginModel() model {
-	email := textinput.New()
-	email.Focus()
-	password := textinput.New()
-	password.EchoMode = textinput.EchoPassword
-
-	// Built with textinput.New even though setup mode is off by default: a
-	// zero-value textinput.Model has a nil cursor and panics on Focus, so a
-	// model that could ever reach the third field has to carry a real one.
-	setupToken := textinput.New()
-
-	return model{
-		view:            viewLogin,
-		emailInput:      email,
-		passwordInput:   password,
-		setupTokenInput: setupToken,
-		serverURL:       "http://localhost:8082",
-		width:           80,
-		height:          24,
-	}
-}
-
-// namedKey covers the keys the shared key() helper does not: it builds
-// tea.KeyMsgs from Type rather than from runes.
-func namedKey(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
-
-func pressKeys(t *testing.T, m model, keys ...tea.KeyMsg) model {
-	t.Helper()
-	for _, k := range keys {
-		next, _ := m.Update(k)
-		updated, ok := next.(model)
-		if !ok {
-			t.Fatalf("Update returned %T, want tui.model", next)
-		}
-		m = updated
-	}
-	return m
+	return initialModel("http://localhost:8082", "", "")
 }
 
 // Tab moves forward through the login fields and wraps.
@@ -56,12 +21,12 @@ func TestTabCyclesLoginFieldsForwards(t *testing.T) {
 		t.Fatalf("focus starts at %d, want 0", m.loginFocus)
 	}
 
-	m = pressKeys(t, m, namedKey(tea.KeyTab))
+	m = press(t, m, "tab")
 	if m.loginFocus != 1 {
 		t.Errorf("after tab: focus %d, want 1 (password)", m.loginFocus)
 	}
 
-	m = pressKeys(t, m, namedKey(tea.KeyTab))
+	m = press(t, m, "tab")
 	if m.loginFocus != 0 {
 		t.Errorf("after two tabs: focus %d, want 0 (wrapped to email)", m.loginFocus)
 	}
@@ -74,12 +39,12 @@ func TestTabCyclesLoginFieldsForwards(t *testing.T) {
 func TestShiftTabCyclesLoginFieldsBackwards(t *testing.T) {
 	m := loginModel()
 
-	m = pressKeys(t, m, namedKey(tea.KeyShiftTab))
+	m = press(t, m, "shift+tab")
 	if m.loginFocus != 1 {
 		t.Errorf("shift+tab from email: focus %d, want 1 (wrapped back to password)", m.loginFocus)
 	}
 
-	m = pressKeys(t, m, namedKey(tea.KeyShiftTab))
+	m = press(t, m, "shift+tab")
 	if m.loginFocus != 0 {
 		t.Errorf("shift+tab from password: focus %d, want 0 (email)", m.loginFocus)
 	}
@@ -96,12 +61,12 @@ func TestShiftTabGoesBackwardsThroughThreeSetupFields(t *testing.T) {
 	m := loginModel()
 	m.setupMode = true
 
-	m = pressKeys(t, m, namedKey(tea.KeyShiftTab))
+	m = press(t, m, "shift+tab")
 	if m.loginFocus != 2 {
 		t.Errorf("shift+tab from email: focus %d, want 2 (wrapped back to the token)", m.loginFocus)
 	}
 
-	m = pressKeys(t, m, namedKey(tea.KeyShiftTab))
+	m = press(t, m, "shift+tab")
 	if m.loginFocus != 1 {
 		t.Errorf("shift+tab from the token: focus %d, want 1 (password)", m.loginFocus)
 	}
@@ -113,7 +78,7 @@ func TestTabCyclesThreeSetupFields(t *testing.T) {
 	m.setupMode = true
 
 	for i, want := range []int{1, 2, 0} {
-		m = pressKeys(t, m, namedKey(tea.KeyTab))
+		m = press(t, m, "tab")
 		if m.loginFocus != want {
 			t.Errorf("tab %d: focus %d, want %d", i+1, m.loginFocus, want)
 		}
@@ -123,8 +88,8 @@ func TestTabCyclesThreeSetupFields(t *testing.T) {
 // "up" is shift-tab's alias and must agree with it, or the two ways to go back
 // disagree about which way back is.
 func TestUpAgreesWithShiftTab(t *testing.T) {
-	withUp := pressKeys(t, loginModel(), namedKey(tea.KeyUp))
-	withShiftTab := pressKeys(t, loginModel(), namedKey(tea.KeyShiftTab))
+	withUp := press(t, loginModel(), "up")
+	withShiftTab := press(t, loginModel(), "shift+tab")
 
 	if withUp.loginFocus != withShiftTab.loginFocus {
 		t.Errorf("up left focus at %d, shift+tab at %d; they must agree",
@@ -134,7 +99,7 @@ func TestUpAgreesWithShiftTab(t *testing.T) {
 
 // The server's answer is what decides which screen this is.
 func TestServerInfoPutsTheLoginScreenIntoSetupMode(t *testing.T) {
-	m := pressKeys(t, loginModel())
+	m := loginModel()
 
 	next, _ := m.Update(serverInfoMsg{version: "v0.5.0", setupRequired: true})
 	m = next.(model)
@@ -196,7 +161,7 @@ func TestSetupRequiresTheTokenAsWellAsTheCredentials(t *testing.T) {
 	m.emailInput.SetValue("me@example.com")
 	m.passwordInput.SetValue("a password")
 
-	next, cmd := m.Update(namedKey(tea.KeyEnter))
+	next, cmd := m.Update(key("enter"))
 	m = next.(model)
 
 	if cmd != nil {
