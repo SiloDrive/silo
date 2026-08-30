@@ -245,14 +245,13 @@ func (c *APIClient) uploadChunks(libraryID, parentDir, localPath string, p store
 	}
 
 	for _, id := range missing {
-		src, ok := sources[id]
-		if !ok {
+		if _, ok := sources[id]; !ok {
 			// The server answered with an id that was never offered.
 			return fmt.Errorf("server asked for chunk %.8s, which is not part of this file", id)
 		}
-		if _, err := c.putChunkFrom(libraryID, id, src); err != nil {
-			return err
-		}
+	}
+	if err := c.sendChunks(libraryID, missing, sources, func(int, int64) {}); err != nil {
+		return err
 	}
 
 	return c.CommitChunks(libraryID, path.Join("/", parentDir, filepath.Base(localPath)), ids)

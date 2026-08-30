@@ -108,6 +108,7 @@ func features() []string {
 		"objects",          // GET/PUT objects/{id}, GET/HEAD chunks/{id}, PUT head
 		"chunks-fetch",     // POST chunks/fetch — many chunks, one framed response
 		"entries-manifest", // GET entries/{path}?type=manifest
+		"chunks-upload",    // POST chunks — many chunks, one framed request
 		"pagination",       // ?limit on changes and directory listings, Link: rel="next"
 		"batch",            // POST libraries/{id}/batch — many operations, one commit
 		"usage",            // GET account/usage, and size/file_count on the libraries listing

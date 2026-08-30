@@ -3,11 +3,13 @@ package silod
 import (
 	"bytes"
 	"context"
+	"io"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/share"
+	"github.com/dkam/silo/store"
 )
 
 // The chunk lane, from a real client to a real server and back.
@@ -37,6 +40,12 @@ import (
 // The counter is the point of several of these tests: what makes the chunk
 // lane worth its extra round trips is the content that never crosses the wire,
 // and the only way to assert that is to count what did.
+//
+// It counts chunks rather than requests, which is why the framed upload is
+// weighed by its frames. Counting requests was the same number while there was
+// one chunk in each; when batching landed, the client sent the same content in
+// one request and every assertion here read zero — a measure of how the bytes
+// were packaged rather than of whether they crossed.
 func laneClient(t *testing.T) (*client.APIClient, string, *atomic.Int64) {
 	t.Helper()
 	sqliteTestDB(t)
@@ -52,8 +61,22 @@ func laneClient(t *testing.T) (*client.APIClient, string, *atomic.Int64) {
 	var puts atomic.Int64
 	router := newHTTPRouter()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut && chunkPutPath(r.URL.Path) {
+		switch {
+		case r.Method == http.MethodPut && chunkPutPath(r.URL.Path):
 			puts.Add(1)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/chunks"):
+			// The body is read here to count its frames and has to be put
+			// back, or the handler downstream receives nothing.
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("reading a framed upload: %v", err)
+			}
+			frames, err := store.DecodeChunkFrames(body)
+			if err != nil {
+				t.Errorf("decoding a framed upload: %v", err)
+			}
+			puts.Add(int64(len(frames)))
+			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
 		router.ServeHTTP(w, r)
 	}))

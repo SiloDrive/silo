@@ -55,7 +55,7 @@ variable.
 
 | code | means | what a client should do |
 |---|---|---|
-| `400 Bad Request` | malformed or contradictory request — missing `path`, moving the library root, a `src` equal to its `dst`, a chunk whose bytes do not hash to the id it was sent under, `?type=chunks` on an encrypted library, a `limit` that is not a positive integer within range, a `cursor` this server did not issue | fix the request; never retry unchanged |
+| `400 Bad Request` | malformed or contradictory request — missing `path`, moving the library root, a `src` equal to its `dst`, a chunk whose bytes do not hash to the id it was sent under, a chunk stream that ends without its terminator, a chunk stream carrying a frame marked absent (that status says "I do not hold this" and is a *reply*; going up it means nothing, so it is refused rather than skipped and the message says so), `?type=chunks` on an encrypted library, a `limit` that is not a positive integer within range, a `cursor` this server did not issue | fix the request; never retry unchanged |
 | `401 Unauthorized` | no `Authorization` header, a malformed one, or an expired session token | re-authenticate, then retry once. Do not loop |
 | `403 Forbidden` | authenticated, but not permitted — including libraries you cannot see | surface it; do not retry. A library you cannot see and a library that does not exist both answer `403` from the token endpoints on purpose, so they cannot be used to probe for valid ids |
 | `404 Not Found` | the named thing does not exist — see the overload note below | depends on *what* was not found |
@@ -63,7 +63,8 @@ variable.
 | `409 Conflict` | a destination collision, an attempt to create `/`, an encrypted library id already in use, or creating an encrypted library before the account has published an identity key — see the overload note below | rename and retry, or fix the client |
 | `410 Gone` | your `since` anchor, or the commit your page cursor was issued against, is no longer reachable | stop incremental sync and enumerate from scratch. `GET libraries/{libraryid}/changes` only |
 | `412 Precondition Failed` | your `If-Match` did not match; someone else wrote first | re-read, reapply your change, write again. Not an error — it is the mechanism working |
-| `413 Payload Too Large` | body over the limit, or a batch over 1000 operations | do not retry; split it |
+| `413 Payload Too Large` | body over the limit, a batch over 1000 operations, or a chunk stream over 256 chunks or 256 MiB | do not retry; split it |
+| `415 Unsupported Media Type` | the body's framing was not declared — `POST chunks` without `Content-Type: application/vnd.silo.chunks` | set the header and retry. The framing is not guessable from the bytes, so an undeclared body is refused rather than parsed hopefully |
 | `416 Range Not Satisfiable` | the range is outside the entry | |
 | `424 Failed Dependency` | the write names chunks the server does not hold | `PUT entries/{path}?type=chunks` and a `create` inside `POST batch`. The body is `{"error":…,"missing":[sha256,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
 | `429 Too Many Requests` | rate limiting; carries `Retry-After` | wait the stated time. Three sources. Where a password is verified — the login endpoints, and `POST auth/password`, which spends the same buckets because a credential is not a throttle. And `POST auth/kdf`, which has its own per-address bucket at sixty a minute and spends a token on every request rather than only on failures, because it has no failures. And `POST auth/setup`, per address only at five a minute — there is no account to count against, since the address in the request is one the operator is inventing |

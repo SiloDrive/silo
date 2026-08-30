@@ -20,6 +20,7 @@ func TestFeaturesNameTheIDAddressedSurface(t *testing.T) {
 		"chunks":           "chunks/missing, PUT chunks/{id}, PUT entries?type=chunks",
 		"objects":          "GET/PUT objects/{id}, GET/HEAD chunks/{id}, PUT head",
 		"chunks-fetch":     "POST chunks/fetch — many chunks in one framed response",
+		"chunks-upload":    "POST chunks — many chunks in one framed request",
 		"entries-manifest": "GET entries/{path}?type=manifest",
 	} {
 		if !slices.Contains(got, name) {

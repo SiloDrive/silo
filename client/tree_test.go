@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dkam/silo/store"
 )
 
 // treeServer is a fake Silo that knows the three surfaces a tree upload uses.
@@ -22,6 +24,7 @@ type treeServer struct {
 	batches   [][]BatchOp // one entry per batch request
 	chunksPut []string
 	asked     [][]string // one entry per chunks/missing request
+	uploads   [][]string // one entry per framed POST chunks, the ids it carried
 	puts      []string   // whole-file PUTs, the fallback path
 	mkdirs    []string
 }
@@ -52,6 +55,32 @@ func newTreeServer(t *testing.T, features ...string) (*treeServer, *APIClient) {
 				}
 			}
 			_ = json.NewEncoder(w).Encode(map[string][]string{"missing": missing})
+
+		// The framed upload: many chunks in one request. Decoded rather than
+		// discarded, because the whole point of the test is what the body
+		// carried — and DecodeChunkFrames verifies every chunk against the id
+		// it arrived under, which is the check the real server makes too.
+		case strings.HasSuffix(path, "/chunks"):
+			body, _ := io.ReadAll(r.Body)
+			frames, err := store.DecodeChunkFrames(body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			var ids []string
+			var stored, present int
+			for _, f := range frames {
+				id := f.ID.String()
+				ids = append(ids, id)
+				if ts.held[id] {
+					present++
+					continue
+				}
+				ts.held[id] = true
+				stored++
+			}
+			ts.uploads = append(ts.uploads, ids)
+			_ = json.NewEncoder(w).Encode(map[string]int{"stored": stored, "present": present})
 
 		case strings.Contains(path, "/chunks/"):
 			id := path[strings.LastIndex(path, "/")+1:]

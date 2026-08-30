@@ -20,9 +20,9 @@ The question splits, and the two halves score very differently.
 | Read, browse, on-demand file access — the File Provider / FUSE case | close. The coordination primitives are all present and several are better than what the same client would get from a commercial API |
 | Full bidirectional sync of large libraries — the actual Dropbox case | not close. The distance is concentrated in bulk writes and in enumeration at scale |
 
-The coordination layer is done, and bulk transfer is now negotiated in both
-directions rather than only on the way up. What remains is narrower than it
-was: one request per chunk *going up*, and no delta for a file whose bytes are
+The coordination layer is done, and bulk transfer is now batched in both
+directions rather than only on the way down. What remains is narrower than it
+was, and is one thing rather than two: no delta for a file whose bytes are
 rewritten wholesale.
 
 ## What is already right
@@ -131,37 +131,17 @@ library is append-mostly and the chunk surface already handles it. A library of
 VM images or database files re-uploads whole files on every edit, and no amount
 of chunk negotiation helps.
 
-### 2. One request per chunk, going up
+> **What this is now competing against has changed.** Part of the case for a
+> wire delta was that per-chunk round trips dominated an upload, so anything
+> that cut the bytes cut the time. Batching removed the round trips without
+> touching the bytes — 128 MiB went from 118 requests to 7 — so what is left
+> for rdiff to win is the transfer itself, on the one library shape where CDC
+> finds nothing to dedup. That is a narrower and more honest claim than the one
+> this section was originally ranked on, and it should be re-measured against a
+> real VM-image workload before it is scheduled rather than inherited from
+> here.
 
-> **Half closed.** The download side has it: `POST chunks/fetch` takes up to
-> 256 ids and answers with one framed body, `store/chunkstream.go`. The heading
-> used to read *still*, when neither direction had a batch. The upload side is
-> what remains, and the framing to send is already written.
-
-A 1 GB file is roughly a thousand `PUT`s, one per chunk: the chunker targets
-1 MiB (`store/params.go`), so the count follows from the file size. That is the
-right trade against an unresumable single request, and it is still a thousand
-round trips. The same argument that produced `chunks/fetch` applies going up: a
-`POST chunks` taking several chunks in one framed body — the same frames, read
-rather than written — which is also where zstd-on-the-wire would earn its keep.
-
-This paragraph said 128, a figure carried over from the 8 MiB fixed blocks this
-surface started with. The correction makes the case stronger rather than weaker,
-which is the reason to fix it rather than round it off: an eightfold undercount
-of the round trips is an eightfold undercount of what batching buys.
-
-Two things soften it, and neither removes it. Concurrent requests on one HTTP/2
-connection recover much of the latency with no protocol work, so this is an
-optimisation rather than a blocker — `sync-design.md` says as much. And a client
-reading a file it has nothing cached for should not be on this surface at all:
-`GET entries/{path}` is ranged and the server assembles, so a cold read is one
-request. The chunk surface earns its keep when a client holds a previous version
-and wants only what moved.
-
-Commit batching is done — see the closed list — so what is left here is purely
-the transfer, not the history.
-
-### 3. No stable per-file identity
+### 2. No stable per-file identity
 
 Identifiers never cross the wire. Every request is `(library_id, path)`; identity
 across a move is reconstructed client-side from an `IdMap` plus the rename ops
@@ -204,6 +184,7 @@ records what came off it.
 | **Batching** | `POST libraries/{id}/batch` applies many operations as one commit: mkdir, delete, move, copy, and create from already-uploaded chunks. Ordered, so an operation sees the ones before it, and all-or-nothing, so a failure names the index that stopped it and writes nothing. Five hundred files dragged into a folder is one commit and one round of branch-head contention rather than five hundred of each. The tree operations were already the right shape — each takes a root id and returns a new one — so the change was threading that root through a list instead of committing after every step |
 | **Pagination** | `?limit=N` on `changes` and on directory listings, with the next page in a `Link: …; rel="next"` header so the body shape did not change. Opt-in with no default, because a truncated answer that looks complete is worse than a large one. A cursor pins the commit or directory object the first page came from, so a sequence of pages is a consistent snapshot. On `changes` the anchor is absent until the last page, which makes "record it whenever you see it" the correct client behaviour rather than a rule to remember |
 | **Resumable, dedup-aware upload** | the chunk surface: `POST chunks/missing`, `PUT chunks/{sha1}`, `PUT entries/{path}?type=chunks`. A client computes chunk ids itself — fixed offsets, SHA-1 of the bytes — so it can ask what the server holds before sending anything. Nothing exists at the destination until the last call, which is what makes an interrupted upload resumable with no session, offset or upload id to keep: ask again and the answer is shorter. `server-info` reports `block_size` so the chunking is not a guess. No more minting a sync token to reach `check-blocks` on the frozen lane |
+| **One request per chunk, going up** | `POST chunks` takes a framed body of many chunks and answers `{"stored":N,"present":M}` — the same frames `chunks/fetch` writes, read rather than written, which is what `store/chunkstream.go` said a batched upload would take. At most 256 chunks or 256 MiB per request. Measured end to end against a real server, a 32 MiB upload went from 34 HTTP requests to 5 and a 128 MiB one from 118 to 7; a 1 GB file at the 1 MiB target was roughly a thousand round trips and is now a couple of dozen. The heading here read *still* when neither direction had a batch, then *half closed* when only the download did. Two things always softened it and still do: concurrent requests on one HTTP/2 connection recover much of the latency with no protocol work, and a client reading a file it has nothing cached for should be on `GET entries/{path}`, which is ranged and server-assembled, rather than here at all. Feature name `chunks-upload` |
 | **The read half of the chunk surface** | `GET chunks/{id}` answers one chunk and `POST chunks/fetch` answers up to 256 in one framed body (`application/vnd.silo.chunks`, layout in `store/chunkstream.go`), and `GET entries/{path}?type=manifest` hands over a file's chunk list at a path a narrowed credential can reach. Together they close the asymmetry this list did not name for a long time: the write side had been able to ask "which of these do you hold?" and send only the answer since 0.4.5, while the read side had no equivalent, so a client editing one byte of a 1 GiB file uploaded a few chunks and downloaded the whole file to build them |
 | **The id-addressed surface has a name** | `GET/PUT objects/{id}`, `GET chunks/{id}` and `PUT head` all shipped with store-v2 and none of them appeared in `features`. porter-fuse asked for two of them as if they were unbuilt, which is what an undiscoverable capability costs — it is not merely unused, it gets asked for again. The names are `objects`, `chunks-fetch` and `entries-manifest` |
 | **`HEAD` is in the contract** | it was implemented, and in `porter-brief.md`, but missing from the endpoint table in [`protocol.md`](protocol.md) |

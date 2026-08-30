@@ -771,6 +771,22 @@ PUT  /api/silo/v1/libraries/{library}/chunks/{id}         the chunk's bytes
 PUT  /api/silo/v1/libraries/{library}/entries/{path}?type=chunks   {"chunks":[id,…]}
 ```
 
+The middle call has a batched form, and on a link with latency you want it.
+Check `features` for `chunks-upload`:
+
+```
+POST /api/silo/v1/libraries/{library}/chunks              a chunk stream → {"stored":N,"present":M}
+```
+
+Same framing as `chunks/fetch`, read rather than written — so if you already
+decode that response you can encode this request with the same code. At most
+256 chunks or 256 MiB per request, whichever comes first, and every stream ends
+with the terminator frame or the server answers `400` rather than believing a
+short upload. `stored + present` always equals the number of frames you sent;
+`present` is content that arrived between your `chunks/missing` and your upload,
+which is ordinary rather than an error. At the 1 MiB target this turns a 1 GB
+file from about a thousand round trips into a couple of dozen.
+
 **You can compute the ids yourself, and that is the point.** An id is the
 **SHA-256** of the chunk's bytes, sixty-four hex characters. Those are the
 names the server uses, so you can ask what it already holds before sending
@@ -1083,6 +1099,7 @@ not on a plain library.
 ```
 POST libraries/{library}/chunks/missing       {"chunks":[id,…]} → {"missing":[id,…]}
 PUT  libraries/{library}/chunks/{id}          the chunk's bytes
+POST libraries/{library}/chunks               many chunks, one framed request
 PUT  libraries/{library}/objects/{id}         manifest, then each directory up the spine,
                                        then the commit
 PUT  libraries/{library}/head                 If-Match: <current head commit id>
@@ -1361,7 +1378,7 @@ exercised against a running server.
 | `modifyItem` (rename) | `POST /api/silo/v1/libraries/{id}/entries/{path}` `{"op":"move",…}` |
 | `modifyItem` (reparent) | the same call — a move is a move |
 | duplicate an item | `POST /api/silo/v1/libraries/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
-| upload a large file | `POST chunks/missing`, `PUT chunks/{id}` for each, then `PUT entries/{path}?type=chunks` |
+| upload a large file | `POST chunks/missing`, then `POST chunks` with the ones it named (or `PUT chunks/{id}` for each on a server without `chunks-upload`), then `PUT entries/{path}?type=chunks` |
 | download a large file you hold a version of | `GET entries/{path}?type=manifest`, then `POST chunks/fetch` for the ids your chunk cache lacks |
 | read a file once, nothing cached | `GET entries/{path}` — one request, the server assembles |
 | enumerate a huge directory | `GET entries/{path}?limit=1000`, then follow `Link: …; rel="next"` |

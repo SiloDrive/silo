@@ -177,17 +177,16 @@ func (c *APIClient) uploadTreeBatched(libraryID string, dirs []string, files []t
 	result.ChunksHeld = len(ids) - len(missing)
 
 	for _, id := range missing {
-		src, ok := sources[id]
-		if !ok {
+		if _, ok := sources[id]; !ok {
 			// The server answered with an id that was never offered.
 			return fmt.Errorf("server asked for chunk %.8s, which is not part of this upload", id)
 		}
-		sent, err := c.putChunkFrom(libraryID, id, src)
-		if err != nil {
-			return err
-		}
-		result.ChunksSent++
-		result.Bytes += sent
+	}
+	if err := c.sendChunks(libraryID, missing, sources, func(chunks int, bytes int64) {
+		result.ChunksSent += chunks
+		result.Bytes += bytes
+	}); err != nil {
+		return err
 	}
 
 	ops := make([]BatchOp, 0, len(dirs)+len(files))

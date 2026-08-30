@@ -380,14 +380,21 @@ Feature name `chunks`. Three calls, and the shape of every resumable upload:
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=chunks` | `{"chunks":[id,…]}` — create the file from them. `201` and an `ETag`, as any other write |
 | GET, HEAD | `/api/silo/v1/libraries/{libraryid}/chunks/{id}` | One chunk, as stored. `ETag` is the bare id and `Cache-Control` is a year and `immutable`, because the id *is* the content hash and this representation can never change |
 | POST | `/api/silo/v1/libraries/{libraryid}/chunks/fetch` | `{"chunks":[id,…]}` → a chunk stream: many chunks in one framed response. Feature name `chunks-fetch` |
+| POST | `/api/silo/v1/libraries/{libraryid}/chunks` | A chunk stream in, `{"stored":N,"present":M}` out: many chunks in one framed request. Feature name `chunks-upload` |
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=manifest` | A file's chunk list, addressed by path. Feature name `entries-manifest` |
 
-The first three are the upload half and were built first. The last three are
-the download half, and the gap between them is worth naming because it is the
-one a client feels: a write has been able to ask "which of these do you hold?"
+The first three are the upload half and were built first. The next three are
+the download half, and the gap between them was worth naming because it was the
+one a client felt: a write has been able to ask "which of these do you hold?"
 and send only the answer since 0.4.5, while a read had no equivalent, so a
 client holding a previous version of a 1 GiB file uploaded a few chunks and
 downloaded the whole file to build them.
+
+The last is the upload half catching up on the other axis. `chunks/fetch`
+closed the asymmetry in *what* could be asked for; `POST chunks` closes the one
+in *how many at a time*, which was the asymmetry left: the read side had
+answered many-at-once since `chunks-fetch`, and the write side, whose whole
+purpose is bulk, still took one request per chunk.
 
 An id is the SHA-256 of the chunk's bytes, so a client computes the names the
 server would without asking. Where the cuts fall is the other half, and that
@@ -494,6 +501,57 @@ one chunk at a time.
 
 `GET chunks/{id}` remains the right call for one chunk: it is cacheable by any
 intermediary, immutable, and needs no body. This is the same answer for many.
+
+#### The batched upload — `POST chunks`
+
+Feature name `chunks-upload`. The same framing as above, read rather than
+written: `Content-Type: application/vnd.silo.chunks` going up, and
+`{"stored":N,"present":M}` coming back.
+
+It exists because the chunker targets 1 MiB, so a 1 GB file is roughly a
+thousand `PUT chunks/{id}` calls — a thousand round trips to move content one
+connection could stream in one. On a link with any latency that is the dominant
+cost of an upload; the bytes were never the complaint.
+
+`stored` is what the server did not already hold and `present` is what it did.
+The second is not an error and is worth reading: it is a `chunks/missing`
+answer that went stale under the client, which is ordinary on a library more
+than one client writes. `stored + present` always equals the number of frames
+sent, so the pair is also the receipt — a client that gets a smaller total has
+found a server it cannot reason about and should not go on to name those ids in
+an entry.
+
+At most **256 chunks** and **256 MiB** in one request, whichever binds first. A
+library chunking at the format's 4 MiB maximum therefore reaches the size limit
+at 64 frames rather than the count limit at 256, which is the intended
+behaviour: the limit that binds should be whichever comes first, and a client
+batching by bytes never meets either.
+
+Three refusals are worth stating because each is a decision:
+
+- **A body without its terminator is `400`,** not a short success. A sender cut
+  off mid-transfer emits whole frames and stops, and nothing in the bytes says
+  the count was not the intended one — only the terminator says that. The
+  message distinguishes truncation from a malformed frame, because the first
+  should simply be retried and the second will fail identically forever.
+- **A frame marked absent is `400`.** Absence is how the *read* side says "I do
+  not hold this"; going up it would have to mean something new, and a frame
+  that means nothing is refused rather than skipped, so a client cannot come to
+  believe it uploaded a chunk it did not.
+- **A missing or wrong `Content-Type` is `415`.** The framing is not guessable
+  from the bytes, so an unlabelled body would be read as an id, a status and a
+  length, and would fail much further in with an error about a chunk nobody
+  sent.
+
+Chunks written before a failure stay written, deliberately. They are
+content-addressed, so storing one twice is storing it once, and nothing
+references them until an entry does — a client that retries asks
+`chunks/missing` and gets a shorter list. That is this surface's whole resume
+story, and it is why this endpoint creates nothing: the entry still arrives
+through `PUT entries/{path}?type=chunks` or through `batch`.
+
+`PUT chunks/{id}` remains the right call for one chunk, and remains the shape a
+retry takes. This is the same answer for many.
 
 #### The manifest — `GET entries/{path}?type=manifest`
 

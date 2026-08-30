@@ -594,6 +594,11 @@ func newHTTPRouter() *mux.Router {
 	// "fetch" is subject to the same note as "missing": it cannot collide with
 	// a chunk id, and it is listed before the id route regardless.
 	apiRouter.HandleFunc("/libraries/{libraryid}/chunks/fetch", chunksFetchHandler).Methods("POST")
+	// The collection itself, POST only: many chunks in one framed body. It
+	// names no id because it carries several, which is also why it cannot
+	// collide with the id route below — that one has a segment where this has
+	// none.
+	apiRouter.HandleFunc("/libraries/{libraryid}/chunks", chunksUploadHandler).Methods("POST")
 	// The id-addressed surface. A chunk id is sixty-four hex characters, so
 	// the id and the route regex cannot collide — the width is the format, not
 	// a convention. See objects.go.
