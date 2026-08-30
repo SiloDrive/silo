@@ -46,7 +46,7 @@ func TestAClientOpensItsAccountAndALibraryKeyOverHTTP(t *testing.T) {
 	// The keyring holds the right content key, shown by what it can open
 	// rather than by comparing the key itself: the keyring does not hand it
 	// out, and this is the property that actually matters.
-	sealed, err := store.SealChunk(seed.CK, []byte("a chunk sealed under the key that was wrapped"))
+	sealed, err := seed.Keyring.SealChunk([]byte("a chunk sealed under the key that was wrapped"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestAClientOpensItsAccountAndALibraryKeyOverHTTP(t *testing.T) {
 	// And the chunker it implies is the library's, not the published default:
 	// an encrypted library's boundaries are unguessable without CK, which is
 	// only true if the seed is derived from it.
-	if got, want := kr.Params(), store.DefaultParams(store.ChunkerSeed(seed.CK)); got != want {
+	if got, want := kr.Params(), seed.Keyring.Params(); got != want {
 		t.Errorf("chunker params = %+v, want the library's own %+v", got, want)
 	}
 	if kr.Params() == store.DefaultParams(store.PlainSeed()) {

@@ -1,12 +1,12 @@
 package silod
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/dkam/silo/client"
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/store"
@@ -28,69 +28,44 @@ import (
 // alternative is creating the library and publishing its key in two requests,
 // which leaves a window holding a library whose key nobody stored.
 
-// sealedSeed builds what a client sends: an empty root directory and an
-// initial commit, both sealed under ck, plus their ids.
+// sealedSeed is what a client sends, built by the client's own code.
+//
+// It delegates to client.NewEncryptedSeed rather than reimplementing it, so
+// the refusals below are tested against seeds something actually writes: a
+// hand-built prototype here would let the two drift, and the server's
+// validation would then be pinning a format no client produces.
 type sealedSeed struct {
-	LibraryID  string
-	CK         []byte
-	Root       []byte
-	Commit     []byte
-	RootID     store.ID
-	CommitID   store.ID
-	WrappedKey []byte
+	client.EncryptedSeed
+	// Keyring is the content key, and the only handle on it there will be.
+	Keyring  *store.Keyring
+	RootID   store.ID
+	CommitID store.ID
 }
 
 func mintSeed(t *testing.T, pub []byte) sealedSeed {
 	t.Helper()
 
-	libraryID := uuid.New().String()
-	ck := make([]byte, store.CKSize)
-	if _, err := rand.Read(ck); err != nil {
-		t.Fatalf("content key: %v", err)
-	}
-
-	var salt [store.DirSaltSize]byte
-	if _, err := rand.Read(salt[:]); err != nil {
-		t.Fatalf("directory salt: %v", err)
-	}
-	root := &store.Directory{Salt: salt}
-	rootBytes, err := root.EncodeSealed(ck)
-	if err != nil {
-		t.Fatalf("sealing the root directory: %v", err)
-	}
-	rootID := store.ObjectID(rootBytes)
-
-	commit := &store.Commit{Root: rootID, CreatedAt: 1756339200}
-	commitBytes, err := commit.EncodeSealed(ck)
-	if err != nil {
-		t.Fatalf("sealing the initial commit: %v", err)
-	}
-
 	var recipient [store.X25519KeySize]byte
 	copy(recipient[:], pub)
-	wrapped, err := store.WrapCK(recipient, libraryID, ck)
+	seed, kr, err := client.NewEncryptedSeed(uuid.New().String(), recipient)
 	if err != nil {
-		t.Fatalf("wrapping the content key: %v", err)
+		t.Fatalf("minting a seed: %v", err)
 	}
-
 	return sealedSeed{
-		LibraryID: libraryID, CK: ck,
-		Root: rootBytes, Commit: commitBytes,
-		RootID: rootID, CommitID: store.ObjectID(commitBytes),
-		WrappedKey: wrapped,
+		EncryptedSeed: seed,
+		Keyring:       kr,
+		RootID:        store.ObjectID(seed.Root),
+		CommitID:      store.ObjectID(seed.Commit),
 	}
 }
 
 func (s sealedSeed) body(t *testing.T, name string) string {
 	t.Helper()
 	b, err := json.Marshal(struct {
-		Name       string `json:"name"`
-		E2EE       bool   `json:"e2ee"`
-		LibraryID  string `json:"library_id"`
-		Root       []byte `json:"root"`
-		Commit     []byte `json:"commit"`
-		WrappedKey []byte `json:"wrapped_key"`
-	}{name, true, s.LibraryID, s.Root, s.Commit, s.WrappedKey})
+		Name string `json:"name"`
+		E2EE bool   `json:"e2ee"`
+		client.EncryptedSeed
+	}{name, true, s.EncryptedSeed})
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
 	}
@@ -210,8 +185,18 @@ func TestTheContentKeyWrapComesBackAndOpens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unwrapping the content key: %v", err)
 	}
-	if string(ck) != string(seed.CK) {
-		t.Error("the content key that came back is not the one that went in")
+	// Key equality, shown by what the key does: the keyring the seed was
+	// minted with seals a chunk, and one built from what came back opens it.
+	kr, err := store.NewKeyring(ck)
+	if err != nil {
+		t.Fatalf("the unwrapped key is not a content key: %v", err)
+	}
+	sealed, err := seed.Keyring.SealChunk([]byte("sealed under the key that went in"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kr.OpenChunk(sealed.PlaintextHash, sealed.Frame); err != nil {
+		t.Errorf("the content key that came back is not the one that went in: %v", err)
 	}
 }
 

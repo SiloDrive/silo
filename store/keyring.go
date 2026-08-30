@@ -14,6 +14,7 @@
 package store
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 )
@@ -43,6 +44,20 @@ func NewKeyring(ck []byte) (*Keyring, error) {
 	return k, nil
 }
 
+// GenerateKeyring mints a content key for a new library.
+//
+// The key is generated here rather than by the caller so that the only way to
+// come by one is to come by a keyring: a bare CK on the client is a value that
+// can be logged, copied into a config file, or passed to the wrong derivation,
+// and there is no recovering from any of those.
+func GenerateKeyring() (*Keyring, error) {
+	ck := make([]byte, CKSize)
+	if _, err := rand.Read(ck); err != nil {
+		return nil, fmt.Errorf("store: generating a content key: %w", err)
+	}
+	return NewKeyring(ck)
+}
+
 // Params is the chunker configuration for this library.
 func (k *Keyring) Params() Params { return k.params }
 
@@ -59,6 +74,15 @@ func (k *Keyring) NameCipher(salt [DirSaltSize]byte) (*NameCipher, error) {
 	return NewNameCipher(nk)
 }
 
+// WrapTo wraps this library's content key to a recipient's identity key.
+//
+// The library id is bound into the wrap as associated data, so it has to be
+// the id the library will actually have -- a wrap made against one spelling of
+// it does not open under another.
+func (k *Keyring) WrapTo(recipient [X25519KeySize]byte, library string) ([]byte, error) {
+	return WrapCK(recipient, library, k.ck)
+}
+
 // SealChunk seals one chunk under this library's content key.
 func (k *Keyring) SealChunk(plaintext []byte) (SealedChunk, error) {
 	return SealChunk(k.ck, plaintext)
@@ -67,6 +91,17 @@ func (k *Keyring) SealChunk(plaintext []byte) (SealedChunk, error) {
 // OpenChunk reverses SealChunk, given the plaintext hash the manifest records.
 func (k *Keyring) OpenChunk(hp ID, frame []byte) ([]byte, error) {
 	return OpenChunk(k.ck, hp, frame)
+}
+
+// SealDirectory and SealCommit are the writing halves of OpenDirectory and
+// OpenCommit. There is no SealManifest yet because nothing writes one: the
+// E2EE write path is not built.
+func (k *Keyring) SealDirectory(d *Directory) ([]byte, error) {
+	return d.EncodeSealed(k.ck)
+}
+
+func (k *Keyring) SealCommit(c *Commit) ([]byte, error) {
+	return c.EncodeSealed(k.ck)
 }
 
 // OpenManifest, OpenDirectory and OpenCommit open the three object types a

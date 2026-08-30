@@ -144,6 +144,10 @@ The id comes from the client because `store.WrapCK` binds it into the wrap as
 associated data — so it has to exist before the key can be wrapped to anybody,
 and the alternative of creating the library and publishing its key in two
 requests leaves a window holding a library whose key nobody stored.
+`client.CreateEncryptedLibrary` is that request in the reference client. It
+returns the library's keyring alongside the library, because that is the only
+moment the keyring is free: nothing the server holds can reconstruct a content
+key, so a caller that drops it has not lost a cache.
 `GET /libraries/{id}/key` hands a member their wrap back. Both are behind the
 `e2ee-libraries` feature name, and the account key material they depend on is
 behind `account-keys`; a client that cannot see those names must not offer the
