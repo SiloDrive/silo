@@ -593,6 +593,7 @@ func newHTTPRouter() *mux.Router {
 	// scoped to one library is refused them here rather than in the handler.
 	apiRouter.HandleFunc("/auth/logout/everywhere", api.LogoutEverywhereHandler).Methods("POST")
 	apiRouter.HandleFunc("/auth/password", api.ChangePasswordHandler).Methods("POST")
+	apiRouter.HandleFunc("/account", api.AccountHandler).Methods("GET")
 	apiRouter.HandleFunc("/account/keys", api.GetAccountKeysHandler).Methods("GET")
 	apiRouter.HandleFunc("/account/keys", api.PutAccountKeysHandler).Methods("PUT")
 	apiRouter.HandleFunc("/account/keys/recovery/{ordinal:[0-9]+}",

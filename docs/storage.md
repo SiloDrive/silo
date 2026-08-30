@@ -699,26 +699,12 @@ library's owner decides. Asking and answering are the same command with and
 without a value, so an operator who types the reading form with an argument
 gets the change they asked for rather than a usage message.
 
-## What Part 1 does not do
-
-- **There is no cache in front of the store.** A read is a read.
-- **Objects are not compressed.** They are encrypted — see § At rest — but
-  what a frame holds is exactly the bytes that arrived.
-- **No client seals anything yet.** The server stores and serves an E2EE
-  library; the sealing client and the split-derivation login are Part 2.
-- **Nothing creates a `VirtualLibrary` row**, and several queries still join
-  the table.
-
----
-
-# Part 2 — designed, not built
-
 ## One password, split client-side
 
-**The server half is built; no client derives the split yet**, so every login
-today still sends the password. If that password also wraps the identity key,
-the server sees the wrapping secret at every login and E2EE is theatre. The
-fix:
+**Both halves are built.** A password that wraps the identity key and is also
+sent at every login is a password the server sees the wrapping secret of, and
+E2EE is then theatre. So the client splits it and sends only the half that
+unwraps nothing:
 
 ```
 master  = argon2id(password, user_salt)     -- client-side
@@ -757,8 +743,25 @@ What this server does about all of it — the `AUTHKEY-SHA256$` hash that names
 its own format and is the crossover flag, the one-statement write of hash and
 parameters, the `409` on a change that would undo a crossover by omission, and
 what an operator reset does and does not touch — is
-[`auth.md`](auth.md) § Split-derivation login, on this side. What is left is
-the client: silo#13.
+[`auth.md`](auth.md) § Split-derivation login, on this side.
+
+An account crosses over when a client enrols it or changes its password, and
+never on the server's own initiative: crossing over needs `master`, which is
+the one value the server does not have. So accounts that predate the crossover
+stay on password login until a client moves them, and both shapes have to keep
+working for as long as any of them remain.
+
+## What Part 1 does not do
+
+- **There is no cache in front of the store.** A read is a read.
+- **Objects are not compressed.** They are encrypted — see § At rest — but
+  what a frame holds is exactly the bytes that arrived.
+- **Nothing creates a `VirtualLibrary` row**, and several queries still join
+  the table.
+
+---
+
+# Part 2 — designed, not built
 
 ## Packs
 

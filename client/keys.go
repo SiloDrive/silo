@@ -8,15 +8,17 @@ package client
 // bootstrap serves both. docs/plans/e2ee-completion.md step 1 owns the
 // sequence; store/ owns every derivation this file performs.
 //
-// What this file does not do is derive an auth key. Login still sends the
-// password, so the server still sees the secret that opens the identity blob;
-// closing that is split-derivation login, and until it lands the encryption
-// here is real against a stolen disk and theatre against the server itself.
+// The password does not reach the server for an account that has crossed over
+// to split-derivation login: OpenAccount derives both halves and sends only the
+// auth half, which unwraps nothing. An account that has not crossed over still
+// logs in with its password, because that is what its stored hash is of --
+// enrolling it is what moves it, and client.Enrol is where that happens.
 // docs/storage.md § One password, split client-side is the owning document.
 
 import (
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/dkam/silo/store"
 )
@@ -114,7 +116,8 @@ func (c *APIClient) ClientKDFParams(email string) (store.KDFParams, error) {
 // that skips the floor. ClientKDFParams exists for enrolment, which has no
 // blob to read parameters out of yet.
 func (c *APIClient) OpenAccount(email, password string) (*Account, error) {
-	if err := c.Login(email, password); err != nil {
+	creds, err := c.login(email, password)
+	if err != nil {
 		return nil, err
 	}
 	keys, err := c.AccountKeys()
@@ -127,11 +130,77 @@ func (c *APIClient) OpenAccount(email, password string) (*Account, error) {
 	if keys.AccountID == "" {
 		return nil, errors.New("client: the server served key material with no holder to open it with")
 	}
-	id, _, err := store.OpenIdentityWithPassword(password, keys.AccountID, keys.WrappedKey)
+	id, err := openIdentity(password, creds, keys)
 	if err != nil {
 		return nil, fmt.Errorf("client: opening the identity key: %w", err)
 	}
 	return &Account{ID: keys.AccountID, Identity: id, c: c}, nil
+}
+
+// login signs in the way this account expects, and returns what the password
+// derived on the way.
+//
+// The derived key is tried first and the password second, because the server
+// will not say which kind an address is -- deliberately, since an endpoint that
+// could be asked "has this account crossed over?" is an endpoint that answers
+// "does this account exist?". Trying the derived key first is what makes the
+// order safe: an account that has crossed over never sends its password, and
+// one that has not was always going to.
+//
+// The cost is one refused login for an account that has not crossed over. Only
+// failures spend a rate-limit token, so that halves the budget before a real
+// mistake is throttled; the answer is to cross accounts over, not to reverse
+// the order.
+func (c *APIClient) login(email, password string) (store.Credentials, error) {
+	params, err := c.ClientKDFParams(email)
+	if err != nil {
+		return store.Credentials{}, err
+	}
+	creds, err := store.DeriveCredentials(password, params)
+	if err != nil {
+		return store.Credentials{}, err
+	}
+
+	err = c.Login(email, creds.AuthKeyString())
+	if err == nil {
+		return creds, nil
+	}
+	if !hasStatus(err, http.StatusUnauthorized) {
+		return store.Credentials{}, err
+	}
+	// Not crossed over. The parameters served above may have been the
+	// plausible fake an unknown address gets, so the credentials derived from
+	// them mean nothing; what opens the identity comes from the blob.
+	if err := c.Login(email, password); err != nil {
+		return store.Credentials{}, err
+	}
+	return store.Credentials{}, nil
+}
+
+// openIdentity unwraps the identity key, reusing the derivation login already
+// paid for when the blob was sealed under the same parameters.
+//
+// It usually was: enrolment publishes the blob and records its parameters in
+// the same breath, so the pre-login endpoint serves exactly what the blob
+// carries. The re-derivation is for the account that has not crossed over,
+// where the parameters served were a fake, and for the one whose blob predates
+// its current parameters.
+func openIdentity(password string, creds store.Credentials, keys AccountKeys) (*store.Identity, error) {
+	sealed, err := store.KDFParamsFromBlob(keys.WrappedKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(creds.WrapKey) > 0 {
+		if derived, err := store.ParseKDFParams(keys.KDFParams); err == nil && derived == sealed {
+			priv, err := store.UnwrapIdentity(creds.WrapKey, keys.AccountID, keys.WrappedKey)
+			if err != nil {
+				return nil, err
+			}
+			return store.IdentityFromPrivate(priv)
+		}
+	}
+	id, _, err := store.OpenIdentityWithPassword(password, keys.AccountID, keys.WrappedKey)
+	return id, err
 }
 
 // OpenLibrary fetches this account's wrap of a library's content key and opens

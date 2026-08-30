@@ -126,6 +126,7 @@ the password is stretched under. See
 [`auth.md`](auth.md#the-accounts-key-material).
 
 ```
+GET    /api/silo/v1/account                     → 200 {account_id, email}
 GET    /api/silo/v1/account/keys                → 200 {account_id, public_key, wrapped_key, kdf_params, recovery:[…]}
                                                   404 if nothing has been published
 PUT    /api/silo/v1/account/keys                → 200 {"updated_at": …, "recovery": 10}
@@ -228,6 +229,7 @@ is registered there too, but is authenticated: see the lane note above.
 | POST | `/api/silo/v1/auth/password` | `{"current_password":…,"new_password":…}` — change the password. Needs `rw` and the current password; revokes `session` credentials and leaves `device` ones mounted. With `"client_kdf_params":…` it is the split-derivation crossover instead: `new_password` carries an `authKey`, and hash and parameters are written together. Feature name `split-login` |
 | POST | `/api/silo/v1/auth/setup` | **No auth**, because it is the request that creates the first account — there is nothing to authenticate it against yet. `{"email":…,"password":…,"setup_token":…}` → `201 {"token":…}`, login's shape exactly. The address and password are the operator's choice; the setup token, printed at boot and by `silo setup-token`, is what proves they own the host. `401` for a wrong *or* malformed token, indistinguishably; `409` once any account exists. Guarded by `setup_required` above rather than by trying it |
 | POST | `/api/silo/v1/auth/kdf` | **No auth.** `{"email":…}` → the argon2id parameters that address's password is stretched under, client-side. Never `404`: an address with no account gets plausible, stable, per-address parameters, so this cannot be used to ask which addresses exist |
+| GET | `/api/silo/v1/account` | `{"account_id","email"}` — who this credential belongs to. Behind any credential; nothing here is a secret. It answers before enrolment, which `account/keys` does not, and that is what it is for: `store.WrapIdentity` binds the `account_id`, so a client cannot wrap an identity key until it knows one |
 | GET | `/api/silo/v1/account/keys` | The account's `account_id` — the holder its wraps are bound to — with its published X25519 public key, its wrapped identity private key, its recovery wraps and its `kdf_params`. `404` before anything is published. Readable with a `perm: "r"` credential |
 | PUT | `/api/silo/v1/account/keys` | Publish all of it, replacing what was there. Needs `rw`. `400` names the specific refusal — every one is a client bug whose symptom otherwise appears on a device months later |
 | DELETE | `/api/silo/v1/account/keys/recovery/{n}` | Redeem one recovery wrap; the rest of the set stands. Needs `rw`. `404` if that ordinal is already spent |

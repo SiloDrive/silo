@@ -68,10 +68,12 @@ server cannot read, rewrites the spine on every write, and turns a
 `changes?since=` path back into a plaintext one. The round trip runs against a
 real server.
 
-Login is split on the server and not yet on the client, so the password still
-reaches the server — which is what makes everything above real against a stolen
-disk and not against the server itself. That, sharing, and the grant model are
-what remain; the sequence is
+Login is split on both sides. `client.Enrol` publishes an identity key and
+crosses the account over in one call, and `client.OpenAccount` logs in with the
+derived `authKey`, so an account this client enrolled never sends the server
+the secret that opens its identity blob. What remains is migrating accounts
+that predate the crossover — which only a client can do, since the server does
+not hold `master` — along with sharing and the grant model. The sequence is
 [`plans/e2ee-completion.md`](plans/e2ee-completion.md).
 
 ## Guardrails — what not to build

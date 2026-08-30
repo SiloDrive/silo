@@ -53,6 +53,7 @@ is the destination and this one is the route.
 | Claiming a fresh server: the setup token, `POST auth/setup`, `silo setup-token` | [`auth.md`](auth.md) § Claiming a server that has no accounts |
 | The account side of E2EE — `client_kdf_params`, `AccountIdentityKey`, `AccountRecoveryWrap`, `POST auth/kdf`, and encrypted-library creation | [`auth.md`](auth.md) § The account's key material, [`storage.md`](storage.md) § What the server can read |
 | The sealing client — key bootstrap from a password, library creation, the object-graph read, the spine rewrite, and one interface over both library types | [`protocol.md`](protocol.md#the-e2ee-client-shape), oriented by [`encryption.md`](encryption.md) |
+| Split-derivation login, both halves — enrolment publishes an identity key and crosses the account over, and login sends a derived key rather than the password | [`auth.md`](auth.md) § Split-derivation login |
 
 Three things are built and worth naming separately because they are easy to
 assume are missing. The **changes feed works on a library the server cannot
@@ -71,10 +72,9 @@ own in porter-fuse. Both consume [`protocol.md`](protocol.md).
 
 Two chains, and they do not wait on each other. **The storage chain** runs
 at-rest encryption → packs → compaction → durable tiers → occupied-block
-charging; its head is built but for the ingest, and packs are unblocked. **The E2EE chain** has two
-unblocked heads — grants and invites, and the client half of split-derivation
-login — and one entry, sharing an encrypted library, that waits on two of
-them. The sequence of the E2EE chain is owned by
+charging; its head is built but for the ingest, and packs are unblocked. **The E2EE chain** has one
+unblocked head — grants and invites — and one entry, sharing an encrypted
+library, that waits on it. The sequence of the E2EE chain is owned by
 [`plans/e2ee-completion.md`](plans/e2ee-completion.md); this file only places
 it beside the storage chain.
 
@@ -182,10 +182,17 @@ and an operator reset that puts an account back on password login and says
 what that costs its key material. Owned by [`auth.md`](auth.md) § Split-
 derivation login, on this side.
 
-**What is left is the client**, which is where this always mostly lived: it
-derives `authKey` and sends it, and enrolment and password change write the
-parameters. Argon2id behind a concurrency semaphore is now moot for a
-crossed-over account and still wanted for the accounts that have not crossed.
+**The client half is built.** `client.Enrol` publishes an identity key and
+crosses the account over in one call; `client.OpenAccount` derives under the
+parameters `auth/kdf` serves and logs in with the `authKey`. Argon2id behind a
+concurrency semaphore is moot for a crossed-over account and still wanted for
+the accounts that have not crossed.
+
+**What is left is migration.** An account crosses over when a client enrols it
+or changes its password, and no server-side batch can do it: crossing over
+needs `master`, which the server does not have. A password change on an
+enrolled account has to re-wrap the identity key at the same time, which is the
+one part of silo#13 not built here.
 
 This is the gate on *offering* an E2EE client to a person, not on building
 one: item 8 can be built and tested before it and cannot ship before it.

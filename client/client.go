@@ -313,7 +313,13 @@ func (c *APIClient) postForTokenLocked(path string, body map[string]string) erro
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		// A StatusError like every other refusal, so that a caller can ask
+		// whether the server said 401 -- which is how a client that does not
+		// know whether an account has crossed over to derived login finds out.
+		return &StatusError{
+			Code: resp.StatusCode, Status: resp.Status,
+			Body: strings.TrimSpace(string(msg)),
+		}
 	}
 	var result struct {
 		Token string `json:"token"`

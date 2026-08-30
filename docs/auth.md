@@ -605,8 +605,32 @@ of two things: that the user can redeem a recovery wrap and republish, or, if
 they published none, that there is no way back to that identity key. Which of
 those it is, is not knowable from the prompt, so it is read from the account.
 
-**What is left is the client.** Nothing derives `authKey` yet, so no account
-has crossed over and `POST auth/kdf` still has no consumer. That is silo#13.
+**The client half is built too.** `client.Enrol` mints an identity key,
+publishes it wrapped under the `wrapKey` its password produces, and crosses the
+account over in the same call; `client.OpenAccount` derives under the
+parameters `POST auth/kdf` serves and logs in with the `authKey`. An account
+enrolled by this client never sends its password to the server again.
+
+The derived key is tried first and the password second, because this endpoint
+will not say which kind an address is. That ordering is what makes the fallback
+safe: an account that has crossed over never sends its password, and one that
+has not was always going to. It costs one refused login for an account that has
+not crossed over, which spends a rate-limit token; the answer is to cross
+accounts over rather than to reverse the order.
+
+## Who the caller is — `GET /account`
+
+`{"account_id", "email"}`, behind any credential. Nothing here is a secret; it
+is what the credential already proves.
+
+It exists because of a bootstrap that could not start. `store.WrapIdentity`
+binds the account id as associated data, so a client cannot wrap an identity
+key until it knows that id — and the id appeared nowhere but `GET
+account/keys`, which answers `404` until an identity key exists. An account
+that had never enrolled had no way to learn the one string it needed in order
+to enrol. Separate from `account/keys` rather than folded into it because they
+are two questions, and answering "who am I" only alongside "what do I hold" is
+what produced the gap.
 
 ## The account's key material
 
@@ -700,11 +724,11 @@ bucket would break the contract: an address that can be throttled is an address
 that has an account. What makes a sweep useless is the indistinguishable
 answer; the bucket bounds what the sweep costs this server.
 
-**The endpoint has no consumer yet.** Nothing sends `authKey`; a client logs
-in with the password, fetches `account/keys`, and derives `wrapKey` under the
-parameters the blob itself carries. Split-derivation login
-([`plans/e2ee-completion.md`](plans/e2ee-completion.md) step 2) is what changes
-what `POST auth/login` receives.
+**`client.OpenAccount` is the consumer.** It asks here before logging in,
+derives both halves under what comes back, and sends the `authKey`. The
+parameters an unknown address is answered with are a fake, so the credentials
+derived from them mean nothing — which is why the identity is opened under the
+parameters the blob itself carries whenever those differ from these.
 
 ## Operating it
 
@@ -1169,13 +1193,13 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
 
 1. **Proof of possession** — public keys registered at enrolment, RFC 9421
    signatures on the Silo lane. Independent of OIDC; whichever is wanted first.
-2. **Split-derivation login — the server half is built**; see
-   [Split-derivation login, on this side](#split-derivation-login-on-this-side).
-   What is left is the client that derives `authKey` and sends it, silo#13 and
-   [`plans/e2ee-completion.md`](plans/e2ee-completion.md) step 2. **argon2id
-   behind a concurrency semaphore** is now moot for any account that crosses
-   over — `AccountPassword.hash` is a fast hash there, by the rule above — and
-   still wanted for the accounts that have not.
+2. **Migrating the accounts that predate the crossover.** Split-derivation
+   login is built on both sides, but an account only crosses over when a client
+   enrols it or changes its password — the server cannot do it in a batch,
+   because crossing over needs `master`, which it does not have. **argon2id
+   behind a concurrency semaphore** is moot for a crossed-over account —
+   `AccountPassword.hash` is a fast hash there, by the rule above — and still
+   wanted for the accounts that have not crossed.
 3. **A persistent JWT signing key**, so a restart does not disconnect every
    watching client. Nothing but notification tokens depends on it. The
    `ServerSecret` table holds exactly this shape of value — a secret that is

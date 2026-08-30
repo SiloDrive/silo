@@ -4,6 +4,7 @@ import (
 	"crypto/hkdf"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -246,6 +247,17 @@ type Credentials struct {
 // authKey means inverting HKDF — but they are not independent of the password.
 // A password weak enough to guess yields both. That is what argon2id is for
 // and why the floor above is enforced rather than suggested.
+// AuthKeyString is authKey in the form that goes on the wire, as the password
+// field of a login or a crossover.
+//
+// Lowercase hex, pinned here rather than left to each client: the server stores
+// a hash of whatever string it was given, so two implementations that encoded
+// the same 32 bytes differently would produce an account that one of them could
+// log in to and the other could not. Hex rather than base64 for the reason
+// every other identifier in this format is hex -- one encoding to get wrong,
+// not two.
+func (c Credentials) AuthKeyString() string { return hex.EncodeToString(c.AuthKey) }
+
 func DeriveCredentials(password string, p KDFParams) (Credentials, error) {
 	if err := p.Validate(); err != nil {
 		return Credentials{}, err
