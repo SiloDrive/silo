@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -204,64 +205,26 @@ func TestAFrameCannotBeMovedToAnotherPath(t *testing.T) {
 	}
 }
 
-// The transition. Until #23 rewrites what is already on disk, an object
-// written before this landed is plaintext, and refusing to read it would make
-// this change a migration rather than an upgrade.
-//
-// TODO(#23): delete this test with the fallback it covers.
-func TestPlaintextObjectsStillRead(t *testing.T) {
-	s := New(confPath, dataDir, "sealed-legacy")
-	plain := "written before there were frames"
+// Nothing in the store is unsealed, so bytes that are not a frame are
+// corruption and are reported as such. There is no reading of plaintext from
+// the store: a store holding any is one the server refuses to start on.
+func TestUnsealedBytesAreCorruption(t *testing.T) {
+	s := New(confPath, dataDir, "sealed-unsealed")
+	plain := "written by something that is not this store"
 	id := sha256Hex([]byte(plain))
-	dir := filepath.Dir(objPath("sealed-legacy", id))
+	dir := filepath.Dir(objPath("sealed-unsealed", id))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(objPath("sealed-legacy", id), []byte(plain), 0o644); err != nil {
+	if err := os.WriteFile(objPath("sealed-unsealed", id), []byte(plain), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	var got bytes.Buffer
-	if err := s.Read(libraryID, id, &got); err != nil {
-		t.Fatalf("Read: %v", err)
+	if err := s.Read(libraryID, id, io.Discard); !errors.Is(err, ErrFrameCorrupt) {
+		t.Errorf("Read of unsealed bytes = %v, want ErrFrameCorrupt", err)
 	}
-	if got.String() != plain {
-		t.Errorf("Read = %q, want %q", got.String(), plain)
-	}
-
-	size, err := s.Stat(libraryID, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if size != int64(len(plain)) {
-		t.Errorf("Stat = %d, want %d", size, len(plain))
-	}
-
-	p := make([]byte, 7)
-	n, err := s.ReadAt(libraryID, id, p, 8)
-	if err != nil {
-		t.Fatalf("ReadAt: %v", err)
-	}
-	if string(p[:n]) != plain[8:15] {
-		t.Errorf("ReadAt = %q, want %q", p[:n], plain[8:15])
-	}
-
-	exists, err := s.Exists(libraryID, id)
-	if err != nil || !exists {
-		t.Errorf("Exists = (%v, %v), want (true, nil)", exists, err)
-	}
-
-	var listed int64 = -1
-	if err := s.List(libraryID, func(o ObjectInfo) error {
-		if o.ID == id {
-			listed = o.Size
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if listed != int64(len(plain)) {
-		t.Errorf("List reported %d for a plaintext object, want %d", listed, len(plain))
+	if _, err := s.ReadAt(libraryID, id, make([]byte, 4), 0); !errors.Is(err, ErrFrameCorrupt) {
+		t.Errorf("ReadAt of unsealed bytes = %v, want ErrFrameCorrupt", err)
 	}
 }
 
@@ -319,50 +282,5 @@ func TestAStoreWithNoKeyReportsWhy(t *testing.T) {
 	}
 	if _, err := s.Stat(libraryID, objID); err == nil {
 		t.Error("Stat on a keyless store succeeded")
-	}
-}
-
-// The restart this change has to survive: a data directory written by a server
-// from before framing — objects on disk, no storage.key — opened by one that
-// seals. It is an upgrade, and it must simply work.
-//
-// TODO(#23): the ingest that rewrites those objects removes this case.
-func TestRestartOnAPreFramingStore(t *testing.T) {
-	dir := t.TempDir()
-	id := strings.Repeat("ab", 32)
-	const content = "a commit from before there were frames"
-	fan := filepath.Join(LibraryDir(dir, TypeObjects, libraryID), id[:2])
-	if err := os.MkdirAll(fan, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fan, id[2:]), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	s := New("", dir, TypeObjects)
-	if err := s.ready(); err != nil {
-		t.Fatalf("the store will not open after an upgrade: %v", err)
-	}
-
-	var got bytes.Buffer
-	if err := s.Read(libraryID, id, &got); err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	if got.String() != content {
-		t.Errorf("Read = %q, want %q", got.String(), content)
-	}
-
-	// And the key it just generated is real, so anything written from now on
-	// is sealed even though what was already there is not.
-	newID := sha256Hex([]byte("written after the upgrade"))
-	if err := s.WriteVerified(libraryID, newID, bytes.NewReader([]byte("written after the upgrade")), false); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(filepath.Join(LibraryDir(dir, TypeObjects, libraryID), newID[:2], newID[2:]))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !isFrame(raw) {
-		t.Error("an object written after the upgrade is not sealed")
 	}
 }

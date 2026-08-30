@@ -19,7 +19,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -82,30 +81,27 @@ func loadStorageKey(dataDir string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("cannot read %s: %w", path, err)
 	}
 
-	// No key. That is one of three things, and they are not the same thing:
+	// No key, and a store that holds something. Generating a fresh one here
+	// looks exactly like a clean first start: the server comes up, prints the
+	// warning below, serves requests, and the damage is only found at the
+	// first read of an object sealed under the old key, by which time more has
+	// been written under the new one. Cannot-lose has to be enforced at the
+	// moment of loss.
 	//
-	//   - a genuine first start, which is the ordinary case;
-	//   - a store written before this server sealed anything, being restarted
-	//     on one that does — an upgrade, and the plaintext fallback in
-	//     object() is exactly what exists to carry it;
-	//   - a key that has gone missing from a store that holds sealed frames,
-	//     which is unrecoverable.
-	//
-	// Only the third is a refusal, and the question that separates it is
-	// whether anything on disk is a frame — not whether anything is there at
-	// all. Generating a fresh key over sealed frames looks exactly like a
-	// clean first start: the server comes up, prints the warning below, serves
-	// requests, and the damage is only found at the first read of an object
-	// sealed under the old key, by which time more has been written under the
-	// new one. Cannot-lose has to be enforced at the moment of loss.
-	sealed, err := aSealedObject(dataDir)
+	// The message offers both answers because both are real. There is one
+	// install of this server and it is the author's, so discarding the store
+	// is a sanctioned way out — docs/storage.md says every object in every
+	// store can still be discarded and rewritten, and that freedom expires the
+	// first time someone else runs this. Until then, "delete it" is an answer
+	// and not a euphemism for data loss.
+	empty, err := storeIsEmpty(dataDir)
 	if err != nil {
 		return nil, false, err
 	}
-	if sealed != "" {
+	if !empty {
 		return nil, false, fmt.Errorf(
-			"%s is missing but %s holds objects sealed under it (%s): restore the key from backup, because a new one cannot read what is there",
-			path, Root(dataDir), sealed)
+			"%s is missing but %s holds objects: restore the key from backup, or delete %s and let the store be rebuilt — a new key cannot read what is there",
+			path, Root(dataDir), Root(dataDir))
 	}
 
 	return generateStorageKey(path)
@@ -173,26 +169,19 @@ func generateStorageKey(path string) ([]byte, bool, error) {
 	return key, true, nil
 }
 
-// aSealedObject returns the path of some object on disk that is a sealed
-// frame, or "" if none is.
+// storeIsEmpty reports whether the object store holds no objects.
 //
-// One is enough: the question is whether anything would be orphaned by
-// generating a new key, and one orphan is a refusal. That also makes the
-// answer cheap in the case that matters most — a lost key over a sealed store
-// stops at the first file it meets.
+// It stops at the first file it finds, so the case that matters — a key gone
+// from a store full of objects — is answered immediately.
 //
-// The case it is not cheap in is the upgrade: a store with no frames in it
-// has to be walked to the end to establish that. It is a walk of the whole
-// store, reading four bytes per object, once in an install's life, and #23
-// walks the same tree to rewrite it. Directories do not count, and neither
-// does an empty store: a library that has had everything reclaimed, one that
-// has never been written to, and the type directories New creates at startup
-// all leave the same tree behind.
-func aSealedObject(dataDir string) (string, error) {
-	found := ""
+// Directories do not count: a library that has had everything reclaimed, one
+// that has never been written to, and the type directories New creates at
+// startup all leave the same tree behind.
+func storeIsEmpty(dataDir string) (bool, error) {
+	empty := true
 	for _, objType := range Types {
 		root := TypeDir(dataDir, objType)
-		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		err := filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					return nil
@@ -202,45 +191,17 @@ func aSealedObject(dataDir string) (string, error) {
 			if d.IsDir() {
 				return nil
 			}
-			sealed, err := fileIsFrame(p)
-			if err != nil {
-				return err
-			}
-			if sealed {
-				found = p
-				return fs.SkipAll
-			}
-			return nil
+			empty = false
+			return fs.SkipAll
 		})
 		if err != nil {
-			return "", fmt.Errorf("cannot inspect %s: %w", root, err)
+			return false, fmt.Errorf("cannot inspect %s: %w", root, err)
 		}
-		if found != "" {
-			return found, nil
-		}
-	}
-	return "", nil
-}
-
-// fileIsFrame reports whether a file on disk begins a sealed frame.
-func fileIsFrame(p string) (bool, error) {
-	fd, err := os.Open(p)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// Removed between the walk and the open. A file that is gone
-			// cannot be orphaned by a new key.
+		if !empty {
 			return false, nil
 		}
-		return false, err
 	}
-	defer func() { _ = fd.Close() }()
-
-	magic := make([]byte, len(frameMagic))
-	n, err := io.ReadFull(fd, magic)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return false, err
-	}
-	return isFrame(magic[:n]), nil
+	return true, nil
 }
 
 // EnsureKey loads or generates the data directory's storage key, so that a

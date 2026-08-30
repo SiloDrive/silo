@@ -374,11 +374,12 @@ because that file is what a second implementation reproduces, and there will
 never be a second implementation of this: no client holds `storage.key`. It is
 pinned by vectors in `fileserver/objstore/testdata/frame.json` instead.
 
-**Objects written before this existed are still read.** A file that does not
-begin with the magic is plaintext, from a store that predates framing, and is
-returned as it is. That is transitional — the ingest that rewrites them
-(§ What is left) removes the fallback, after which anything that is not a
-frame is corruption.
+**There is nothing else on disk.** Bytes that are not a frame are corruption
+and are reported as such; the store does not read unsealed objects. A store
+written before framing existed is not migrated — it is discarded and rebuilt,
+which this server is still allowed to say (see the top of this document), and
+a missing key over a non-empty store is a refusal to start that offers exactly
+those two answers: restore the key, or delete the store.
 
 For a plain library this is the only encryption; for an E2EE library it is the
 outer of two, and the inner one is the client's. The server gains nothing by
@@ -842,9 +843,10 @@ loose store adopted the frame first — a loose object is one sealed frame at it
 existing path, which is Part 1 § At rest — and packs arrive later as a
 container of frames plus an index, with no change to the frame format or the
 key. What that bought is at-rest encryption against the store an install is
-actually running, and a loose-to-frame ingest that is the dry run for the
-loose-to-pack ingest packs need anyway. The recovery scan that walks frames is
-the same code over a directory of single-frame files or a pack. Nothing about
+actually running, and a loose store that is already made of the thing packs
+will contain — so the pack ingest moves frames rather than making them. The
+recovery scan that walks frames is the same code over a directory of
+single-frame files or a pack. Nothing about
 the decision above changes: cannot-lose and cannot-rotate hold from the first
 frame written.
 
@@ -1234,26 +1236,20 @@ the two library types.
    over has to be atomic — the new hash and the new `client_kdf_params` in one
    write — or the account is left with parameters that describe a password the
    stored hash was not made from.
-2. **The ingest that rewrites existing plaintext loose objects as frames**,
-   restartable at every step. The frame codec, `storage.key` and one frame per
-   loose object are built — Part 1 § At rest — and until this runs, a file that
-   does not begin with the frame magic is read as the plaintext it is. This
-   removes that fallback, and is the dry run for the loose-to-pack ingest packs
-   need anyway.
-3. **Packs** — the container format, per-pack indexes,
+2. **Packs** — the container format, per-pack indexes,
    seal-on-size-or-age-or-shutdown, the recovery scan, and the loose-store
-   ingest that scan doubles as — which is the frame ingest above, pointed at a
-   pack.
-4. **The tracing mark and compaction** — `PackStats`, threshold and throttled
+   ingest that scan doubles as. Loose objects are already frames, so the
+   ingest is a rewrite of where they live rather than of what they are.
+3. **The tracing mark and compaction** — `PackStats`, threshold and throttled
    rewrite, locality and undersize as scheduling inputs, two budgets. Built
    together with per-library GC, which is the same mark.
-5. **Durable backends** — NAS and S3 against the four-verb floor, async upload
+4. **Durable backends** — NAS and S3 against the four-verb floor, async upload
    of sealed packs, verified-then-evictable local cache, the cache-size knob,
    the unverified-packs column and the scan that rebuilds it, replication as
    pack copy. The background workers arrive here and bring their panic recovery
    and the three error-level conditions with them.
-6. **Compression**, measured before it is written.
-7. **`silo convert`.**
+5. **Compression**, measured before it is written.
+6. **`silo convert`.**
 
 One piece of debris to clear on the way past, not load-bearing: nothing creates
 a `VirtualLibrary` row while several queries still join the table.

@@ -48,10 +48,10 @@ import (
 // the subtraction.
 //
 // The magic and the version are not in the tuple docs/storage.md first gave.
-// Without the magic a frame cannot say it is one, which the transitional
-// plaintext fallback needs; without the version a format change means
-// rewriting every frame on every tier, which is the operation storage.key is
-// defined as not supporting.
+// Without the magic a frame cannot say it is one, so a truncated or foreign
+// file would be decrypted rather than rejected; without the version a format
+// change means rewriting every frame on every tier, which is the operation
+// storage.key is defined as not supporting.
 const (
 	frameMagic      = "SILF"
 	frameVersion    = 1
@@ -80,14 +80,11 @@ var ErrFrameCorrupt = errors.New("objstore: stored frame failed to authenticate"
 
 // isFrame reports whether b begins a sealed frame.
 //
-// A magic check only: it says which of two readers to use, and the reader it
-// picks is the one that authenticates. Plaintext that happens to start with
-// the magic gets sent to openFrame and fails there, which is the right
-// outcome — the alternative, silently reading it as plaintext, would mean a
-// corrupted frame header downgraded the object to unauthenticated bytes.
-//
-// TODO(#23): the ingest that rewrites existing plaintext objects as frames
-// removes the fallback this exists for, and this with it.
+// A magic check, and openFrame's first gate. It is not a choice between two
+// readers: everything in the store is a frame, so bytes that fail this are
+// corruption and are reported as such. Anything that reaches here and is not
+// a frame has already got past a server that refuses to start on a store it
+// has no key for.
 func isFrame(b []byte) bool {
 	return len(b) >= len(frameMagic) && string(b[:len(frameMagic)]) == frameMagic
 }

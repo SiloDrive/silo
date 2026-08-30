@@ -82,24 +82,22 @@ it beside the storage chain.
 #### 1. At-rest encryption: the sealed frame and `storage.key`
 
 The frame codec with vectors, key generation at first start with its backup
-wiring and the one-time warning, `objstore` reading and writing one frame per
-loose object, and the restartable ingest that rewrites existing plaintext loose
-objects as frames. Owned by [`storage.md`](storage.md) § At rest, sequenced by
+wiring and the one-time warning, and `objstore` reading and writing one frame
+per loose object. Owned by [`storage.md`](storage.md) § At rest, sequenced by
 [`plans/at-rest-encryption.md`](plans/at-rest-encryption.md).
 
-**It landed ahead of packs**, and everything but the ingest is built. A frame
-is self-describing whether the file holding it contains one or a thousand, so
-the loose store an install is actually running got at-rest encryption without
-waiting for a container format — and the loose-to-frame ingest is the dry run
-for the loose-to-pack ingest packs need anyway. Cannot-lose and cannot-rotate
-hold from the first frame written, which is why the key's backup wiring was
-part of this step and not a later one.
+**It landed ahead of packs, and it is built.** A frame is self-describing
+whether the file holding it contains one or a thousand, so the loose store an
+install is actually running got at-rest encryption without waiting for a
+container format. Cannot-lose and cannot-rotate hold from the first frame
+written, which is why the key's backup wiring was part of this step and not a
+later one.
 
-What is left here is the ingest. Until it runs, an object written before
-framing is read as the plaintext it is; the ingest removes that fallback.
-
-Tracked: milestone `at-rest-encryption`, #18 (frame, key, one frame per loose
-object — **built**), #23 (ingest of existing loose objects).
+**No ingest of existing plaintext objects was written**, and none is planned.
+This server has one install; a store from before framing is discarded and
+rebuilt rather than migrated, which is the freedom the top of
+[`storage.md`](storage.md) says expires the first time someone else runs this.
+A missing key over a non-empty store is a refusal to start that says so.
 
 #### 2. Packs
 
@@ -113,7 +111,7 @@ not optional: the first install runs the loose store, and the migration this
 project claims not to need is the one it would otherwise discover in
 production.
 
-Tracked: milestone `packs`, #17 — blocked by #18 and #23.
+Tracked: milestone `packs`, #17 — blocked by #18, which is done.
 
 #### 3. The tracing mark, and compaction
 

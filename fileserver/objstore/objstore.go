@@ -208,14 +208,10 @@ func (s *ObjectStore) object(libraryID string, objID string) ([]byte, error) {
 	if err := s.backend.read(libraryID, objID, &buf); err != nil {
 		return nil, err
 	}
-	raw := buf.Bytes()
-	if !isFrame(raw) {
-		// TODO(#23): an object written before this store sealed anything.
-		// The ingest that rewrites them as frames removes this branch, after
-		// which anything that is not a frame is corruption.
-		return raw, nil
-	}
-	return openFrame(s.key, objID, raw)
+	// Everything in the store is a frame. Anything that is not is corruption,
+	// and openFrame says so — there is no reading of unsealed bytes here,
+	// because a store that holds any is one that must not have started.
+	return openFrame(s.key, objID, buf.Bytes())
 }
 
 // ReadAt reads len(p) bytes of an object starting at off, with io.ReaderAt
@@ -339,33 +335,21 @@ func (s *ObjectStore) Stat(libraryID string, objID string) (int64, error) {
 	if err != nil {
 		return -1, err
 	}
-	return s.plaintextSize(libraryID, objID, size)
+	return objectSize(size), nil
 }
 
-// plaintextSize turns a file size into the size of the object inside it.
+// objectSize turns a file size into the size of the object inside it.
 //
-// The peek is what the transition costs. A framed object's size is arithmetic
-// — the overhead is fixed precisely so this needs no read — but until #23 has
-// rewritten what is already on disk, whether a file is framed at all is a
-// question only its first four bytes can answer.
-//
-// TODO(#23): with no plaintext objects left this is the subtraction alone,
-// and Stat is one os.Stat again.
-func (s *ObjectStore) plaintextSize(libraryID string, objID string, fileSize int64) (int64, error) {
-	magic := make([]byte, len(frameMagic))
-	n, err := s.backend.readAt(libraryID, objID, magic, 0)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return -1, err
-	}
-	if !isFrame(magic[:n]) {
-		return fileSize, nil
-	}
+// Arithmetic, and no read: the frame's widths are all fixed precisely so that
+// this question costs one stat. That is why ct_len is eight bytes rather than
+// a varint.
+func objectSize(fileSize int64) int64 {
 	if fileSize <= int64(frameOverhead) {
-		// A frame that cannot hold anything: the torn write, caught by the
+		// Nothing a frame that size could hold: the torn write, caught by the
 		// same rule that has always called a zero-length object absent.
-		return 0, nil
+		return 0
 	}
-	return fileSize - int64(frameOverhead), nil
+	return fileSize - int64(frameOverhead)
 }
 
 // ObjectInfo is what a listing already knows about one object without opening
@@ -395,11 +379,7 @@ func (s *ObjectStore) List(libraryID string, fn func(ObjectInfo) error) error {
 		return err
 	}
 	return s.backend.list(libraryID, func(p packInfo) error {
-		size, err := s.plaintextSize(libraryID, p.id, p.size)
-		if err != nil {
-			return err
-		}
-		return fn(ObjectInfo{ID: p.id, Size: size, ModTime: p.modTime})
+		return fn(ObjectInfo{ID: p.id, Size: objectSize(p.size), ModTime: p.modTime})
 	})
 }
 

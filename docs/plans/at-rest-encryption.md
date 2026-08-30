@@ -1,13 +1,13 @@
 # Plan: at-rest encryption — the sealed frame and `storage.key`
 
-Status: **built**, except the ingest, which is `#23`. Owns the *sequence* and the decisions the issue left
+Status: **built**. Owns the *sequence* and the decisions the issue left
 open; [`../storage.md`](../storage.md) § Storage encryption, universal is
 normative for the format, and where the two disagree that document wins, by
 [`../roadmap.md`](../roadmap.md)'s rule.
 
 Tracked on git.booko.info as `dkam/silo#18`, milestone `at-rest-encryption`.
-Its neighbours: the ingest of existing plaintext objects is `#23`, packs are
-`#17`. The issues carry state; this document carries the reasoning, and is not
+Its neighbour is packs, `#17`. Its other neighbour, `#23` — the ingest of
+existing plaintext objects — was made unnecessary; see Decision 3. The issues carry state; this document carries the reasoning, and is not
 updated as they close.
 
 ## Where it stands
@@ -143,21 +143,35 @@ are untouched by what the storage layer does underneath them.
 Both points are amendments to `storage.md`, made in the same change as the
 code. They are not silent additions.
 
-## Decision 3 — reads fall back to plaintext until `#23`
+## Decision 3 — there is no fallback, because there is no store to protect
 
-Ingest is out of scope here by the issue's own boundary, which leaves a window
-between this landing and `#23` landing in which every object already on disk
-is plaintext. Without a fallback, this change makes an existing store
-unreadable on upgrade — the one migration this project claims not to need,
-discovered in the one place it must not be.
+**Reversed, after it was built.** The original decision was that reads should
+fall back to treating a non-frame file as plaintext, so that a store written
+before framing kept working until `#23` rewrote it. The reasoning was sound
+and the premise was wrong: there are no installs of this server except the
+author's, and discarding a store and rebuilding it is an answer he is willing
+to give. [`../storage.md`](../storage.md) says so at the top — *every object in
+every store can be discarded and rewritten… that freedom expires the first time
+someone else runs this server* — and this plan should have read its own owning
+document rather than inventing a user to protect.
 
-So: **always write framed; on read, a file that does not begin with the magic
-is opened as plaintext.** The magic plus the length arithmetic make the two
-cases distinguishable without ambiguity, and a plaintext object that happened
-to begin with `SILF` still fails the length check and the tag.
+So: **everything in the store is a frame, and bytes that are not are
+corruption.** What that deletes is not just a branch in `object()`:
 
-`#23` deletes the fallback, and the code carries a `TODO(#23)` saying so. It is
-a transitional allowance with a named end, not a permanent read mode.
+- `Stat` is one `os.Stat` again. The fallback forced a four-byte read per
+  object to decide whether the overhead should be subtracted, which meant a
+  peek on every `Content-Length` and on every entry of a census walk. The
+  fixed-width header was chosen so this question would cost nothing, and with
+  the fallback gone it does.
+- The key refusal is "the store is not empty" again rather than "the store
+  holds a frame", so it stops at the first file it meets instead of walking to
+  the end of a plaintext store to prove a negative.
+- `#23` has nothing left to do, and the `TODO(#23)` markers are gone.
+
+What replaces the fallback is a better error. A missing key over a non-empty
+store refuses to start and offers both real answers: restore the key, or delete
+the store and let it be rebuilt. The second one expires when someone else runs
+this server, and the sentence in `storage.md` is what says when.
 
 ## One safety rule the issue does not state
 
@@ -173,28 +187,19 @@ enforced at the moment of loss, not described in a document.
 The same load path refuses a key file that is not 32 bytes, and warns on
 permissions looser than `0600`.
 
-### The word "sealed" in that rule was missing, and it mattered
+### It collided with the fallback, until the fallback went
 
-As first written the rule refused over a store that held *any* objects, and
-that is wrong in a way only a restart shows: it collides head-on with
-Decision 3. A store written before framing has objects and no key —
-legitimately — and that is precisely the case the plaintext fallback exists to
-carry. The refusal blocked it, so the first restart after an upgrade opened no
-store at all, and the change became the migration it was designed not to be.
+As first written this rule refused over a store holding *any* objects, which
+broke the one case Decision 3 existed to carry: a pre-framing store has objects
+and no key, legitimately, and refusing it made the change a migration rather
+than an upgrade. The first fix distinguished "holds a frame" from "holds
+anything", at the cost of a four-byte read per object. Reversing Decision 3
+removed the distinction along with the case, and the rule went back to the
+simple one.
 
-Three states share "no key file", and only one of them is a loss:
-
-| on disk | what it is | what to do |
-|---|---|---|
-| nothing | a first start | generate |
-| plaintext objects only | a pre-framing store being upgraded | generate; the fallback reads them |
-| any sealed frame | the key is gone | refuse |
-
-So the question is not whether the store is empty but whether anything in it
-is a frame, which is a four-byte read per object. It stops at the first frame
-found, so the case that matters most — a lost key over a sealed store — is
-answered almost immediately. The case it walks to the end of is the upgrade,
-once in an install's life, over a tree `#23` walks anyway.
+Worth keeping as a note about how the two decisions were reached: a rule about
+loss and a rule about compatibility were written in the same afternoon without
+either being checked against a restart, and a restart is what found it.
 
 ### And it has to fail at startup, not at the first request
 
@@ -234,10 +239,9 @@ someone in that state may be trying to do.
    race into a re-read of the winner's key.
 3. **Wire `objstore`**, and call `EnsureKey` at startup — seal in `Write` and
    `WriteVerified`, open in `Read` and `ReadAt`, and the size arithmetic in
-   `Stat`, `List` and `Exists`.
+   `Stat`, `List` and `Exists` (arithmetic alone: see Decision 3).
    `Exists` keeps its "a zero-length object is absent" rule, tightened to
    "shorter than a frame is absent", which covers the same torn-write case.
-4. **The read fallback** of Decision 3, with its `TODO(#23)`.
 5. **Docs.** `storage.md` split into Part 1 (as built) and Part 2 (designed)
    after this plan was written, and at-rest encryption crosses that line when
    this lands — which is most of the doc work:
@@ -280,13 +284,13 @@ here is deterministic, so there is no exception to name.
   agrees with `Stat`, `ReadAt` at zero returns the object, `Exists` is
   unchanged, and `WriteVerified` still rejects a mismatched id — which is the
   test that pins hashing to the plaintext rather than to the frame.
-- **Fallback:** a plaintext file placed directly at a fan-out path reads back
-  through `objstore` unchanged.
-- **The upgrade, end to end:** a data directory holding plaintext objects and
-  no key opens, reads them, and seals what it writes from then on. Verified
-  against the real binary as well: a first start generates and warns, a
-  restart is silent, a pre-framing store starts, and a sealed store with no
-  key refuses by name and writes nothing.
+- **Unsealed bytes are corruption:** a plaintext file placed directly at a
+  fan-out path is an `ErrFrameCorrupt` from `Read` and `ReadAt`, not a
+  silently-returned object.
+- **Verified against the real binary**, not only in tests: a first start
+  generates the key and warns once, a restart is silent and reuses it, and a
+  non-empty store with no key refuses to start, names the store, offers both
+  answers, and writes no key.
 - **The regression proof for "ids and paths unchanged":** the existing
   `fileserver/objstore/objstore_test.go` and
   `fileserver/encrypted_library_test.go` pass with no edits at all. An edit
@@ -309,9 +313,9 @@ Then `make check`.
 
 ## What this does not do
 
-Not here, deliberately: the ingest that rewrites existing plaintext objects as
-frames (`#23`), packs and pack indexes (`#17`), any durable tier, and any
-change to what crosses the wire. Nothing above alters an id, a path, a
+Not here, deliberately: packs and pack indexes (`#17`), any durable tier, and
+any change to what crosses the wire. The ingest of existing plaintext objects
+(`#23`) is not deferred but cancelled — see Decision 3. Nothing above alters an id, a path, a
 response body or a manifest.
 
 One consequence worth naming rather than discovering: the one-time generation

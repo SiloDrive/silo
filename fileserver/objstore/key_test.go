@@ -113,9 +113,13 @@ func putObjectFile(t *testing.T, dataDir, objType, id string, content []byte) {
 
 // The rule that makes cannot-lose enforceable rather than merely documented:
 // a key that has gone missing must not be silently replaced, because a fresh
-// key over sealed frames looks exactly like a clean first start and the damage
-// is only found at the next read of an old object.
-func TestStorageKeyRefusesGenerationOverSealedObjects(t *testing.T) {
+// key over an existing store looks exactly like a clean first start and the
+// damage is only found at the next read of an old object.
+//
+// The way out is to restore the key, or — while this server has exactly one
+// install — to discard the store and let it be rebuilt. The error offers both,
+// because both are real answers here and only one of them stays real.
+func TestStorageKeyRefusesGenerationOverANonEmptyStore(t *testing.T) {
 	for _, objType := range Types {
 		t.Run(objType, func(t *testing.T) {
 			dataDir := t.TempDir()
@@ -128,50 +132,18 @@ func TestStorageKeyRefusesGenerationOverSealedObjects(t *testing.T) {
 
 			_, _, err = loadStorageKey(dataDir)
 			if err == nil {
-				t.Fatal("generated a new storage.key over a store that holds sealed frames")
+				t.Fatal("generated a new storage.key over a store that already holds objects")
 			}
 			if !strings.Contains(err.Error(), "storage.key") {
 				t.Errorf("error does not name the missing file: %v", err)
+			}
+			if !strings.Contains(err.Error(), "delete") {
+				t.Errorf("error does not offer discarding the store: %v", err)
 			}
 			if _, statErr := os.Stat(KeyPath(dataDir)); statErr == nil {
 				t.Error("a key was written despite the refusal")
 			}
 		})
-	}
-}
-
-// The other half of that rule, and the one it is easy to get wrong: a store
-// written before there were frames has objects and no key, legitimately. It is
-// an upgrade, not a loss, and refusing it would make this change a migration
-// — the one thing the plaintext fallback exists to avoid.
-//
-// TODO(#23): with no plaintext objects left, every object is a frame and this
-// distinction goes away with the fallback.
-func TestStorageKeyGeneratesOverAPreFramingStore(t *testing.T) {
-	dataDir := t.TempDir()
-	id := strings.Repeat("cd", 32)
-	putObjectFile(t, dataDir, TypeObjects, id, []byte("a commit from before there were frames"))
-
-	if _, created, err := loadStorageKey(dataDir); err != nil || !created {
-		t.Fatalf("a pre-framing store would not start: created=%v err=%v", created, err)
-	}
-}
-
-// One sealed object anywhere is enough to refuse, even among plaintext ones.
-func TestStorageKeyRefusesOnAPartlyIngestedStore(t *testing.T) {
-	dataDir := t.TempDir()
-	plain := strings.Repeat("cd", 32)
-	putObjectFile(t, dataDir, TypeObjects, plain, []byte("not yet rewritten"))
-
-	sealedID := strings.Repeat("ef", 32)
-	frame, err := sealFrame(testKey(t), sealedID, []byte("already rewritten"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	putObjectFile(t, dataDir, TypeChunks, sealedID, frame)
-
-	if _, _, err := loadStorageKey(dataDir); err == nil {
-		t.Fatal("generated a key over a store holding one sealed frame among plaintext")
 	}
 }
 

@@ -28,8 +28,13 @@ The server prints a one-time warning when it generates the key. If the file
 goes missing while the store still holds objects, the server **refuses to
 start** rather than generating a new one — a fresh key would look exactly like
 a clean first start and the loss would not surface until the first read of an
-old object. Restore the key from wherever it was copied; there is nothing else
-that recovers it.
+old object.
+
+There are two ways out and the error names both: restore the key from wherever
+it was copied, or delete `<data-dir>/storage/` and let clients re-upload. The
+second is a real answer only while this server has no deployments to speak of,
+and it stops being one the moment it does — which is the whole reason the first
+one is worth the two minutes it takes.
 
 The other side of that rule: a copy of `storage.key` is a copy of everything
 needed to read the store, so treat it the way its contents deserve. It is
