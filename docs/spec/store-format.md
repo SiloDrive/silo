@@ -332,8 +332,8 @@ content and nothing else.
 
 - `size` is the chunk's **plaintext** length, because mapping a read offset to
   a chunk needs it. The client-visible wire size is derivable: +16 under E2EE
-  for the content tag, +0 plain. Storage framing and the pack frame header are
-  server-internal and never enter client arithmetic.
+  for the content tag, +0 plain. Any server-side storage framing (designed,
+  not built) is server-internal and never enters client arithmetic.
 - Per-chunk sizes are mandatory. Under content-defined chunking a client cannot
   map an offset to a chunk without them.
 - **The reference skeleton is public even in E2EE libraries.** Chunk ids and
@@ -458,8 +458,9 @@ that ever matters.
 ## Content crypto
 
 Per-library, chosen at creation, default on. A plain library's chunks are
-stored as plaintext (under the server's storage-layer encryption, which is
-invisible to clients); an E2EE library's are encrypted client-side first.
+stored as plaintext (at-rest encryption on the server is designed, not
+built, and would be invisible to clients); an E2EE library's are encrypted
+client-side first.
 
 ### Chunks
 

@@ -61,10 +61,9 @@ its bytes; that name is its dedup key, its integrity proof, and the only handle
 anything outside the store ever holds. Nothing is updated in place — a write
 produces new chunks and a new file object.
 
-**The hash is 256-bit and cryptographic.** BLAKE3 unless the benchmark on the
-machine this actually runs on says SHA-256 wins there. Non-cryptographic hashes
-are disqualified regardless of speed: the hash is the address, so a collision
-substitutes content.
+**The hash is SHA-256** ([`plans/hash-choice.md`](plans/hash-choice.md)).
+Non-cryptographic hashes are disqualified regardless of speed: the hash is the
+address, so a collision substitutes content.
 
 **Boundaries are content-defined**, averaging around 1 MiB, FastCDC-normalised,
 with the parameters advertised in `server-info`. Fixed offsets lose an entire
@@ -105,7 +104,7 @@ One lane, `/api/silo/v1`, and two ways to read.
 - **Ranged reads.** `GET entries/{path}` with a `Range`; the server resolves
   offset to chunk to pack and returns bytes. The client needs to know nothing
   about chunking. Right for anything read once.
-- **Chunk-addressed reads.** `GET entries/{path}?type=chunks` for the ordered
+- **Chunk-addressed reads.** `GET entries/{path}?type=manifest` for the ordered
   list of `(id, size)`, then `GET chunks/{id}`. Right for anything the client
   means to keep, because a cache keyed by chunk id survives edits, dedups across
   files and libraries, and can verify what it was handed.
@@ -143,7 +142,7 @@ these speeds and because the assumption is much easier to keep than to add back.
 - **Third-party clients.** The lane is ours and has one family of consumers.
 
 Object storage sits outside this list rather than in it. `storageBackend`
-(`objstore.go:140`) is the seam, and it is already pack-shaped for exactly this
+(`fileserver/objstore`) is the seam, and it is already pack-shaped for exactly this
 reason. S3 and a NAS mount are planned durable tiers rather than non-goals —
 see [`storage.md`](storage.md) § Durable tiers — but they are not built, and
 nothing in this target may be shaped around them before they are.
@@ -151,18 +150,11 @@ nothing in this target may be shaped around them before they are.
 Replication with a single authority (a primary, some number of read-only
 replicas, a minimum copy count that makes dropping safe) is a genuine stretch
 goal rather than a non-goal. It is described in
-[`roadmap.md`](roadmap.md) and nothing in this target should
-make it harder later.
+[`plans/replication.md`](plans/replication.md) and nothing in this target
+should make it harder later.
 
 ## Open
 
-- **Which hash.** BLAKE3 against SHA-256 and SHA-512/256, benchmarked on the
-  architecture the server actually runs on, checking whether each library has
-  assembly for that GOARCH or is falling back to portable Go. The server's
-  answer decides the format.
-- **The chunk size target.** ~1 MiB is the working assumption; the real number
-  comes from measuring object count and read amplification against a real
-  library.
 - **Whether the commit DAG survives.** Demoting it off the read path is
   decided. Whether history is best served by a DAG at all, once nothing reads
   through it, is not.

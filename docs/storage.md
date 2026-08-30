@@ -196,6 +196,80 @@ is fine — a client caches the salt map beside its local index — but the cold
 start is a tree walk. Moving an entry re-encrypts one name; renaming an
 ancestor re-encrypts nothing.
 
+## Key material
+
+The account model E2EE needs is built, and [`auth.md`](auth.md#the-accounts-key-material)
+is normative for it. It is four schema items and one endpoint:
+
+- the published X25519 public key;
+- the wrapped identity private key, one blob;
+- recovery blobs as **individually deletable rows** — that granularity is
+  forced by the redemption rule below rather than chosen;
+- the client's KDF parameters;
+- a pre-login endpoint serving a user's KDF salt.
+
+The endpoint is the one with teeth. It is unauthenticated, so it is an
+account-enumeration oracle in a new place, and its answer is
+attacker-influenced input to the client's KDF — which is what the parameter
+ceiling in `store/` exists to bound. Asking for an unknown address returns
+deterministic plausible parameters, indistinguishable from a real account's,
+exactly as login does. The wrap construction itself is
+[`spec/store-format.md`](spec/store-format.md) § Key wrapping.
+
+**Keys.** An X25519 identity keypair per user, its private half wrapped under a
+key derived from the user's password and stored server-side as an opaque blob.
+A content key **CK** per library: 32 random bytes, generated client-side at
+creation, never password-derived, wrapped to each member's public key as one
+blob per member. Sharing is a wrap for one more key; a password change re-wraps
+only the user's own private key.
+
+**The library id has to exist before its CK can be wrapped**, because the wrap
+binds the id as associated data. That is why an encrypted library's id arrives
+with the create request rather than being minted by the server — see
+[`protocol.md`](protocol.md). The alternative is creating the library and
+publishing its key in two requests, which leaves a window holding a library
+whose key nobody stored.
+
+**The wrap construction is owned, HPKE-shaped, and does not claim to be HPKE** —
+ephemeral X25519, HKDF-SHA256 over a context carrying both public keys, then
+AES-256-GCM. RFC 9180 ships in neither Go's standard library nor CryptoKit, so
+conformance would mean hand-porting its whole negotiation into Swift: a larger
+correctness surface than the forty lines it replaces, for a wire nobody outside
+Silo reads.
+
+**Every wrap binds who and what it is for** — holder and library as associated
+data, both immutable UUID text — so a server can neither move a blob between
+accounts nor replay a content-key wrap into another library.
+
+**What the wraps do not vouch for.** Binding the recipient's public key stops
+blob-swapping; it does not vouch that the key is the person's. A server
+substituting a public key at share time gets a wrap the sharer built correctly
+for the wrong recipient. The resolution is tamper-evidence, not prevention: the
+member's public key travels in the audit payload, so chain-head pinning
+([`plans/events.md`](plans/events.md)) makes a substitution evident after the
+fact. Out-of-band fingerprint comparison is what closes it outright.
+
+**Recovery codes are a required feature, not an afterthought**: 160 bits,
+Crockford base32, 32 characters, ten to a set, single-use, printed once.
+Redemption deletes one blob and the rest of the set stands — regenerating the
+whole set on every use punishes the person who just proved they lost something.
+No KDF stretch: at 160 bits the secret goes straight into HKDF.
+
+**argon2id parameters are data with a floor and a ceiling**, not constants: a
+constant can never be raised, and a served parameter is a downgrade lever. The
+bound is enforced in the shared package on *every* derivation — at enrolment
+and at open — because a client that checks only when it asks the server still
+derives under whatever a blob says at new-device bootstrap.
+
+**Default on.** E2EE is per-library and chosen at creation, and the common
+library is meant to be the one where server-side preview, search, thumbnails
+and inline rendering do not exist. Server-readable is the deliberate exception,
+chosen for the libraries that want those features. The costs are real and stay
+listed in [`encryption.md`](encryption.md): no server-side preview or search,
+browser access needs client-side crypto or does not exist, key loss is data
+loss, revocation is not retroactive. Features needing plaintext get scoped
+explicitly to plain libraries, so the boundary lives in code.
+
 ## Where the bytes are
 
 ```
@@ -273,11 +347,14 @@ PATCH  /libraries/{id}                               rename
 DELETE /libraries/{id}
 GET    /libraries/{id}/changes?since=                the diff, paginated
 GET    /libraries/{id}/commits                       history
+GET    /libraries/{id}/key                           the caller's wrapped content key (E2EE)
 POST   /libraries/{id}/chunks/missing                which of these chunks do you lack?
+POST   /libraries/{id}/chunks                        many chunks, one framed request
+POST   /libraries/{id}/chunks/fetch                  many chunks, one framed response
 PUT    /libraries/{id}/chunks/{id}                   a chunk, verified against its id
-GET    /libraries/{id}/chunks/{id}                   a chunk, as stored
+GET    /libraries/{id}/chunks/{id}                   a chunk, as stored (HEAD for existence)
 PUT    /libraries/{id}/objects/{id}                  a manifest, directory or commit
-GET    /libraries/{id}/objects/{id}                  the same
+GET    /libraries/{id}/objects/{id}                  the same (HEAD for existence)
 PUT    /libraries/{id}/head                          If-Match: <current head commit id>
 POST   /libraries/{id}/batch                         many operations, one commit
 *      /libraries/{id}/entries/{path}                the path-addressed surface
@@ -331,10 +408,13 @@ and `entries/{path}?at=` answers the same way for the same reason.
 one commit, so a refusal halfway would refuse operations carrying no bytes at
 all. It is weighed against quota once, before the tree is touched.
 
-`server-info` advertises `chunks`, `batch`, `changes`, `entries`,
-`entries-copy`, `conditional-writes`, `ranged-reads`, `pagination`,
-`library-rename`, `libraries` and `usage`, so clients feature-detect rather
-than version-sniff.
+`server-info` advertises `libraries`, `entries`, `entries-copy`,
+`conditional-writes`, `ranged-reads`, `changes`, `library-rename`, `chunks`,
+`objects`, `chunks-fetch`, `entries-manifest`, `chunks-upload`, `pagination`,
+`batch`, `usage`, `logout`, `password-change`, `account-keys`,
+`e2ee-libraries` and `setup` (plus `notifications` when built with it), so
+clients feature-detect rather than version-sniff. The list is `features` in
+`fileserver/api/api.go`.
 
 ## What the numbers mean
 
@@ -534,8 +614,8 @@ gets the change they asked for rather than a usage message.
 
 - **There is no cache in front of the store.** A read is a read.
 - **Objects are stored raw**, unencrypted and uncompressed.
-- **The id-addressed surface has no `server-info` feature name.** `chunks`
-  covers the chunk half; `objects/{id}` and `PUT head` are undiscoverable.
+- **No client seals anything yet.** The server stores and serves an E2EE
+  library; the sealing client and the split-derivation login are Part 2.
 - **Nothing creates a `VirtualLibrary` row**, and several queries still join
   the table.
 
@@ -543,88 +623,11 @@ gets the change they asked for rather than a usage message.
 
 # Part 2 — designed, not built
 
-## End-to-end encryption, end to end
+## One password, split client-side
 
-The format is done and the account model it needs is **built** — see
-[`auth.md`](auth.md#the-accounts-key-material), which is now the normative
-description of all five items below. What follows is the reasoning that chose
-them, and it holds. The gap it described was four schema items and one
-endpoint:
-
-- the published X25519 public key;
-- the wrapped identity private key, one blob;
-- recovery blobs as **individually deletable rows** — that granularity is
-  forced by the redemption rule below rather than chosen;
-- the client's KDF parameters;
-- a pre-login endpoint serving a user's KDF salt.
-
-The endpoint is the one with teeth. It is unauthenticated, so it is an
-account-enumeration oracle in a new place, and its answer is
-attacker-influenced input to the client's KDF — which is what the parameter
-ceiling in `store/` was written to survive. Asking for an unknown address must
-return a deterministic fake salt, indistinguishable from a real one, exactly as
-login does. The account half of this is written up in
-[`auth.md`](auth.md#the-accounts-key-material).
-
-**Keys.** An X25519 identity keypair per user, its private half wrapped under a
-key derived from the user's password and stored server-side as an opaque blob.
-A content key **CK** per library: 32 random bytes, generated client-side at
-creation, never password-derived, wrapped to each member's public key as one
-blob per member. Sharing is a wrap for one more key; a password change re-wraps
-only the user's own private key.
-
-**The library id has to exist before its CK can be wrapped**, because the wrap
-binds the id as associated data. That is why an encrypted library's id arrives
-with the create request rather than being minted by the server — see
-[`protocol.md`](protocol.md). The alternative is creating the library and
-publishing its key in two requests, which leaves a window holding a library
-whose key nobody stored.
-
-**The wrap construction is owned, HPKE-shaped, and does not claim to be HPKE** —
-ephemeral X25519, HKDF-SHA256 over a context carrying both public keys, then
-AES-256-GCM. RFC 9180 ships in neither Go's standard library nor CryptoKit, so
-conformance would mean hand-porting its whole negotiation into Swift: a larger
-correctness surface than the forty lines it replaces, for a wire nobody outside
-Silo reads.
-
-**Every wrap binds who and what it is for** — holder and library as associated
-data, both immutable UUID text — so a server can neither move a blob between
-accounts nor replay a content-key wrap into another library.
-
-**What the wraps do not vouch for.** Binding the recipient's public key stops
-blob-swapping; it does not vouch that the key is the person's. A server
-substituting a public key at share time gets a wrap the sharer built correctly
-for the wrong recipient. The resolution is tamper-evidence, not prevention: the
-member's public key travels in the audit payload, so chain-head pinning
-([`plans/events.md`](plans/events.md)) makes a substitution evident after the
-fact. Out-of-band fingerprint comparison is what closes it outright.
-
-**Recovery codes are a required feature, not an afterthought**: 160 bits,
-Crockford base32, 32 characters, ten to a set, single-use, printed once.
-Redemption deletes one blob and the rest of the set stands — regenerating the
-whole set on every use punishes the person who just proved they lost something.
-No KDF stretch: at 160 bits the secret goes straight into HKDF.
-
-**argon2id parameters are data with a floor and a ceiling**, not constants: a
-constant can never be raised, and a served parameter is a downgrade lever. The
-bound is enforced in the shared package on *every* derivation — at enrolment
-and at open — because a client that checks only when it asks the server still
-derives under whatever a blob says at new-device bootstrap.
-
-**Default on.** E2EE is per-library and chosen at creation, and the common
-library is meant to be the one where server-side preview, search, thumbnails
-and inline rendering do not exist. Server-readable is the deliberate exception,
-chosen for the libraries that want those features. The costs are real and stay
-listed in [`encryption.md`](encryption.md): no server-side preview or search,
-browser access needs client-side crypto or does not exist, key loss is data
-loss, revocation is not retroactive. Features needing plaintext get scoped
-explicitly to plain libraries, so the boundary lives in code.
-
-### One password, split client-side
-
-Silo's login sends the password to the server. If that password also wraps the
-identity key, the server sees the wrapping secret at every login and E2EE is
-theatre. The fix:
+Not built: no client derives this split yet. Silo's login sends the password
+to the server. If that password also wraps the identity key, the server sees
+the wrapping secret at every login and E2EE is theatre. The fix:
 
 ```
 master  = argon2id(password, user_salt)     -- client-side
@@ -747,9 +750,8 @@ outer of two. The difference between the library types remains exactly one
 sentence: *whether the server holds a key that can read the content.* Nothing
 about storage layout differs.
 
-**The frame is the unit, and it does not wait for packs.** This section used
-to be sequenced inside § Packs because the nonce lives in the frame header.
-That is true, and it is also why the two are separable: a frame is
+**The frame is the unit, and it does not wait for packs.** The nonce lives in
+the frame header, which is why the two are separable: a frame is
 self-describing whether the file holding it contains one or a thousand. So
 the loose store adopts the frame first — a loose object becomes one sealed
 frame at its existing path — and packs arrive later as a container of frames
@@ -1133,36 +1135,33 @@ the two library types.
 
 ## What is left, in order
 
-1. **The split-derivation login**, which lands with or after
-   [`auth.md`](auth.md)'s credential work — that work is done, so this is now
-   unblocked. It is mostly a client change: the server already hashes whatever
-   arrives, and the parameters it must arrive under are served by
-   `POST auth/kdf`. What is left on this side is that switching an account over
-   has to be atomic — the new hash and the new `client_kdf_params` in one
+1. **The split-derivation login.** [`auth.md`](auth.md)'s credential work is
+   built, so nothing blocks it. It is mostly a client change: the server
+   hashes whatever arrives, and the parameters it must arrive under are served
+   by `POST auth/kdf`. What is left on this side is that switching an account
+   over has to be atomic — the new hash and the new `client_kdf_params` in one
    write — or the account is left with parameters that describe a password the
    stored hash was not made from.
-2. **A `server-info` feature name for the id-addressed surface**, so a client
-   can detect `objects/{id}` and `PUT head` rather than assume them.
-3. **The sealed frame and `storage.key`** — the frame codec with vectors,
+2. **The sealed frame and `storage.key`** — the frame codec with vectors,
    key generation at first start with its backup wiring and the one-time
    warning, `objstore` reading and writing one frame per loose object, and
    the restartable ingest that rewrites existing plaintext loose objects as
    frames. At-rest encryption lands here, ahead of packs, for the reason given
    under § Storage encryption, universal.
-4. **Packs** — the container format, per-pack indexes,
+3. **Packs** — the container format, per-pack indexes,
    seal-on-size-or-age-or-shutdown, the recovery scan, and the loose-store
    ingest that scan doubles as — which is the frame ingest above, pointed at a
    pack.
-5. **The tracing mark and compaction** — `PackStats`, threshold and throttled
+4. **The tracing mark and compaction** — `PackStats`, threshold and throttled
    rewrite, locality and undersize as scheduling inputs, two budgets. Built
    together with per-library GC, which is the same mark.
-6. **Durable backends** — NAS and S3 against the four-verb floor, async upload
+5. **Durable backends** — NAS and S3 against the four-verb floor, async upload
    of sealed packs, verified-then-evictable local cache, the cache-size knob,
    the unverified-packs column and the scan that rebuilds it, replication as
    pack copy. The background workers arrive here and bring their panic recovery
    and the three error-level conditions with them.
-7. **Compression**, measured before it is written.
-8. **`silo convert`.**
+6. **Compression**, measured before it is written.
+7. **`silo convert`.**
 
 One piece of debris to clear on the way past, not load-bearing: nothing creates
 a `VirtualLibrary` row while several queries still join the table.

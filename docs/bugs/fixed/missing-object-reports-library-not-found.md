@@ -42,7 +42,7 @@ in. Everything else goes through `libmgr.Get`, which reads the head commit.
 
 ## Cause
 
-`libmgr.Get` (`fileserver/libmgr/libmgr.go:105`) returns `nil` for four
+`libmgr.Get` (`fileserver/libmgr/libmgr.go`) returns `nil` for four
 unrelated reasons:
 
 | condition | line | what it actually means |
@@ -62,10 +62,10 @@ if library == nil {
 }
 ```
 
-— `entryLibrary` in `fileserver/entries.go:113`, and the same shape at
-`fileserver/api/api.go:316` and `:355`, `fileserver/api_handlers.go:31` and
-`:206`, `fileserver/api/changes.go:116`, and the compatibility lane's
-download-info handler (since deleted with that lane).
+— `entryLibrary` in `fileserver/entries.go`, and the same shape in
+`fileserver/api/api.go`, `fileserver/api_handlers.go` and
+`fileserver/api/changes.go`, and the compatibility lane's download-info
+handler (since deleted with that lane).
 
 Three of those four conditions are the server's own failures. All four are
 reported to the client as the one condition that is a statement about *the

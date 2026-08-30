@@ -94,7 +94,7 @@ Two real costs:
 - **SigV4 needs a secret to sign with.** A PBKDF2 hash cannot be used for HMAC
   signing, so this requires a genuine access-key/secret-key pair per user. See
   *App passwords* below.
-- **`ETag` semantics are MD5-shaped.** Silo's object IDs are SHA-1 over
+- **`ETag` semantics are MD5-shaped.** Silo's object IDs are SHA-256 over
   different input, so they can't be reused. restic and rclone do check `ETag`,
   so either compute and store an MD5 alongside each file at index time, or
   document `--ignore-checksum` and accept the caveat.

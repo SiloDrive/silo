@@ -3,7 +3,7 @@
 Date: 2026-08-22
 Status: **closed — SHA-256 confirmed.**
 
-The measurement behind decision 4 of [`../storage.md`](../storage.md): which hash
+The measurement behind [`../storage.md`](../storage.md) § Three rules: which hash
 names every chunk and object in the store. Two runs, one per architecture —
 arm64 first, x86 appended — plus source inspection of each candidate library,
 because one of them was doing something that would have quietly poisoned the
@@ -36,7 +36,7 @@ numbers.
   │ zeebo/xxh3 (ceiling)    │ 26277  │ 26186   │ 26245 │ 25465 │ 39,953       │ 0                │ Yes — NEON               │
   └─────────────────────────┴────────┴─────────┴───────┴───────┴──────────────┴──────────────────┴──────────────────────────┘
 
-  Throughput in MB/s. Full logs: /private/tmp/claude-501/-Users-dkam-Development-silo/334a2dc4-6e59-4b6a-8554-79f849fb9ca5/scratchpad/hashbench/.
+  Throughput in MB/s.
 
   How the assembly column was determined (build tags + source, not numbers):
   - stdlib — sha1block_arm64.s uses SHA1C/SHA1M/SHA1P/SHA1SU0; sha256block_arm64.s uses SHA256H/SHA256SU0; sha512block_arm64.s uses SHA512H/SHA512SU0. Each
@@ -48,8 +48,8 @@ numbers.
     but there is no SIMD behind it on arm64.
   - xxh3 — real accum_vector_neon_arm64.s, selected via hasNEON = true in accum_stubs_arm64.go.
 
-  Requirement 3 flag — lukechampine.com/blake3 multithreads implicitly, and cannot be turned off. Hasher.Write spawns one goroutine per eigentree
-  (blake3.go:90), and guts.CompressEigentree spawns numChunks/16 more (guts/node.go:84), uncapped by NumCPU. Sum256 routes through Write for anything over 1
+  Requirement 3 flag — lukechampine.com/blake3 multithreads implicitly, and cannot be turned off. Hasher.Write spawns one goroutine per eigentree,
+  and guts.CompressEigentree spawns numChunks/16 more, uncapped by NumCPU. Sum256 routes through Write for anything over 1
   KiB, so the one-shot API is affected too. Measured peak: +384 goroutines for a single 8 MiB hash, vs +0 for zeebo. At default GOMAXPROCS it posts 4001 MB/s
   at 8 MiB — that number is ~10 cores of work, and it drops to 617 MB/s when held to one. Both libraries agree with the official BLAKE3 abc vector and with
   each other at 8 MiB, so this is genuine parallelism, not corruption — but in your design, where chunks are already hashed concurrently across goroutines, it

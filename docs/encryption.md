@@ -1,142 +1,66 @@
 # Encryption
 
-**Decision, 2026-08-18: Silo will not support the encrypted libraries it
-inherited from upstream.** We built our own end-to-end scheme instead. The
-audit that forced that decision is kept
-[at the end of this document](#why-not-the-inherited-scheme); it is history
-now, and reading it is optional.
+**Record.** This is the audit that ruled out the encrypted libraries Silo
+inherited from upstream, and the guardrails that keep the replacement honest.
+It is not the design: the wire format — chunking, content crypto, manifests,
+names, key wrapping — is [`spec/store-format.md`](spec/store-format.md), which
+is normative, and the account model that holds the key material is
+[`auth.md`](auth.md). Where this document and those disagree, they bind.
 
-**This document is no longer the design.** It began as the sketch that
-established a modern scheme was reachable. The design has since been written
-for real: the wire format — chunking, content crypto, manifests, names — is
-specified in [`spec/store-format.md`](spec/store-format.md), and the account
-model that holds the key material is pinned in [`auth.md`](auth.md). Where this
-document and those disagree, they bind. What stays alive here is the
-orientation below, the guardrails, and the record of what the sketch got
-superseded on.
+**Decision, 2026-08-18: Silo does not support the inherited encrypted
+libraries.** The audit that forced that decision is
+[at the end of this document](#why-not-the-inherited-scheme).
 
 ## The scheme
 
-Two tiers of key, and the indirection between them is what buys everything
-else:
-
-- **An identity keypair per account** (X25519), generated client-side at
-  enrolment. The public key is published — it is what another member's client
-  wraps a library key *to*, so it must be servable to people who are not its
-  owner. The private key is sealed under a key derived client-side from the
-  passphrase and stored server-side as an opaque blob
-  (`AccountIdentityKey.wrapped_key` in [`auth.md`](auth.md)), so a new device
-  can bootstrap from the passphrase alone. The server can store that blob but
-  never open it: login uses a *split derivation* — the client stretches the
-  passphrase into an `authKey` and only that crosses the wire, while the
-  sealing key lives on the branch of the derivation the server is never sent.
-- **A content key per library** (CK), 32 random bytes generated client-side at
-  creation, never derived from a password. Everything in the library derives
-  from CK: the chunk keys, the name encryption, the chunker seed. CK is
-  **wrapped to each member's public key** — one sealed blob per member, bound
-  to the recipient so blobs cannot be swapped or replayed across libraries.
-- **Ten recovery codes per account**, each stored as its own independent wrap
-  of the identity key (`AccountRecoveryWrap`, one row per code). Redeeming one
-  deletes its row and leaves the other nine valid — the server never learns a
-  code; redemption is the client fetching the set and trying each blob.
-
-The inherited scheme bound the library to a password, so sharing meant telling
-someone the password and revocation was impossible. Wrapping to identities means sharing is
-"wrap CK for one more public key", and a passphrase change re-wraps only the
-user's *own private key* — CK is untouched and not one byte of content is
-re-encrypted. Recovery protects exactly one secret, the identity key, and
-through it every library the account can open.
+Two tiers of key: an X25519 identity keypair per account, its private half
+sealed under a client-derived key and stored server-side as an opaque blob;
+and a random 32-byte content key (CK) per library, wrapped to each member's
+public key. Sharing is one more wrap, a passphrase change re-wraps only the
+identity key, and recovery codes protect exactly that one secret. Key
+derivations, the wrap construction and the recovery-code rules are
+[`spec/store-format.md`](spec/store-format.md) § Key wrapping; the schema is
+[`auth.md`](auth.md) § The account's key material.
 
 ### Content
 
-Chunking is **keyed FastCDC** — the same `fastcdc-gear64/v1` as a plain
-library, but seeded from CK (`HKDF-SHA256(CK, salt="silo/chunker/v1")`), so cut
-points are a function of plaintext *and a secret*. The sketch that used to live
-at the top of this file mandated fixed-offset chunks on the grounds that CDC
-cut points leak plaintext structure; the spec closed that leak by keying the
-cut points instead, which keeps delta sync and gives the server nothing to
-fingerprint. **An E2EE library must never chunk under the plain seed** — see
-the Seeds section of the spec for the second, subtler reason (`seal_hash`
-would otherwise be a content-confirmation oracle).
-
-Each chunk is sealed under a key derived from its own plaintext
-(spec, [Content crypto](spec/store-format.md)):
-
-```
-H_p   = SHA-256(plaintext_chunk)
-K_c   = HKDF-SHA256(CK, salt="silo/chunk/v1", info=H_p, L=32)
-frame = AES-256-GCM(K_c, zero nonce, plaintext_chunk)
-id    = SHA-256(frame)
-```
-
-Convergent on purpose: identical plaintext under the same CK yields an
-identical frame and a stable id, so within-library dedup and delta sync work
-exactly as in a plain library. What that costs is a content-confirmation
-oracle extending only to holders of CK — the library's own members — and the
-spec accepts that trade explicitly. The AEAD tag gives integrity per chunk and
-localises tampering to the chunk it touched.
-
-Ranged reads fall out for free, and this is worth being explicit about: the
-server is not decrypting anything, so a range request is a plain byte range
-over stored bytes. Manifests carry a mandatory per-chunk plaintext size, so
-the client maps a plaintext range onto chunk indices, asks for the ciphertext
-covering them, decrypts, and trims. The inherited scheme could not serve ranges
-on encrypted libraries; this one serves them the same way it serves everything
-else.
+Keyed FastCDC seeded from CK, then per-chunk convergent AES-256-GCM under a
+key derived from the chunk's own plaintext hash, with the id the SHA-256 of
+the sealed frame. Within-library dedup and ranged reads survive; the
+members-only content-confirmation oracle is the accepted price. Normative:
+[`spec/store-format.md`](spec/store-format.md) § Chunking and § Content
+crypto. **An E2EE library must never chunk under the plain seed** — the
+spec's Seeds section says why `seal_hash` would otherwise be a key-free
+confirmation oracle.
 
 ### Names and metadata
 
-Settled — this used to be the open question that decided the shape of the API.
-Each path segment is encrypted with **AES-CMAC-SIV, under a key derived per
-directory** (spec, [Names](spec/store-format.md)). SIV is deterministic by
-design, which is the point: `entries/{path}` routes on ciphertext, so a client
-must be able to compute the same bytes the directory object holds. The
-equality leak that determinism implies — identical names within a directory
-encrypt identically — is stated and accepted. Directory and commit objects
-additionally carry **sealed sections** for the metadata that has no reason to
-be public, with sizes and structure bounded so the server can validate what it
-stores without reading it.
+Each path segment is AES-CMAC-SIV under a per-directory key, deterministic so
+`entries/{path}` routes on ciphertext; directory and commit objects carry
+sealed sections for what need not be public. Normative:
+[`spec/store-format.md`](spec/store-format.md) § Names.
 
 ### What it costs
 
 - **Cross-library and cross-user dedup end for E2EE libraries.** A different
-  CK gives a different seed, different keys, different frames. Decided and
-  priced in the spec: "that was always the price of E2EE." Within one library,
-  dedup survives in full.
+  CK gives a different seed, different keys, different frames. Within one
+  library, dedup survives in full.
 - **No server-side anything**: no thumbnails, no preview, no full-text search,
-  no server-side zip, no charset guessing. That machinery is gone anyway.
+  no server-side zip, no charset guessing.
 - **Compression must happen client-side, before encryption.** Ciphertext does
   not compress.
 - **Revocation is not retroactive.** Rotating CK and re-wrapping for the
   remaining members stops future reads; a departing member keeps whatever
   ciphertext and old CK they already had. Only re-encrypting the library fixes
-  that, and that is O(library). Said plainly rather than implied otherwise.
+  that, and that is O(library).
 
 ## Status
 
-The format is specified with test vectors. The server side already treats an
-E2EE library as opaque in the ways that matter — the store hashes what it
-stores, and the changes feed works on a library the server cannot read, which
-is the point of the design.
-
-**The server half is built.** The account key schema landed — the four items in
-[`auth.md`](auth.md#the-accounts-key-material): `client_kdf_params`,
-`AccountIdentityKey`, `AccountRecoveryWrap`, and the pre-login parameters
-endpoint, `POST auth/kdf`. That endpoint was the sharp piece and its
-constraints remain load-bearing rather than historical: it is unauthenticated
-by necessity, answers unknown addresses with stable plausible parameters so it
-cannot be used to ask which addresses exist, and its answer is
-attacker-influenced input to the client's KDF — which is what the parameter
-ceiling in the store package exists to bound. Creating an encrypted library
-landed with it: `POST /libraries` with `"e2ee": true`, and
+The server half is built: the format with vectors, the account key schema and
+`POST auth/kdf`, `POST /libraries` with `"e2ee": true` and
 `GET /libraries/{id}/key`, behind the `account-keys` and `e2ee-libraries`
-feature names. See [`storage.md`](storage.md) § What the server can read for
-the request shape and why the library id comes from the client.
-
-What is left is **a client that does the sealing**, and one server-side
-sequencing item: the split-derivation login, where the password is stretched
-under the parameters `auth/kdf` serves and only the auth half goes up. Both are
-tracked in [`roadmap.md`](roadmap.md).
+feature names. No client seals anything yet, and login is not split. The
+sequence for what is left is [`plans/e2ee-completion.md`](plans/e2ee-completion.md).
 
 ## Guardrails — what not to build
 
@@ -158,7 +82,7 @@ day.
 
 **Names stay opaque to the server.** No case folding, no Unicode
 normalisation, no behaviour derived from a file extension anywhere on the
-`entries/` path. `parseContentType` (`entries.go:876`) guessing a MIME type
+`entries/` path. `parseContentType` in `fileserver/entries.go` guessing a MIME type
 from the suffix is exactly the pattern to keep away from that path.
 
 **Mind the name budget.** `shouldIgnoreFile` rejects names that are not valid
@@ -172,10 +96,9 @@ old lane refused ranges on encrypted libraries because the *server* was doing
 the decryption; that branch died with the lane. Anything that makes ranged
 reads smarter about file contents takes us the wrong way.
 
-**Per-user key material has a designed home — build that, not a variant.**
-This guardrail used to say "leave room"; the room is now drawn, in `auth.md`'s
-schema. The failure mode has moved: improvising a slightly different shape
-because the designed one is not implemented yet.
+**Per-user key material has one home — build against it, not a variant.**
+The schema is `auth.md`'s. The failure mode is improvising a slightly
+different shape because the piece that needs it is not implemented yet.
 
 **Keep client-supplied library ids possible.** Key wrapping binds to the
 library id, so the client has to be able to create a library with a UUID it
@@ -187,28 +110,6 @@ office preview, virus scanning, server-side folder zip. Each is defensible on
 its own and each becomes a reason not to do this. If one is genuinely wanted,
 scope it explicitly to unencrypted libraries so the boundary is visible in the
 code rather than discovered later.
-
-## What the sketch got superseded on
-
-The original sketch in this file established reachability; the spec then made
-different calls on four of its specifics. Recorded so nobody resurrects the
-sketch's version from history:
-
-- **Fixed 1 MiB chunks → keyed FastCDC.** The sketch ruled out CDC because cut
-  points leak structure; the spec keys the cut points with a CK-derived seed
-  instead, keeping delta sync and closing the leak.
-- **XChaCha20-Poly1305 with random per-file nonces → convergent AES-256-GCM
-  per chunk.** The sketch derived a file key from a random nonce; the spec
-  derives a chunk key from the chunk's own plaintext hash, which is what makes
-  within-library dedup survive encryption.
-- **The dedup question → decided.** The sketch left "random nonces vs
-  convergent" open; the spec chose convergent within a library and accepted
-  the members-only confirmation oracle explicitly.
-- **Names Option A vs B → settled as A, hardened.** Deterministic AES-SIV per
-  segment so path routing keeps working, plus sealed sections in directory and
-  commit objects for what need not be public.
-- **"Delete `keycache/` and `parseCryptKey`" → done**, along with the entire
-  lane they were wired into.
 
 ## Why not the inherited scheme
 
@@ -260,12 +161,10 @@ Upstream knows. A trio of `pwd_hash` fields in their commit format is their
 replacement for `magic`, backed by argon2id. It is a serious fix to one of the
 four. Silo carried those fields through and computed none of them.
 
-This file previously also held a plan for *creating* libraries in that format
-from the TUI. That plan is withdrawn, and it was wrong on a load-bearing
-detail: it claimed `enc_version=4` was AES-128-ECB and "crypto-identical to
-v3". v4 is AES-256-CBC. Implementing it as written would have produced
-libraries no client of that server could open. Do not resurrect it from git
-history.
+One detail worth pinning because it is easy to get wrong: `enc_version=4` is
+AES-256-CBC, not AES-128-ECB, and is not crypto-identical to v3. A writer
+that treated them as the same would produce libraries no client of that
+server could open.
 
 ## Why we could walk away
 
@@ -277,7 +176,7 @@ a web layer Silo does not run.
 So there was no installed base. No Silo user had an encrypted library that Silo
 made, and the only way to have one at all was to import it from an upstream
 install. Refusing the format cost us nothing we offered, and bought a free hand
-— which is what `POST /libraries` with `"e2ee": true` now spends.
+— which is what `POST /libraries` with `"e2ee": true` spends.
 
 As for any library in the old format that might still sit in a data directory:
 the sync lane that could read one was deleted whole (`5d4baa0`), and the

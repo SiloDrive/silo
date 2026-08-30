@@ -29,8 +29,8 @@ server runs in-process on `/notification`; the RPC client, its socket and the
 controller were removed outright. The one compatibility constraint that
 survived the migration is password hashes — see § Password formats below.
 
-One consequence worth knowing: anything that used to be authorized by the web
-layer is simply absent. The share-link routes (`/f/`, `/u/`, `/d/`) and the web
+One consequence worth knowing: anything the web layer authorized is simply
+absent. The share-link routes (`/f/`, `/u/`, `/d/`) and the web
 file-access route were removed rather than ported, because every one of them
 authorized by calling out to a service Silo does not run. See
 `docs/capability-urls.md`.
@@ -59,9 +59,9 @@ carries a credential, is deliberate — see `docs/capability-urls.md`.
 
 One database, `<data-dir>/silo.db`. SQLite is the only engine — embedded, WAL
 mode, one serialized write connection and a read-only read pool. Users and
-groups used to live in a second file because upstream ran two server processes;
-Silo runs one, so they are one database. There is no upgrade path from the old
-pair — `docs/backup.md` says why, and what a current server checks instead.
+groups are in the same file as everything else: Silo runs one process, so it
+has one database. There is no upgrade path from upstream's two-file pair —
+`docs/backup.md` says why, and what a current server checks instead.
 
 ### Users and groups
 - `Account` / `AccountEmail` / `AccountIdentity` / `AccountPassword` — the
