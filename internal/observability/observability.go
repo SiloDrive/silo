@@ -187,6 +187,72 @@ func recordResponseStatus(next http.Handler) http.Handler {
 	})
 }
 
+// RecordRequestBytes puts one request's wire sizes on its transaction.
+//
+// Span data rather than tags. Tags are indexed strings meant for grouping, and
+// a byte count is neither -- every request would be its own tag value, which
+// is the cardinality problem NameTransaction exists to fix, reintroduced one
+// field lower down.
+//
+// These are per-request sizes and must never be summed into a throughput
+// figure. Traces are sampled -- a tenth by default -- so a total assembled
+// from them is a tenth of the truth and looks entirely plausible, which is the
+// worst way for a number to be wrong. The server's own counters in
+// fileserver/traffic are the unsampled total; this is for asking which
+// endpoint moves the fattest bodies and whether a slow request was slow
+// because of its size.
+//
+// A no-op when Sentry is off or the request was not sampled, which is the
+// common case and costs a nil check.
+func RecordRequestBytes(r *http.Request, in, out int64) {
+	if !enabled {
+		return
+	}
+	tx := sentry.TransactionFromContext(r.Context())
+	if tx == nil {
+		return
+	}
+	tx.SetData("http.request_content_length", in)
+	tx.SetData("http.response_content_length", out)
+
+	// And a bucket as a tag, because span data is not enough on its own: the
+	// Go SDK files it under contexts.trace.data, and a receiver reading the
+	// transaction does not show it -- the same surprise, in the same place,
+	// that recordResponseStatus exists to work around for the status code.
+	// A tag is what can be seen and filtered on.
+	//
+	// Bucketed rather than exact, which is the whole reason a tag is safe
+	// here. Tags are indexed strings meant for grouping; an exact byte count
+	// would give every request its own value and reintroduce, one field lower
+	// down, the cardinality problem NameTransaction exists to fix. Six buckets
+	// answer "show me the slow requests carrying big bodies", which is the
+	// question worth asking, and no more.
+	tx.SetTag("body_size", sizeBucket(max(in, out)))
+}
+
+// sizeBucket names a size in a way that stays a small closed set.
+//
+// The boundaries follow what the format already treats as thresholds rather
+// than round numbers for their own sake: 64 KiB is store.InlineThreshold, the
+// point below which a file travels inside its manifest, and the megabyte
+// steps above it are chunk-sized and file-sized. A bucket that lined up with
+// nothing would sort requests into groups that mean nothing.
+func sizeBucket(n int64) string {
+	switch {
+	case n == 0:
+		return "empty"
+	case n < 4<<10:
+		return "under-4kb"
+	case n < 64<<10:
+		return "4kb-64kb"
+	case n < 1<<20:
+		return "64kb-1mb"
+	case n < 16<<20:
+		return "1mb-16mb"
+	}
+	return "over-16mb"
+}
+
 // NameTransaction replaces the URL-derived name of the request's transaction
 // with a route template.
 //

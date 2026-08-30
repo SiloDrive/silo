@@ -561,3 +561,76 @@ func waitFor(t *testing.T, done func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Byte sizes ride on the transaction as span data, so that "which endpoint
+// moves the fattest bodies" is answerable from the trace. They are per-request
+// figures and the comment on RecordRequestBytes says why they must not be
+// summed: traces are sampled, so a total assembled from them is a fraction of
+// the truth and looks entirely plausible.
+func TestTransactionCarriesTheRequestAndResponseSizes(t *testing.T) {
+	stub := newSentryStub(t)
+	t.Setenv("SILO_SENTRY_TRACES_SAMPLE_RATE", "1")
+	enable(t, stub)
+
+	const body = "0123456789"
+	handler := observability.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = w.Write([]byte("okay"))
+		observability.RecordRequestBytes(r, int64(len(body)), 4)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/libraries/r1/chunks", strings.NewReader(body))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	observability.Flush()
+
+	envs := stub.envelopes()
+	if len(envs) != 1 {
+		t.Fatalf("stub received %d envelopes, want 1", len(envs))
+	}
+	// Under contexts.trace.data, which is where the Go SDK puts span data --
+	// the same place, and the same surprise, as the status the response
+	// context exists to restate.
+	contexts, _ := envs[0].payload[0]["contexts"].(map[string]any)
+	trace, _ := contexts["trace"].(map[string]any)
+	data, _ := trace["data"].(map[string]any)
+	if data == nil {
+		t.Fatalf("transaction carries no span data: %v", contexts)
+	}
+	if got, want := data["http.request_content_length"], float64(len(body)); got != want {
+		t.Errorf("http.request_content_length = %v, want %v", got, want)
+	}
+	if got, want := data["http.response_content_length"], float64(4); got != want {
+		t.Errorf("http.response_content_length = %v, want %v", got, want)
+	}
+
+	// The tag is the half that can actually be seen: a receiver reading the
+	// transaction shows tags and does not show contexts.trace.data, so span
+	// data alone would be recorded where nobody can look at it.
+	tags, _ := envs[0].payload[0]["tags"].(map[string]any)
+	if got, want := tags["body_size"], "under-4kb"; got != want {
+		t.Errorf("body_size tag = %v, want %v", got, want)
+	}
+}
+
+// The bucket set has to stay small, or the tag is a cardinality problem rather
+// than a filter. Boundaries follow the format's own thresholds -- 64 KiB is
+// where a file stops travelling inside its manifest.
+func TestSizeBucketsAreAClosedSet(t *testing.T) {
+	seen := map[string]bool{}
+	for _, n := range []int64{0, 1, 4095, 4096, 65535, 65536, 1 << 20, 15 << 20, 1 << 30, 1 << 40} {
+		seen[observability.SizeBucketForTest(n)] = true
+	}
+	if len(seen) > 6 {
+		t.Errorf("sizes fell into %d buckets: %v", len(seen), seen)
+	}
+	if observability.SizeBucketForTest(0) != "empty" {
+		t.Error("a request that moved nothing is not named as such")
+	}
+}
+
+// Off, or not sampled, must cost nothing and must not panic. This is the
+// common case: reporting is opt-in and the default sample rate keeps a tenth.
+func TestRecordingBytesWithNoTransactionIsHarmless(t *testing.T) {
+	observability.ResetForTest()
+	req := httptest.NewRequest(http.MethodGet, "/api/silo/v1/libraries", nil)
+	observability.RecordRequestBytes(req, 1, 2)
+}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/dkam/silo/fileserver/traffic"
+	"github.com/dkam/silo/internal/observability"
 )
 
 // CountTraffic records the wire bytes of every request and response.
@@ -36,7 +37,14 @@ func CountTraffic(next http.Handler) http.Handler {
 		// observability.Middleware sits outside this and will recover, and a
 		// panic in a large upload is exactly the transfer worth having a
 		// record of.
-		defer func() { traffic.Default.Record(lane, body.n, rec.n) }()
+		defer func() {
+			traffic.Default.Record(lane, body.n, rec.n)
+			// The same two numbers, for a different question. The counters are
+			// the unsampled total and the rate; this puts the per-request size
+			// on the trace, where it can be ranked and correlated but must
+			// never be summed. See observability.RecordRequestBytes.
+			observability.RecordRequestBytes(r, body.n, rec.n)
+		}()
 
 		next.ServeHTTP(rec, r)
 	})
