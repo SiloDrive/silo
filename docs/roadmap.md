@@ -17,9 +17,9 @@ from the summary. So this one does not summarise designs.
 
 ## Where state lives
 
-Work is tracked on git.booko.info, in `dkam/silo`'s
-[milestones](https://git.booko.info/dkam/silo/milestones) and issues, with
-porter's share in `dkam/porter-fuse` and `dkam/porter-macos`. **The issues
+Work is tracked on git.booko.info, in `Silo/silo`'s
+[milestones](https://git.booko.info/Silo/silo/milestones) and issues, with
+porter's share in `Silo/porter-fuse` and `Silo/porter-macos`. **The issues
 carry state; this document carries order and the reasoning for it.** Each
 entry below names the milestone and issues that track it, and the document is
 not updated as they close — an issue that reads closed here is the tracker's

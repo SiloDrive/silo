@@ -5,9 +5,9 @@ the document that is normative for it, and where they disagree the owning
 document wins, by [`../roadmap.md`](../roadmap.md)'s rule.
 
 Tracked on git.booko.info: milestones `e2ee-client`, `split-login`,
-`grants-and-invites`, `sharing-e2ee` in `dkam/silo`, and one issue per
+`grants-and-invites`, `sharing-e2ee` in `Silo/silo`, and one issue per
 bullet — numbers are given beside each step. Porter's share lives in
-`dkam/porter-fuse` and `dkam/porter-macos`. The issues carry state; this
+`Silo/porter-fuse` and `Silo/porter-macos`. The issues carry state; this
 document carries the reasoning, and is not updated as they close.
 
 ## Where it stands

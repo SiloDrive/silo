@@ -5,7 +5,7 @@ open; [`../storage.md`](../storage.md) § Storage encryption, universal is
 normative for the format, and where the two disagree that document wins, by
 [`../roadmap.md`](../roadmap.md)'s rule.
 
-Tracked on git.booko.info as `dkam/silo#18`, milestone `at-rest-encryption`.
+Tracked on git.booko.info as `Silo/silo#18`, milestone `at-rest-encryption`.
 Its neighbour is packs, `#17`. Its other neighbour, `#23` — the ingest of
 existing plaintext objects — was made unnecessary; see Decision 3. The issues carry state; this document carries the reasoning, and is not
 updated as they close.
