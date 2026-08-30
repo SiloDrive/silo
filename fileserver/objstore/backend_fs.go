@@ -7,10 +7,8 @@
 package objstore
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"io/fs"
 	"os"
@@ -34,42 +32,6 @@ func newFSBackend(dataDir string, objType string) (*fsBackend, error) {
 	backend.objDir = objDir
 	backend.objType = objType
 	return backend, nil
-}
-
-// verifierFor returns the digest an id names.
-//
-// One hash, because there is one id width: every id in the store is the
-// SHA-256 of the bytes it names. It stays a function rather than a call to
-// sha256.New at each site so that the id and the digest that checks it are
-// decided in one place.
-//
-// Called from ObjectStore.write rather than from here. Verification has to
-// happen over the object, and what reaches this backend is the frame around
-// it, so a backend cannot check an id even in principle.
-//
-// validPackID has already established the width.
-func verifierFor(string) hash.Hash { return sha256.New() }
-
-// validPackID reports whether an id is one this store will build a path from.
-//
-// Lowercase hex, sixty-four characters: the SHA-256 of what is stored under
-// it. Sixty-four is more than the two characters the fan-out slices off, which
-// is the crash this guards.
-//
-// One case only. Two spellings of an id are two files holding one object, and
-// the second is invisible to every reader looking for the first.
-func validPackID(id string) bool {
-	if len(id) != 2*sha256.Size {
-		return false
-	}
-	for i := 0; i < len(id); i++ {
-		c := id[i]
-		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 // packPath builds the on-disk path for a pack. Ids are fanned out as
@@ -158,13 +120,13 @@ func (b *fsBackend) readAt(libraryID string, packID string, p []byte, off int64)
 // so a pack enters this interface only once it is sealed, and arrives whole.
 // Here, where a pack holds exactly one object, it is sealed the moment it is
 // written, and the rename is what makes it appear complete or not at all.
-func (b *fsBackend) write(libraryID string, packID string, r io.Reader, opts writeOpts) error {
+func (b *fsBackend) write(libraryID string, packID string, r io.Reader, sync bool) error {
 	p, err := b.packPath(libraryID, packID)
 	if err != nil {
 		return err
 	}
 	parentDir := path.Dir(p)
-	if err := b.mkObjDirs(parentDir, opts.sync); err != nil {
+	if err := b.mkObjDirs(parentDir, sync); err != nil {
 		return err
 	}
 
@@ -189,7 +151,7 @@ func (b *fsBackend) write(libraryID string, packID string, r io.Reader, opts wri
 		return err
 	}
 
-	if opts.sync {
+	if sync {
 		if err := tFile.Sync(); err != nil {
 			_ = tFile.Close()
 			return fmt.Errorf("failed to sync object %s/%s: %v", libraryID, packID, err)
@@ -206,7 +168,7 @@ func (b *fsBackend) write(libraryID string, packID string, r io.Reader, opts wri
 		return err
 	}
 
-	if opts.sync {
+	if sync {
 		// Until the directory itself is synced the rename can be lost, which
 		// would leave the object under its temp name — invisible to reads and
 		// invisible to the GC, which only walks well-formed object paths.

@@ -92,13 +92,6 @@ type ObjectStore struct {
 	initErr error
 }
 
-// writeOpts is how a pack is published.
-type writeOpts struct {
-	// sync makes the pack durable before write returns: the data is fsynced
-	// before the publish, and the containing directory afterwards.
-	sync bool
-}
-
 // storageBackend is the interface every storage tier implements.
 //
 // Pack-shaped, and specifically **sealed**-pack-shaped. A real pack has two
@@ -132,9 +125,9 @@ type packInfo struct {
 
 type storageBackend interface {
 	// write stores r under packID and publishes it atomically. A reader
-	// never sees a partial pack, and with opts.sync the pack is durable
-	// before write returns.
-	write(libraryID, packID string, r io.Reader, opts writeOpts) error
+	// never sees a partial pack, and with sync the pack is durable before
+	// write returns.
+	write(libraryID, packID string, r io.Reader, sync bool) error
 	// readAt reads len(p) bytes from packID starting at off, with io.ReaderAt
 	// semantics: a short read returns io.EOF.
 	readAt(libraryID, packID string, p []byte, off int64) (int, error)
@@ -163,15 +156,7 @@ type storageBackend interface {
 // and says what happened.
 func New(confPath string, dataDir string, objType string) *ObjectStore {
 	obj := &ObjectStore{ObjType: objType}
-	backend, err := newFSBackend(dataDir, objType)
-	if err != nil {
-		obj.initErr = fmt.Errorf("objstore: no %s store: %w", objType, err)
-		return obj
-	}
-	// The key is loaded after the backend because generating one refuses over
-	// a store that already holds objects, and answering that question needs
-	// the store directories to be the ones this backend will use.
-	key, err := storageKeyFor(dataDir)
+	backend, key, err := open(dataDir, objType)
 	if err != nil {
 		obj.initErr = fmt.Errorf("objstore: no %s store: %w", objType, err)
 		return obj
@@ -181,6 +166,22 @@ func New(confPath string, dataDir string, objType string) *ObjectStore {
 	return obj
 }
 
+// open is everything New has to get right before it has a store, in the order
+// it has to happen: the key is loaded after the backend because generating one
+// refuses over a store that already holds objects, and answering that question
+// needs the store directories to be the ones this backend will use.
+func open(dataDir, objType string) (storageBackend, []byte, error) {
+	backend, err := newFSBackend(dataDir, objType)
+	if err != nil {
+		return nil, nil, err
+	}
+	key, err := storageKeyFor(dataDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	return backend, key, nil
+}
+
 func (s *ObjectStore) ready() error { return s.initErr }
 
 // Read data from storage backends.
@@ -188,7 +189,7 @@ func (s *ObjectStore) Read(libraryID string, objID string, w io.Writer) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
-	obj, err := s.object(libraryID, objID)
+	obj, err := s.object(libraryID, objID, nil)
 	if err != nil {
 		return err
 	}
@@ -196,22 +197,47 @@ func (s *ObjectStore) Read(libraryID string, objID string, w io.Writer) error {
 	return err
 }
 
-// object reads one object and opens its frame, returning the bytes the caller
-// stored.
+// ReadInto reads a whole object into buf, growing it only when it is too
+// small, and returns the object as a sub-slice of it.
+//
+// This is the shape every reader of this store actually wants, and the one
+// that costs least. An object cannot be read in parts — see object — so a
+// caller that hands its own buffer down a loop pays no allocation per object
+// at all: the frame is read into a buffer sized from stat, and the plaintext
+// is decrypted straight into buf. The returned slice aliases buf, and callers
+// pass it back in on the next call.
+func (s *ObjectStore) ReadInto(libraryID string, objID string, buf []byte) ([]byte, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	return s.object(libraryID, objID, buf)
+}
+
+// object reads one object and opens its frame, appending the bytes the caller
+// stored to dst.
 //
 // Whole, not streamed, and that is the shape of GCM rather than a choice: the
 // tag covers the entire ciphertext, so there is no prefix of a frame that can
 // be trusted before the last byte has been read. A ranged read of a *pack* is
 // a range over frames; there is no ranged read within one.
-func (s *ObjectStore) object(libraryID string, objID string) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := s.backend.read(libraryID, objID, &buf); err != nil {
+//
+// Sized from stat and read in one pass rather than copied into a growing
+// buffer. The growth is not free at these sizes — a 4 MiB chunk reallocates a
+// dozen times and memcpys twice its own length before it is even decrypted —
+// and the size is already one syscall away.
+func (s *ObjectStore) object(libraryID string, objID string, dst []byte) ([]byte, error) {
+	size, err := s.backend.stat(libraryID, objID)
+	if err != nil {
+		return nil, err
+	}
+	frame := make([]byte, size)
+	if _, err := s.backend.readAt(libraryID, objID, frame, 0); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	// Everything in the store is a frame. Anything that is not is corruption,
 	// and openFrame says so — there is no reading of unsealed bytes here,
 	// because a store that holds any is one that must not have started.
-	return openFrame(s.key, objID, buf.Bytes())
+	return openFrame(s.key, objID, frame, dst)
 }
 
 // ReadAt reads len(p) bytes of an object starting at off, with io.ReaderAt
@@ -220,11 +246,17 @@ func (s *ObjectStore) object(libraryID string, objID string) ([]byte, error) {
 // The whole point of the reshape: a chunk read becomes a ranged read of the
 // pack holding it, which is one ranged GET against object storage rather than
 // a fetch of the pack. Here, where an object is its own pack, it is a seek.
+//
+// Ranged in what it returns, never in what it costs: a range of one frame is
+// the whole frame read and the whole object decrypted, because the tag covers
+// all of it. Reading one object in k ranges therefore costs k times reading
+// it once. ReadInto is the call for reading a whole object, and it is what
+// every reader in this repository uses.
 func (s *ObjectStore) ReadAt(libraryID string, objID string, p []byte, off int64) (int, error) {
 	if err := s.ready(); err != nil {
 		return 0, err
 	}
-	obj, err := s.object(libraryID, objID)
+	obj, err := s.object(libraryID, objID, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -281,12 +313,12 @@ func (s *ObjectStore) WriteVerified(libraryID string, objID string, r io.Reader,
 // large object across several frames is a pack-format question that arrives
 // with packs.
 func (s *ObjectStore) write(libraryID string, objID string, r io.Reader, sync bool, verify bool) error {
-	plain, err := io.ReadAll(r)
+	plain, err := readWhole(r)
 	if err != nil {
 		return err
 	}
 	if verify {
-		h := verifierFor(objID)
+		h := verifier()
 		h.Write(plain)
 		// Checked before the frame is built, not after the write: the object
 		// may already be there with the right content, and a
@@ -299,7 +331,26 @@ func (s *ObjectStore) write(libraryID string, objID string, r io.Reader, sync bo
 	if err != nil {
 		return err
 	}
-	return s.backend.write(libraryID, objID, bytes.NewReader(frame), writeOpts{sync: sync})
+	return s.backend.write(libraryID, objID, bytes.NewReader(frame), sync)
+}
+
+// readWhole reads r to EOF, sized up front when r can say how much it holds.
+//
+// Both callers of Write and WriteVerified hand this a bytes.Reader over a
+// slice they are already holding, so io.ReadAll's growth — a dozen
+// reallocations and twice the object copied, for a 4 MiB chunk — buys
+// nothing. Anything that genuinely streams still works; it just does not know
+// its length, and falls through.
+func readWhole(r io.Reader) ([]byte, error) {
+	sized, ok := r.(interface{ Len() int })
+	if !ok {
+		return io.ReadAll(r)
+	}
+	buf := make([]byte, sized.Len())
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
 }
 
 // Exists reports whether an object is present and usable.

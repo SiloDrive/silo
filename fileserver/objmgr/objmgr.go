@@ -142,11 +142,7 @@ func (s *Store) PutChunk(id store.ID, data []byte) error {
 
 // GetChunk returns a chunk's stored bytes, still sealed in an E2EE library.
 func (s *Store) GetChunk(id store.ID) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := s.chunks.Read(s.storeID, id.String(), &buf); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return s.chunks.ReadInto(s.storeID, id.String(), nil)
 }
 
 // HasChunk reports whether a chunk is present and usable.
@@ -211,27 +207,14 @@ func (s *Store) PutObject(id store.ID, encoded []byte) error {
 // GetChunkInto reads a chunk into buf, growing it only when it is too small,
 // and returns the bytes read as a sub-slice of it.
 //
-// GetChunk allocates a fresh bytes.Buffer per call and lets it grow from 512
-// bytes, so a 4 MiB chunk costs about thirteen reallocations and twice its own
-// size in memcpy. That is invisible one chunk at a time and is not invisible on
-// the batch-fetch path, where a single request moves up to 256 of them: one
-// scratch buffer reused down the loop replaces 256 allocations and the copying
-// that comes with growing each of them.
+// GetChunk allocates one chunk per call, which is invisible one chunk at a
+// time and is not invisible on the batch-fetch path, where a single request
+// moves up to 256 of them. One scratch buffer reused down the loop replaces
+// those 256 allocations: the chunk is decrypted straight into it.
 //
 // The returned slice aliases buf. Callers pass it back in on the next call.
 func (s *Store) GetChunkInto(id store.ID, buf []byte) ([]byte, error) {
-	size, err := s.chunks.Stat(s.storeID, id.String())
-	if err != nil {
-		return nil, err
-	}
-	if int64(cap(buf)) < size {
-		buf = make([]byte, size)
-	}
-	buf = buf[:size]
-	if _, err := s.chunks.ReadAt(s.storeID, id.String(), buf, 0); err != nil {
-		return nil, err
-	}
-	return buf, nil
+	return s.chunks.ReadInto(s.storeID, id.String(), buf)
 }
 
 // ObjectSize returns an object's stored size without reading it.
@@ -245,11 +228,7 @@ func (s *Store) ObjectSize(id store.ID) (int64, error) {
 
 // GetObject returns an object's encoded bytes.
 func (s *Store) GetObject(id store.ID) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := s.objects.Read(s.storeID, id.String(), &buf); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return s.objects.ReadInto(s.storeID, id.String(), nil)
 }
 
 // HasObject reports whether an object is present and usable.

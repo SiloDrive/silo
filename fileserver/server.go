@@ -277,13 +277,6 @@ func Run(args []string) error {
 	}
 	log.Infof("Data directory: %s", absDataDir)
 
-	// See openStores: the same check, for the path that does not go through
-	// it. A server that cannot read its own store should say so and stop, not
-	// accept requests and fail every one of them.
-	if err := objstore.EnsureKey(absDataDir); err != nil {
-		log.Fatalf("%v", err)
-	}
-
 	// Logging: default to stdout. Use -l to write to a file instead.
 	if logFile != "" && logFile != "-" {
 		var err error
@@ -303,6 +296,18 @@ func Run(args []string) error {
 		}
 	} else {
 		logToStdout = true
+	}
+
+	// See openStores: the same check, for the path that does not go through
+	// it. A server that cannot read its own store should say so and stop, not
+	// accept requests and fail every one of them.
+	//
+	// After the log destination is settled, because on a first start this is
+	// what generates storage.key and prints the back-it-up warning — and that
+	// warning says "printed once", so the one run that emits it is the one
+	// run that must not send it to a stderr nobody is reading.
+	if err := objstore.EnsureKey(absDataDir); err != nil {
+		log.Fatalf("%v", err)
 	}
 
 	// After the log destination is settled, so the "reporting to" line lands

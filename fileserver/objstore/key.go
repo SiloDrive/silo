@@ -120,25 +120,27 @@ func generateStorageKey(path string) ([]byte, bool, error) {
 	}
 
 	dir := filepath.Dir(path)
+	// CreateTemp opens 0600, and umask can only clear bits rather than add
+	// them, so the key is never briefly world-readable and needs no chmod.
 	tmp, err := os.CreateTemp(dir, KeyName+".*")
 	if err != nil {
 		return nil, false, fmt.Errorf("cannot create %s: %w", path, err)
 	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
+	defer func() {
+		// Close before Remove, and both unconditionally: a second Close on
+		// the success path returns ErrClosed, which is exactly the error
+		// worth discarding.
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+	}()
 
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return nil, false, fmt.Errorf("cannot set permissions on %s: %w", path, err)
-	}
 	if _, err := tmp.Write(key); err != nil {
-		_ = tmp.Close()
 		return nil, false, fmt.Errorf("cannot write %s: %w", path, err)
 	}
 	// Synced before it is published, and the directory after. A key that is
 	// lost to a power cut after objects have been written under it is the
 	// unrecoverable case this whole file is about.
 	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
 		return nil, false, fmt.Errorf("cannot sync %s: %w", path, err)
 	}
 	if err := tmp.Close(); err != nil {

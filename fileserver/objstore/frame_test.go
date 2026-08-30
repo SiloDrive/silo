@@ -36,7 +36,7 @@ func testKey(t *testing.T) []byte {
 // idOf is the id a plaintext would be stored under: objstore ids are the
 // SHA-256 of the stored bytes, in lowercase hex.
 func idOf(b []byte) string {
-	h := verifierFor("")
+	h := verifier()
 	h.Write(b)
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -61,7 +61,7 @@ func TestFrameRoundTrip(t *testing.T) {
 		if !isFrame(frame) {
 			t.Error("sealed frame is not recognised as one")
 		}
-		got, err := openFrame(key, id, frame)
+		got, err := openFrame(key, id, frame, nil)
 		if err != nil {
 			t.Fatalf("opening %d bytes: %v", len(plain), err)
 		}
@@ -118,7 +118,7 @@ func TestFrameTamperIsRejected(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bad := bytes.Clone(frame)
 			bad[tc.at] ^= 0x01
-			if _, err := openFrame(key, id, bad); !errors.Is(err, ErrFrameCorrupt) {
+			if _, err := openFrame(key, id, bad, nil); !errors.Is(err, ErrFrameCorrupt) {
 				t.Errorf("flipping a bit in %s at %d gave %v, want ErrFrameCorrupt", tc.name, tc.at, err)
 			}
 		})
@@ -134,7 +134,7 @@ func TestFrameIsBoundToItsID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openFrame(key, idOf([]byte("yours")), frame); !errors.Is(err, ErrFrameCorrupt) {
+	if _, err := openFrame(key, idOf([]byte("yours")), frame, nil); !errors.Is(err, ErrFrameCorrupt) {
 		t.Errorf("a frame opened under another id: %v", err)
 	}
 }
@@ -149,13 +149,14 @@ func TestFrameWrongKey(t *testing.T) {
 	}
 	other := bytes.Clone(key)
 	other[0] ^= 0x01
-	if _, err := openFrame(other, id, frame); !errors.Is(err, ErrFrameCorrupt) {
+	if _, err := openFrame(other, id, frame, nil); !errors.Is(err, ErrFrameCorrupt) {
 		t.Errorf("a frame opened under the wrong key: %v", err)
 	}
 }
 
 // A truncated frame is the torn-write case, and it must be an error rather
-// than a short read: the length in the header is what says the frame is whole.
+// than a short read: the tag covers every ciphertext byte, so a frame missing
+// any of them cannot open.
 func TestFrameTruncated(t *testing.T) {
 	key := testKey(t)
 	plain := bytes.Repeat([]byte("x"), 1000)
@@ -165,14 +166,15 @@ func TestFrameTruncated(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, n := range []int{0, 1, frameHeaderSize - 1, frameHeaderSize, len(frame) - 1} {
-		if _, err := openFrame(key, id, frame[:n]); !errors.Is(err, ErrFrameCorrupt) {
+		if _, err := openFrame(key, id, frame[:n], nil); !errors.Is(err, ErrFrameCorrupt) {
 			t.Errorf("a frame truncated to %d bytes opened: %v", n, err)
 		}
 	}
 }
 
-// isFrame is what the transitional plaintext fallback turns on, so it has to
-// be honest about bytes that were never a frame.
+// isFrame is openFrame's first gate, so it has to be honest about bytes that
+// were never a frame: what it rejects is reported as corruption, and what it
+// admits still has to survive the tag.
 func TestIsFrame(t *testing.T) {
 	key := testKey(t)
 	frame, err := sealFrame(key, idOf([]byte("x")), []byte("x"))
@@ -195,7 +197,7 @@ func TestIsFrame(t *testing.T) {
 	// Long enough, and it starts with the magic, and it is still not a frame.
 	almost := bytes.Repeat([]byte{0}, 200)
 	copy(almost, frameMagic)
-	if _, err := openFrame(key, idOf([]byte("x")), almost); !errors.Is(err, ErrFrameCorrupt) {
+	if _, err := openFrame(key, idOf([]byte("x")), almost, nil); !errors.Is(err, ErrFrameCorrupt) {
 		t.Errorf("plaintext beginning with the magic opened as a frame: %v", err)
 	}
 }
@@ -253,7 +255,7 @@ func TestFrameVectors(t *testing.T) {
 		}
 		// Every vector must also open, or a committed vector could pin a
 		// frame this code cannot read.
-		plain, err := openFrame(key, id, frame)
+		plain, err := openFrame(key, id, frame, nil)
 		if err != nil {
 			t.Fatalf("%s: opening what we just sealed: %v", c.name, err)
 		}

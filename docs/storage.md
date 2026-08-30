@@ -278,11 +278,16 @@ only surface at the first read of an old object, by which time more has been
 written under the new key. Cannot-lose is enforced at the moment of loss rather
 than described after it.
 
-That refusal is not yet a refusal to *start*. `objstore.New` has no error
-return, so it holds the failure and raises it at the first object read or
-write: a server whose key has gone missing still accepts logins and serves
-listings, and fails only when something reaches for an object. Turning it into
-a startup failure is the exported error accessor in silo#28.
+The refusal is a **refusal to start**, and deliberately not a refusal at the
+first read. Startup checks the key before it opens a database or a library, on
+both the paths that reach a store, so a server whose key has gone missing
+never comes up to accept logins and serve listings it cannot honour. It is
+also where the key is generated on a first start, after the log destination is
+settled, so the once-ever warning lands wherever the operator is reading.
+
+The other way `objstore` can fail to open — a store directory it cannot create
+— is still raised lazily, at the first object that asks. Making that one eager
+too is silo#28.
 
 **Default on.** E2EE is per-library and chosen at creation, and the common
 library is meant to be the one where server-side preview, search, thumbnails

@@ -3,7 +3,6 @@ package objstore
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -15,12 +14,7 @@ import (
 // objPath is where an object's file lands, reaching past the seam on purpose:
 // these are the tests that care what is actually on the disk.
 func objPath(objType, id string) string {
-	return filepath.Join(TypeDir(dataDir, objType), libraryID, id[:2], id[2:])
-}
-
-func sha256Hex(b []byte) string {
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
+	return filepath.Join(LibraryDir(dataDir, objType, libraryID), id[:2], id[2:])
 }
 
 // The assertion the whole issue exists for. Everything else here checks that
@@ -28,7 +22,7 @@ func sha256Hex(b []byte) string {
 func TestStoredObjectIsCiphertextOnDisk(t *testing.T) {
 	s := New(confPath, dataDir, "sealed-disk")
 	plain := []byte("the needle in this haystack is CONFIDENTIAL-MARKER and it must not be on disk")
-	id := sha256Hex(plain)
+	id := idOf(plain)
 
 	if err := s.WriteVerified(libraryID, id, bytes.NewReader(plain), false); err != nil {
 		t.Fatalf("WriteVerified: %v", err)
@@ -63,7 +57,7 @@ func TestStoredObjectIsCiphertextOnDisk(t *testing.T) {
 func TestStatAndListReportPlaintextLength(t *testing.T) {
 	s := New(confPath, dataDir, "sealed-size")
 	plain := strings.Repeat("s", 5000)
-	id := sha256Hex([]byte(plain))
+	id := idOf([]byte(plain))
 	if err := s.WriteVerified(libraryID, id, strings.NewReader(plain), false); err != nil {
 		t.Fatal(err)
 	}
@@ -104,13 +98,7 @@ func TestStatAndListReportPlaintextLength(t *testing.T) {
 func TestShorterThanAFrameIsAbsent(t *testing.T) {
 	s := New(confPath, dataDir, "sealed-short")
 	id := strings.Repeat("c", 2*sha256.Size)
-	dir := filepath.Dir(objPath("sealed-short", id))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(objPath("sealed-short", id), []byte(frameMagic+"trunc"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	putObjectFile(t, dataDir, "sealed-short", libraryID, id, []byte(frameMagic+"trunc"))
 	exists, err := s.Exists(libraryID, id)
 	if err != nil {
 		t.Fatalf("Exists: %v", err)
@@ -126,13 +114,13 @@ func TestShorterThanAFrameIsAbsent(t *testing.T) {
 func TestWriteVerifiedHashesThePlaintext(t *testing.T) {
 	s := New(confPath, dataDir, "sealed-verify")
 	plain := []byte("verified content")
-	id := sha256Hex(plain)
+	id := idOf(plain)
 
 	if err := s.WriteVerified(libraryID, id, bytes.NewReader(plain), false); err != nil {
 		t.Fatalf("WriteVerified under the plaintext's own hash: %v", err)
 	}
 
-	wrong := sha256Hex([]byte("something else"))
+	wrong := idOf([]byte("something else"))
 	err := s.WriteVerified(libraryID, wrong, bytes.NewReader(plain), false)
 	if err == nil {
 		t.Fatal("WriteVerified accepted content that does not hash to its id")
@@ -151,7 +139,7 @@ func TestWriteVerifiedHashesThePlaintext(t *testing.T) {
 func TestCorruptedFrameIsAnError(t *testing.T) {
 	s := New(confPath, dataDir, "sealed-corrupt")
 	plain := []byte("bit rot happens")
-	id := sha256Hex(plain)
+	id := idOf(plain)
 	if err := s.WriteVerified(libraryID, id, bytes.NewReader(plain), false); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +167,7 @@ func TestCorruptedFrameIsAnError(t *testing.T) {
 func TestAFrameCannotBeMovedToAnotherPath(t *testing.T) {
 	s := New(confPath, dataDir, "sealed-move")
 	plain := []byte("mine, at my own id")
-	id := sha256Hex(plain)
+	id := idOf(plain)
 	if err := s.WriteVerified(libraryID, id, bytes.NewReader(plain), false); err != nil {
 		t.Fatal(err)
 	}
@@ -193,13 +181,7 @@ func TestAFrameCannotBeMovedToAnotherPath(t *testing.T) {
 	if other == id {
 		other = "e" + id[1:]
 	}
-	dir := filepath.Dir(objPath("sealed-move", other))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(objPath("sealed-move", other), raw, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	putObjectFile(t, dataDir, "sealed-move", libraryID, other, raw)
 	if err := s.Read(libraryID, other, io.Discard); err == nil {
 		t.Error("a frame opened at another object's path")
 	}
@@ -211,14 +193,8 @@ func TestAFrameCannotBeMovedToAnotherPath(t *testing.T) {
 func TestUnsealedBytesAreCorruption(t *testing.T) {
 	s := New(confPath, dataDir, "sealed-unsealed")
 	plain := "written by something that is not this store"
-	id := sha256Hex([]byte(plain))
-	dir := filepath.Dir(objPath("sealed-unsealed", id))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(objPath("sealed-unsealed", id), []byte(plain), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	id := idOf([]byte(plain))
+	putObjectFile(t, dataDir, "sealed-unsealed", libraryID, id, []byte(plain))
 
 	if err := s.Read(libraryID, id, io.Discard); !errors.Is(err, ErrFrameCorrupt) {
 		t.Errorf("Read of unsealed bytes = %v, want ErrFrameCorrupt", err)
@@ -234,7 +210,7 @@ func TestUnsealedBytesAreCorruption(t *testing.T) {
 func TestRewritingAnObjectIsFine(t *testing.T) {
 	s := New(confPath, dataDir, "sealed-rewrite")
 	plain := []byte("written twice, one id")
-	id := sha256Hex(plain)
+	id := idOf(plain)
 
 	if err := s.WriteVerified(libraryID, id, bytes.NewReader(plain), false); err != nil {
 		t.Fatal(err)

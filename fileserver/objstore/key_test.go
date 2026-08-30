@@ -100,9 +100,9 @@ func TestStorageKeyRefusesWrongLength(t *testing.T) {
 
 // putObjectFile writes raw bytes where an object of a type lives, without
 // going through the store. These are the tests about what is already on disk.
-func putObjectFile(t *testing.T, dataDir, objType, id string, content []byte) {
+func putObjectFile(t *testing.T, dataDir, objType, storeID, id string, content []byte) {
 	t.Helper()
-	dir := filepath.Join(LibraryDir(dataDir, objType, "lib"), id[:2])
+	dir := filepath.Join(LibraryDir(dataDir, objType, storeID), id[:2])
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestStorageKeyRefusesGenerationOverANonEmptyStore(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			putObjectFile(t, dataDir, objType, id, frame)
+			putObjectFile(t, dataDir, objType, "lib", id, frame)
 
 			_, _, err = loadStorageKey(dataDir)
 			if err == nil {

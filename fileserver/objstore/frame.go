@@ -149,8 +149,13 @@ func sealFrameNonce(key []byte, id string, plaintext, nonce []byte) ([]byte, err
 }
 
 // openFrame reverses sealFrame, checking that the frame is the one stored at
-// id.
-func openFrame(key []byte, id string, frame []byte) ([]byte, error) {
+// id, and appends the plaintext to dst.
+//
+// dst is an optional scratch buffer: with enough capacity the object is
+// decrypted straight into it and the read allocates nothing, which is what
+// lets a batch fetch reuse one buffer down its whole loop. A nil dst is a
+// fresh allocation, so callers with nothing to reuse pass nil.
+func openFrame(key []byte, id string, frame, dst []byte) ([]byte, error) {
 	aead, err := frameAEAD(key)
 	if err != nil {
 		return nil, err
@@ -165,18 +170,23 @@ func openFrame(key []byte, id string, frame []byte) ([]byte, error) {
 	if frame[offVersion] != frameVersion {
 		return nil, fmt.Errorf("%w: frame version %d, want %d", ErrFrameCorrupt, frame[offVersion], frameVersion)
 	}
-	// The id and the length are checked before the AEAD as well as by it. The
-	// AEAD would catch both, but only after opening; checking here is what
-	// lets a mismatch say which field was wrong.
+	// The id is checked here rather than left to the AEAD, and it is the one
+	// header field of which that is true. The associated data is the header
+	// as it was read from the file, not one rebuilt from the id asked for, so
+	// a whole frame moved to another object's path authenticates perfectly
+	// and would hand back the wrong object's bytes under the requested name.
+	// The AEAD stops the id being edited in place; this stops the frame being
+	// moved. Both are needed and neither substitutes for the other.
+	//
+	// ct_len gets no such check: Open never reads it, and any disagreement
+	// between it and the bytes present is already a failed tag, either
+	// because the ciphertext was cut or because the header covering it
+	// changed. See ErrFrameCorrupt on why one answer is the right number.
 	if string(frame[offID:offID+32]) != string(raw) {
 		return nil, fmt.Errorf("%w: frame holds another object", ErrFrameCorrupt)
 	}
-	if got := binary.LittleEndian.Uint64(frame[offLen:]); got != uint64(len(frame)-frameHeaderSize) {
-		return nil, fmt.Errorf("%w: frame declares %d ciphertext bytes and carries %d",
-			ErrFrameCorrupt, got, len(frame)-frameHeaderSize)
-	}
 
-	plain, err := aead.Open(nil, frame[offNonce:frameHeaderSize], frame[frameHeaderSize:], frame[:frameHeaderSize])
+	plain, err := aead.Open(dst[:0], frame[offNonce:frameHeaderSize], frame[frameHeaderSize:], frame[:frameHeaderSize])
 	if err != nil {
 		return nil, ErrFrameCorrupt
 	}
