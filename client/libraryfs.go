@@ -136,7 +136,10 @@ func node(e DirEntry) Node {
 // entry is its listing or its bytes, and neither says what the entry is
 // without first assuming which one it got.
 func (p *plainLibrary) Stat(entry string) (Node, error) {
-	segs := segments(entry)
+	segs, err := segments(entry)
+	if err != nil {
+		return Node{}, err
+	}
 	if len(segs) == 0 {
 		return Node{Name: "/", Type: store.NodeDir}, nil
 	}
@@ -207,7 +210,10 @@ func (p *plainLibrary) WriteFrom(file string, r io.Reader, mtime int64) error {
 }
 
 func (p *plainLibrary) MkdirAll(dir string) error {
-	segs := segments(dir)
+	segs, err := segments(dir)
+	if err != nil {
+		return err
+	}
 	for i := range segs {
 		err := p.c.Mkdir(p.ID, "/"+strings.Join(segs[:i+1], "/"))
 		// Already there is the answer MkdirAll wants, not one it reports.

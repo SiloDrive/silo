@@ -209,14 +209,35 @@ func (l *EncryptedLibrary) directory(id store.ID) (*directory, error) {
 // segments splits a library path. The root is no segments rather than one
 // empty one, and "a//b" is "a/b" -- a doubled separator is a typo in a path,
 // not a nameless directory between them.
-func segments(p string) []string {
+//
+// ".." is refused rather than resolved, which is the same rule objmgr.SplitPath
+// applies on the server and for the same reason store.ValidName gives: a
+// separator inside a name is how a directory entry becomes a path traversal on
+// whichever client writes it to disk, and ".." is that attack spelled
+// differently.
+//
+// Refused here rather than further down, even though an encrypted library
+// would refuse it anyway when NameCipher.Encrypt reached ValidName. Two
+// reasons. A plain library never encrypts a name, so nothing below this checks
+// one at all and the traversal reached the wire to be refused by the server --
+// which meant the client had to be online to find out. And the error a caller
+// got back was about a name when what they passed was a path, which is a
+// worse answer to a question they did not ask about names.
+//
+// "." stays tolerated, as it is in SplitPath: a caller naming the tree they
+// are already in is not trying to leave it.
+func segments(p string) ([]string, error) {
 	var out []string
 	for _, s := range strings.Split(p, "/") {
-		if s != "" && s != "." {
-			out = append(out, s)
+		if s == "" || s == "." {
+			continue
 		}
+		if s == ".." {
+			return nil, fmt.Errorf("%w: %q in path %q", store.ErrName, s, p)
+		}
+		out = append(out, s)
 	}
-	return out
+	return out, nil
 }
 
 // Stat resolves a path to the entry that names it.
@@ -230,7 +251,10 @@ func (l *EncryptedLibrary) Stat(p string) (Node, error) {
 	}
 	at := Node{ID: root, Name: "/", Type: store.NodeDir}
 
-	segs := segments(p)
+	segs, err := segments(p)
+	if err != nil {
+		return Node{}, err
+	}
 	for i, seg := range segs {
 		if at.Type != store.NodeDir {
 			return Node{}, fmt.Errorf("%w: %s is not a directory",
@@ -291,7 +315,10 @@ func (l *EncryptedLibrary) List(p string) ([]Node, error) {
 // and the answer is to read changes more often rather than to keep a key map
 // the format does not have.
 func (l *EncryptedLibrary) DecryptPath(p string) (string, error) {
-	segs := segments(p)
+	segs, err := segments(p)
+	if err != nil {
+		return "", err
+	}
 	if len(segs) == 0 {
 		return "/", nil
 	}

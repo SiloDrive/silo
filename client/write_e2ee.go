@@ -76,7 +76,10 @@ func (l *EncryptedLibrary) WriteFile(p string, data []byte, mtime int64) error {
 // bounded is the chunk list, which is the manifest and has to be complete
 // before the manifest can be sealed.
 func (l *EncryptedLibrary) WriteFrom(p string, r io.Reader, mtime int64) error {
-	segs := segments(p)
+	segs, err := segments(p)
+	if err != nil {
+		return err
+	}
 	if len(segs) == 0 {
 		return errors.New("client: the root is not a file")
 	}
@@ -89,7 +92,10 @@ func (l *EncryptedLibrary) WriteFrom(p string, r io.Reader, mtime int64) error {
 
 // link points a path at a manifest, which is the tree half of a write.
 func (l *EncryptedLibrary) link(p string, manifest store.ID, mtime int64) error {
-	segs := segments(p)
+	segs, err := segments(p)
+	if err != nil {
+		return err
+	}
 	if len(segs) == 0 {
 		return errors.New("client: the root is not a file")
 	}
@@ -105,7 +111,10 @@ func (l *EncryptedLibrary) link(p string, manifest store.ID, mtime int64) error 
 // MkdirAll creates a directory and any missing parents, and is content with
 // one that already exists.
 func (l *EncryptedLibrary) MkdirAll(p string) error {
-	segs := segments(p)
+	segs, err := segments(p)
+	if err != nil {
+		return err
+	}
 	if len(segs) == 0 {
 		_, err := l.Root()
 		return err
@@ -116,7 +125,10 @@ func (l *EncryptedLibrary) MkdirAll(p string) error {
 // Remove deletes one entry. A directory is removed with whatever it holds:
 // nothing else names those objects, and the next collection reclaims them.
 func (l *EncryptedLibrary) Remove(p string) error {
-	segs := segments(p)
+	segs, err := segments(p)
+	if err != nil {
+		return err
+	}
 	if len(segs) == 0 {
 		return errors.New("client: the root cannot be removed")
 	}
