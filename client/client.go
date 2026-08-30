@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -129,7 +130,7 @@ func (c *APIClient) doRequestHeaders(method, path string, body, result interface
 
 	if resp.StatusCode >= 400 {
 		msg, _ := io.ReadAll(resp.Body)
-		return resp.Header, fmt.Errorf("%s: %s", resp.Status, string(msg))
+		return resp.Header, &StatusError{Code: resp.StatusCode, Status: resp.Status, Body: string(msg)}
 	}
 
 	if result != nil {
@@ -138,6 +139,28 @@ func (c *APIClient) doRequestHeaders(method, path string, body, result interface
 		}
 	}
 	return resp.Header, nil
+}
+
+// StatusError is a response the server refused with. It carries the code as
+// well as the text because some refusals are answers rather than failures: a
+// 404 from libraries/{id}/key means this account holds no wrap for that
+// library, which is what a plain library and an unshared one both look like,
+// and a caller has to be able to tell that from a server that fell over.
+//
+// Its message is the status line and the body, which is what this client has
+// always returned, so anything that only displays the error is unaffected.
+type StatusError struct {
+	Code   int
+	Status string
+	Body   string
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("%s: %s", e.Status, e.Body) }
+
+// isNotFound reports whether err is the server saying 404.
+func isNotFound(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.Code == http.StatusNotFound
 }
 
 // doStream performs an authenticated request whose body is streamed rather than
