@@ -798,18 +798,87 @@ kind of object than one with six thousand.
   Compaction rewrites packs, so anything a client held about one goes stale.
 
 Each chunk sits in a pack as a self-describing frame (`chunk_id`,
-`ciphertext_len`, nonce, `ciphertext+tag`), so the store stays reconstructible
-from packs plus the storage key alone, with no database required.
+`ciphertext_len`, nonce, `ciphertext+tag`) — the same `SILF` frame a loose
+object already is, copied rather than re-sealed. So the store stays
+reconstructible from packs plus the storage key alone, with no database
+required.
 
-**Pack indexes** are per-pack local files mapping `chunk_id → (offset, len)`,
-sorted by id, mmap'd, with an in-memory summary layer across packs — always on
-local disk regardless of where the pack lives, so a chunk lookup is never a
-round trip. They are rebuildable by scanning packs, which makes index loss an
-inconvenience rather than data loss *while every pack is local*. Once the local
-tier is an evictable cache, rebuild-by-scan means re-downloading every evicted
-pack: a full-store egress bill. So each sealed pack's index is uploaded beside
-it — a few hundred KB next to 512 MB — and recovery fetches indexes, never
-packs.
+### A sealed pack carries its own index, in a footer
+
+Magic, frames, index, bloom filter, a fixed-width length, magic again. A reader
+seeks to the end, reads the length out of a known offset, and seeks back — one
+ranged GET on a tier that has no local copy, or two if it does not guess the
+tail size generously enough.
+
+The footer is not a stylistic choice; it is the only place the index can go. A
+pack does not know its own frame offsets until the frames are written, so a
+header would need either a second pass or reserved space seeked back into.
+Parquet reaches the same layout from the same constraint, and the magic at both
+ends is worth copying with it: a truncated pack is the *normal* crash case
+here, not an exotic one, and a missing tail magic says so in eight bytes.
+
+One object per pack rather than a pack and a sidecar is what this buys on a
+durable tier: half the PUTs, half the LIST entries, and no way for a pack and
+its index to be separated, to upload out of order, or for one to survive the
+other. Recovery still fetches indexes and never packs — it is a ranged read of
+the tail, and ranged GET is in the four-verb floor.
+
+### While a pack is open, its index is a sidecar
+
+An open pack is appended to, so its index cannot be in its footer yet. It
+accumulates in a sidecar file beside the pack, in **the same format the footer
+uses** — so there is one index writer, one parser, and one thing to get right,
+used for the live index, for the footer, and for recovery.
+
+Sealing appends the sidecar to the pack as its footer, fsyncs, publishes, and
+truncates the sidecar for the next pack. A crash part-way through is the same
+rule as any other: truncate to the last offset the sidecar indexes and re-do
+the step, which is idempotent because the sidecar is still the authority on
+what is in the pack.
+
+The ordering is load-bearing, for the reason the loose store's already is:
+append → fsync the pack → append the sidecar → fsync the sidecar → acknowledge.
+The branch head lives in SQLite, which fsyncs its own WAL, so a head commit can
+otherwise outlive the objects it references — and nothing repairs that
+afterwards, because the client believes it has already uploaded them. In that
+order, the worst a crash leaves is a pack tail no sidecar entry points at.
+
+**Concurrent writers serialise on the append**, which is new: writes to
+distinct loose paths needed no coordination and an append to a shared file
+needs an allocated offset. The batch surface is what makes this cheap rather
+than costly — `POST chunks` carries up to 256 frames, so the lock is taken once
+per request, and 256 appends followed by one fsync replaces 256 temp files,
+fsyncs and renames.
+
+### Finding the pack a chunk is in
+
+Per-pack indexes are sorted by id and mmap'd, so a lookup within a known pack
+is a binary search and never a round trip. What names the pack is a **bloom
+filter per sealed pack**, held in memory: "no" is certain and ends the search,
+"yes" is a probability and costs one binary search to confirm.
+
+Ids are SHA-256 and therefore uniformly random, which decides two things. It
+rules out min/max statistics — every pack's id range is the whole id space, so
+they partition nothing, which is the same dead end that put optional bloom
+filters into Parquet for high-cardinality equality. And it makes the filter's
+hash free: take `k` disjoint bit-ranges out of the 256 bits and use them as
+indices, rather than hashing an already-uniform value again.
+
+**The false-positive rate is set against the number of packs, not per pack.**
+At a 512 MB target a pack holds ~500 chunks of 1 MiB, so 6 TB is ~12,000 packs
+— and a textbook 1% rate would mean ~120 false hits, and 120 confirming
+searches, on *every* lookup. At 1e-5 it is ~24 bits per chunk, ~1.5 KB per
+pack, ~18 MB across the whole store, and about one false hit in ten lookups.
+The filter's parameters are written into the footer beside it rather than
+compiled in, so a later pack can choose differently without invalidating an
+earlier one.
+
+**The open pack is asked first, and it is asked differently.** Its contents are
+in the sidecar rather than in any filter — it is one file, it is small, and its
+index is already in memory because the writer is holding it. So a lookup checks
+the open pack, then the filters. A loose object, in a store that has not
+finished ingesting, is the third and last place to look, and that lane exists
+only until ingest completes.
 
 **The recovery scan also has to ingest a loose store.** Everything above is
 justified by there being no installs, and that is true right up until the first
