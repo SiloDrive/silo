@@ -343,3 +343,86 @@ func TestAMissingAccountCostsWhatAPresentOneDoes(t *testing.T) {
 		t.Errorf("a miss took %s and a hit took %s: the gap answers which addresses exist", miss, hit)
 	}
 }
+
+// A crossed-over account takes the authKey and not the password. This is the
+// plain statement of what split-derivation login buys: the password stops
+// being a wire credential, so `curl -u user:password` against such an account
+// is refused no matter how right the password is.
+func TestACrossedOverAccountTakesTheAuthKeyAndNotThePassword(t *testing.T) {
+	authTestDB(t)
+
+	const authKey = "3f7a1c9e5b2d8046a1f3c7e9b5d2048c6a2e0f8d4b7159c3e6a0d2f4b8c15790"
+	hash, err := HashAuthKey(authKey)
+	if err != nil {
+		t.Fatalf("HashAuthKey returned %v", err)
+	}
+	seedUser(t, "crossed@example.com", hash)
+
+	if _, err := ValidatePassword("crossed@example.com", authKey); err != nil {
+		t.Fatalf("the authKey was refused: %v", err)
+	}
+	if _, err := ValidatePassword("crossed@example.com", "the password behind it"); err == nil {
+		t.Error("a raw password opened a crossed-over account")
+	}
+}
+
+// The rehash path must leave a crossed-over hash alone.
+//
+// It rewrites anything that is not PBKDF2 at the current work factor, which
+// before this included an authKey hash — so the first successful login after a
+// crossover would have rewritten it as 600k rounds over the authKey. No
+// stronger, since the entropy is already 256 bits, and the next login would
+// present the authKey against a hash of an authKey run through PBKDF2, and
+// fail. A crossover undone by using it.
+func TestALoginDoesNotRehashACrossedOverAccount(t *testing.T) {
+	authTestDB(t)
+
+	const authKey = "9d4c2a7e1f8b3506c9a2e7d0b4f81c53a6e9027d4b1f8c35e0a7d2b96f4c8103"
+	before, err := HashAuthKey(authKey)
+	if err != nil {
+		t.Fatalf("HashAuthKey returned %v", err)
+	}
+	seedUser(t, "stable@example.com", before)
+
+	if _, err := ValidatePassword("stable@example.com", authKey); err != nil {
+		t.Fatalf("ValidatePassword returned %v", err)
+	}
+	if after := storedHash(t, "stable@example.com"); after != before {
+		t.Errorf("the login rewrote a crossed-over hash:\n before %s\n after  %s", before, after)
+	}
+	if _, err := ValidatePassword("stable@example.com", authKey); err != nil {
+		t.Fatalf("the authKey stopped working after one login: %v", err)
+	}
+}
+
+func TestHashAuthKeyIsSaltedAndSelfDescribing(t *testing.T) {
+	first, err := HashAuthKey("an authKey")
+	if err != nil {
+		t.Fatalf("HashAuthKey returned %v", err)
+	}
+	second, err := HashAuthKey("an authKey")
+	if err != nil {
+		t.Fatalf("HashAuthKey returned %v", err)
+	}
+	if first == second {
+		t.Error("two hashes of one authKey are identical, so the salt is not random")
+	}
+	if !IsAuthKeyHash(first) {
+		t.Errorf("HashAuthKey wrote %q, which IsAuthKeyHash does not recognise", first)
+	}
+	if IsAuthKeyHash(mustHashPassword(t, "a password")) {
+		t.Error("a password hash was read as a crossed-over one")
+	}
+	if validatePasswd("a different authKey", first) {
+		t.Error("the wrong authKey validated")
+	}
+}
+
+func mustHashPassword(t *testing.T, pw string) string {
+	t.Helper()
+	h, err := HashPassword(pw)
+	if err != nil {
+		t.Fatalf("HashPassword returned %v", err)
+	}
+	return h
+}

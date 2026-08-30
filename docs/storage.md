@@ -711,9 +711,10 @@ gets the change they asked for rather than a usage message.
 
 ## One password, split client-side
 
-Not built: no client derives this split yet. Silo's login sends the password
-to the server. If that password also wraps the identity key, the server sees
-the wrapping secret at every login and E2EE is theatre. The fix:
+**The server half is built; no client derives the split yet**, so every login
+today still sends the password. If that password also wraps the identity key,
+the server sees the wrapping secret at every login and E2EE is theatre. The
+fix:
 
 ```
 master  = argon2id(password, user_salt)     -- client-side
@@ -747,6 +748,13 @@ strictly smaller blast radius, and the one that fails without escalating.
 credential does not need a memory-hard KDF, by the rule already stated in
 [`auth.md`](auth.md); argon2id remains sized for enrolment and link redemption
 only.
+
+What this server does about all of it — the `AUTHKEY-SHA256$` hash that names
+its own format and is the crossover flag, the one-statement write of hash and
+parameters, the `409` on a change that would undo a crossover by omission, and
+what an operator reset does and does not touch — is
+[`auth.md`](auth.md) § Split-derivation login, on this side. What is left is
+the client: silo#13.
 
 ## Packs
 
@@ -1234,13 +1242,11 @@ the two library types.
 
 ## What is left, in order
 
-1. **The split-derivation login.** [`auth.md`](auth.md)'s credential work is
-   built, so nothing blocks it. It is mostly a client change: the server
-   hashes whatever arrives, and the parameters it must arrive under are served
-   by `POST auth/kdf`. What is left on this side is that switching an account
-   over has to be atomic — the new hash and the new `client_kdf_params` in one
-   write — or the account is left with parameters that describe a password the
-   stored hash was not made from.
+1. **The split-derivation login — the client half.** The server half is built:
+   the atomic switch-over write landed, so an account can no longer be left
+   with parameters describing a password the stored hash was not made from.
+   What is left is a client that derives `authKey` and sends it, which is
+   silo#13 and where this was always mostly going to live.
 2. **Packs** — the container format, per-pack indexes,
    seal-on-size-or-age-or-shutdown, the recovery scan, and the loose-store
    ingest that scan doubles as. Loose objects are already frames, so the

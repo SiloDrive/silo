@@ -266,15 +266,71 @@ func PasswordHash(ctx context.Context, email string) (ID, string, error) {
 	return id, hash, nil
 }
 
-// SetPassword stores a hash for an account, replacing any it already had.
+// SetPassword stores a hash for an account, replacing any it already had, and
+// clears the client KDF parameters beside it.
+//
+// The clearing is the part worth explaining, because it looks like collateral
+// damage and is the opposite. client_kdf_params governs how a login password
+// becomes the authKey the hash column is made of. A hash written here is of
+// whatever was handed over — for this caller, a raw password — so parameters
+// left standing beside it would describe a stretching that no longer leads to
+// the stored hash: a crossed-over client would derive an authKey under the old
+// salt, present it, and be refused, with nothing on the server disagreeing
+// with itself in any way it could report. Dropping them says plainly what the
+// write did, which is to put the account back on password login.
+//
+// It used to happen anyway, and by accident: INSERT OR REPLACE deletes the
+// conflicting row and inserts a fresh one, so a column absent from the list
+// came back NULL. Same outcome, no statement of intent, and no test — which is
+// how it would have survived a change to an upsert that "obviously" preserved
+// the other columns, and quietly reintroduced the mismatch above.
+//
+// What it deliberately does not touch is AccountIdentityKey and
+// AccountRecoveryWrap. Those are not wrapped under the password: each recovery
+// blob opens with a recovery code, so a user whose password an operator has
+// just reset redeems one, recovers the identity key, re-wraps it under the new
+// password and republishes. Deleting them here would turn a password reset
+// into the permanent loss of every library the account can read.
+//
+// A caller that has both halves — the new hash and the parameters it was
+// derived under — wants SetPasswordAndKDFParams instead.
 func SetPassword(ctx context.Context, id ID, hash string) error {
 	if id.IsZero() || hash == "" {
 		return fmt.Errorf("refusing to store an empty password")
 	}
 	if _, err := writeDB.ExecContext(ctx,
-		dbutil.InsertOrReplace("AccountPassword", "account_id, hash, changed_at"),
-		id, hash, time.Now().Unix()); err != nil {
+		dbutil.InsertOrReplace("AccountPassword", "account_id, hash, changed_at, client_kdf_params"),
+		id, hash, time.Now().Unix(), nil); err != nil {
 		return fmt.Errorf("storing a password: %v", err)
+	}
+	return nil
+}
+
+// SetPasswordAndKDFParams stores a hash and the client KDF parameters it was
+// derived under, in one statement.
+//
+// This is the split-derivation crossover write. The two are one fact: the hash
+// is of an authKey, and the parameters are how a password becomes that
+// authKey, so a state where one has been written and the other has not is an
+// account nobody can log in to. Two statements have a window between them that
+// a crash can land in; one has none.
+//
+// The parameters are required. A caller with nothing to put here is changing a
+// password rather than crossing an account over, and SetPassword is that
+// caller — it says so by clearing the column rather than by leaving whatever
+// was there.
+func SetPasswordAndKDFParams(ctx context.Context, id ID, hash, kdfParams string) error {
+	if id.IsZero() || hash == "" {
+		return fmt.Errorf("refusing to store an empty password")
+	}
+	if kdfParams == "" {
+		return fmt.Errorf("refusing to store a password hash with no client KDF parameters: " +
+			"use SetPassword to put an account back on password login")
+	}
+	if _, err := writeDB.ExecContext(ctx,
+		dbutil.InsertOrReplace("AccountPassword", "account_id, hash, changed_at, client_kdf_params"),
+		id, hash, time.Now().Unix(), kdfParams); err != nil {
+		return fmt.Errorf("storing a password and client KDF parameters: %v", err)
 	}
 	return nil
 }

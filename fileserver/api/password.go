@@ -14,18 +14,87 @@ package api
 //     that one revokes everything.
 
 import (
+	"context"
 	"net/http"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/store"
 	log "github.com/sirupsen/logrus"
 )
 
 type changePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
+	// ClientKDFParams turns this request into the split-derivation crossover:
+	// new_password carries an authKey rather than a password, and this says
+	// what it was derived under. The two are written together or not at all —
+	// a hash whose parameters did not land describes a secret the client can
+	// no longer produce.
+	//
+	// Absent means an ordinary password change, which is still the only kind
+	// any shipped client makes.
+	ClientKDFParams string `json:"client_kdf_params"`
+}
+
+// writeNewSecret stores whatever this request is changing the account to, and
+// reports whether the handler should carry on. It has already answered the
+// caller when it returns false.
+//
+// Two shapes reach here and they are not interchangeable:
+//
+//   - With client_kdf_params, new_password is an authKey. Hash and parameters
+//     go down in one statement, because a hash whose parameters did not land
+//     describes a secret nothing can reproduce.
+//   - Without, new_password is a password, and the parameters are cleared —
+//     see account.SetPassword for why that is a statement rather than a loss.
+//
+// The refusal in between is the one worth naming. An account already crossed
+// over, sent a change with no parameters, would be put back on password login
+// by a client that did not know it was doing it: every device that had been
+// sending an authKey would start failing, and the server would look wrong
+// rather than the request. A client that means to undo a crossover can say so
+// by sending the password change to an account that has not crossed over —
+// which is to say, it cannot, and that is deliberate. This is not a state to
+// arrive at by omission.
+func writeNewSecret(w http.ResponseWriter, ctx context.Context, acct *account.Account, req changePasswordRequest) bool {
+	if req.ClientKDFParams != "" {
+		if _, err := store.ParseKDFParams(req.ClientKDFParams); err != nil {
+			http.Error(w, "client_kdf_params is not a parameter string this server can read: "+err.Error(),
+				http.StatusBadRequest)
+			return false
+		}
+		if err := authmgr.SetAccountAuthKey(ctx, acct.ID, req.NewPassword, req.ClientKDFParams); err != nil {
+			log.Errorf("Failed to cross %s over to split-derivation login: %v", acct.Email, err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return false
+		}
+		return true
+	}
+
+	_, stored, err := account.PasswordHash(ctx, acct.Email)
+	if err != nil {
+		log.Errorf("Failed to read the stored hash for %s: %v", acct.Email, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return false
+	}
+	if authmgr.IsAuthKeyHash(stored) {
+		http.Error(w,
+			"This account logs in with a derived key, so a password change has to carry the "+
+				"parameters it was derived under. Send client_kdf_params alongside new_password.",
+			http.StatusConflict)
+		return false
+	}
+
+	if err := authmgr.SetAccountPassword(ctx, acct.ID, req.NewPassword); err != nil {
+		log.Errorf("Failed to set a new password for %s: %v", acct.Email, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return false
+	}
+	return true
 }
 
 // ChangePasswordHandler handles POST /api/silo/v1/auth/password.
@@ -85,9 +154,7 @@ func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := option.WithDBTimeout(r.Context())
 	defer cancel()
 
-	if err := authmgr.SetAccountPassword(ctx, acct.ID, req.NewPassword); err != nil {
-		log.Errorf("Failed to set a new password for %s: %v", acct.Email, err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	if !writeNewSecret(w, ctx, acct, req) {
 		return
 	}
 

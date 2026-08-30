@@ -1,6 +1,8 @@
 package silod
 
 import (
+	"errors"
+
 	"context"
 	"encoding/json"
 	"net/http"
@@ -590,4 +592,92 @@ func TestServerInfoAdvertisesTheAccountKeySurface(t *testing.T) {
 		}
 	}
 	t.Errorf("server-info does not advertise account-keys: %v", out.Features)
+}
+
+// An operator reset drops the account back to password login, and takes
+// nothing else with it.
+//
+// The parameters have to go. After crossover they govern how a login password
+// becomes the authKey the hash column is made of, so leaving them beside a
+// hash of a raw password is the exact failure this is all about: the client
+// stretches the new password under the old salt and sends an authKey the
+// stored hash was never made from, and the account cannot log in at all.
+//
+// The identity key and the recovery wraps must stay. They are not wrapped
+// under the password — each recovery blob opens with a recovery code — so the
+// user redeems one, recovers the identity key, re-wraps it under the new
+// password and republishes. Deleting them here would turn a password reset
+// into permanent loss of every library the account can read, which is not
+// what an operator asked for and not something they could undo.
+func TestAnOperatorResetDropsTheAccountBackToPasswordLogin(t *testing.T) {
+	sqliteTestDB(t)
+	acct := mintPasswordAccount(t, "reset@example.com", "correct horse battery staple")
+	ctx := testCtx(t)
+
+	km := mintKeyMaterial(t, acct.ID.String(), "correct horse battery staple")
+	if err := account.SetKeys(ctx, acct.ID, km.keys()); err != nil {
+		t.Fatalf("SetKeys: %v", err)
+	}
+	if _, err := account.ClientKDFParams(ctx, "reset@example.com"); err != nil {
+		t.Fatalf("ClientKDFParams before the reset: %v", err)
+	}
+
+	if err := authmgr.SetAccountPassword(ctx, acct.ID, "an operator's choice"); err != nil {
+		t.Fatalf("SetAccountPassword: %v", err)
+	}
+
+	if _, err := account.ClientKDFParams(ctx, "reset@example.com"); !errors.Is(err, account.ErrNotFound) {
+		t.Errorf("client_kdf_params after an operator reset: err = %v, want ErrNotFound", err)
+	}
+
+	// And the material the user can still recover from is untouched.
+	got, err := account.GetKeys(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("the reset took the identity key with it: %v", err)
+	}
+	if string(got.PublicKey) != string(km.Public) {
+		t.Error("the reset replaced the published public key")
+	}
+	if len(got.Recovery) != len(km.keys().Recovery) {
+		t.Errorf("the reset left %d recovery wraps, want %d", len(got.Recovery), len(km.keys().Recovery))
+	}
+}
+
+// The crossover write puts the hash and the parameters down together.
+//
+// Separately is what makes an account unopenable: a hash written without its
+// parameters describes a secret the parameters no longer produce, and the
+// window between two statements is a window a crash can land in. One
+// transaction, or neither.
+func TestTheCrossoverWritesTheHashAndParametersTogether(t *testing.T) {
+	sqliteTestDB(t)
+	acct := mintPasswordAccount(t, "cross@example.com", "correct horse battery staple")
+	ctx := testCtx(t)
+
+	km := mintKeyMaterial(t, acct.ID.String(), "a new password entirely")
+	hash, err := authmgr.HashAuthKey("an authKey standing in for 32 random bytes")
+	if err != nil {
+		t.Fatalf("HashAuthKey: %v", err)
+	}
+	if err := account.SetPasswordAndKDFParams(ctx, acct.ID, hash, km.Params.String()); err != nil {
+		t.Fatalf("SetPasswordAndKDFParams: %v", err)
+	}
+
+	got, err := account.ClientKDFParams(ctx, "cross@example.com")
+	if err != nil {
+		t.Fatalf("ClientKDFParams after the crossover: %v", err)
+	}
+	if got != km.Params.String() {
+		t.Errorf("client_kdf_params = %q, want %q", got, km.Params.String())
+	}
+
+	// And the hash that landed beside them is the one that was handed over,
+	// not a re-hash of something else.
+	_, stored, err := account.PasswordHash(ctx, "cross@example.com")
+	if err != nil {
+		t.Fatalf("PasswordHash: %v", err)
+	}
+	if stored != hash {
+		t.Errorf("stored hash = %q, want %q", stored, hash)
+	}
 }

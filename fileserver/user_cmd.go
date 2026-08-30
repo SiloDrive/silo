@@ -236,6 +236,41 @@ func addUser(email string, staff, generate bool) error {
 	return nil
 }
 
+// warnAboutKeyMaterial says what a reset just did to an account's end-to-end
+// encryption, and it is deliberately specific about which of two situations
+// the operator is in.
+//
+// An operator cannot re-wrap the identity key on the user's behalf, and that
+// is the design working rather than a gap: re-wrapping means first unwrapping,
+// which needs the old password. Whoever is resetting a password does not have
+// it — that is why they are resetting it. A server that could do this could
+// also read the key, and every library it opens.
+//
+// So the identity blob is left in place and unopenable, and what happens next
+// depends on something the operator cannot see from the prompt: whether the
+// user ever published recovery wraps. Saying "use a recovery code" to somebody
+// who has none is worse than saying nothing, because it sends them looking for
+// a card that was never printed.
+func warnAboutKeyMaterial(email string, keys *account.Keys, err error) {
+	if err != nil || keys == nil {
+		// ErrNoKeys is the ordinary case: an account with no end-to-end
+		// encryption has nothing here to lose. Anything else has already been
+		// reported by the write that mattered.
+		return
+	}
+	fmt.Printf("\n%s has published an identity key, and it was wrapped under the old password.\n", email)
+	fmt.Printf("The new password does not open it, and this server cannot re-wrap it — doing that\n")
+	fmt.Printf("would mean reading the key, which is the one thing it is built not to do.\n")
+	if len(keys.Recovery) > 0 {
+		fmt.Printf("\nThey hold %d recovery wrap(s): redeeming one recovers the identity key, after\n", len(keys.Recovery))
+		fmt.Printf("which their client re-wraps it under the new password and republishes.\n")
+		return
+	}
+	fmt.Printf("\nThey have no recovery wraps, so there is no way back to that identity key.\n")
+	fmt.Printf("They must enrol again, and every end-to-end encrypted library that key opened\n")
+	fmt.Printf("stays sealed unless another member re-shares it.\n")
+}
+
 func passwdUser(email string, generate bool) error {
 	acct, err := resolveAccount(email)
 	if err != nil {
@@ -249,9 +284,14 @@ func passwdUser(email string, generate bool) error {
 
 	setCtx, setCancel := option.WithDBTimeout(context.Background())
 	defer setCancel()
+
+	// Read before the write, because the write is what makes it untrue.
+	keys, keysErr := account.GetKeys(setCtx, acct.ID)
+
 	if err := authmgr.SetAccountPassword(setCtx, acct.ID, password); err != nil {
 		return err
 	}
+	warnAboutKeyMaterial(acct.Email, keys, keysErr)
 
 	// An administrator reset revokes everything, per docs/auth.md. The two
 	// cases genuinely differ: a user changing their own password should revoke

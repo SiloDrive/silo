@@ -175,20 +175,22 @@ The client derives twice from one password: an auth key that goes up, a wrap
 key that never leaves. Owned by [`storage.md`](storage.md) § One password,
 split client-side, and [`auth.md`](auth.md) item 2.
 
-**Mostly a client change.** The server hashes whatever arrives, and
-`POST auth/kdf` serves the parameters it must arrive under. What is left on the
-server is that switching an existing account over has to be atomic — the new
-hash and the new `client_kdf_params` in one write — or the account is left with
-parameters describing a password the stored hash was not made from.
+**The server half is built.** The atomic switch-over landed — hash and
+`client_kdf_params` in one statement — along with the fast hash that names its
+own format, the refusal of a change that would undo a crossover by omission,
+and an operator reset that puts an account back on password login and says
+what that costs its key material. Owned by [`auth.md`](auth.md) § Split-
+derivation login, on this side.
 
-Argon2id behind a concurrency semaphore is sequenced with it and is cheap to
-defer, because once `AccountPassword.hash` is a hash of a 256-bit `authKey`
-rather than of a password, it becomes a fast hash and the semaphore is moot.
+**What is left is the client**, which is where this always mostly lived: it
+derives `authKey` and sends it, and enrolment and password change write the
+parameters. Argon2id behind a concurrency semaphore is now moot for a
+crossed-over account and still wanted for the accounts that have not crossed.
 
 This is the gate on *offering* an E2EE client to a person, not on building
 one: item 8 can be built and tested before it and cannot ship before it.
 
-Tracked: milestone `split-login`, #12 (server switch-over), #13 (client
+Tracked: milestone `split-login`, #12 (server switch-over, done), #13 (client
 `authKey`).
 
 #### 8. The sealing client

@@ -516,6 +516,11 @@ POST /api/silo/v1/auth/password
 200 { "revoked": 2 }    how many session credentials were signed out
 ```
 
+**With `client_kdf_params`, the same request is the split-derivation
+crossover.** `new_password` then carries an `authKey` rather than a password,
+and the hash and the parameters are written in one statement — see
+[Split-derivation login, on this side](#split-derivation-login-on-this-side).
+
 **The current password is required even though the request is already
 authenticated.** Otherwise a stolen device credential upgrades itself into
 account takeover, and the point of a scoped, revocable credential is that it
@@ -533,6 +538,8 @@ it says.
 | A wrong current password | `401`, and it charges the login rate limiter |
 | A `perm: "r"` credential | `403` — setting the account password is the most consequential write there is, and holding the password means a fresh login is available |
 | A scoped credential | `403` — the password is the account's, which is wider than one library |
+| `client_kdf_params` the server cannot parse | `400`, before anything is written |
+| No `client_kdf_params` on an account that has crossed over | `409` — see below |
 
 Permission is checked before the body is read, and the current password after
 the shape: a caller who may not do this at all learns nothing about their body,
@@ -543,6 +550,63 @@ gives.
 Rate limiting is the login endpoint's, on the same buckets. A credential is not
 a throttle: whoever holds one could otherwise guess the password here as fast as
 the server will hash.
+
+## Split-derivation login, on this side
+
+Built here; the client half is not, and that is the whole of what is left.
+The design is in [`storage.md`](storage.md) § One password, split client-side:
+the client runs argon2id once and splits the result, sending `authKey` up and
+keeping `wrapKey` on the device. What follows is only what this server does
+about it.
+
+**The stored hash names its own format, and that is the crossover flag.** A
+crossed-over account's `AccountPassword.hash` begins `AUTHKEY-SHA256$`, and
+`authmgr.IsAuthKeyHash` is the question anything asks. It is deliberately not
+`client_kdf_params`: that column is written by `account.SetKeys` to record what
+the identity blob was sealed under, so it is set on every account that has
+published keys, crossed over or not. A flag that is part of the hash cannot
+drift from the hash.
+
+**One SHA-256, salted.** `authKey` is 256 bits out of HKDF over an argon2id the
+client already ran, so the rule in [Why tokens want a fast hash](#why-tokens-want-a-fast-hash-and-passwords-do-not)
+applies unchanged: there is no dictionary, brute force is 2^256, and the
+memory-hard work has been done where it protects something guessable. The salt
+buys little and costs nothing; unlike a credential's hash this column is never
+looked up by value, so there is no index to keep.
+
+**The rehash path must skip it.** `needsRehash` rewrites anything that is not
+PBKDF2 at the current work factor, and an authKey hash is not. Left alone, the
+first successful login after a crossover would have rewritten it as 600k rounds
+over the `authKey` — no stronger, and the next login would present the
+`authKey` against a hash of an `authKey` run through PBKDF2 and fail. A
+crossover undone by using it.
+
+**The write is one statement.** `account.SetPasswordAndKDFParams` puts the hash
+and the parameters down together, because they are one fact: the hash is of an
+`authKey`, and the parameters are how a password becomes that `authKey`. A
+state where one landed and the other did not is an account nobody can log in
+to, and two statements have a window a crash can land in.
+
+**A change with no parameters, on an account that has crossed over, is
+`409`.** Taking it would store a hash of a raw password and clear the column —
+putting the account back on password login by omission, after which every
+device that had been sending an `authKey` starts failing and the server looks
+wrong rather than the request that did it.
+
+**An operator reset does put it back on password login, deliberately.**
+`silo user passwd` and every other raw-password write clears
+`client_kdf_params`, because parameters left beside a hash of a password
+describe a stretching that no longer leads to it. What the reset does *not*
+touch is `AccountIdentityKey` and `AccountRecoveryWrap`. An operator cannot
+re-wrap the identity key — re-wrapping means unwrapping first, which needs the
+old password, which is precisely what whoever is resetting does not have — so
+the blob is left in place and unopenable, and the command says so. It says one
+of two things: that the user can redeem a recovery wrap and republish, or, if
+they published none, that there is no way back to that identity key. Which of
+those it is, is not knowable from the prompt, so it is read from the account.
+
+**What is left is the client.** Nothing derives `authKey` yet, so no account
+has crossed over and `POST auth/kdf` still has no consumer. That is silo#13.
 
 ## The account's key material
 
@@ -1105,13 +1169,13 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
 
 1. **Proof of possession** — public keys registered at enrolment, RFC 9421
    signatures on the Silo lane. Independent of OIDC; whichever is wanted first.
-2. **Split-derivation login**, then **argon2id behind a concurrency
-   semaphore** if it is still wanted. Nothing sends `authKey` yet; the item is
-   [`plans/e2ee-completion.md`](plans/e2ee-completion.md) step 2. The server's
-   own hashing is cheap to defer: the argon2id that matters most is the
-   client's, and that one already runs. Once `AccountPassword.hash` is a hash
-   of a 256-bit `authKey` rather than of a password, the server's side becomes
-   a *fast* hash rather than a memory-hard one, and the semaphore is moot.
+2. **Split-derivation login — the server half is built**; see
+   [Split-derivation login, on this side](#split-derivation-login-on-this-side).
+   What is left is the client that derives `authKey` and sends it, silo#13 and
+   [`plans/e2ee-completion.md`](plans/e2ee-completion.md) step 2. **argon2id
+   behind a concurrency semaphore** is now moot for any account that crosses
+   over — `AccountPassword.hash` is a fast hash there, by the rule above — and
+   still wanted for the accounts that have not.
 3. **A persistent JWT signing key**, so a restart does not disconnect every
    watching client. Nothing but notification tokens depends on it. The
    `ServerSecret` table holds exactly this shape of value — a secret that is

@@ -124,6 +124,17 @@ func features() []string {
 		// key, and must say so rather than enrol into a library whose content
 		// key would die with the device that made it.
 		"account-keys", // GET/PUT account/keys, DELETE …/recovery/{n}, POST auth/kdf
+		// Split-derivation login: this server will store a hash of an authKey
+		// rather than of a password, and POST auth/password will take the
+		// client KDF parameters alongside it and write both together.
+		//
+		// A client that cannot see this name must send the password, because
+		// an older server would hash the authKey as if it were one and the
+		// account would be reachable only by sending that same authKey
+		// forever — a crossover nothing recorded and nothing can undo. Seeing
+		// it does not mean any particular account has crossed over; that is
+		// per-account, and POST auth/kdf is the question that answers it.
+		"split-login", // authKey on POST auth/login, kdf_params on POST auth/password
 		// Creating an end-to-end encrypted library, which takes a different
 		// request from creating a plain one: the client brings the sealed
 		// root, the sealed initial commit, the library id and the wrapped

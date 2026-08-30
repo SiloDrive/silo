@@ -121,6 +121,9 @@ func validatePasswd(password, storedPasswd string) bool {
 	}
 
 	// Check for known prefix before falling back to length-based dispatch
+	if strings.HasPrefix(storedPasswd, AuthKeyHashPrefix) {
+		return validateAuthKeySHA256(password, storedPasswd)
+	}
 	if strings.HasPrefix(storedPasswd, "PBKDF2SHA256$") {
 		return validatePBKDF2SHA256(password, storedPasswd)
 	}
@@ -158,6 +161,57 @@ func validatePBKDF2SHA256(password, storedPasswd string) bool {
 	computedHash := hex.EncodeToString(derived)
 
 	return subtle.ConstantTimeCompare([]byte(computedHash), []byte(expectedHash)) == 1
+}
+
+// AuthKeyHashPrefix names the one hash in this column that is not of a
+// password.
+//
+// After split-derivation login the client sends `authKey` — 256 bits out of
+// HKDF over an argon2id it ran itself — and what the server stores is a hash
+// of that. The prefix is how the stored value says so, which matters more
+// than it looks: it means nothing has to consult a second column to know what
+// it is holding. A gate on `client_kdf_params` would work until the day the
+// two drift, and this cannot drift from the hash because it is part of it.
+const AuthKeyHashPrefix = "AUTHKEY-SHA256$"
+
+// HashAuthKey derives a storable hash from an authKey.
+//
+// One SHA-256, by the rule auth.md § Why tokens want a fast hash states for
+// credential secrets and which applies here for the same reason: there is no
+// dictionary for 256 bits from a KDF, brute force is 2^256, and taxing a guess
+// that will never succeed only taxes the login. The memory-hard work has
+// already been done — on the client, where it protects the password that
+// nothing here ever sees.
+//
+// Salted anyway, because it costs nothing and the column is not looked up by
+// hash the way a credential's is, so there is no index to keep.
+func HashAuthKey(authKey string) (string, error) {
+	salt := make([]byte, 32)
+	if _, err := rand.Read(salt); err != nil {
+		return "", fmt.Errorf("failed to generate salt: %v", err)
+	}
+	sum := authKeyDigest(authKey, salt)
+	return AuthKeyHashPrefix + hex.EncodeToString(salt) + "$" + hex.EncodeToString(sum), nil
+}
+
+func authKeyDigest(authKey string, salt []byte) []byte {
+	h := sha256.New()
+	h.Write(salt)
+	h.Write([]byte(authKey))
+	return h.Sum(nil)
+}
+
+func validateAuthKeySHA256(authKey, storedPasswd string) bool {
+	parts := strings.Split(strings.TrimPrefix(storedPasswd, AuthKeyHashPrefix), "$")
+	if len(parts) != 2 {
+		return false
+	}
+	salt, err := hex.DecodeString(parts[0])
+	if err != nil {
+		return false
+	}
+	computed := hex.EncodeToString(authKeyDigest(authKey, salt))
+	return subtle.ConstantTimeCompare([]byte(computed), []byte(parts[1])) == 1
 }
 
 func validateSHA256Salted(password, storedPasswd string) bool {
@@ -216,6 +270,17 @@ func HashPassword(password string) (string, error) {
 // moment the plaintext is in hand and known good, so it is the only chance to
 // fix that without asking the user to do anything.
 func needsRehash(storedPasswd string) bool {
+	// A crossed-over account is already in the format it should be in, and it
+	// is the one hash here that must never be "upgraded": rewriting it as
+	// PBKDF2 would store 600k rounds over an authKey — no stronger, since the
+	// entropy is already 256 bits — and would leave the column claiming to be
+	// a password hash while client_kdf_params still says the client stretches
+	// first. The next login would then present an authKey against a hash of
+	// an authKey run through PBKDF2, and fail. The upgrade path exists for
+	// hashes weaker than today's, and this one is not on it.
+	if strings.HasPrefix(storedPasswd, AuthKeyHashPrefix) {
+		return false
+	}
 	if !strings.HasPrefix(storedPasswd, "PBKDF2SHA256$") {
 		return true
 	}
@@ -289,6 +354,34 @@ func SetAccountPassword(ctx context.Context, id account.ID, password string) err
 		return err
 	}
 	return account.SetPassword(ctx, id, hash)
+}
+
+// IsAuthKeyHash reports whether a stored hash is of an authKey rather than of
+// a password — that is, whether the account has crossed over to
+// split-derivation login.
+//
+// The stored hash is the right thing to ask, and client_kdf_params is not.
+// That column is written by account.SetKeys to record what the identity blob
+// was sealed under, so it is set on every account that has published keys,
+// crossed over or not. The hash names its own format, and cannot disagree with
+// itself.
+func IsAuthKeyHash(hash string) bool {
+	return strings.HasPrefix(hash, AuthKeyHashPrefix)
+}
+
+// SetAccountAuthKey crosses an account over: it stores a hash of the authKey
+// and the parameters that authKey was derived under, together.
+//
+// The KDF has one entry point here for the reason ClaimSetup gives, and this
+// is the second one it has ever had. What differs is only which hash — a
+// caller outside this package still does not have to know that a crossed-over
+// account stores something else, or what.
+func SetAccountAuthKey(ctx context.Context, id account.ID, authKey, kdfParams string) error {
+	hash, err := HashAuthKey(authKey)
+	if err != nil {
+		return err
+	}
+	return account.SetPasswordAndKDFParams(ctx, id, hash, kdfParams)
 }
 
 // ClaimSetup is the plaintext lane for the one account that has no operator
