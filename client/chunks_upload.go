@@ -157,6 +157,9 @@ func (f *framedUpload) Close() error { return nil }
 
 // readChunkSource reads one chunk's bytes out of the file it came from.
 func readChunkSource(src chunkSource) ([]byte, error) {
+	if src.data != nil {
+		return src.data, nil
+	}
 	file, err := os.Open(src.local)
 	if err != nil {
 		return nil, err

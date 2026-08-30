@@ -1274,6 +1274,10 @@ PUT  libraries/{library}/head                 If-Match: <current head commit id>
 The server verifies that each object's id is the SHA-256 of its bytes and that
 it decodes, and nothing else, because there is nothing else it can check.
 
+`client.EncryptedLibrary` writes with `WriteFile`, `WriteFrom`, `MkdirAll` and
+`Remove`. Each publishes one commit and returns the new head, retrying the
+compare-and-swap below on its own.
+
 **A write rewrites the spine, and that is your job.** Changing one file means
 a new manifest, a new parent directory, a new grandparent, up to a new root
 and a new commit. Three rules the server cannot enforce for you:

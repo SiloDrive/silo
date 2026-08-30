@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dkam/silo/store"
 )
@@ -44,12 +45,20 @@ func (n Node) IsDir() bool { return n.Type == store.NodeDir }
 type EncryptedLibrary struct {
 	ID string
 
+	// Now is the clock a write stamps a mutation with, in unix seconds.
+	//
+	// A field rather than a call to time.Now because "the mutation's timestamp
+	// is not the file's mtime" is a rule worth being able to pin, and because a
+	// caller building a reproducible tree wants to decide it.
+	Now func() int64
+
 	c  *APIClient
 	kr *store.Keyring
 
 	mu       sync.Mutex
+	head     store.ID
 	root     store.ID
-	haveRoot bool
+	haveHead bool
 	dirs     map[store.ID]*directory
 }
 
@@ -77,7 +86,11 @@ func (a *Account) OpenEncryptedLibrary(libraryID string) (*EncryptedLibrary, err
 // the one CreateEncryptedLibrary handed back, say, rather than one fetched
 // again.
 func NewEncryptedLibrary(c *APIClient, libraryID string, kr *store.Keyring) *EncryptedLibrary {
-	return &EncryptedLibrary{ID: libraryID, c: c, kr: kr, dirs: map[store.ID]*directory{}}
+	return &EncryptedLibrary{
+		ID: libraryID, c: c, kr: kr,
+		Now:  func() int64 { return time.Now().Unix() },
+		dirs: map[store.ID]*directory{},
+	}
 }
 
 // Keyring is the library's content key and what is derived from it.
@@ -91,12 +104,59 @@ func (l *EncryptedLibrary) Keyring() *store.Keyring { return l.kr }
 // names the same bytes.
 func (l *EncryptedLibrary) Refresh() {
 	l.mu.Lock()
-	l.haveRoot = false
+	l.haveHead = false
 	l.mu.Unlock()
 }
 
-// Head returns the library's current head commit id, as the server reports it.
+// Head returns the head this library is being read at: the cached one if there
+// is one, and otherwise whatever the server reports now.
 func (l *EncryptedLibrary) Head() (store.ID, error) {
+	head, _, err := l.at()
+	return head, err
+}
+
+// Root returns the root directory of that head.
+func (l *EncryptedLibrary) Root() (store.ID, error) {
+	_, root, err := l.at()
+	return root, err
+}
+
+// at returns the head and its root, reading them once and remembering both
+// until Refresh.
+//
+// Both together, because a head and a root read separately can straddle
+// somebody else's commit -- and a write that names one head and builds on
+// another root is a write that silently discards whatever landed in between.
+func (l *EncryptedLibrary) at() (head, root store.ID, err error) {
+	l.mu.Lock()
+	if l.haveHead {
+		head, root = l.head, l.root
+		l.mu.Unlock()
+		return head, root, nil
+	}
+	l.mu.Unlock()
+
+	head, err = l.serverHead()
+	if err != nil {
+		return store.ID{}, store.ID{}, err
+	}
+	b, err := l.c.Object(l.ID, head)
+	if err != nil {
+		return store.ID{}, store.ID{}, fmt.Errorf("client: reading the head commit: %w", err)
+	}
+	commit, err := l.kr.OpenCommit(b)
+	if err != nil {
+		return store.ID{}, store.ID{}, fmt.Errorf("client: opening the head commit: %w", err)
+	}
+
+	l.mu.Lock()
+	l.head, l.root, l.haveHead = head, commit.Root, true
+	l.mu.Unlock()
+	return head, commit.Root, nil
+}
+
+// serverHead asks the server where the library is now, ignoring the cache.
+func (l *EncryptedLibrary) serverHead() (store.ID, error) {
 	libraries, err := l.c.ListLibraries()
 	if err != nil {
 		return store.ID{}, err
@@ -111,36 +171,6 @@ func (l *EncryptedLibrary) Head() (store.ID, error) {
 		return store.ParseID(lib.HeadCommitID)
 	}
 	return store.ID{}, fmt.Errorf("%w: library %s", ErrNotFound, l.ID)
-}
-
-// Root returns the root directory of the head commit, reading the head once
-// and remembering it until Refresh.
-func (l *EncryptedLibrary) Root() (store.ID, error) {
-	l.mu.Lock()
-	if l.haveRoot {
-		root := l.root
-		l.mu.Unlock()
-		return root, nil
-	}
-	l.mu.Unlock()
-
-	head, err := l.Head()
-	if err != nil {
-		return store.ID{}, err
-	}
-	b, err := l.c.Object(l.ID, head)
-	if err != nil {
-		return store.ID{}, fmt.Errorf("client: reading the head commit: %w", err)
-	}
-	commit, err := l.kr.OpenCommit(b)
-	if err != nil {
-		return store.ID{}, fmt.Errorf("client: opening the head commit: %w", err)
-	}
-
-	l.mu.Lock()
-	l.root, l.haveRoot = commit.Root, true
-	l.mu.Unlock()
-	return commit.Root, nil
 }
 
 // directory fetches and decodes one directory object, or returns the cached
@@ -250,6 +280,26 @@ func (l *EncryptedLibrary) List(p string) ([]Node, error) {
 		out = append(out, Node{ID: e.ChildID, Name: name, Type: e.Type, Mtime: e.Mtime, Mode: e.Mode})
 	}
 	return out, nil
+}
+
+// Directory reads the directory object a path names.
+//
+// Exported because the salt is part of it, and a caller rewriting a directory
+// has to carry that salt forward -- which is a rule it cannot follow without
+// being able to see it.
+func (l *EncryptedLibrary) Directory(p string) (*store.Directory, error) {
+	at, err := l.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if at.Type != store.NodeDir {
+		return nil, fmt.Errorf("client: %s is not a directory", p)
+	}
+	d, err := l.directory(at.ID)
+	if err != nil {
+		return nil, err
+	}
+	return d.dir, nil
 }
 
 // Manifest reads the manifest a path names.

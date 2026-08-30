@@ -27,15 +27,23 @@ var ErrNotFound = errors.New("client: not found")
 // long list is batched here rather than at every call site.
 const maxFetchChunks = 256
 
+// ErrHeadMoved reports a PUT head that lost the compare-and-swap: something
+// else committed since the head this write was built on.
+//
+// It is an answer rather than a failure. The move is to re-read the head,
+// rebuild the change on the new root and try again, which is what the write
+// path here does; a caller only sees it if the rebuild kept losing.
+var ErrHeadMoved = errors.New("client: the head has moved")
+
 // doBytes performs an authenticated request whose response is raw bytes.
-func (c *APIClient) doBytes(method, path, contentType string, body []byte) ([]byte, error) {
+func (c *APIClient) doBytes(method, path, contentType string, header http.Header, body []byte) ([]byte, error) {
 	var newBody func() (io.ReadCloser, int64, error)
 	if body != nil {
 		newBody = func() (io.ReadCloser, int64, error) {
 			return io.NopCloser(bytes.NewReader(body)), int64(len(body)), nil
 		}
 	}
-	resp, err := c.doStream(method, path, contentType, newBody)
+	resp, err := c.doStreamHeaders(method, path, contentType, header, newBody)
 	if err != nil {
 		return nil, err
 	}
@@ -44,8 +52,11 @@ func (c *APIClient) doBytes(method, path, contentType string, body []byte) ([]by
 	if resp.StatusCode >= 400 {
 		msg, _ := io.ReadAll(resp.Body)
 		se := &StatusError{Code: resp.StatusCode, Status: resp.Status, Body: string(msg)}
-		if resp.StatusCode == http.StatusNotFound {
+		switch resp.StatusCode {
+		case http.StatusNotFound:
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, se)
+		case http.StatusPreconditionFailed:
+			return nil, fmt.Errorf("%w: %s", ErrHeadMoved, se)
 		}
 		return nil, se
 	}
@@ -60,7 +71,32 @@ func (c *APIClient) doBytes(method, path, contentType string, body []byte) ([]by
 // because it followed a reference that said so.
 func (c *APIClient) Object(libraryID string, id store.ID) ([]byte, error) {
 	return c.doBytes("GET",
-		"/api/silo/v1/libraries/"+libraryID+"/objects/"+id.String(), "", nil)
+		"/api/silo/v1/libraries/"+libraryID+"/objects/"+id.String(), "", nil, nil)
+}
+
+// PutObject stores one object under the id its bytes hash to.
+//
+// The server verifies that id against the bytes and that they decode as one of
+// the store's object kinds, and nothing else, because there is nothing else it
+// can check without the content key. So a successful PUT is proof the bytes
+// crossed intact and no statement at all about whether they mean anything.
+func (c *APIClient) PutObject(libraryID string, id store.ID, body []byte) error {
+	_, err := c.doBytes("PUT",
+		"/api/silo/v1/libraries/"+libraryID+"/objects/"+id.String(),
+		"application/octet-stream", nil, body)
+	return err
+}
+
+// PutHead advances the library to a new commit, refusing unless the head is
+// still the one named.
+//
+// ErrHeadMoved is the lost compare-and-swap. There is no server-side merge and
+// there cannot be one: merging trees means reading names.
+func (c *APIClient) PutHead(libraryID string, newHead, expected store.ID) error {
+	header := http.Header{"If-Match": []string{`"` + expected.String() + `"`}}
+	_, err := c.doBytes("PUT", "/api/silo/v1/libraries/"+libraryID+"/head",
+		"text/plain", header, []byte(newHead.String()))
+	return err
 }
 
 // FetchChunks fetches many chunks in one round trip, batching over the
@@ -92,7 +128,7 @@ func (c *APIClient) fetchChunkBatch(libraryID string, ids []store.ID, out map[st
 		return err
 	}
 	stream, err := c.doBytes("POST",
-		"/api/silo/v1/libraries/"+libraryID+"/chunks/fetch", "application/json", body)
+		"/api/silo/v1/libraries/"+libraryID+"/chunks/fetch", "application/json", nil, body)
 	if err != nil {
 		return err
 	}

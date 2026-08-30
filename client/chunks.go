@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -185,7 +186,15 @@ type chunkSource struct {
 	local string
 	off   int64
 	size  int64
+	// data holds the bytes outright, for a chunk that is not a region of any
+	// file on disk. An encrypted library's chunks are sealed frames: they
+	// differ from the plaintext they were cut from, so there is nowhere to
+	// re-read them and they have to be carried.
+	data []byte
 }
+
+// fromBytes is a chunk that already exists in memory.
+func fromBytes(b []byte) chunkSource { return chunkSource{data: b, size: int64(len(b))} }
 
 // chunkFile computes the chunk ids of a local file, in order, along with a
 // place each one can be read from. Nothing is held in memory but the chunker's
@@ -261,6 +270,9 @@ func (c *APIClient) uploadChunks(libraryID, parentDir, localPath string, p store
 // bytes it sent.
 func (c *APIClient) putChunkFrom(libraryID, id string, src chunkSource) (int64, error) {
 	err := c.PutChunk(libraryID, id, func() (io.ReadCloser, int64, error) {
+		if src.data != nil {
+			return io.NopCloser(bytes.NewReader(src.data)), src.size, nil
+		}
 		// A factory, not a reader: doStream re-sends the body after a 401, and
 		// a reader already drained cannot be sent twice.
 		file, err := os.Open(src.local)

@@ -174,6 +174,16 @@ func isNotFound(err error) bool {
 //
 // The response body is left open for the caller to stream from.
 func (c *APIClient) doStream(method, path, contentType string, newBody func() (io.ReadCloser, int64, error)) (*http.Response, error) {
+	return c.doStreamHeaders(method, path, contentType, nil, newBody)
+}
+
+// doStreamHeaders is doStream with extra request headers -- If-Match on a head
+// move is the one that needs them, and it needs them on the retry too, which
+// is why they go in here rather than being set on a response that has already
+// been sent.
+func (c *APIClient) doStreamHeaders(method, path, contentType string, header http.Header,
+	newBody func() (io.ReadCloser, int64, error),
+) (*http.Response, error) {
 	send := func(token string) (*http.Response, error) {
 		var (
 			body   io.ReadCloser
@@ -199,6 +209,11 @@ func (c *APIClient) doStream(method, path, contentType string, newBody func() (i
 		}
 		if contentType != "" {
 			req.Header.Set("Content-Type", contentType)
+		}
+		for k, vs := range header {
+			for _, v := range vs {
+				req.Header.Add(k, v)
+			}
 		}
 		if newBody != nil {
 			req.ContentLength = length

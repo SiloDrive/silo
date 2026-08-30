@@ -24,6 +24,18 @@ import (
 	"github.com/google/uuid"
 )
 
+// newDirSalt mints a directory's name salt. A fresh one per directory, so that
+// two directories holding a file of the same name do not produce the same
+// encrypted entry name -- and never on a rewrite, which carries the salt of
+// the object it replaces.
+func newDirSalt() ([store.DirSaltSize]byte, error) {
+	var salt [store.DirSaltSize]byte
+	if _, err := rand.Read(salt[:]); err != nil {
+		return salt, fmt.Errorf("client: generating a directory salt: %w", err)
+	}
+	return salt, nil
+}
+
 // EncryptedSeed is the initial state of an encrypted library, as it goes on
 // the wire: the two objects the server stores without being able to read
 // them, the id they belong to, and the only copy of the key that opens them.
@@ -51,11 +63,9 @@ func NewEncryptedSeed(libraryID string, recipient [store.X25519KeySize]byte) (En
 		return EncryptedSeed{}, nil, err
 	}
 
-	// A fresh salt per directory, so that two directories holding a file of
-	// the same name do not produce the same encrypted entry name.
-	var salt [store.DirSaltSize]byte
-	if _, err := rand.Read(salt[:]); err != nil {
-		return EncryptedSeed{}, nil, fmt.Errorf("client: generating the root directory's salt: %w", err)
+	salt, err := newDirSalt()
+	if err != nil {
+		return EncryptedSeed{}, nil, err
 	}
 	root, err := kr.SealDirectory(&store.Directory{Salt: salt})
 	if err != nil {
