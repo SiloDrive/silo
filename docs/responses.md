@@ -103,7 +103,7 @@ a client written from the code alone.
 
 | body | means | correct handling |
 |---|---|---|
-| `Destination exists and is a directory` / `…and is a file` | a move or copy would destroy the destination | rename and retry (`NSFileProviderError.filenameCollision`) |
+| `Destination exists and is a directory` / `…and is a file` | a move or copy would destroy a *directory* — either the destination or the source's subtree landing on a file | rename and retry (`NSFileProviderError.filenameCollision`) |
 | `The library root already exists` | you tried to create `/` | a bug in the client; do not retry |
 | `A library with that id already exists` | the `library_id` you minted for an encrypted library is taken | mint another and rebuild the wrap, which binds the id |
 | `This account has published no identity key…` | you asked for an encrypted library before `PUT account/keys` | publish key material, then retry |
@@ -112,6 +112,12 @@ a client written from the code alone.
 All five are "the state here is not what your request assumed", and all five
 want the same shape of handling: change something and send it again, rather
 than retrying unchanged.
+
+**A move or copy onto an existing *file* is not among them.** It replaces the
+file and answers `200`/`201`, the same as `PUT entries/{path}` does — so the
+absence of a `409` is not a report that the destination was empty.
+[`protocol.md`](protocol.md#the-three-write-refusals-a-sync-client-meets) has
+the table of which collisions are refused and why only directories are.
 
 It used to be. `GC conflict; retry` — a write that raced the garbage collector —
 also answered `409`, which meant a client reading `409` as "collision" would

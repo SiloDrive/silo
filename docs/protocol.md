@@ -255,10 +255,10 @@ clients speak, and what `client/` speaks; the traps are under
 | GET, HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}?at={commit}` | The same read, resolved against that commit's tree instead of the head's. `400` if `at` is not a commit id or is sent with `PUT`, `POST` or `DELETE` — history refuses writes rather than silently taking them; `410` if the commit is no longer reachable; `404` if the path is absent in that commit. `rootFor` in `fileserver/entries.go` |
 | HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | The same headers as `GET`, no body. On a directory `Content-Length` is the size of the listing, not of its contents |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Store a file — body is the content |
-| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter) |
+| PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter). `201` and `{id, name, type}`, the same shape every other create returns |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=chunks` | Store a file from chunks already uploaded — body is `{"chunks":[sha256,…]}`, no content. See the chunk surface below |
-| POST | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"op":"move","to":"/dst"}` — moving covers renaming |
-| POST | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"op":"copy","to":"/dst"}` — server-side copy; `201` and the source's `ETag`, no content transferred |
+| POST | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"op":"move","to":"/dst"}` — moving covers renaming. `200`, no body. A destination file is **replaced**; a destination directory is `409` |
+| POST | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"op":"copy","to":"/dst"}` — server-side copy; `201` and the source's `ETag`, no content transferred. Same replacement rule as `move` |
 | DELETE | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Delete a file or directory |
 | GET | `/api/silo/v1/libraries/{libraryid}/changes?since=` | Changes since an anchor (`410` when the anchor is too old) |
 | GET | *any of the above* `?limit=N` | Page the answer. `Link: …; rel="next"` until the last page. See pagination below |
@@ -909,6 +909,28 @@ end-to-end integrity check for the transfer, and it costs a comparison;
 `fileserver/manifest_id_test.go` runs exactly this against a live server for
 an inline and a chunked file.
 
+**Every create answers the same shape.** A client can decode one struct for
+all of them rather than special-casing the verb it used:
+
+| call | status | body | `ETag` |
+|---|---|---|---|
+| `PUT entries/{path}` | `201` | `{id, name, type, size}` | the new manifest id |
+| `PUT entries/{path}?type=chunks` | `201` | `{id, name, type, size}` | the new manifest id |
+| `PUT entries/{path}?type=dir` | `201` | `{id, name, type}` | the new directory's id |
+| `POST {"op":"copy"}` | `201` | `{id, name, type}` | the *source's* id, which the copy shares |
+| `POST {"op":"move"}` | `200` | empty | — |
+| `DELETE entries/{path}` | `200` | empty | — |
+
+`size` is absent on a directory for the reason the listing omits it there: a
+directory object has no size of its own, and the sum of what is under it is a
+different question with a different endpoint. Everything else is present on
+every create, including `id` — which is the field a client is most likely to
+have built its decoding around, because a listing row always carries one.
+
+The two `200`s hand back nothing because there is nothing new to name: a move
+and a delete both act on an entry the caller already has the id of. What
+changed is the library root, and its new `ETag` comes back on the next read.
+
 ### The three write refusals a sync client meets
 
 **`503` on a write means nothing was applied, retry unchanged.** Concurrent
@@ -921,9 +943,38 @@ only safe handling there is to stop and surface it — `EIO` from a FUSE client,
 which to the application that already wrote the bytes is data loss.
 
 **`409` means exactly one thing: the state here is not what your request
-assumed.** A destination collision (`Destination exists…`), a `mkdir` over a
-file, an attempt to create the root. Change something — rename, usually — and
-send it again. It is never a request to retry unchanged; that is `503`'s job.
+assumed.** A `mkdir` over a file, an attempt to create the root, a path
+component that is not a directory, and the two destination collisions below.
+Change something — rename, usually — and send it again. It is never a request
+to retry unchanged; that is `503`'s job.
+
+**Not every collision is one.** A move or a copy onto an existing *file*
+replaces it and answers an ordinary success, exactly as `PUT entries/{path}`
+does — replacement is the contract for a file, not an accident, and there is
+no header that opts out of it. What is refused is the collision that would
+take something the caller did not name:
+
+| destination holds | `move`/`copy` of a file | of a directory |
+|---|---|---|
+| nothing | written | written |
+| a file | **replaced** | `409 Destination exists and is a file` |
+| a directory | `409 Destination exists and is a directory` | `409` likewise |
+
+Where the table says written or replaced, the status is the verb's ordinary
+one — `200` for a `move`, `201` for a `copy` — whether or not anything was
+there before. A directory is refused in both columns because replacing it
+drops its whole subtree in one commit: data loss the caller never asked for,
+reported as a success. A file is not, because the only thing lost is the one
+entry the request named.
+
+So **do not read "no `409`" as "nothing was there."** On a `PUT` a client that
+wants to know sends `If-None-Match: *`, which asks exactly that about the path
+being written and answers `412` when something is there. On a `move` or a
+`copy` that header asks about the **source** — see the note under the endpoint
+table — so it cannot be used to ask about the destination, and sending it
+there just fails against a source that by definition exists. A client that
+needs to know before replacing looks first with `HEAD`, and accepts that
+looking and writing are two requests with a gap between them.
 
 **`412` is the mechanism working, not an error.** Someone else wrote first.
 Re-read, reapply, write again. Note the header changes meaning with the

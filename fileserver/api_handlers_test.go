@@ -206,3 +206,128 @@ func exists(t *testing.T, libraryID string, acct *account.Account, path string) 
 	vars := map[string]string{"libraryid": libraryID, "path": strings.TrimPrefix(path, "/")}
 	return do(t, entriesHandler, acct, "HEAD", "/x", vars, nil).Code == http.StatusOK
 }
+
+// Replacing a *file* is the contract, not an accident. A move or a copy onto
+// an existing file overwrites it and says so with an ordinary success — the
+// same thing PUT entries/{path} does, and the one collision that destroys
+// nothing the caller did not name. The directory cases beside it are 409
+// precisely because they would take a subtree the caller never mentioned.
+//
+// Pinned here because it is a decision rather than a behaviour: it is the
+// answer a client's "no 409 means nothing was there" assumption gets wrong,
+// and without a test the answer could change without anyone choosing to.
+func TestMoveOntoAnExistingFileReplacesIt(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+	put(t, libraryID, acct, "/src.txt", []byte("the mover"))
+	put(t, libraryID, acct, "/dst.txt", []byte("the replaced"))
+
+	w := postOp(t, libraryID, acct, "/src.txt", "move", "/dst.txt")
+	if w.Code != http.StatusOK {
+		t.Fatalf("move onto a file = %d (%s), want 200", w.Code, w.Body.String())
+	}
+	if got := get(t, libraryID, acct, "/dst.txt"); got != "the mover" {
+		t.Errorf("destination holds %q, want the source's bytes", got)
+	}
+	if exists(t, libraryID, acct, "/src.txt") {
+		t.Error("the move left its source behind")
+	}
+}
+
+// Copy answers 201 whether or not it replaced something. It is the status for
+// the operation rather than for the destination's prior state, which is worth
+// pinning because it differs from move's 200 over the identical collision.
+func TestCopyOntoAnExistingFileReplacesIt(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+	put(t, libraryID, acct, "/src.txt", []byte("the copier"))
+	put(t, libraryID, acct, "/dst.txt", []byte("the replaced"))
+
+	w := postOp(t, libraryID, acct, "/src.txt", "copy", "/dst.txt")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("copy onto a file = %d (%s), want 201", w.Code, w.Body.String())
+	}
+	if got := get(t, libraryID, acct, "/dst.txt"); got != "the copier" {
+		t.Errorf("destination holds %q, want the source's bytes", got)
+	}
+	if !exists(t, libraryID, acct, "/src.txt") {
+		t.Error("the copy removed its source")
+	}
+}
+
+// A create reports the id of what it made, whatever kind of thing it made.
+//
+// A client models a write's answer on a listing row, where id is always
+// present — so a mkdir that omits it does not read as a directory with an
+// unknown id, it fails to decode at all. The id is not expensive to know:
+// Mkdir builds the entry from EmptyDir, so the value is in hand before the
+// commit that publishes it.
+func TestMkdirReportsTheIdOfWhatItMade(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+
+	vars := map[string]string{"libraryid": libraryID, "path": "reports"}
+	w := do(t, entriesHandler, acct, "PUT", "/x?type=dir", vars, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mkdir = %d (%s), want 201", w.Code, w.Body.String())
+	}
+
+	var made struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+		ID   string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &made); err != nil {
+		t.Fatal(err)
+	}
+	if made.Name != "reports" || made.Type != "dir" {
+		t.Errorf("mkdir reported %+v", made)
+	}
+	if made.ID == "" {
+		t.Fatal("mkdir did not report the id of the directory it created")
+	}
+
+	// The id it reported is the one the parent's listing gives for the same
+	// entry — otherwise it is a value a client cannot match anything against.
+	if listed := idInListing(t, libraryID, acct, "/", "reports"); listed != made.ID {
+		t.Errorf("mkdir reported id %s, the parent listing says %s", made.ID, listed)
+	}
+
+	// And the ETag is that id, the way it is for a file write and a copy, so a
+	// client can file the directory in its cache without a follow-up GET.
+	if want := `"` + etagPrefix + made.ID + `"`; w.Header().Get("ETag") != want {
+		t.Errorf("mkdir ETag = %q, want %q", w.Header().Get("ETag"), want)
+	}
+}
+
+func get(t *testing.T, libraryID string, acct *account.Account, path string) string {
+	t.Helper()
+	vars := map[string]string{"libraryid": libraryID, "path": strings.TrimPrefix(path, "/")}
+	w := do(t, entriesHandler, acct, "GET", "/x", vars, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get %s = %d (%s)", path, w.Code, w.Body.String())
+	}
+	return w.Body.String()
+}
+
+// idInListing reads one entry's id out of its parent's listing, which is the
+// shape a client compares a write's answer against.
+func idInListing(t *testing.T, libraryID string, acct *account.Account, dir, name string) string {
+	t.Helper()
+	vars := map[string]string{"libraryid": libraryID, "path": strings.TrimPrefix(dir, "/")}
+	w := do(t, entriesHandler, acct, "GET", "/x", vars, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list %s = %d (%s)", dir, w.Code, w.Body.String())
+	}
+	var rows []struct {
+		Name string `json:"name"`
+		ID   string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("listing of %s did not decode: %v (%s)", dir, err, w.Body.String())
+	}
+	for _, row := range rows {
+		if row.Name == name {
+			return row.ID
+		}
+	}
+	t.Fatalf("%s is not in the listing of %s (%s)", name, dir, w.Body.String())
+	return ""
+}

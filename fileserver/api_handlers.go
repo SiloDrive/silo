@@ -161,15 +161,45 @@ func mkdirHandler(w http.ResponseWriter, r *http.Request) {
 	if library == nil {
 		return
 	}
-	if _, _, err := mutateTree(library, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
+	newRoot, _, err := mutateTree(library, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Mkdir(root, path, defaultDirMode, now)
-	}); err != nil {
+	})
+	if err != nil {
 		writeTreeErr(w, r, err, "Parent directory does not exist",
 			fmt.Sprintf("mkdir %s in library %s", path, library.ID))
 		return
 	}
 
-	writeEntryJSON(w, http.StatusCreated, map[string]any{"name": dirName, "type": "dir"})
+	// The id of the directory that was made. A client models a write's answer
+	// on a listing row, where id is always present, so omitting it does not
+	// read as a directory whose id is unknown — it fails to decode at all,
+	// which is what made this the one create verb a client had to special-case.
+	//
+	// Resolved against the root this commit published rather than against the
+	// head, which may already have moved: a writer that landed in between
+	// would otherwise have this report their directory, or none.
+	st, err := library.Store()
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to open store for library %s", library.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	made, err := st.Resolve(newRoot, path)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("mkdir %s in library %s committed but did not resolve", path, library.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// The same ETag a file write and a copy return, for the same reason: the
+	// directory is empty and its id says so, so a client can file it in its
+	// cache without a follow-up GET. A directory carries no size — the listing
+	// omits it there too, and the sum of what is under it is a different
+	// question with a different endpoint.
+	w.Header().Set("ETag", `"`+etagPrefix+made.ID.String()+`"`)
+	writeEntryJSON(w, http.StatusCreated, map[string]any{
+		"name": dirName, "type": "dir", "id": made.ID.String(),
+	})
 }
 
 func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
