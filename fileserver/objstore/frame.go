@@ -1,0 +1,199 @@
+// The sealed storage frame: what an object looks like on disk, on every
+// backend, in every library.
+//
+// This is the *outer* of the two encryptions a byte can carry, and it is not
+// the one in store/. That package's sealing is content crypto under a
+// library's content key, which the server does not hold for an E2EE library.
+// This one is under storage.key, which the server holds and no client ever
+// sees, and it applies uniformly — both library types, all backends —
+// so that an E2EE chunk simply gets a second wrap and the backend stays
+// ignorant of libraries. docs/storage.md § Storage encryption, universal is
+// the owning document.
+//
+// The frame lives here rather than in store/ for the reason store/doc.go
+// gives: storage-layer encryption is the server's business, and a client that
+// reimplements the store format has no use for code it can never run. The
+// vectors in testdata/frame.json pin the bytes anyway, because storage.key is
+// unrotatable and so is the format under it.
+//
+// It is applied above the backend seam, not inside one. Every backend stores
+// identical bytes — that is what makes replication a file copy — so a backend
+// that had to seal for itself would be a second place for the answer to
+// differ.
+package objstore
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"fmt"
+)
+
+// The frame's fixed header, in order:
+//
+//	magic       4    "SILF"
+//	version     1    frameVersion
+//	id         32    the object's id — SHA-256 of the bytes sealed here
+//	ct_len      8    length of ciphertext ‖ tag, little-endian
+//	nonce      12    fresh per write
+//	ct ‖ tag    n
+//
+// Every width is fixed, and that is forced rather than tidy: Stat answers
+// with the plaintext length, derived as the file size minus frameOverhead, so
+// that a Content-Length costs one os.Stat and never opens the object. A
+// varint length would make the overhead a function of the content and break
+// the subtraction.
+//
+// The magic and the version are not in the tuple docs/storage.md first gave.
+// Without the magic a frame cannot say it is one, which the transitional
+// plaintext fallback needs; without the version a format change means
+// rewriting every frame on every tier, which is the operation storage.key is
+// defined as not supporting.
+const (
+	frameMagic      = "SILF"
+	frameVersion    = 1
+	frameNonceSize  = 12
+	frameTagSize    = 16
+	frameHeaderSize = len(frameMagic) + 1 + 32 + 8 + frameNonceSize
+
+	// frameOverhead is what a frame adds to the bytes it holds.
+	frameOverhead = frameHeaderSize + frameTagSize
+
+	offVersion = len(frameMagic)
+	offID      = offVersion + 1
+	offLen     = offID + 32
+	offNonce   = offLen + 8
+)
+
+// StorageKeySize is the length of storage.key.
+const StorageKeySize = 32
+
+// ErrFrameCorrupt reports a frame that did not authenticate: a wrong key, a
+// truncated write, a bit rot, or a frame moved to another object's path. They
+// are indistinguishable by construction and the answer is the same for all of
+// them — this object is not readable, and the id it was stored under does not
+// name what is there.
+var ErrFrameCorrupt = errors.New("objstore: stored frame failed to authenticate")
+
+// isFrame reports whether b begins a sealed frame.
+//
+// A magic check only: it says which of two readers to use, and the reader it
+// picks is the one that authenticates. Plaintext that happens to start with
+// the magic gets sent to openFrame and fails there, which is the right
+// outcome — the alternative, silently reading it as plaintext, would mean a
+// corrupted frame header downgraded the object to unauthenticated bytes.
+//
+// TODO(#23): the ingest that rewrites existing plaintext objects as frames
+// removes the fallback this exists for, and this with it.
+func isFrame(b []byte) bool {
+	return len(b) >= len(frameMagic) && string(b[:len(frameMagic)]) == frameMagic
+}
+
+// frameAEAD builds the cipher for one frame.
+func frameAEAD(key []byte) (cipher.AEAD, error) {
+	if len(key) != StorageKeySize {
+		return nil, fmt.Errorf("objstore: storage key is %d bytes, want %d", len(key), StorageKeySize)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("objstore: storage cipher: %w", err)
+	}
+	return cipher.NewGCM(block)
+}
+
+// sealFrame seals plaintext under key as the object stored at id, with a
+// fresh random nonce.
+//
+// Non-convergent on purpose: the same plaintext sealed twice gives different
+// bytes. That is the opposite of the rule store.SealChunk follows, and it is
+// right here for the reason that rule is right there — an id is minted over
+// the bytes handed to the store, before this runs, so dedup, ETags and
+// changes?since= never see what happens underneath them. A deterministic
+// nonce would buy byte-identical rewrites of an object that is never
+// rewritten, at the cost of the one thing GCM asks of a caller.
+func sealFrame(key []byte, id string, plaintext []byte) ([]byte, error) {
+	nonce := make([]byte, frameNonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("objstore: no randomness for a frame nonce: %w", err)
+	}
+	return sealFrameNonce(key, id, plaintext, nonce)
+}
+
+// sealFrameNonce is sealFrame with the nonce supplied. Only the vectors call
+// it directly; a caller that picks its own nonce is one that can repeat one.
+func sealFrameNonce(key []byte, id string, plaintext, nonce []byte) ([]byte, error) {
+	aead, err := frameAEAD(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(nonce) != frameNonceSize {
+		return nil, fmt.Errorf("objstore: frame nonce is %d bytes, want %d", len(nonce), frameNonceSize)
+	}
+	raw, err := frameID(id)
+	if err != nil {
+		return nil, err
+	}
+
+	frame := make([]byte, frameHeaderSize, frameHeaderSize+len(plaintext)+frameTagSize)
+	copy(frame, frameMagic)
+	frame[offVersion] = frameVersion
+	copy(frame[offID:], raw)
+	binary.LittleEndian.PutUint64(frame[offLen:], uint64(len(plaintext)+frameTagSize))
+	copy(frame[offNonce:], nonce)
+
+	// The header is the associated data, so the id, the length and the nonce
+	// are all authenticated. Without that the id in the header is decoration:
+	// nothing would stop a frame being relabelled, or moved to another
+	// object's path, and opening happily under the same key.
+	return aead.Seal(frame, nonce, plaintext, frame[:frameHeaderSize]), nil
+}
+
+// openFrame reverses sealFrame, checking that the frame is the one stored at
+// id.
+func openFrame(key []byte, id string, frame []byte) ([]byte, error) {
+	aead, err := frameAEAD(key)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := frameID(id)
+	if err != nil {
+		return nil, err
+	}
+	if len(frame) < frameOverhead || !isFrame(frame) {
+		return nil, ErrFrameCorrupt
+	}
+	if frame[offVersion] != frameVersion {
+		return nil, fmt.Errorf("%w: frame version %d, want %d", ErrFrameCorrupt, frame[offVersion], frameVersion)
+	}
+	// The id and the length are checked before the AEAD as well as by it. The
+	// AEAD would catch both, but only after opening; checking here is what
+	// lets a mismatch say which field was wrong.
+	if string(frame[offID:offID+32]) != string(raw) {
+		return nil, fmt.Errorf("%w: frame holds another object", ErrFrameCorrupt)
+	}
+	if got := binary.LittleEndian.Uint64(frame[offLen:]); got != uint64(len(frame)-frameHeaderSize) {
+		return nil, fmt.Errorf("%w: frame declares %d ciphertext bytes and carries %d",
+			ErrFrameCorrupt, got, len(frame)-frameHeaderSize)
+	}
+
+	plain, err := aead.Open(nil, frame[offNonce:frameHeaderSize], frame[frameHeaderSize:], frame[:frameHeaderSize])
+	if err != nil {
+		return nil, ErrFrameCorrupt
+	}
+	return plain, nil
+}
+
+// frameID decodes an object id into the 32 bytes the header carries.
+//
+// The header holds the raw digest rather than its hex, which halves it. The
+// width check is validPackID's, restated as a decode: an id that is not
+// sixty-four lowercase hex characters never named anything in this store.
+func frameID(id string) ([]byte, error) {
+	if !validPackID(id) {
+		return nil, fmt.Errorf("invalid object id %q", id)
+	}
+	return hex.DecodeString(id)
+}

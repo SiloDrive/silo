@@ -261,6 +261,29 @@ bound is enforced in the shared package on *every* derivation — at enrolment
 and at open — because a client that checks only when it asks the server still
 derives under whatever a blob says at new-device bootstrap.
 
+**`storage.key` is the server's own key, and is not account key material.**
+32 random bytes, **generated** rather than derived — there is no secret worth
+deriving from — at first start, `0600` in the data directory, and it is what
+every object on disk is sealed under (§ At rest). It is the **first item in the
+must-not-lose set**, and it is effectively **unrotatable**: every copy of the
+store holds byte-identical ciphertext under it, so rotation is a rewrite of
+everything everywhere. Cannot-lose and cannot-rotate are two halves of one
+fact. A one-time "back this up now" warning is printed when it is generated,
+and [`backup.md`](backup.md) is where an operator is told what to do about it.
+
+A missing key over a store that already holds objects is a **refusal**, not a
+fresh key. Silently generating one would look exactly like a clean first start
+— the server comes up, prints the warning, serves requests — and the loss would
+only surface at the first read of an old object, by which time more has been
+written under the new key. Cannot-lose is enforced at the moment of loss rather
+than described after it.
+
+That refusal is not yet a refusal to *start*. `objstore.New` has no error
+return, so it holds the failure and raises it at the first object read or
+write: a server whose key has gone missing still accepts logins and serves
+listings, and fails only when something reaches for an object. Turning it into
+a startup failure is the exported error accessor in silo#28.
+
 **Default on.** E2EE is per-library and chosen at creation, and the common
 library is meant to be the one where server-side preview, search, thumbnails
 and inline rendering do not exist. Server-readable is the deliberate exception,
@@ -305,8 +328,63 @@ that would stop the store being reconstructible from its own bytes. That is
 what keeps [`backup.md`](backup.md)'s "databases first, objects second"
 ordering safe.
 
-There is no storage-layer encryption and no compression: objects are stored
-exactly as they arrive. Both are Part 2.
+**Every object on disk is a sealed frame**, in both library types, under
+`storage.key`. See § At rest. There is no compression: within the frame, an
+object is exactly the bytes that arrived. That one is still Part 2.
+
+## At rest
+
+Every object is stored as a **sealed frame**: AES-256-GCM under `storage.key`,
+with a fresh 96-bit nonce per write. Uniformly — both library types, and the
+local disk is not an exception. The rule is one sentence, *what is on the disk
+is ciphertext, everywhere, always*, and its cost is invisible against hardware
+AES at multiple GB/s. Part 2's § Storage encryption, universal has the
+reasoning; what follows is the shape.
+
+```
+magic       4    "SILF"
+version     1
+id         32    the object's id — SHA-256 of the bytes sealed here
+ct_len      8    length of ciphertext ‖ tag, little-endian
+nonce      12
+ct ‖ tag    n
+```
+
+73 bytes of overhead, every width fixed. Fixed is forced rather than tidy: a
+`Content-Length` is the object's length, not the file's, and deriving it as
+`file size − 73` is what keeps answering that question a single `stat`.
+
+**The header is the AEAD's associated data.** Without that the id in the header
+would be decoration — nothing would stop a frame being relabelled, or moved to
+another object's path, and opening happily under the same key.
+
+**A frame is not convergent**: the same bytes sealed twice give different
+files. That is the opposite of the rule the content crypto follows, and right
+for the opposite reason — an id is minted over the bytes handed to the store,
+*before* this runs, so dedup, ETags and `changes?since=` never see what happens
+underneath them.
+
+**The frame is applied above the backend seam**, in `objstore`, not inside the
+filesystem backend. Every backend stores identical bytes; that is what will
+make replication a file copy, and a backend that sealed for itself would be a
+second place for the answer to differ.
+
+The byte layout is here rather than in [`spec/store-format.md`](spec/store-format.md)
+because that file is what a second implementation reproduces, and there will
+never be a second implementation of this: no client holds `storage.key`. It is
+pinned by vectors in `fileserver/objstore/testdata/frame.json` instead.
+
+**Objects written before this existed are still read.** A file that does not
+begin with the magic is plaintext, from a store that predates framing, and is
+returned as it is. That is transitional — the ingest that rewrites them
+(§ What is left) removes the fallback, after which anything that is not a
+frame is corruption.
+
+For a plain library this is the only encryption; for an E2EE library it is the
+outer of two, and the inner one is the client's. The server gains nothing by
+it that it did not already have, and the difference between the library types
+remains exactly one sentence: *whether the server holds a key that can read the
+content.*
 
 ## What the catalog holds
 
@@ -614,7 +692,8 @@ gets the change they asked for rather than a usage message.
 ## What Part 1 does not do
 
 - **There is no cache in front of the store.** A read is a read.
-- **Objects are stored raw**, unencrypted and uncompressed.
+- **Objects are not compressed.** They are encrypted — see § At rest — but
+  what a frame holds is exactly the bytes that arrived.
 - **No client seals anything yet.** The server stores and serves an E2EE
   library; the sealing client and the split-derivation login are Part 2.
 - **Nothing creates a `VirtualLibrary` row**, and several queries still join
@@ -723,6 +802,11 @@ because it is the same append → fsync → index update the writer uses.
 
 ## Storage encryption, universal
 
+**Built, for loose objects.** The frame codec, `storage.key` and its refusals
+are Part 1 § At rest and Part 1 § Key material; what is still designed here is
+the *pack* holding many frames rather than one. The reasoning below is kept
+because it is the argument, not the description.
+
 `storage.key`: 32 random bytes, **generated** rather than derived — there is no
 secret worth deriving from — at first start, stored `0600` in the data dir,
 first item in the must-not-lose set, with a one-time "back this up now" warning
@@ -751,17 +835,24 @@ outer of two. The difference between the library types remains exactly one
 sentence: *whether the server holds a key that can read the content.* Nothing
 about storage layout differs.
 
-**The frame is the unit, and it does not wait for packs.** The nonce lives in
+**The frame is the unit, and it did not wait for packs.** The nonce lives in
 the frame header, which is why the two are separable: a frame is
-self-describing whether the file holding it contains one or a thousand. So
-the loose store adopts the frame first — a loose object becomes one sealed
-frame at its existing path — and packs arrive later as a container of frames
-plus an index, with no change to the frame format or the key. What that buys
-is at-rest encryption against the store an install is actually running, and
-a loose-to-frame ingest that is the dry run for the loose-to-pack ingest
-packs need anyway. The recovery scan that walks frames is the same code over
-a directory of single-frame files or a pack. Nothing about the decision above
-changes: cannot-lose and cannot-rotate hold from the first frame written.
+self-describing whether the file holding it contains one or a thousand. So the
+loose store adopted the frame first — a loose object is one sealed frame at its
+existing path, which is Part 1 § At rest — and packs arrive later as a
+container of frames plus an index, with no change to the frame format or the
+key. What that bought is at-rest encryption against the store an install is
+actually running, and a loose-to-frame ingest that is the dry run for the
+loose-to-pack ingest packs need anyway. The recovery scan that walks frames is
+the same code over a directory of single-frame files or a pack. Nothing about
+the decision above changes: cannot-lose and cannot-rotate hold from the first
+frame written.
+
+Two things the frame carries that this section did not originally give it: a
+magic and a version byte, and the header bound as associated data. Both are in
+Part 1 § At rest, and both are permanent from the first frame written — which
+is what an unrotatable key means for the format under it as well as for the
+key itself.
 
 ## Durable tiers
 
@@ -1143,12 +1234,12 @@ the two library types.
    over has to be atomic — the new hash and the new `client_kdf_params` in one
    write — or the account is left with parameters that describe a password the
    stored hash was not made from.
-2. **The sealed frame and `storage.key`** — the frame codec with vectors,
-   key generation at first start with its backup wiring and the one-time
-   warning, `objstore` reading and writing one frame per loose object, and
-   the restartable ingest that rewrites existing plaintext loose objects as
-   frames. At-rest encryption lands here, ahead of packs, for the reason given
-   under § Storage encryption, universal.
+2. **The ingest that rewrites existing plaintext loose objects as frames**,
+   restartable at every step. The frame codec, `storage.key` and one frame per
+   loose object are built — Part 1 § At rest — and until this runs, a file that
+   does not begin with the frame magic is read as the plaintext it is. This
+   removes that fallback, and is the dry run for the loose-to-pack ingest packs
+   need anyway.
 3. **Packs** — the container format, per-pack indexes,
    seal-on-size-or-age-or-shutdown, the recovery scan, and the loose-store
    ingest that scan doubles as — which is the frame ingest above, pointed at a

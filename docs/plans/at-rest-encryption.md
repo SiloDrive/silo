@@ -1,6 +1,6 @@
 # Plan: at-rest encryption — the sealed frame and `storage.key`
 
-Status: **proposed**. Owns the *sequence* and the decisions the issue left
+Status: **built**, except the ingest, which is `#23`. Owns the *sequence* and the decisions the issue left
 open; [`../storage.md`](../storage.md) § Storage encryption, universal is
 normative for the format, and where the two disagree that document wins, by
 [`../roadmap.md`](../roadmap.md)'s rule.
@@ -162,7 +162,7 @@ a transitional allowance with a named end, not a permanent read mode.
 ## One safety rule the issue does not state
 
 **Generating `storage.key` must refuse when `storage/` already holds objects
-and no key file is present.**
+sealed under it and no key file is present.**
 
 A lost key that silently regenerates looks exactly like a clean first start.
 The server comes up, logs its one-time "back this up now" warning, serves
@@ -173,19 +173,68 @@ enforced at the moment of loss, not described in a document.
 The same load path refuses a key file that is not 32 bytes, and warns on
 permissions looser than `0600`.
 
+### The word "sealed" in that rule was missing, and it mattered
+
+As first written the rule refused over a store that held *any* objects, and
+that is wrong in a way only a restart shows: it collides head-on with
+Decision 3. A store written before framing has objects and no key —
+legitimately — and that is precisely the case the plaintext fallback exists to
+carry. The refusal blocked it, so the first restart after an upgrade opened no
+store at all, and the change became the migration it was designed not to be.
+
+Three states share "no key file", and only one of them is a loss:
+
+| on disk | what it is | what to do |
+|---|---|---|
+| nothing | a first start | generate |
+| plaintext objects only | a pre-framing store being upgraded | generate; the fallback reads them |
+| any sealed frame | the key is gone | refuse |
+
+So the question is not whether the store is empty but whether anything in it
+is a frame, which is a four-byte read per object. It stops at the first frame
+found, so the case that matters most — a lost key over a sealed store — is
+answered almost immediately. The case it walks to the end of is the upgrade,
+once in an install's life, over a tree `#23` walks anyway.
+
+### And it has to fail at startup, not at the first request
+
+The key was loaded lazily, at the first `ObjectStore` opened for the first
+library someone touched, which turned "this store's key is gone" into a 500 on
+an ordinary request rather than a server that says why it will not run.
+`objstore.EnsureKey` is called from `openStores` and from `Run`, so the
+refusal happens before anything is served. `silo backup-db` deliberately does
+not call it: backing up ciphertext is still worth doing, and is exactly what
+someone in that state may be trying to do.
+
 ## The work, in order
 
 1. **`fileserver/objstore/frame.go`** — `sealFrame` and `openFrame`,
    AES-256-GCM, `crypto/rand` nonce, header as AD, the `frameOverhead`
    constant, and golden vectors under `fileserver/objstore/testdata/`.
-2. **`fileserver/storagekey`** — `Load(dataDir) (key []byte, created bool, err
-   error)`. 32 bytes from `crypto/rand`, written `0600` and atomically, with
-   the one-time warning at generation and the three refusals above. Cached per
-   data directory and called from `objstore.New`, so the roughly a dozen
-   construction sites need no signature change and a load failure lands in the
-   `initErr` channel `objstore.New` already has for exactly this.
-3. **Wire `objstore`** — seal in `Write` and `WriteVerified`, open in `Read`
-   and `ReadAt`, and the size arithmetic in `Stat`, `List` and `Exists`.
+2. **`fileserver/objstore/key.go`** — `loadStorageKey(dataDir) (key []byte,
+   created bool, err error)`. 32 bytes from `crypto/rand`, written `0600` and
+   atomically, with the one-time warning at generation and the three refusals
+   above. Cached per data directory and called from `objstore.New`, so the
+   roughly a dozen construction sites need no signature change and a load
+   failure lands in the `initErr` channel `objstore.New` already has for
+   exactly this.
+
+   *Landed in `objstore` rather than in a package of its own, as this plan
+   first said.* A separate package cannot ask whether the store is empty
+   without either importing `objstore` — which would import it back for the
+   key — or spelling `"storage"` a second time. `gc` already demonstrated what
+   a second spelling of a store directory costs: a renamed store turned
+   `silo gc -delete` into a silent no-op that reported success. The key is
+   `objstore`'s and nothing else uses it, so it lives there and `KeyPath` is
+   exported for the two callers outside that need to name the file.
+
+   The publish is temp-file-then-**link**, not rename: rename overwrites, and
+   the one thing this must never do is replace a key another process created
+   in the same instant. `Link` fails on an existing target, which turns that
+   race into a re-read of the winner's key.
+3. **Wire `objstore`**, and call `EnsureKey` at startup — seal in `Write` and
+   `WriteVerified`, open in `Read` and `ReadAt`, and the size arithmetic in
+   `Stat`, `List` and `Exists`.
    `Exists` keeps its "a zero-length object is absent" rule, tightened to
    "shorter than a frame is absent", which covers the same torn-write case.
 4. **The read fallback** of Decision 3, with its `TODO(#23)`.
@@ -233,11 +282,25 @@ here is deterministic, so there is no exception to name.
   test that pins hashing to the plaintext rather than to the frame.
 - **Fallback:** a plaintext file placed directly at a fan-out path reads back
   through `objstore` unchanged.
+- **The upgrade, end to end:** a data directory holding plaintext objects and
+  no key opens, reads them, and seals what it writes from then on. Verified
+  against the real binary as well: a first start generates and warns, a
+  restart is silent, a pre-framing store starts, and a sealed store with no
+  key refuses by name and writes nothing.
 - **The regression proof for "ids and paths unchanged":** the existing
   `fileserver/objstore/objstore_test.go` and
   `fileserver/encrypted_library_test.go` pass with no edits at all. An edit
   needed in either is the signal that the seam leaked, and is to be treated as
   a finding rather than as test maintenance.
+
+  **One edit was needed, and it is the honest kind.** `testExists` asserted
+  `os.Stat` on the object's file was exactly 130 bytes — reaching past the
+  seam to the disk, which is the one thing this change alters. It now asserts
+  both halves: `Stat` says 130 and the file says `130 + frameOverhead`. The
+  pair is a better test than the original, and nothing else in either file
+  moved. `TestListYieldsEveryObjectWithItsSize` and
+  `TestReadAtPastTheEndReportsEOF` were the two most likely to break and both
+  passed untouched, which is the seam holding.
 - **The second wrap:** an E2EE chunk's bytes on disk differ from the frame the
   client uploaded, while `GetChunk` returns that client frame exactly. This is
   the one test that shows the two layers are actually two.
@@ -250,3 +313,9 @@ Not here, deliberately: the ingest that rewrites existing plaintext objects as
 frames (`#23`), packs and pack indexes (`#17`), any durable tier, and any
 change to what crosses the wire. Nothing above alters an id, a path, a
 response body or a manifest.
+
+One consequence worth naming rather than discovering: the one-time generation
+warning fires per data directory, so a `go test ./...` run prints it once per
+temporary store. That is the warning working, not a leak — but if it ever
+becomes noise worth suppressing, suppress it in the tests and never in the
+server.

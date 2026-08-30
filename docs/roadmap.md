@@ -70,7 +70,7 @@ own in porter-fuse. Both consume [`protocol.md`](protocol.md).
 
 Two chains, and they do not wait on each other. **The storage chain** runs
 at-rest encryption → packs → compaction → durable tiers → occupied-block
-charging, and only its head is unblocked. **The E2EE chain** has three
+charging; its head is built but for the ingest, and packs are unblocked. **The E2EE chain** has three
 unblocked heads — grants and invites, split-derivation login, and the sealing
 client — that can be worked in any order, and one entry, sharing an encrypted
 library, that waits on two of them. The sequence of the E2EE chain is owned by
@@ -84,20 +84,22 @@ it beside the storage chain.
 The frame codec with vectors, key generation at first start with its backup
 wiring and the one-time warning, `objstore` reading and writing one frame per
 loose object, and the restartable ingest that rewrites existing plaintext loose
-objects as frames. Owned by [`storage.md`](storage.md) § Storage encryption,
-universal, sequenced by
+objects as frames. Owned by [`storage.md`](storage.md) § At rest, sequenced by
 [`plans/at-rest-encryption.md`](plans/at-rest-encryption.md).
 
-**Unblocked, and it lands ahead of packs.** A frame is self-describing whether
-the file holding it contains one or a thousand, so the loose store an install
-is actually running gets at-rest encryption without waiting for a container
-format — and the loose-to-frame ingest is the dry run for the loose-to-pack
-ingest packs need anyway. Cannot-lose and cannot-rotate hold from the first
-frame written, which is why the key's backup wiring is part of this step and
-not a later one.
+**It landed ahead of packs**, and everything but the ingest is built. A frame
+is self-describing whether the file holding it contains one or a thousand, so
+the loose store an install is actually running got at-rest encryption without
+waiting for a container format — and the loose-to-frame ingest is the dry run
+for the loose-to-pack ingest packs need anyway. Cannot-lose and cannot-rotate
+hold from the first frame written, which is why the key's backup wiring was
+part of this step and not a later one.
+
+What is left here is the ingest. Until it runs, an object written before
+framing is read as the plaintext it is; the ingest removes that fallback.
 
 Tracked: milestone `at-rest-encryption`, #18 (frame, key, one frame per loose
-object), #23 (ingest of existing loose objects).
+object — **built**), #23 (ingest of existing loose objects).
 
 #### 2. Packs
 

@@ -98,7 +98,16 @@ Objects are immutable, so anything the copied heads reference is still there.
 Copying the store first and the database after can capture heads that point
 at objects the backup does not contain. Do not run "silo gc -delete" while a
 backup is in progress.
-`, storeDir, destDir)
+
+And once, somewhere that is not this machine:
+
+  %s
+
+Every object in the store is encrypted under that key and it cannot be
+rotated, so a backup without it is a directory of unreadable files. It never
+changes, so it does not belong in the nightly rotation — copy it once and keep
+it as carefully as its contents deserve.
+`, storeDir, destDir, objstore.KeyPath(absDataDir))
 
 	return nil
 }

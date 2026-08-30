@@ -8,7 +8,6 @@ package objstore
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
@@ -43,6 +42,10 @@ func newFSBackend(dataDir string, objType string) (*fsBackend, error) {
 // SHA-256 of the bytes it names. It stays a function rather than a call to
 // sha256.New at each site so that the id and the digest that checks it are
 // decided in one place.
+//
+// Called from ObjectStore.write rather than from here. Verification has to
+// happen over the object, and what reaches this backend is the frame around
+// it, so a backend cannot check an id even in principle.
 //
 // validPackID has already established the width.
 func verifierFor(string) hash.Hash { return sha256.New() }
@@ -180,23 +183,10 @@ func (b *fsBackend) write(libraryID string, packID string, r io.Reader, opts wri
 		}
 	}()
 
-	// Hashed on the way past rather than in a second pass, so verification
-	// costs no extra read of an object that can be several megabytes.
-	if opts.verify != nil {
-		r = io.TeeReader(r, opts.verify)
-	}
-
 	_, err = io.Copy(tFile, r)
 	if err != nil {
 		_ = tFile.Close()
 		return err
-	}
-
-	if opts.verify != nil {
-		if got := hex.EncodeToString(opts.verify.Sum(nil)); got != packID {
-			_ = tFile.Close()
-			return fmt.Errorf("object %s/%s hashes to %s: %w", libraryID, packID, got, ErrContentMismatch)
-		}
 	}
 
 	if opts.sync {

@@ -16,9 +16,10 @@
 package objstore
 
 import (
+	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"path/filepath"
 	"time"
@@ -84,7 +85,10 @@ type ObjectStore struct {
 	// TypeChunks or TypeObjects
 	ObjType string
 	backend storageBackend
-	// initErr is why there is no backend, if there is not. See New.
+	// key is storage.key: what every object in this store is sealed under.
+	// See frame.go and key.go.
+	key []byte
+	// initErr is why there is no backend or no key, if there is not. See New.
 	initErr error
 }
 
@@ -93,17 +97,6 @@ type writeOpts struct {
 	// sync makes the pack durable before write returns: the data is fsynced
 	// before the publish, and the containing directory afterwards.
 	sync bool
-	// verify, when non-nil, is fed every byte written and its lowercase hex
-	// digest must equal the pack id before the pack is published.
-	//
-	// A hash rather than a bool because the store holds both widths. Nothing
-	// on the wire mints a SHA-1 any more — the routes pin their id variable to
-	// sixty-four hex characters and ParseID refuses anything else, so a
-	// 40-character id cannot arrive over HTTP — but the backend still reads
-	// them, because the id's width is how an object on disk says which it is.
-	// The backend does not need to know which, only that what it was handed
-	// must agree with the name.
-	verify hash.Hash
 }
 
 // storageBackend is the interface every storage tier implements.
@@ -175,7 +168,16 @@ func New(confPath string, dataDir string, objType string) *ObjectStore {
 		obj.initErr = fmt.Errorf("objstore: no %s store: %w", objType, err)
 		return obj
 	}
+	// The key is loaded after the backend because generating one refuses over
+	// a store that already holds objects, and answering that question needs
+	// the store directories to be the ones this backend will use.
+	key, err := storageKeyFor(dataDir)
+	if err != nil {
+		obj.initErr = fmt.Errorf("objstore: no %s store: %w", objType, err)
+		return obj
+	}
 	obj.backend = backend
+	obj.key = key
 	return obj
 }
 
@@ -186,7 +188,34 @@ func (s *ObjectStore) Read(libraryID string, objID string, w io.Writer) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.read(libraryID, objID, w)
+	obj, err := s.object(libraryID, objID)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(obj)
+	return err
+}
+
+// object reads one object and opens its frame, returning the bytes the caller
+// stored.
+//
+// Whole, not streamed, and that is the shape of GCM rather than a choice: the
+// tag covers the entire ciphertext, so there is no prefix of a frame that can
+// be trusted before the last byte has been read. A ranged read of a *pack* is
+// a range over frames; there is no ranged read within one.
+func (s *ObjectStore) object(libraryID string, objID string) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := s.backend.read(libraryID, objID, &buf); err != nil {
+		return nil, err
+	}
+	raw := buf.Bytes()
+	if !isFrame(raw) {
+		// TODO(#23): an object written before this store sealed anything.
+		// The ingest that rewrites them as frames removes this branch, after
+		// which anything that is not a frame is corruption.
+		return raw, nil
+	}
+	return openFrame(s.key, objID, raw)
 }
 
 // ReadAt reads len(p) bytes of an object starting at off, with io.ReaderAt
@@ -199,7 +228,21 @@ func (s *ObjectStore) ReadAt(libraryID string, objID string, p []byte, off int64
 	if err := s.ready(); err != nil {
 		return 0, err
 	}
-	return s.backend.readAt(libraryID, objID, p, off)
+	obj, err := s.object(libraryID, objID)
+	if err != nil {
+		return 0, err
+	}
+	if off < 0 {
+		return 0, fmt.Errorf("objstore: negative offset %d", off)
+	}
+	if off >= int64(len(obj)) {
+		return 0, io.EOF
+	}
+	n := copy(p, obj[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
 // Write data to storage backends.
@@ -207,7 +250,7 @@ func (s *ObjectStore) Write(libraryID string, objID string, r io.Reader, sync bo
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.write(libraryID, objID, r, writeOpts{sync: sync})
+	return s.write(libraryID, objID, r, sync, false)
 }
 
 // WriteVerified writes an object and publishes it only if its content hashes
@@ -226,7 +269,41 @@ func (s *ObjectStore) WriteVerified(libraryID string, objID string, r io.Reader,
 	if err := s.ready(); err != nil {
 		return err
 	}
-	return s.backend.write(libraryID, objID, r, writeOpts{sync: sync, verify: verifierFor(objID)})
+	return s.write(libraryID, objID, r, sync, true)
+}
+
+// write seals an object into a frame and hands the frame to the backend.
+//
+// The verification is over the bytes the caller offered, never over the frame.
+// That ordering is the whole of what WriteVerified promises: an id names the
+// stored object, and a frame is a container the store puts around it. Hashing
+// the frame instead would still pass — a frame is self-consistent — while
+// checking nothing anybody asked about.
+//
+// Buffered whole, for the reason object() is: GCM is one-shot. A 1 MiB chunk
+// is nothing; the manifest of a 1 TiB file is some 36 MB, and splitting a
+// large object across several frames is a pack-format question that arrives
+// with packs.
+func (s *ObjectStore) write(libraryID string, objID string, r io.Reader, sync bool, verify bool) error {
+	plain, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	if verify {
+		h := verifierFor(objID)
+		h.Write(plain)
+		// Checked before the frame is built, not after the write: the object
+		// may already be there with the right content, and a
+		// verify-then-delete would let one bad upload destroy a good chunk.
+		if got := hex.EncodeToString(h.Sum(nil)); got != objID {
+			return fmt.Errorf("object %s/%s hashes to %s: %w", libraryID, objID, got, ErrContentMismatch)
+		}
+	}
+	frame, err := sealFrame(s.key, objID, plain)
+	if err != nil {
+		return err
+	}
+	return s.backend.write(libraryID, objID, bytes.NewReader(frame), writeOpts{sync: sync})
 }
 
 // Exists reports whether an object is present and usable.
@@ -248,11 +325,47 @@ func (s *ObjectStore) Exists(libraryID string, objID string) (bool, error) {
 }
 
 // Stat returns an object's size, or ErrNotFound.
+//
+// The size of the object, not of the file holding it. Every caller of this is
+// asking about the bytes it stored — ChunkStoredSize and ObjectSize turn it
+// into a Content-Length, and GetChunkInto sizes a buffer with it — so
+// answering with the file size would be wrong by exactly the frame overhead,
+// on the wire, silently.
 func (s *ObjectStore) Stat(libraryID string, objID string) (int64, error) {
 	if err := s.ready(); err != nil {
 		return -1, err
 	}
-	return s.backend.stat(libraryID, objID)
+	size, err := s.backend.stat(libraryID, objID)
+	if err != nil {
+		return -1, err
+	}
+	return s.plaintextSize(libraryID, objID, size)
+}
+
+// plaintextSize turns a file size into the size of the object inside it.
+//
+// The peek is what the transition costs. A framed object's size is arithmetic
+// — the overhead is fixed precisely so this needs no read — but until #23 has
+// rewritten what is already on disk, whether a file is framed at all is a
+// question only its first four bytes can answer.
+//
+// TODO(#23): with no plaintext objects left this is the subtraction alone,
+// and Stat is one os.Stat again.
+func (s *ObjectStore) plaintextSize(libraryID string, objID string, fileSize int64) (int64, error) {
+	magic := make([]byte, len(frameMagic))
+	n, err := s.backend.readAt(libraryID, objID, magic, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return -1, err
+	}
+	if !isFrame(magic[:n]) {
+		return fileSize, nil
+	}
+	if fileSize <= int64(frameOverhead) {
+		// A frame that cannot hold anything: the torn write, caught by the
+		// same rule that has always called a zero-length object absent.
+		return 0, nil
+	}
+	return fileSize - int64(frameOverhead), nil
 }
 
 // ObjectInfo is what a listing already knows about one object without opening
@@ -282,7 +395,11 @@ func (s *ObjectStore) List(libraryID string, fn func(ObjectInfo) error) error {
 		return err
 	}
 	return s.backend.list(libraryID, func(p packInfo) error {
-		return fn(ObjectInfo{ID: p.id, Size: p.size, ModTime: p.modTime})
+		size, err := s.plaintextSize(libraryID, p.id, p.size)
+		if err != nil {
+			return err
+		}
+		return fn(ObjectInfo{ID: p.id, Size: size, ModTime: p.modTime})
 	})
 }
 

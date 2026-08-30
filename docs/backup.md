@@ -1,15 +1,40 @@
 # Backup and restore
 
-A Silo deployment is two kinds of state, and they need different handling:
+A Silo deployment is three kinds of state, and they need different handling:
 
 | What | Where | How to copy |
 |---|---|---|
+| Storage key | `<data-dir>/storage.key` | copy it once, somewhere else, now |
 | Database | `<data-dir>/silo.db` | `silo backup-db` |
 | Object store | `<data-dir>/storage/` | `rsync`, `cp -a`, snapshot, tar — anything |
 
 The object store is an immutable content-addressed file tree; any ordinary
 copy tool handles it. The database is not safe to copy with `cp`, and the
 order the two halves are captured in decides whether the backup restores.
+
+## `storage.key` first, and only once
+
+**Every object in the store is encrypted under `storage.key`, and it cannot be
+rotated.** It is 32 bytes, generated the first time the server starts, and
+without it a backup of the object store is a directory of unreadable files —
+a complete backup by every measure a backup tool applies, and worth nothing.
+
+It never changes, so it is not part of the nightly rotation: copy it once, to
+somewhere that is not this machine and not the same disk as the store, and
+check that you still have it whenever you check anything else. A password
+manager or a printed copy is a reasonable place for 32 bytes.
+
+The server prints a one-time warning when it generates the key. If the file
+goes missing while the store still holds objects, the server **refuses to
+start** rather than generating a new one — a fresh key would look exactly like
+a clean first start and the loss would not surface until the first read of an
+old object. Restore the key from wherever it was copied; there is nothing else
+that recovers it.
+
+The other side of that rule: a copy of `storage.key` is a copy of everything
+needed to read the store, so treat it the way its contents deserve. It is
+mode `0600` in the data directory, and it belongs somewhere at least that
+careful.
 
 ## Why `cp silo.db` is not a backup
 
@@ -62,6 +87,9 @@ silo backup-db -d /var/lib/silo /backup/silo/$(date +%F)
 rsync -a /var/lib/silo/storage/ /backup/silo/$(date +%F)/storage/
 ```
 
+`storage.key` is not in there, deliberately — see above. It is copied once, by
+hand, somewhere else.
+
 `backup-db` refuses to overwrite an existing destination file, so a failed run
 cannot replace a good backup with a broken one. Pass `-f` when rotating into a
 fixed path.
@@ -89,8 +117,15 @@ The order rule does not apply here — nothing is writing.
 systemctl stop silo
 rm -rf /var/lib/silo
 cp -a /backup/silo/2026-08-16 /var/lib/silo
+cp /wherever/you/kept/it/storage.key /var/lib/silo/storage.key
+chmod 600 /var/lib/silo/storage.key
 systemctl start silo
 ```
+
+**The key goes back too, and it is the same key.** A restore that puts back
+the database and the store but not `storage.key` restores nothing readable,
+and the server will say so rather than starting: a missing key over a store
+that holds objects is a refusal, not a first start.
 
 A restored library may be behind what a client already has locally. Clients
 resolve this by uploading what the server is missing, the same way they handle
@@ -106,6 +141,15 @@ sqlite3 /backup/silo/2026-08-16/silo.db 'PRAGMA integrity_check;'
 
 A snapshot from `backup-db` stands alone: there should be no `-wal` or `-shm`
 file beside it. If there is, it did not come from `backup-db`.
+
+Check the key is where you think it is, and that it is 32 bytes:
+
+```sh
+wc -c < /wherever/you/kept/it/storage.key    # 32
+cmp /wherever/you/kept/it/storage.key /var/lib/silo/storage.key
+```
+
+This is the one check with no second chance, and the cheapest one here.
 
 To confirm the store matches the heads, restore into a scratch data directory
 and run `silo serve` against it — a client that syncs a library end to end has

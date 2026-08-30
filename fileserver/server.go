@@ -24,6 +24,7 @@ import (
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/notif"
+	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/serversecret"
 	"github.com/dkam/silo/fileserver/setup"
@@ -188,6 +189,13 @@ func openStores() error {
 	if err := resolvePaths(); err != nil {
 		return err
 	}
+	// Before anything opens a library: a store whose key is missing cannot be
+	// read at all, and finding that out here means one error that says so
+	// rather than a failure per object, later, from whatever happened to ask
+	// first. On a first start this is what generates the key.
+	if err := objstore.EnsureKey(absDataDir); err != nil {
+		return err
+	}
 	option.LoadFileServerOptions(configFile)
 	loadDatabase()
 	libmgr.Init(siloPair.Read, siloPair.Write, dataDir)
@@ -268,6 +276,13 @@ func Run(args []string) error {
 		log.Fatalf("%v", err)
 	}
 	log.Infof("Data directory: %s", absDataDir)
+
+	// See openStores: the same check, for the path that does not go through
+	// it. A server that cannot read its own store should say so and stop, not
+	// accept requests and fail every one of them.
+	if err := objstore.EnsureKey(absDataDir); err != nil {
+		log.Fatalf("%v", err)
+	}
 
 	// Logging: default to stdout. Use -l to write to a file instead.
 	if logFile != "" && logFile != "-" {

@@ -106,9 +106,17 @@ func testExists(t *testing.T) {
 		t.Errorf("File is not exist\n")
 	}
 
+	// The object is 130 bytes; the file holding it is a sealed frame around
+	// them. Both halves are asserted, because the pair is the invariant: the
+	// store answers about the object, and the disk holds the frame.
+	const objectSize = 130
+	if size, err := bend.Stat(libraryID, objID); err != nil || size != objectSize {
+		t.Errorf("Stat = (%d, %v), want (%d, nil)", size, err, objectSize)
+	}
+
 	filePath := path.Join(dataDir, "storage", "commit", libraryID, objID[:2], objID[2:])
 	fileInfo, _ := os.Stat(filePath)
-	if fileInfo.Size() != 130 {
+	if fileInfo.Size() != int64(objectSize+frameOverhead) {
 		t.Errorf("File is exist, but the size of file is incorrect.\n")
 	}
 }
