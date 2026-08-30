@@ -43,9 +43,14 @@ type packReader interface {
 // is a RemoveAll today and packs shared across libraries would make deleting
 // one library a compaction of every pack it touched.
 type packSet struct {
+	// mu guards which packs exist. Readers take it for a moment to look; it is
+	// never held across an fsync.
 	mu     sync.RWMutex
 	open   *openPack
 	sealed []*sealedPack
+	// writeMu serialises appends and the rotation between packs. Separate from
+	// mu on purpose — see appendFrame.
+	writeMu sync.Mutex
 }
 
 // find asks the open pack and then the sealed ones.
@@ -130,10 +135,27 @@ type packStore struct {
 	objDir string
 	mu     sync.Mutex
 	libs   map[string]*packSet
+
+	// The age sealer, brought up the first time anything writes a pack. See
+	// packwrite.go.
+	sealerOnce sync.Once
+	sealerMu   sync.Mutex
+	stop       chan struct{}
+	stopped    bool
+	wg         sync.WaitGroup
+	// maxAge and sweep are copied from the package variables at creation, so
+	// the sweeper goroutine reads fields nobody else writes. See packwrite.go.
+	maxAge time.Duration
+	sweep  time.Duration
 }
 
 func newPackStore(objDir string) *packStore {
-	return &packStore{objDir: objDir, libs: map[string]*packSet{}}
+	return &packStore{
+		objDir: objDir,
+		libs:   map[string]*packSet{},
+		maxAge: packMaxAge,
+		sweep:  packSweep,
+	}
 }
 
 func (ps *packStore) set(libraryID string) (*packSet, error) {
@@ -239,6 +261,10 @@ func loadPackSet(objDir, libraryID string) (*packSet, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Inherited from a previous run rather than opened by this one, which
+		// the writer needs to know: its frames have been outside any sealed
+		// pack for at least as long as the process was down.
+		p.recovered = true
 		set.open = p
 	}
 	for _, id := range sealedIDs {

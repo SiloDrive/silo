@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // A pack opens with its own magic and version, and — once sealed — closes with
@@ -96,6 +97,13 @@ type openPack struct {
 	size    int64
 	entries []indexEntry
 	byID    map[string]indexEntry
+	// first is when the oldest frame in this pack was appended, which is what
+	// the age rule bounds. Zero while the pack is empty: an empty pack has no
+	// oldest frame and no window to close.
+	first time.Time
+	// recovered marks a pack this process found open rather than opened, set
+	// by loadPackSet. The writer seals such a pack rather than appending to it.
+	recovered bool
 }
 
 func packPaths(objDir, libraryID, packID string) (pack string, side string) {
@@ -200,6 +208,9 @@ func (p *openPack) append(frame []byte, objID string, sync bool) (indexEntry, er
 	}
 
 	p.size = offset + int64(len(frame))
+	if len(p.entries) == 0 {
+		p.first = time.Now()
+	}
 	p.entries = append(p.entries, e)
 	p.byID[objID] = e
 	return e, nil
@@ -241,6 +252,34 @@ func (p *openPack) full() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.size >= packTarget
+}
+
+// olderThan reports whether this pack's oldest frame has been waiting longer
+// than d. An empty pack is never old: there is nothing in it whose durability
+// window is open.
+func (p *openPack) olderThan(d time.Duration) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.entries) > 0 && !p.first.IsZero() && time.Since(p.first) > d
+}
+
+// discard closes an open pack that never held a frame and removes both files.
+//
+// Sealing it instead would leave a pack holding a footer, a filter and nothing
+// else, which every later lookup would ask and every listing would walk — a
+// permanent cost for a pack that never held anything.
+func (p *openPack) discard(objDir, libraryID string) error {
+	if err := p.close(); err != nil {
+		return err
+	}
+	packPath, sidePath := packPaths(objDir, libraryID, p.id)
+	if err := os.Remove(sidePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Remove(packPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return syncDir(packDir(objDir, libraryID))
 }
 
 func (p *openPack) close() error {

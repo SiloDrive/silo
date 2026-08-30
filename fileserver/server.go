@@ -485,6 +485,13 @@ func handleSignals() {
 		}
 	}
 
+	// Before the database, because sealing writes files that the store must be
+	// able to describe afterwards, and after the HTTP drain, because a request
+	// still in flight may still be appending frames.
+	if err := objstore.Close(); err != nil {
+		log.Warnf("Failed to seal open packs: %v", err)
+	}
+
 	checkpointAndClose(siloPair)
 
 	if err := removePidfile(pidFilePath); err != nil {

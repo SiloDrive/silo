@@ -23,6 +23,8 @@ import (
 	"io"
 	"path/filepath"
 	"time"
+
+	"github.com/dkam/silo/fileserver/option"
 )
 
 // ErrContentMismatch is returned by a verified write whose bytes do not hash
@@ -178,7 +180,7 @@ func New(confPath string, dataDir string, objType string) *ObjectStore {
 	}
 	obj.backend = backend
 	obj.key = key
-	obj.packs = newPackStore(TypeDir(dataDir, objType))
+	obj.packs = packStoreFor(TypeDir(dataDir, objType))
 	return obj
 }
 
@@ -375,6 +377,12 @@ func (s *ObjectStore) write(libraryID string, objID string, r io.Reader, sync bo
 	frame, err := sealFrame(s.key, objID, plain)
 	if err != nil {
 		return err
+	}
+	if option.PackWrites {
+		// The frame is the same bytes either way. That is the property that
+		// makes ingest a copy rather than a re-seal, and it is why this is a
+		// choice of container at the last moment rather than two write paths.
+		return s.packs.append(libraryID, objID, frame, sync)
 	}
 	return s.backend.write(libraryID, objID, bytes.NewReader(frame), sync)
 }

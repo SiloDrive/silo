@@ -1,9 +1,11 @@
 # Packs
 
-Status: **steps 1 to 3 built** — the index, the sidecar, recovery, sealing,
-reading a sealed pack, and the lookup that serves every read verb out of one.
-Steps 4 and 5 are still ahead, and the loose store is still the *write* path,
-so nothing on disk is packed yet. Tracked as silo#17, milestone `packs`.
+Status: **steps 1 to 4 built, and the cutover is behind a flag that is off.**
+The index, the sidecar, recovery, sealing, reading a sealed pack, the lookup,
+the writer and the three sealing rules are all in. `option.PackWrites` is
+`false`, so every install still writes loose objects. See § The cutover for why
+it is not on, and step 5 for what is left. Tracked as silo#17, milestone
+`packs`.
 
 Owned by [`../storage.md`](../storage.md) § Packs, which is normative for the
 format and the sealing rules. This document owns the *build*: what order, what
@@ -260,10 +262,57 @@ Three things this step settled that the plan had not:
 
 ### 4. Seal on age and at shutdown, and packs become the write path
 
-The age rule is what turns the single-copy window into a number rather than
-"until enough data arrives". It comes after reads work because it is the first
-thing needing a clock and a background timer, which are easier to reason about
-against a layer that is already correct.
+**Built, behind `option.PackWrites`, which is off.** The writer, the three
+sealing rules and the process-wide registry are in and tested; what the flag
+gates is only which container a write lands in.
+
+Three rules close a pack: **target size**; **age**, so the single-copy window
+is a number rather than "until enough data arrives" — an open pack cannot be
+uploaded, so on a quiet server the day's last chunks would otherwise sit on one
+disk until unrelated future traffic happened to fill the pack; and **clean
+shutdown**, so a stop leaves nothing half-open. A fourth case falls out of
+recovery: a pack found open at startup is sealed rather than appended to, since
+its frames have been outside any sealed pack for at least as long as the
+process was down.
+
+An open pack that never held a frame is **discarded rather than sealed**.
+Sealing it would leave a footer and a filter that every later lookup asks and
+every listing walks, permanently, for a pack that held nothing.
+
+**The open pack is process-global per store directory, and that is forced.**
+`objstore.New` is called once per loaded library, so an open pack held on an
+`ObjectStore` would mean two instances appending to one library through two
+handles at two offsets, each believing it owned the end of the file. Step 3's
+"two open packs" refusal catches that state on disk; the registry is what stops
+it being created. `objstore.Close()` is package-level for the same reason, and
+the server calls it once on the way down.
+
+Two prerequisites landed before any of this, because they are what a write path
+moving would otherwise break:
+
+- **`Remove` refuses a packed object** with `ErrInPack` instead of succeeding.
+  The loose path is gone, and `os.Remove` on a missing file is deliberately not
+  an error here, so the old code would have reported bytes reclaimed that are
+  still on the disk. `gc` counts those separately and says so.
+- **`List` reports packed objects**, and reports an object that is in a pack
+  and loose exactly once.
+
+### The cutover
+
+`PackWrites` defaults to **off**, and this is the one decision in this plan
+made against the plan's own ordering.
+
+A sealed pack is immutable, so an unreferenced object inside one cannot be
+deleted; the bytes come back only when compaction rewrites the pack without
+them, and compaction is silo#19 and is not built. Turning packs on as the write
+path therefore means `silo gc -delete` finds orphans, reports them honestly as
+left in place, and frees nothing — a store that churns grows without bound.
+Neither step 4 nor step 5 restores that; only silo#19 does.
+
+So the write path lands, is exercised and can be reviewed against a server that
+still reclaims space, and the default flips when compaction makes it safe. The
+flag is not a tuning knob and no deployment should set it; it is deleted rather
+than documented.
 
 ### 5. Ingest, and `gc` stops walking the layout
 
