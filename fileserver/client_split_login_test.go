@@ -41,7 +41,7 @@ func TestEnrollingCrossesTheAccountOverAndStopsSendingThePassword(t *testing.T) 
 	}
 
 	c := client.NewClient(base)
-	acct, err := c.Enrol(email, wirePassword)
+	acct, _, err := c.Enrol(email, wirePassword)
 	if err != nil {
 		t.Fatalf("Enrol: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestEnrollingCrossesTheAccountOverAndStopsSendingThePassword(t *testing.T) 
 func TestACrossedOverAccountStillDrivesAnEncryptedLibrary(t *testing.T) {
 	base, _ := wire(t)
 	c := client.NewClient(base)
-	acct, err := c.Enrol("wire@example.com", wirePassword)
+	acct, _, err := c.Enrol("wire@example.com", wirePassword)
 	if err != nil {
 		t.Fatalf("Enrol: %v", err)
 	}

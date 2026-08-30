@@ -215,28 +215,29 @@ sees the shape and not the names. It was built before item 7 deliberately: it
 gives the login change a consumer to test against, and `OpenAccount` is the one
 function both touch.
 
-**One thing in its scope did not land: nothing mints recovery codes.**
-`store/recovery.go` and the server side are both complete — the codes, the
-kind-2 wrap, the table, the redemption that leaves the rest of a set standing —
-and `GenerateRecoveryCode` has no caller outside a test, so no account holds
-any. Until that changes, a forgotten password and an operator reset are the
-same event: `silo user passwd` cannot re-wrap an identity key, because
-re-wrapping means unwrapping and that needs the old password, so the blob is
-left in place and unopenable.
+**Recovery codes are minted here too, and that placement is the argument for
+it.** `client.Enrol` wraps the identity private half once per code and returns
+the set to its caller, in the same call that generates the key — the only
+moment it can, since minting a set means holding the private half and after
+enrolment returns nothing does. `client.Recover` takes a code and a password,
+opens the identity, re-wraps it under fresh parameters and retires the spent
+code in one publish. Built later it would have arrived to a population of
+accounts holding no codes and needed a migration to give them some, which is
+the shape of problem this project keeps declining to create.
 
-It belongs here rather than after, and the ordering is the argument: the code
-that generates an identity key is the code that should generate its recovery
-set. Built later, it arrives to a population of accounts holding no codes and
-needs a migration to give them some — which is the shape of problem this
-project keeps declining to create.
+What that makes survivable is the operator reset. `silo user passwd` cannot
+re-wrap an identity key — re-wrapping means unwrapping and that needs the old
+password — so it leaves the blob in place and unopenable and says so. A code is
+the way back to it, and the two halves are deliberately in different hands: the
+operator restores login and cannot open a blob, the code opens the blob and
+cannot restore login.
 
 Tracked: milestone `e2ee-client`, #6 (key bootstrap), #7
 (`CreateEncryptedLibrary`), #8 (read path), #9 (write path), #10 (one
-interface, two implementations), #11 (round-trip test), #32 (recovery codes,
-not built). Porter's side: porter-fuse #1, #2; porter-macos #1 — each an
-independent implementation against
-[`spec/store-format.md`](spec/store-format.md), so each reproduces the kind-2
-wrap rather than inheriting it, and none of that is actionable before #32.
+interface, two implementations), #11 (round-trip test), #32 (recovery codes).
+Porter's side: porter-fuse #1, #2; porter-macos #1 — each an independent
+implementation against [`spec/store-format.md`](spec/store-format.md), so each
+reproduces the kind-2 wrap rather than inheriting it.
 
 #### 9. Sharing an encrypted library
 

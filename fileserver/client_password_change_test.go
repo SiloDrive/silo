@@ -23,7 +23,7 @@ func TestChangingThePasswordKeepsTheIdentityKey(t *testing.T) {
 	const email = "wire@example.com"
 
 	c := client.NewClient(base)
-	acct, err := c.Enrol(email, wirePassword)
+	acct, _, err := c.Enrol(email, wirePassword)
 	if err != nil {
 		t.Fatalf("Enrol: %v", err)
 	}

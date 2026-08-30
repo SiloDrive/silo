@@ -686,6 +686,36 @@ they lost their device. The server never learns a code — it stores an
 `ordinal`, never the code — so redemption is the client fetching the set,
 trying each blob, and telling the server which one is spent.
 
+**The client mints the set at enrolment, and only there.** `client.Enrol`
+wraps the identity private half once per code and returns the codes to its
+caller, in the same call that generates the key. It is the only moment they
+can be produced: minting a set means holding the private half, and after
+enrolment returns nothing does. So a set arrives with the identity key or the
+account never has one, which is the shape that avoids a population of accounts
+holding no codes and a migration to give them some.
+
+**The wraps go up in the same `PUT` as the identity blob**, for the reason the
+whole-set rule above gives. A second publish that added them would be a second
+chance to fail with the identity key already stored — an account whose key is
+recorded and whose way back to it is not.
+
+**`client.Recover` spends the code in that same `PUT` rather than through
+`DELETE`.** Publishing without a wrap removes it, so re-wrapping the identity
+under the new password and retiring the spent code are one statement. The
+order matters the way it does everywhere else here: deleting first would spend
+a code and then, on a failed publish, leave the user holding one fewer and no
+further forward. `DELETE account/keys/recovery/{n}` remains the endpoint for
+retiring a code on its own, which is not what redemption is.
+
+**A code recovers the identity key. It does not recover login, and it cannot.**
+Redeeming takes an authenticated request, so an account nobody can log in to is
+one no code can reach. Login comes back through the operator, who can set a
+password and cannot open a blob; the code is the half the operator does not
+have. `client.Recover` takes both for that reason, and what it leaves behind is
+an ordinary enrolled account — identity re-wrapped under fresh parameters, the
+account crossed back over to derived login, and a device holding only the new
+password working afterwards with no code at all.
+
 | Request | Answer |
 |---|---|
 | A publish whose blob and `kdf_params` disagree | `400`, saying which is which — every case here is a client bug whose symptom otherwise appears months later |

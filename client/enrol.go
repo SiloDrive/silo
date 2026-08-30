@@ -73,45 +73,62 @@ func (c *APIClient) PublishKeys(public, wrapped []byte, params store.KDFParams, 
 // It returns the opened account, because the caller has just paid argon2id and
 // holds the identity in memory; making them call OpenAccount afterwards would
 // pay it a second time for a key already in hand.
-func (c *APIClient) Enrol(email, password string) (*Account, error) {
+//
+// It also returns the account's recovery codes, and this is the only moment
+// they exist. They are wrapped to the identity key here and nowhere else --
+// the server never sees one, this client does not keep one, and no later call
+// can produce them, because minting a set means wrapping the private half and
+// after this returns nothing holds it. A caller that discards the slice has
+// made an account whose password is its single point of failure; the codes are
+// a return value rather than a field so that discarding them has to be
+// deliberate.
+func (c *APIClient) Enrol(email, password string) (*Account, []string, error) {
 	// The password, because this account has not crossed over yet -- that is
 	// what enrolling is about to do.
 	if err := c.Login(email, password); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	info, err := c.AccountInfo()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var salt [store.KDFSaltSize]byte
 	if _, err := rand.Read(salt[:]); err != nil {
-		return nil, fmt.Errorf("client: generating a KDF salt: %w", err)
+		return nil, nil, fmt.Errorf("client: generating a KDF salt: %w", err)
 	}
 	params := store.DefaultKDFParams(salt)
 	creds, err := store.DeriveCredentials(password, params)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	identity, err := store.GenerateIdentity()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	priv := identity.Private()
 	wrapped, err := store.WrapIdentity(creds.WrapKey, info.AccountID, params, priv)
 	if err != nil {
-		return nil, fmt.Errorf("client: wrapping the identity key: %w", err)
+		return nil, nil, fmt.Errorf("client: wrapping the identity key: %w", err)
+	}
+	// The recovery set goes up in the same PUT as the identity blob. Not a
+	// later call: this endpoint replaces everything it is given, so a second
+	// publish adding the wraps would be a second chance to fail with the
+	// identity key already stored and no way back to it.
+	codes, recovery, err := mintRecovery(info.AccountID, priv)
+	if err != nil {
+		return nil, nil, err
 	}
 	pub := identity.Public()
-	if err := c.PublishKeys(pub[:], wrapped, params, nil); err != nil {
-		return nil, fmt.Errorf("client: publishing the identity key: %w", err)
+	if err := c.PublishKeys(pub[:], wrapped, params, recovery); err != nil {
+		return nil, nil, fmt.Errorf("client: publishing the identity key: %w", err)
 	}
 
 	if err := c.crossOver(password, creds, params); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &Account{ID: info.AccountID, Identity: identity, c: c}, nil
+	return &Account{ID: info.AccountID, Identity: identity, c: c}, codes, nil
 }
 
 // rewrapIdentity re-seals the identity key under a new password and publishes
