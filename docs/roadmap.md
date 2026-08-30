@@ -52,6 +52,7 @@ is the destination and this one is the route.
 | The E2EE content format — codecs, name encryption, key wrapping, key-free readers, test vectors | [`spec/store-format.md`](spec/store-format.md), oriented by [`encryption.md`](encryption.md) |
 | Claiming a fresh server: the setup token, `POST auth/setup`, `silo setup-token` | [`auth.md`](auth.md) § Claiming a server that has no accounts |
 | The account side of E2EE — `client_kdf_params`, `AccountIdentityKey`, `AccountRecoveryWrap`, `POST auth/kdf`, and encrypted-library creation | [`auth.md`](auth.md) § The account's key material, [`storage.md`](storage.md) § What the server can read |
+| The sealing client — key bootstrap from a password, library creation, the object-graph read, the spine rewrite, and one interface over both library types | [`protocol.md`](protocol.md#the-e2ee-client-shape), oriented by [`encryption.md`](encryption.md) |
 
 Three things are built and worth naming separately because they are easy to
 assume are missing. The **changes feed works on a library the server cannot
@@ -70,10 +71,10 @@ own in porter-fuse. Both consume [`protocol.md`](protocol.md).
 
 Two chains, and they do not wait on each other. **The storage chain** runs
 at-rest encryption → packs → compaction → durable tiers → occupied-block
-charging; its head is built but for the ingest, and packs are unblocked. **The E2EE chain** has three
-unblocked heads — grants and invites, split-derivation login, and the sealing
-client — that can be worked in any order, and one entry, sharing an encrypted
-library, that waits on two of them. The sequence of the E2EE chain is owned by
+charging; its head is built but for the ingest, and packs are unblocked. **The E2EE chain** has two
+unblocked heads — grants and invites, and the client half of split-derivation
+login — and one entry, sharing an encrypted library, that waits on two of
+them. The sequence of the E2EE chain is owned by
 [`plans/e2ee-completion.md`](plans/e2ee-completion.md); this file only places
 it beside the storage chain.
 
@@ -155,8 +156,7 @@ The grant table, `CheckPerm` unification across the three principals, the
 `role` column, and invite redemption. Owned by
 [`plans/sharing.md`](plans/sharing.md), step 1 of its build order.
 
-**Unblocked, and with the sealing client one of the two largest available
-product steps.** It stands on the credential table and on the account side of
+**Unblocked, and the largest available product step.** It stands on the credential table and on the account side of
 E2EE, both built — invite redemption is where E2EE bootstrap happens, the one
 moment a client is guaranteed present to generate an identity keypair, and the
 schema it writes into exists. It is also what makes `is_staff` mean something:
@@ -201,11 +201,12 @@ the round-trip test over HTTP that does not exist yet. Owned by
 [`plans/e2ee-completion.md`](plans/e2ee-completion.md) step 1, with porter's
 adoption of it as that plan's step 4.
 
-**Unblocked, and the largest available product step alongside grants.** Every
-primitive it needs is in `store/`; what is missing is the client that calls
-them, and that client is the only way to get the round-trip test. Building it
-before item 7 is deliberate: it gives the login change a consumer to test
-against, and `OpenAccount` is the one function both touch.
+**Built.** `client.LibraryFS` is the interface and `Account.Open` makes the
+choice per library; the round trip runs against a real server, from a password
+to a written tree to a second client that reads it back and a keyless view that
+sees the shape and not the names. It was built before item 7 deliberately: it
+gives the login change a consumer to test against, and `OpenAccount` is the one
+function both touch.
 
 Tracked: milestone `e2ee-client`, #6 (key bootstrap), #7
 (`CreateEncryptedLibrary`), #8 (read path), #9 (write path), #10 (one

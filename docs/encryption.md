@@ -59,8 +59,20 @@ sealed sections for what need not be public. Normative:
 The server half is built: the format with vectors, the account key schema and
 `POST auth/kdf`, `POST /libraries` with `"e2ee": true` and
 `GET /libraries/{id}/key`, behind the `account-keys` and `e2ee-libraries`
-feature names. No client seals anything yet, and login is not split. The
-sequence for what is left is [`plans/e2ee-completion.md`](plans/e2ee-completion.md).
+feature names.
+
+The client half is built too. `client.LibraryFS` answers *list*, *read* and
+*write* over either kind of library, chosen once by `Account.Open`; the
+encrypted implementation opens an identity from a password, mints a library the
+server cannot read, rewrites the spine on every write, and turns a
+`changes?since=` path back into a plaintext one. The round trip runs against a
+real server.
+
+Login is split on the server and not yet on the client, so the password still
+reaches the server — which is what makes everything above real against a stolen
+disk and not against the server itself. That, sharing, and the grant model are
+what remain; the sequence is
+[`plans/e2ee-completion.md`](plans/e2ee-completion.md).
 
 ## Guardrails — what not to build
 

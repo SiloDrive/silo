@@ -282,6 +282,61 @@ func (l *EncryptedLibrary) List(p string) ([]Node, error) {
 	return out, nil
 }
 
+// DecryptPath turns a path as changes?since= reports it into a plaintext one.
+//
+// An encrypted library's changes carry each segment as unpadded base64url of
+// its AES-SIV ciphertext, because the server builds that answer out of public
+// directory sections and has nothing else to say. Decrypting it needs a walk:
+// each segment is under its parent's salt, so the parents have to be read in
+// order, which is the same cost as resolving the path and shares the same
+// cache.
+//
+// It resolves against the current head, so a path whose parent directories
+// have since been removed cannot be decrypted -- there is no directory left to
+// hold the key. That is a real limit on a client that lets its anchor get old,
+// and the answer is to read changes more often rather than to keep a key map
+// the format does not have.
+func (l *EncryptedLibrary) DecryptPath(p string) (string, error) {
+	segs := segments(p)
+	if len(segs) == 0 {
+		return "/", nil
+	}
+	at, err := l.Root()
+	if err != nil {
+		return "", err
+	}
+	out := make([]string, 0, len(segs))
+	for i, seg := range segs {
+		ct, err := store.NameFromURL(seg)
+		if err != nil {
+			return "", fmt.Errorf("client: segment %d of %s: %w", i, p, err)
+		}
+		d, err := l.directory(at)
+		if err != nil {
+			return "", err
+		}
+		name, err := d.names.Decrypt(ct)
+		if err != nil {
+			return "", fmt.Errorf("client: segment %d of %s does not decrypt: %w", i, p, err)
+		}
+		out = append(out, name)
+		if i == len(segs)-1 {
+			break
+		}
+		child, kind, found, err := lookup(d.dir, d.names, name)
+		switch {
+		case err != nil:
+			return "", err
+		case !found:
+			return "", fmt.Errorf("%w: %s is no longer in the tree", ErrNotFound, strings.Join(out, "/"))
+		case kind != store.NodeDir:
+			return "", fmt.Errorf("client: %s is not a directory", strings.Join(out, "/"))
+		}
+		at = child
+	}
+	return "/" + strings.Join(out, "/"), nil
+}
+
 // Directory reads the directory object a path names.
 //
 // Exported because the salt is part of it, and a caller rewriting a directory
