@@ -747,6 +747,19 @@ outer of two. The difference between the library types remains exactly one
 sentence: *whether the server holds a key that can read the content.* Nothing
 about storage layout differs.
 
+**The frame is the unit, and it does not wait for packs.** This section used
+to be sequenced inside § Packs because the nonce lives in the frame header.
+That is true, and it is also why the two are separable: a frame is
+self-describing whether the file holding it contains one or a thousand. So
+the loose store adopts the frame first — a loose object becomes one sealed
+frame at its existing path — and packs arrive later as a container of frames
+plus an index, with no change to the frame format or the key. What that buys
+is at-rest encryption against the store an install is actually running, and
+a loose-to-frame ingest that is the dry run for the loose-to-pack ingest
+packs need anyway. The recovery scan that walks frames is the same code over
+a directory of single-frame files or a pack. Nothing about the decision above
+changes: cannot-lose and cannot-rotate hold from the first frame written.
+
 ## Durable tiers
 
 The same pack format byte-for-byte on every backend: server-local disk as the
@@ -1130,19 +1143,26 @@ the two library types.
    stored hash was not made from.
 2. **A `server-info` feature name for the id-addressed surface**, so a client
    can detect `objects/{id}` and `PUT head` rather than assume them.
-3. **Packs** — the format, per-pack indexes, seal-on-size-or-age-or-shutdown,
-   `storage.key` and its backup wiring, the recovery scan, and the loose-store
-   ingest that scan doubles as.
-4. **The tracing mark and compaction** — `PackStats`, threshold and throttled
+3. **The sealed frame and `storage.key`** — the frame codec with vectors,
+   key generation at first start with its backup wiring and the one-time
+   warning, `objstore` reading and writing one frame per loose object, and
+   the restartable ingest that rewrites existing plaintext loose objects as
+   frames. At-rest encryption lands here, ahead of packs, for the reason given
+   under § Storage encryption, universal.
+4. **Packs** — the container format, per-pack indexes,
+   seal-on-size-or-age-or-shutdown, the recovery scan, and the loose-store
+   ingest that scan doubles as — which is the frame ingest above, pointed at a
+   pack.
+5. **The tracing mark and compaction** — `PackStats`, threshold and throttled
    rewrite, locality and undersize as scheduling inputs, two budgets. Built
    together with per-library GC, which is the same mark.
-5. **Durable backends** — NAS and S3 against the four-verb floor, async upload
+6. **Durable backends** — NAS and S3 against the four-verb floor, async upload
    of sealed packs, verified-then-evictable local cache, the cache-size knob,
    the unverified-packs column and the scan that rebuilds it, replication as
    pack copy. The background workers arrive here and bring their panic recovery
    and the three error-level conditions with them.
-6. **Compression**, measured before it is written.
-7. **`silo convert`.**
+7. **Compression**, measured before it is written.
+8. **`silo convert`.**
 
 One piece of debris to clear on the way past, not load-bearing: nothing creates
 a `VirtualLibrary` row while several queries still join the table.
