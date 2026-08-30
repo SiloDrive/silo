@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/admin"
 )
 
 var readDB *sql.DB
@@ -168,6 +169,17 @@ func Claim(ctx context.Context, presented Token, email, passwordHash string) (ac
 		// an account holds it. Treated as a refusal rather than trusted,
 		// because the cost of being wrong is a token spent on nothing.
 		return account.Zero, ErrAlreadySetUp
+	}
+
+	// The full capability set, in this same transaction. The role alone says
+	// what kind of account it is and grants nothing on its own -- admin.Can is
+	// a conjunction -- so a first boot that wrote the role and stopped would
+	// produce a server whose only account is an administrator who can do
+	// nothing, with no second account to fix it from. That is not a recoverable
+	// state, which is the same reason the token is spent in here rather than
+	// after.
+	if err := admin.AssignTx(ctx, tx, id, admin.All()...); err != nil {
+		return account.Zero, err
 	}
 
 	res, err := tx.ExecContext(ctx, "DELETE FROM SetupToken WHERE id = 1")

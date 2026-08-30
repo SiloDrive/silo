@@ -65,6 +65,16 @@ CREATE TABLE Account (
   ctime      INTEGER NOT NULL
 );
 
+-- One row per administrative operation an account holds. Rows rather than
+-- columns, so a new administrative verb is data and not a migration -- and half
+-- an answer rather than the whole one: the rule is a conjunction, role = admin
+-- AND a row exists, spelled once in fileserver/admin. See plans/admin.md.
+CREATE TABLE AccountCapability (
+  account_id BLOB NOT NULL REFERENCES Account(id),
+  capability TEXT NOT NULL,             -- users | passwords | quota | tokens | retention | grant
+  PRIMARY KEY (account_id, capability)
+);
+
 CREATE TABLE AccountEmail (
   email       TEXT    PRIMARY KEY,       -- lowercased; account.Normalize is the one rule
   account_id  BLOB    NOT NULL REFERENCES Account(id),
@@ -1250,6 +1260,18 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
 6. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
 Outside that list: `role` can be set when an account is created but not
-afterwards. Changing it is the `grant` capability in
-[`plans/admin.md`](plans/admin.md), and it does not exist yet — so an install
-that wants a second administrator creates one with `silo user -role admin add`.
+afterwards, so an install that wants a second administrator creates one with
+`silo user -role admin add`.
+
+*Capabilities* can be changed after the fact — `silo user grant` and `silo user
+revoke`, over the closed set in [`plans/admin.md`](plans/admin.md). Two things
+are refused there, and both are about the install rather than about tidiness:
+nobody hands on or takes away an authority they do not hold themselves, and the
+last holder of `grant` may not drop it. `setup.Claim` writes the role and all
+six capabilities in one transaction, because a first boot that produced a
+server nobody can administer is not a recoverable state.
+
+Being an admin grants nothing on its own, and neither do the rows: `admin.Can`
+is a conjunction and is the only place that rule is written. That is what makes
+a demotion reversible without anybody having to remember a set — the rows
+survive it and mean nothing while it stands.

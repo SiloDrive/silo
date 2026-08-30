@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/admin"
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/option"
 )
@@ -18,6 +19,7 @@ func userTestStore(t *testing.T) {
 	t.Helper()
 	tokenTestStore(t)
 	authmgr.Init(siloPair.Read, siloPair.Write)
+	admin.Init(siloPair.Read, siloPair.Write)
 }
 
 // withStdin hands a command a password the way a pipe would. A pipe is not a

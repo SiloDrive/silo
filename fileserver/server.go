@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/admin"
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/credential"
@@ -343,6 +344,7 @@ func Run(args []string) error {
 	share.Init(siloPair.Read, option.GroupTableName, option.CloudMode)
 
 	account.Init(siloPair.Read, siloPair.Write)
+	admin.Init(siloPair.Read, siloPair.Write)
 	authmgr.Init(siloPair.Read, siloPair.Write)
 	api.Init(siloPair.Read, siloPair.Write)
 	api.StartLoginLimiterCleanup()

@@ -1,0 +1,224 @@
+package admin
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/option"
+)
+
+func testDB(t *testing.T) *dbutil.DBPair {
+	t.Helper()
+
+	origTimeout := option.DBOpTimeout
+	if option.DBOpTimeout <= 0 {
+		option.DBOpTimeout = 30 * time.Second
+	}
+	pair, err := dbutil.OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
+	if err != nil {
+		t.Fatalf("opening test database: %v", err)
+	}
+	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
+		t.Fatalf("creating test tables: %v", err)
+	}
+
+	origRead, origWrite := readDB, writeDB
+	Init(pair.Read, pair.Write)
+	account.Init(pair.Read, pair.Write)
+	t.Cleanup(func() {
+		readDB, writeDB = origRead, origWrite
+		option.DBOpTimeout = origTimeout
+		_ = pair.Close()
+	})
+	return pair
+}
+
+func ctx(t *testing.T) context.Context {
+	t.Helper()
+	c, cancel := option.WithDBTimeout(context.Background())
+	t.Cleanup(cancel)
+	return c
+}
+
+// mkAccount creates an account in the given role and assigns it capabilities
+// by the install's own hand, which is what setup and the CLI have.
+func mkAccount(t *testing.T, email string, role account.Role, caps ...Capability) *account.Account {
+	t.Helper()
+	id, _, err := account.Create(ctx(t), email, "", role)
+	if err != nil {
+		t.Fatalf("creating %s: %v", email, err)
+	}
+	if len(caps) > 0 {
+		if err := Assign(ctx(t), id, caps...); err != nil {
+			t.Fatalf("assigning %v to %s: %v", caps, email, err)
+		}
+	}
+	acct, err := account.ByEmail(ctx(t), email)
+	if err != nil {
+		t.Fatalf("reading back %s: %v", email, err)
+	}
+	return acct
+}
+
+// The vocabulary is closed, for the reason ParseRole's is: a capability read
+// back that matches no rule is not an error at the point it is written, it is
+// an authority nothing recognises -- and whether that refuses everything or
+// allows everything depends on which way the rule reading it is written.
+func TestAnUnknownCapabilityIsRefusedAtTheDoor(t *testing.T) {
+	for _, s := range []string{"", "admin", "Users", "users ", "read_any_library", "*"} {
+		if c, err := ParseCapability(s); err == nil {
+			t.Errorf("ParseCapability(%q) = %q, want an error", s, c)
+		}
+	}
+	if len(All()) != 6 {
+		t.Errorf("the vocabulary holds %d capabilities, want the six", len(All()))
+	}
+	for _, want := range All() {
+		if got, err := ParseCapability(string(want)); err != nil || got != want {
+			t.Errorf("ParseCapability(%q) = %q, %v", want, got, err)
+		}
+	}
+}
+
+// The rule is a conjunction and this is the whole of it. Neither half implies
+// the other: rows on a non-admin grant nothing, and being an admin grants
+// nothing on its own.
+func TestCanIsRoleAndRowAndNeitherAlone(t *testing.T) {
+	testDB(t)
+	rowsButNotAdmin := mkAccount(t, "user@example.com", account.RoleUser, All()...)
+	adminNoRows := mkAccount(t, "bare@example.com", account.RoleAdmin)
+	both := mkAccount(t, "admin@example.com", account.RoleAdmin, CapUsers)
+
+	for _, c := range []struct {
+		name string
+		acct *account.Account
+		cap  Capability
+		want bool
+	}{
+		{"every row but not an admin", rowsButNotAdmin, CapUsers, false},
+		{"an admin holding no rows", adminNoRows, CapUsers, false},
+		{"an admin holding the row", both, CapUsers, true},
+		{"an admin holding a different row", both, CapQuota, false},
+	} {
+		got, err := Can(ctx(t), c.acct, c.cap)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got != c.want {
+			t.Errorf("%s: Can(%s) = %v, want %v", c.name, c.cap, got, c.want)
+		}
+	}
+
+	// A nil account is the unauthenticated caller, and it holds nothing.
+	if got, err := Can(ctx(t), nil, CapUsers); err != nil || got {
+		t.Errorf("Can(nil) = %v, %v, want false", got, err)
+	}
+}
+
+// Otherwise grant is grant-plus-everything, spelled indirectly.
+func TestNobodyGrantsWhatTheyDoNotHold(t *testing.T) {
+	testDB(t)
+	actor := mkAccount(t, "granter@example.com", account.RoleAdmin, CapGrant, CapUsers)
+	target := mkAccount(t, "target@example.com", account.RoleAdmin)
+
+	if err := Grant(ctx(t), actor, target.ID, CapUsers); err != nil {
+		t.Fatalf("granting a capability the actor holds: %v", err)
+	}
+	err := Grant(ctx(t), actor, target.ID, CapRetention)
+	if !errors.Is(err, ErrNotHeld) {
+		t.Errorf("granting a capability the actor lacks = %v, want ErrNotHeld", err)
+	}
+	// And it did not land by half: a refused grant writes nothing.
+	held, err := Of(ctx(t), target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 1 || held[0] != CapUsers {
+		t.Errorf("the target holds %v after a refused grant, want just users", held)
+	}
+
+	// Taking one away is the same rule read the other way. An account holding
+	// only grant must not be able to strip every other administrator of an
+	// authority it was never trusted with itself.
+	stripper := mkAccount(t, "stripper@example.com", account.RoleAdmin, CapGrant)
+	if err := Revoke(ctx(t), stripper, target.ID, CapUsers); !errors.Is(err, ErrNotHeld) {
+		t.Errorf("revoking a capability the actor lacks = %v, want ErrNotHeld", err)
+	}
+}
+
+// grant is the escalation boundary, so holding the operations without it is
+// not enough to hand them on.
+func TestGrantingWithoutTheGrantCapabilityIsRefused(t *testing.T) {
+	testDB(t)
+	actor := mkAccount(t, "operator@example.com", account.RoleAdmin, CapUsers, CapQuota)
+	target := mkAccount(t, "target@example.com", account.RoleAdmin)
+
+	if err := Grant(ctx(t), actor, target.ID, CapUsers); !errors.Is(err, ErrNeedsGrant) {
+		t.Errorf("granting without the grant capability = %v, want ErrNeedsGrant", err)
+	}
+
+	// A user who is not an admin at all holds nothing, whatever rows say.
+	notAdmin := mkAccount(t, "ordinary@example.com", account.RoleUser, All()...)
+	if err := Grant(ctx(t), notAdmin, target.ID, CapUsers); !errors.Is(err, ErrNeedsGrant) {
+		t.Errorf("granting as a non-admin = %v, want ErrNeedsGrant", err)
+	}
+}
+
+// A server nobody can administer is a data-loss event with extra steps. The
+// rule is about the last holder of grant, not the last admin -- an install can
+// have several administrators of whom one manages authority.
+func TestTheLastHolderOfGrantMayNotDropIt(t *testing.T) {
+	testDB(t)
+	only := mkAccount(t, "only@example.com", account.RoleAdmin, All()...)
+	// A second admin, holding everything except grant, so that "the last admin"
+	// and "the last holder of grant" are different accounts in this test.
+	mkAccount(t, "deputy@example.com", account.RoleAdmin, CapUsers, CapQuota)
+
+	err := Revoke(ctx(t), only, only.ID, CapGrant)
+	if !errors.Is(err, ErrLastGrant) {
+		t.Errorf("the last holder dropping grant = %v, want ErrLastGrant", err)
+	}
+	// The install's own hand is refused too. It is the same invariant, and the
+	// CLI can always hand grant to somebody else first.
+	if err := Withdraw(ctx(t), only.ID, CapGrant); !errors.Is(err, ErrLastGrant) {
+		t.Errorf("withdrawing the last grant = %v, want ErrLastGrant", err)
+	}
+
+	// With a second holder it is an ordinary revocation.
+	second := mkAccount(t, "second@example.com", account.RoleAdmin)
+	if err := Grant(ctx(t), only, second.ID, CapGrant); err != nil {
+		t.Fatalf("granting grant: %v", err)
+	}
+	if err := Revoke(ctx(t), only, only.ID, CapGrant); err != nil {
+		t.Errorf("dropping grant with a second holder standing: %v", err)
+	}
+	if can, err := Can(ctx(t), only, CapGrant); err != nil || can {
+		t.Errorf("the capability survived its revocation: %v, %v", can, err)
+	}
+}
+
+// Granting is idempotent: a capability an account already holds is not an
+// error, because the caller's intent is a state and not an increment.
+func TestGrantingTwiceIsNotAnError(t *testing.T) {
+	testDB(t)
+	actor := mkAccount(t, "granter@example.com", account.RoleAdmin, CapGrant, CapUsers)
+	target := mkAccount(t, "target@example.com", account.RoleAdmin)
+
+	for range 2 {
+		if err := Grant(ctx(t), actor, target.ID, CapUsers); err != nil {
+			t.Fatalf("granting: %v", err)
+		}
+	}
+	held, err := Of(ctx(t), target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 1 {
+		t.Errorf("the target holds %v, want one row", held)
+	}
+}

@@ -155,6 +155,8 @@ Usage:
   silo user disable <email>       Stop every credential the account holds
   silo user enable <email>        Undo a disable
   silo user quota <email> [size]  Show the storage cap and usage, or set it
+  silo user grant <email> <caps>  Give administrative capabilities
+  silo user revoke <email> <caps> Take administrative capabilities away
   silo token list <email>         Show a user's sync and API tokens
   silo token revoke <email> [tok] Revoke every token a user holds, or just one
   silo tui [url]                  Launch the interactive terminal UI

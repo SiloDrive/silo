@@ -1,8 +1,9 @@
 # Plan: administrative authority, and the surface it gates
 
 Date: 2026-08-30
-Status: **partly built** — the `role` column and its closed parser have landed;
-capabilities, the middleware and the HTTP surface are designed and not built. Depends on
+Status: **partly built** — the `role` column, the capability table and both
+`grant` invariants have landed; the middleware and the HTTP surface are
+designed and not built. Depends on
 [`sharing.md`](sharing.md) § Accounts, which owns the role vocabulary, and on
 [`../auth.md`](../auth.md)'s credential table, which has landed.
 
@@ -215,8 +216,26 @@ reported fact that nothing currently reports.
 1. **`is_staff` becomes `role`.** Built. The flag went rather than gaining a
    neighbour; `SchemaVersion` 3. `silo user add -role admin|user|guest`, a ROLE
    column in the listing, and `role` in its JSON.
-2. **`AccountCapability`, the closed vocabulary, and both `grant` invariants**,
-   with `setup.Claim` writing the full set in its existing transaction.
+2. **`AccountCapability`, the closed vocabulary, and both `grant` invariants.**
+   Built, in `fileserver/admin`. `setup.Claim` writes `role` and all six in its
+   existing transaction; `admin.Can` is the conjunction and is the only
+   spelling of it. `silo user grant` and `silo user revoke` take a
+   comma-separated set, and the listing gained a CAPABILITIES column.
+
+   The CLI is the install's own hand and has no actor to check: an operator
+   holding the database could write the row directly, so asking them to prove
+   authority would be a formality. It still honours the last-holder rule, which
+   is about the install rather than the caller — and costs nothing, since
+   handing `grant` to somebody else first is the thing the operator meant to
+   do. `Grant` and `Revoke` are the actor-bearing pair the HTTP surface will
+   use; `Assign` and `Withdraw` are the CLI's.
+
+   **Revoking is checked the same way as granting.** The plan states the
+   invariant for handing on; it is applied to taking away as well, because an
+   account holding only `grant` must not be able to strip every other
+   administrator of an authority it was never trusted with itself. That is not
+   escalation, but it is an install left unable to do its own work by somebody
+   who could never do it either.
 3. **`RequireAdmin`**, and the accounts endpoints over the functions the CLI
    already calls.
 4. **The page**, `embed.FS`, with the libraries and accounts panels — the two

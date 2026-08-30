@@ -159,9 +159,11 @@ The grant table, `CheckPerm` unification across the three principals, the
 **Unblocked, and the largest available product step.** It stands on the credential table and on the account side of
 E2EE, both built — invite redemption is where E2EE bootstrap happens, the one
 moment a client is guaranteed present to generate an identity keypair, and the
-schema it writes into exists. The `role` column has landed ahead of it; what
-an `admin` may do is designed in [`plans/admin.md`](plans/admin.md) and
-consumed by nothing today.
+schema it writes into exists. The `role` column has landed ahead of it, and so
+has the capability set that says what an `admin` may do —
+[`plans/admin.md`](plans/admin.md) steps 1 and 2, held in `AccountCapability`
+and reachable from `silo user grant`. What consumes it is still nothing: the
+`RequireAdmin` middleware and the endpoints behind it are that plan's step 3.
 
 The event log lands alongside: [`plans/events.md`](plans/events.md) phase 1 can
 start now, and its phase 2 must ship *with* the share surface rather than after

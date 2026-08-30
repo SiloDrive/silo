@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dkam/silo/fileserver/admin"
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
@@ -48,6 +49,7 @@ func serveTestAPI(t *testing.T) string {
 	share.Init(siloPair.Read, "Group", false)
 	api.Init(siloPair.Read, siloPair.Write)
 	authmgr.Init(siloPair.Read, siloPair.Write)
+	admin.Init(siloPair.Read, siloPair.Write)
 	setup.Init(siloPair.Read, siloPair.Write)
 
 	srv := httptest.NewServer(newHTTPRouter())

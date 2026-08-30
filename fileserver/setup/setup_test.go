@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/admin"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/option"
 )
@@ -209,6 +210,18 @@ func TestClaimCreatesTheFirstAccountAsStaff(t *testing.T) {
 	}
 	if !acct.Role.IsAdmin() {
 		t.Errorf("the first account is %q, want admin", acct.Role)
+	}
+	// The role and the full capability set land in the same transaction, for
+	// the reason the token and the account do: a first boot that produced a
+	// server nobody can administer is not a recoverable state, and an admin
+	// holding no capability rows can do nothing at all.
+	admin.Init(pair.Read, pair.Write)
+	held, err := admin.Of(ctx(t), id)
+	if err != nil {
+		t.Fatalf("reading the first account's capabilities: %v", err)
+	}
+	if len(held) != len(admin.All()) {
+		t.Errorf("the first account holds %v, want all six", held)
 	}
 	if !acct.IsActive {
 		t.Error("the first account is not active")

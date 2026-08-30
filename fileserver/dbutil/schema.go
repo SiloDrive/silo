@@ -158,6 +158,25 @@ CREATE TABLE IF NOT EXISTS AccountRecoveryWrap (
 -- name is the purpose, not a key id. Two purposes must never share a secret,
 -- so the name is part of the primary key and reaching for a new purpose mints
 -- a new row rather than reusing one.
+-- Administrative authority, one row per capability an account holds.
+--
+-- Rows rather than columns, so that adding an administrative operation is data
+-- and not a migration: a column per operation means a schema change, a CLI
+-- flag, a JSON field and a checkbox for every new verb, forever, and "what can
+-- this person do" becomes a read of N columns no query can ask generically.
+--
+-- A row is half of an answer, never the whole one. The rule is a conjunction
+-- and lives in fileserver/admin: role = admin AND a row exists. So these rows
+-- survive an account being demoted out of admin and mean nothing while it is,
+-- which is what makes a demotion reversible without remembering a set.
+--
+-- See docs/plans/admin.md.
+CREATE TABLE IF NOT EXISTS AccountCapability (
+  account_id BLOB NOT NULL REFERENCES Account(id),
+  capability TEXT NOT NULL,
+  PRIMARY KEY (account_id, capability)
+);
+
 CREATE TABLE IF NOT EXISTS ServerSecret (
   name   TEXT    PRIMARY KEY,
   secret BLOB    NOT NULL,

@@ -14,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/admin"
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/option"
@@ -89,6 +90,20 @@ func RunUser(args []string) error {
 		}
 		size := rest[2]
 		run = func() error { return setUserQuota(email, size) }
+	case "grant", "revoke":
+		// Two arguments, and the second is a set rather than a single name:
+		// handing somebody users and quota in two commands leaves a window in
+		// which they hold half of what the operator decided to give them.
+		if len(rest) != 3 {
+			return fmt.Errorf("silo user %s needs an email address and a comma-separated list of capabilities\n\n%s",
+				action, UserUsage)
+		}
+		email, caps := rest[1], rest[2]
+		if action == "grant" {
+			run = func() error { return grantUser(email, caps) }
+		} else {
+			run = func() error { return revokeUser(email, caps) }
+		}
 	case "add", "passwd", "disable", "enable":
 		// Every one of these names one person, and names them by the address
 		// the operator knows rather than the id the tables hold.
@@ -119,6 +134,7 @@ func RunUser(args []string) error {
 	// package left uninitialised does not fail to compile and does not fail
 	// gracefully: the nil *sql.DB panics on first use.
 	credential.Init(siloPair.Read, siloPair.Write)
+	admin.Init(siloPair.Read, siloPair.Write)
 
 	return run()
 }
@@ -137,6 +153,10 @@ const UserUsage = `usage:
   silo user enable <email>                    Undo a disable
   silo user quota <email>                     Show the cap and what is used
   silo user quota <email> <size|none>         Set the cap: 100gb, 500mb, none
+  silo user grant <email> <caps>              Give administrative capabilities
+  silo user revoke <email> <caps>             Take them away
+                                              (caps: users, passwords, quota,
+                                               tokens, retention, grant)
 
 Flags come first: silo user -generate add alice@example.com`
 
@@ -148,9 +168,18 @@ func listUsers(asJSON bool) error {
 	if err != nil {
 		return err
 	}
+	// Read whatever the listing is about to render, in one query rather than
+	// one per account. Capabilities mean nothing on an account that is not an
+	// admin -- admin.Can is a conjunction -- but the rows are shown as they
+	// are, because a listing that hid them would hide exactly what a demotion
+	// left behind.
+	caps, err := admin.OfAll(ctx)
+	if err != nil {
+		return err
+	}
 
 	if asJSON {
-		return printUsersJSON(users)
+		return printUsersJSON(users, caps)
 	}
 	if len(users) == 0 {
 		fmt.Println("No accounts. The server will mint a bootstrap admin on its next start.")
@@ -161,14 +190,15 @@ func listUsers(asJSON bool) error {
 	// an operator has to read with a ruler is one they will read wrong, and
 	// hand-computed widths only ever measure the column somebody remembered.
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "EMAIL\tSTATUS\tROLE\tPASSWORD\tCREATED")
+	fmt.Fprintln(tw, "EMAIL\tSTATUS\tROLE\tPASSWORD\tCREATED\tCAPABILITIES")
 	for _, u := range users {
 		status := "active"
 		if !u.IsActive {
 			status = "DISABLED"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			displayEmail(u), status, string(u.Role), yesNo(u.HasPassword), formatTime(u.Ctime))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			displayEmail(u), status, string(u.Role), yesNo(u.HasPassword),
+			formatTime(u.Ctime), admin.Join(caps[u.ID]))
 	}
 	return tw.Flush()
 }
@@ -451,27 +481,112 @@ func readPasswordLine(r io.Reader) (string, error) {
 // userJSON is the listing's wire shape, named here rather than inlined so
 // that a field cannot be renamed by accident.
 type userJSON struct {
-	ID          string `json:"id"`
-	Email       string `json:"email"`
-	IsActive    bool   `json:"is_active"`
-	Role        string `json:"role"`
-	HasPassword bool   `json:"has_password"`
-	Created     string `json:"created"`
+	ID           string   `json:"id"`
+	Email        string   `json:"email"`
+	IsActive     bool     `json:"is_active"`
+	Role         string   `json:"role"`
+	Capabilities []string `json:"capabilities"`
+	HasPassword  bool     `json:"has_password"`
+	Created      string   `json:"created"`
 }
 
-func printUsersJSON(users []account.Listed) error {
+func printUsersJSON(users []account.Listed, caps map[account.ID][]admin.Capability) error {
 	out := make([]userJSON, 0, len(users))
 	for _, u := range users {
+		// An empty list rather than null: a consumer iterating the field
+		// should not have to special-case the account that holds nothing,
+		// which is most of them.
+		held := []string{}
+		for _, c := range caps[u.ID] {
+			held = append(held, string(c))
+		}
 		out = append(out, userJSON{
-			ID:          u.ID.String(),
-			Email:       u.Email,
-			IsActive:    u.IsActive,
-			Role:        string(u.Role),
-			HasPassword: u.HasPassword,
-			Created:     formatTime(u.Ctime),
+			ID:           u.ID.String(),
+			Email:        u.Email,
+			IsActive:     u.IsActive,
+			Role:         string(u.Role),
+			Capabilities: held,
+			HasPassword:  u.HasPassword,
+			Created:      formatTime(u.Ctime),
 		})
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
+}
+
+// grantUser and revokeUser are the install's own hand on administrative
+// authority: no actor, because the operator already holds the database and an
+// actor check would be a formality asked of somebody who could write the row
+// directly. What they do honour is the last-holder-of-grant invariant, which
+// is about the install rather than about the caller -- and which costs nothing
+// here, since handing grant to somebody else first is the thing the operator
+// meant to do.
+//
+// The whole set is parsed before the account is looked up, so a typo in a
+// capability name is reported as a typo rather than as a partial grant.
+func grantUser(email, list string) error {
+	caps, acct, err := resolveCapabilityChange(email, list)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	if err := admin.Assign(ctx, acct.ID, caps...); err != nil {
+		return err
+	}
+	return reportCapabilities(ctx, acct)
+}
+
+func revokeUser(email, list string) error {
+	caps, acct, err := resolveCapabilityChange(email, list)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	if err := admin.Withdraw(ctx, acct.ID, caps...); err != nil {
+		return err
+	}
+	return reportCapabilities(ctx, acct)
+}
+
+// resolveCapabilityChange parses the set and finds the account, in that order.
+// Parsing first means an unknown capability costs a message and not a database
+// read, and -- more to the point -- it means no part of a set containing one is
+// ever written.
+func resolveCapabilityChange(email, list string) ([]admin.Capability, *account.Account, error) {
+	caps, err := admin.ParseCapabilities(list)
+	if err != nil {
+		return nil, nil, err
+	}
+	acct, err := resolveAccount(email)
+	if err != nil {
+		return nil, nil, err
+	}
+	return caps, acct, nil
+}
+
+// reportCapabilities prints what the account holds now rather than what
+// changed. The operator asked for a state, and the set they are looking at is
+// the answer to "did that do what I meant".
+func reportCapabilities(ctx context.Context, acct *account.Account) error {
+	held, err := admin.Of(ctx, acct.ID)
+	if err != nil {
+		return err
+	}
+	if len(held) == 0 {
+		fmt.Printf("%s holds no administrative capabilities.\n", acct.Email)
+		return nil
+	}
+	fmt.Printf("%s holds: %s\n", acct.Email, admin.Join(held))
+	if !acct.Role.IsAdmin() {
+		// Said out loud, because the rows are real and do nothing: an operator
+		// who granted a capability and saw it listed would otherwise have no
+		// way to learn why the person still cannot use it.
+		fmt.Printf("\n%s is a %s, not an admin, so none of these grant anything yet.\n",
+			acct.Email, acct.Role)
+		fmt.Printf("Capabilities are half of the rule: the account must be an admin as well.\n")
+	}
+	return nil
 }
