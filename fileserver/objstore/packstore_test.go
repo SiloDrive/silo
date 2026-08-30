@@ -330,3 +330,128 @@ func TestAPackedFrameIsStillBoundToItsID(t *testing.T) {
 		t.Errorf("the id the pack does hold did not read: %v", err)
 	}
 }
+
+// --- listing and removal ------------------------------------------------
+
+// A census that could not see packed objects would report a store as nearly
+// empty, and a collector reading the same walk would find nothing to collect.
+func TestListReportsPackedObjects(t *testing.T) {
+	bodies := []string{"one", "two, which is longer", "three"}
+	s, ids, _ := packedStore(t, TypeChunks, bodies, true)
+
+	got := map[string]int64{}
+	if err := s.List(libraryID, func(o ObjectInfo) error {
+		got[o.ID] = o.Size
+		if o.ModTime.IsZero() {
+			t.Errorf("%s was listed with no modification time — the collector's age guard needs one", o.ID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	if len(got) != len(ids) {
+		t.Fatalf("List reported %d objects, want %d", len(got), len(ids))
+	}
+	for i, id := range ids {
+		if got[id] != int64(len(bodies[i])) {
+			t.Errorf("List gave %s a size of %d, want %d", id, got[id], len(bodies[i]))
+		}
+	}
+}
+
+// Ingest appends a frame and deletes the loose copy only once the index is
+// durable, so the two overlap by design. Counting such an object twice would
+// report bytes that are not there — the number an operator reads before
+// deciding to reclaim.
+func TestListReportsAnObjectInBothPlacesOnce(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "storage-data")
+	first := New(confPath, dataDir, TypeChunks)
+	body := "mid-ingest: in a pack and still loose"
+	id := idOf([]byte(body))
+
+	if err := first.WriteVerified(libraryID, id, strings.NewReader(body), true); err != nil {
+		t.Fatal(err)
+	}
+	p, err := createPack(TypeDir(dataDir, TypeChunks), libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := sealFrame(first.key, id, []byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.append(frame, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.seal(); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(confPath, dataDir, TypeChunks)
+	seen := 0
+	var size int64
+	if err := s.List(libraryID, func(o ObjectInfo) error {
+		if o.ID == id {
+			seen++
+			size = o.Size
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if seen != 1 {
+		t.Errorf("an object in a pack and loose was listed %d times, want 1", seen)
+	}
+	if size != int64(len(body)) {
+		t.Errorf("it was listed at %d bytes, want %d", size, len(body))
+	}
+}
+
+// The dangerous one. The loose path is already gone, and os.Remove on a
+// missing file is deliberately not an error here — so without the check this
+// returns success and lets "silo gc -delete" report bytes reclaimed that are
+// still on the disk.
+func TestRemovingAPackedObjectIsRefusedRatherThanFaked(t *testing.T) {
+	body := "unreferenced, but inside a sealed pack"
+	s, ids, dataDir := packedStore(t, TypeChunks, []string{body}, true)
+	id := ids[0]
+
+	err := s.Remove(libraryID, id)
+	if !errors.Is(err, ErrInPack) {
+		t.Fatalf("Remove of a packed object gave %v, want ErrInPack", err)
+	}
+
+	// And it is still readable, which is the whole reason the refusal matters:
+	// reporting it as removed would have been a lie about live data.
+	got, err := s.ReadInto(libraryID, id, nil)
+	if err != nil {
+		t.Fatalf("the object is gone after a refused removal: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("read %q, want %q", got, body)
+	}
+	_ = dataDir
+}
+
+// Removing a loose object still works, and removing one that was never there
+// is still success — deletion has to stay idempotent for compaction's sake.
+func TestRemovingALooseObjectIsUnchanged(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "storage-data")
+	s := New(confPath, dataDir, TypeChunks)
+	body := "loose, and removable"
+	id := idOf([]byte(body))
+
+	if err := s.WriteVerified(libraryID, id, strings.NewReader(body), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove(libraryID, id); err != nil {
+		t.Fatalf("removing a loose object: %v", err)
+	}
+	if exists, err := s.Exists(libraryID, id); err != nil || exists {
+		t.Errorf("Exists = %v (err %v) after removal, want false", exists, err)
+	}
+	if err := s.Remove(libraryID, id); err != nil {
+		t.Errorf("removing it twice: %v — deletion must stay idempotent", err)
+	}
+}

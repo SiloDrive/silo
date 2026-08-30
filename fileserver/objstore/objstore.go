@@ -40,6 +40,17 @@ var ErrContentMismatch = errors.New("content does not match its object id")
 // sentinel means the tiering logic is written once instead of per backend.
 var ErrNotFound = errors.New("no such object")
 
+// ErrInPack reports an object that cannot be deleted where it is, because a
+// sealed pack is immutable.
+//
+// A sentinel because a caller has to be able to tell it from a failure. It is
+// not "the delete went wrong": the object is exactly where it should be, and
+// the space it occupies is reclaimed by compaction rewriting the pack without
+// it. A collector that treats this as an error stops; one that treats it as
+// success reports space it did not free. Neither is right, and only a named
+// error lets a caller pick the third answer.
+var ErrInPack = errors.New("objstore: the object is in a pack, and a pack reclaims by compaction")
+
 // The two object types, and the directory each one's store occupies.
 //
 // Chunks are the large content objects — the ones packs exist for — and
@@ -468,22 +479,67 @@ type ObjectInfo struct {
 	ModTime time.Time
 }
 
-// List calls fn for every object a library holds. fn's error stops the walk and
-// is returned.
+// List calls fn for every object a library holds, packed or loose. fn's error
+// stops the walk and is returned.
+//
+// Each object is reported once even while it is in both places. Ingest appends
+// a frame to a pack and deletes the loose copy only once the index is durable,
+// so the two overlap by design, and a census that counted such an object twice
+// would report bytes that are not there — which is exactly the number an
+// operator reads before deciding to reclaim.
+//
+// The set of packed ids is held for the duration, which is the cost of that
+// guarantee: a full store is millions of ids. It is the same shape the census
+// above this already builds to answer reachability, so it is not a new order
+// of memory — but it is why this is a walk rather than a stream that could
+// forget what it had seen.
 func (s *ObjectStore) List(libraryID string, fn func(ObjectInfo) error) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
+
+	packed := map[string]struct{}{}
+	err := s.packs.each(libraryID, func(e indexEntry, modTime time.Time) error {
+		if _, seen := packed[e.ID]; seen {
+			// The same object in two packs, which ingest can produce and
+			// compaction resolves. One report, not two.
+			return nil
+		}
+		packed[e.ID] = struct{}{}
+		return fn(ObjectInfo{ID: e.ID, Size: e.plaintextLen(), ModTime: modTime})
+	})
+	if err != nil {
+		return err
+	}
+
 	return s.backend.list(libraryID, func(p packInfo) error {
+		if _, seen := packed[p.id]; seen {
+			return nil
+		}
 		return fn(ObjectInfo{ID: p.id, Size: objectSize(p.size), ModTime: p.modTime})
 	})
 }
 
 // Remove deletes one object. Removing an object that is not there is not an
 // error.
+//
+// An object inside a pack is refused rather than deleted, and that refusal is
+// the point of this being a sentinel. A pack is immutable once sealed, so there
+// is no delete to perform: the bytes come back when compaction rewrites the
+// pack without them (silo#19). The dangerous version of this function is the
+// one that does not check — the loose path is already gone, os.Remove on a
+// missing file is deliberately not an error here, so it would return success
+// and let "silo gc -delete" report bytes reclaimed that are still on the disk.
 func (s *ObjectStore) Remove(libraryID string, objID string) error {
 	if err := s.ready(); err != nil {
 		return err
+	}
+	_, _, packed, err := s.packs.find(libraryID, objID)
+	if err != nil {
+		return err
+	}
+	if packed {
+		return fmt.Errorf("%s/%s: %w", libraryID, objID, ErrInPack)
 	}
 	return s.backend.remove(libraryID, objID)
 }

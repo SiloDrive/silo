@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/objmgr"
+	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/internal/format"
 	storefmt "github.com/dkam/silo/store"
@@ -40,6 +42,16 @@ type orphanSweep struct {
 	tooYoung int
 	removed  int
 	freed    int64
+	// packed is how many were left where they are because a pack holds them.
+	// A sealed pack is immutable, so there is no delete to perform: the bytes
+	// come back when compaction rewrites the pack without them.
+	//
+	// Counted separately from removed and from an error, because it is
+	// neither. Folding it into removed would report space that is still on the
+	// disk; logging it as a failure would tell an operator something went
+	// wrong when nothing did.
+	packed      int
+	packedBytes int64
 }
 
 // sweepOrphans reclaims one library's unreferenced objects.
@@ -107,6 +119,11 @@ func sweepOrphans(libraryID string, minAge time.Duration, del bool) (orphanSweep
 	// that works until the day the backend is not a filesystem.
 	for _, o := range doomed {
 		if err := st.RemoveOrphan(o); err != nil {
+			if errors.Is(err, objstore.ErrInPack) {
+				sweep.packed++
+				sweep.packedBytes += o.Size
+				continue
+			}
 			log.Errorf("Failed to remove orphan %s from %s: %v", o.ID, libraryID, err)
 			continue
 		}
@@ -157,8 +174,8 @@ func runOrphanSweep(minAge time.Duration, del bool, quiet bool) error {
 		return nil
 	}
 
-	var found, removed, tooYoung int
-	var bytes, freed int64
+	var found, removed, tooYoung, packed int
+	var bytes, freed, packedBytes int64
 	for _, id := range ids {
 		sweep, err := sweepOrphans(id, minAge, del)
 		if err != nil {
@@ -173,6 +190,8 @@ func runOrphanSweep(minAge time.Duration, del bool, quiet bool) error {
 		tooYoung += sweep.tooYoung
 		removed += sweep.removed
 		freed += sweep.freed
+		packed += sweep.packed
+		packedBytes += sweep.packedBytes
 		if !quiet && (sweep.found > 0 || sweep.tooYoung > 0) {
 			verb := "would remove"
 			if del {
@@ -190,6 +209,13 @@ func runOrphanSweep(minAge time.Duration, del bool, quiet bool) error {
 		fmt.Printf("Removed %d unreferenced objects, %s.\n", removed, format.Bytes(freed))
 	} else {
 		fmt.Printf("%d unreferenced objects, %s. Re-run with -delete to remove.\n", found, format.Bytes(bytes))
+	}
+	if packed > 0 {
+		// Named rather than left inside "removed", because these bytes are
+		// still on the disk. An operator who ran this to free space has to be
+		// told that this much of it will not come back until compaction runs.
+		fmt.Printf("%d unreferenced objects, %s, are inside packs and were left there; "+
+			"a pack is immutable, and compaction is what reclaims them.\n", packed, format.Bytes(packedBytes))
 	}
 	if tooYoung > 0 {
 		// Said out loud rather than left to be inferred from a total that does

@@ -205,6 +205,18 @@ func (p *openPack) append(frame []byte, objID string, sync bool) (indexEntry, er
 	return e, nil
 }
 
+// snapshot copies the index, so a walk can read it without holding the pack's
+// mutex across the caller's work. Appends keep going during a listing, which
+// matters because a listing is a whole-store walk and an append is on the
+// request path.
+func (p *openPack) snapshot() []indexEntry {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]indexEntry, len(p.entries))
+	copy(out, p.entries)
+	return out
+}
+
 // lookup answers from memory. An open pack has no bloom filter and needs none:
 // it is one pack, the writer is already holding its index, and asking it is a
 // map read rather than anything on disk.

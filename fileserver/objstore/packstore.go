@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // packReader is what the two kinds of pack have in common, which is exactly
@@ -63,6 +64,52 @@ func (s *packSet) find(objID string) (packReader, indexEntry, bool) {
 		}
 	}
 	return nil, indexEntry{}, false
+}
+
+// each calls fn for every object the set's packs hold, with the modification
+// time of the pack holding it.
+//
+// A pack's mtime rather than a frame's, because a frame has no timestamp and
+// adding one would put a field in the index that only this walk reads. What
+// uses it is the collector's age guard — "has this been sitting here long
+// enough to be safe to reclaim" — and a pack is always at least as young as
+// the frames in it, so an object in one looks newer than it is. That is the
+// conservative direction: the guard errs towards not collecting.
+func (s *packSet) each(fn func(indexEntry, time.Time) error) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.open != nil {
+		mt, err := fileModTime(s.open.path)
+		if err != nil {
+			return err
+		}
+		for _, e := range s.open.snapshot() {
+			if err := fn(e, mt); err != nil {
+				return err
+			}
+		}
+	}
+	for _, p := range s.sealed {
+		mt, err := fileModTime(p.path)
+		if err != nil {
+			return err
+		}
+		for _, e := range p.entries() {
+			if err := fn(e, mt); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func fileModTime(path string) (time.Time, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return info.ModTime(), nil
 }
 
 // packStore holds every library's packs, loaded when a library is first asked
@@ -110,6 +157,15 @@ func (ps *packStore) forget(libraryID string) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	delete(ps.libs, libraryID)
+}
+
+// each calls fn for every object a library's packs hold.
+func (ps *packStore) each(libraryID string, fn func(indexEntry, time.Time) error) error {
+	s, err := ps.set(libraryID)
+	if err != nil {
+		return err
+	}
+	return s.each(fn)
 }
 
 // find locates an object in a library's packs.
