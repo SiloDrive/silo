@@ -342,3 +342,108 @@ func TestTwoRedemptionsRacingProduceOneWinner(t *testing.T) {
 		t.Errorf("%d of %d redemptions succeeded, want exactly 1", won, racers)
 	}
 }
+
+// Revoking an outstanding invite closes the link and leaves the trail.
+//
+// The link has to actually stop working, which is the half a no-op Revoke would
+// pass. The trail has to survive, which is the half a delete would fail: the
+// Invite row is the record of who was invited and by whom, and it is the reason
+// revocation expires the credential instead of removing it.
+//
+// The tombstone account stays too, and stays inactive. Revoke cannot tell an
+// account it caused to exist from one that was already standing for a share to
+// an address nobody had enrolled -- Mint reuses rather than duplicates -- so
+// deleting it would sometimes take a share's referent with it. Leaving it costs
+// nothing, because a tombstone opens no lane.
+func TestRevokingAnInviteClosesTheLinkAndKeepsTheTrail(t *testing.T) {
+	testDB(t)
+	by := admin(t)
+	inv, token, err := Mint(ctx(t), Options{
+		Email: "gone@example.com", Role: account.RoleUser, By: by,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Revoke(ctx(t), inv.CredentialID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if _, err := Redeem(ctx(t), token); err == nil {
+		t.Fatal("a revoked invite was redeemed")
+	} else if !errors.Is(err, credential.ErrExpired) {
+		t.Errorf("refusal = %v, want ErrExpired", err)
+	}
+
+	// Revoking again is not an error. There is no state to conflict over: the
+	// invite is outstanding both times, and the second call writes the same
+	// answer the first one did.
+	if err := Revoke(ctx(t), inv.CredentialID); err != nil {
+		t.Errorf("revoking twice: %v", err)
+	}
+
+	found, err := List(ctx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("List reported %d invites, want 1 -- revocation took the record with it", len(found))
+	}
+	if found[0].Email != "gone@example.com" || found[0].CreatedBy != by {
+		t.Errorf("trail = %+v, want the address and the administrator who minted it", found[0])
+	}
+	if found[0].RedeemedAt != 0 {
+		t.Errorf("RedeemedAt = %d, want 0 -- a revoked invite was never redeemed", found[0].RedeemedAt)
+	}
+
+	acct, err := account.ByID(ctx(t), inv.AccountID)
+	if err != nil {
+		t.Fatalf("the tombstone went with the invite: %v", err)
+	}
+	if acct.IsActive {
+		t.Error("revoking an invite activated the account it named")
+	}
+}
+
+// Revoking a redeemed invite is refused, and does not touch the account.
+//
+// There is nothing left to withdraw: the person arrived, and the credential's
+// expiry is no longer what stands between anybody and that account. Expiring it
+// anyway would report success for an operator's decision it did not carry out.
+// Taking the account back is a separate operation with a separate name, and the
+// refusal is what sends them to it.
+func TestRevokingASpentInviteIsRefused(t *testing.T) {
+	testDB(t)
+	by := admin(t)
+	inv, token, err := Mint(ctx(t), Options{
+		Email: "arrived@example.com", Role: account.RoleUser, By: by,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Redeem(ctx(t), token); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Revoke(ctx(t), inv.CredentialID); err == nil {
+		t.Fatal("a redeemed invite was revoked")
+	} else if !errors.Is(err, ErrSpent) {
+		t.Errorf("refusal = %v, want ErrSpent", err)
+	}
+
+	acct, err := account.ByID(ctx(t), inv.AccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !acct.IsActive {
+		t.Error("a refused revocation deactivated the account anyway")
+	}
+}
+
+// An invite that never existed and one that was already revoked away are the
+// same answer to an operator as to a redeemer.
+func TestRevokingAnInviteThatDoesNotExistIsNotFound(t *testing.T) {
+	testDB(t)
+	if err := Revoke(ctx(t), "no-such-credential"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Revoke = %v, want ErrNotFound", err)
+	}
+}

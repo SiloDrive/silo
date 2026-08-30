@@ -211,6 +211,25 @@ func Revoke(ctx context.Context, id string, owner account.ID) (bool, error) {
 	return dbutil.RowsAffected(res) > 0, nil
 }
 
+// Expire ends a credential's life without removing its row.
+//
+// Revoke deletes, which is right for a credential an operator is finished with:
+// the row is the credential, and a revoked one should leave nothing behind to
+// resolve. Expire is for the credential that is part of a record -- an invite,
+// whose Invite row references it and is the trail saying who was invited and
+// when they arrived. Deleting the credential would take that reference with it,
+// or be refused by it, which is what the foreign key is for.
+//
+// The token is as dead either way: every path that resolves one checks the
+// expiry, and a time in the past fails it.
+func Expire(ctx context.Context, id string) error {
+	if _, err := writeDB.ExecContext(ctx,
+		"UPDATE Credential SET expires_at = ? WHERE id = ?", time.Now().Unix()-1, id); err != nil {
+		return fmt.Errorf("expiring credential: %v", err)
+	}
+	return nil
+}
+
 // RevokeByLibrary deletes every credential scoped to a library, inside the
 // caller's transaction.
 //

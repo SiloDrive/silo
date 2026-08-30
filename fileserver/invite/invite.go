@@ -41,9 +41,11 @@ var (
 	// shared to that address, and minting a second account beside it would
 	// recreate the double-mint the identity split made unrepresentable.
 	ErrActiveAccount = errors.New("an active account already holds that address")
-	// ErrNotFound reports a token that names no invite. An invite that never
-	// existed and one that was revoked are the same answer to somebody holding
-	// a link.
+	// ErrNotFound reports a token, or a credential id, that names no invite.
+	// A revoked one still names one: revocation expires the credential and
+	// leaves the row, so a withdrawn link is refused as expired rather than as
+	// unknown -- the same answer a lapsed one gets, which is the point. See
+	// Revoke.
 	ErrNotFound = errors.New("no such invite")
 )
 
@@ -247,6 +249,55 @@ func Redeem(ctx context.Context, token string) (*Invite, error) {
 	// still runs out underneath it.
 	inv.RedeemedAt = now
 	return inv, nil
+}
+
+// Revoke withdraws an outstanding invite.
+//
+// The credential is expired rather than deleted and the Invite row is left
+// standing, because that row is the record of who was invited and by whom. An
+// invite withdrawn before anybody used it is a thing an operator did, and a
+// trail that forgets the invites nobody redeemed is a trail that only remembers
+// the decisions that worked out.
+//
+// A withdrawn invite and one that ran out of its seven days give the holder the
+// same answer, credential.ErrExpired, and that is the intent rather than a
+// shortcut. Neither is an answer they can act on except by asking for another
+// one, and a distinct "this was taken away from you" would say something about
+// an administrator's decision to somebody outside it. Which of the two it was
+// is the audit log's question, and docs/plans/events.md gives it a name --
+// `credential.revoked` -- along with the actor this function deliberately does
+// not take a parameter for until there is somewhere to put it.
+//
+// A spent invite is refused rather than expired. Nothing is left to withdraw:
+// the person arrived, the account is active, and the credential's expiry is no
+// longer what stands between anybody and it. Expiring it would report success
+// for a decision it did not carry out. Taking that account back is a separate
+// operation, and ErrSpent is what sends an operator to it.
+// This one reads before it writes, which is what Redeem was fixed for not
+// doing, and the difference is what the gate is protecting. Redeem's read was a
+// gate on admission and losing it let two people in on one invite. This read
+// gates a message: a revocation that arrives in the same instant as the
+// redemption it was too late for finds redeemed_at still NULL and expires a
+// credential that is now spent. The person is in either way -- that decision
+// was made by the spend, which is still the one conditional write -- and the
+// only casualty is that presenting the token again reports "expired" instead of
+// "already redeemed".
+//
+// Closing it would mean putting the condition inside the write, which means
+// invite issuing an UPDATE against Credential. Then expires_at is set from two
+// packages and "how a credential is killed without deleting it" is decided in
+// two places, which is the coupling RevokeByLibrary exists to have removed.
+// Paying that permanently to sharpen one message in one race is the wrong
+// trade.
+func Revoke(ctx context.Context, credentialID string) error {
+	inv, err := byCredential(ctx, credentialID)
+	if err != nil {
+		return err
+	}
+	if inv.RedeemedAt != 0 {
+		return fmt.Errorf("%w: %s", ErrSpent, inv.Email)
+	}
+	return credential.Expire(ctx, credentialID)
 }
 
 // List reports every invite, spent and outstanding, for the admin surface.
