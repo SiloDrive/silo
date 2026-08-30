@@ -1,11 +1,13 @@
 package silod
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/objmgr"
+	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/internal/format"
 	storefmt "github.com/dkam/silo/store"
 	log "github.com/sirupsen/logrus"
@@ -18,6 +20,17 @@ type historyExpiry struct {
 	// are inside it, the head included.
 	expired int
 	kept    int
+	// deferred is how many were past the window but could not be removed where
+	// they are, because a sealed pack is immutable — their space comes back
+	// when compaction rewrites the pack without them.
+	//
+	// Counted apart from expired, and this is the whole reason the field
+	// exists: expired used to be assigned from the candidate list before a
+	// single delete had been attempted, so a store where every delete was
+	// refused still reported the history as truncated. It was not, the commits
+	// are still readable, and the bytes are still on the disk the operator ran
+	// this to free.
+	deferred int
 	// freed is the space the expired commits held that nothing else reaches --
 	// what a following sweep will actually reclaim. The commit objects
 	// themselves are tens of bytes; this is the number an operator cares about.
@@ -74,12 +87,15 @@ func expireHistory(libraryID string, keep time.Duration, del bool) (historyExpir
 	if err != nil {
 		return out, err
 	}
-	out.expired, out.kept = len(doomed), kept
+	out.kept = kept
 	if len(doomed) == 0 {
 		return out, nil
 	}
 
 	if !del {
+		// A dry run reports candidates, which is what it is for. Whether each
+		// one can actually be removed is not knowable without trying.
+		out.expired = len(doomed)
 		out.freed = before.History.Bytes
 		return out, nil
 	}
@@ -92,9 +108,17 @@ func expireHistory(libraryID string, keep time.Duration, del bool) (historyExpir
 	}
 	for _, id := range doomed {
 		if err := st.RemoveOrphan(objmgr.Orphan{ID: id.String()}); err != nil {
+			if errors.Is(err, objstore.ErrReclaimDeferred) {
+				// Inside a sealed pack, which is immutable. Not a failure and
+				// not an expiry: the commit is still there and still readable,
+				// and its space comes back when compaction rewrites the pack.
+				out.deferred++
+				continue
+			}
 			log.Errorf("Failed to expire commit %s of %s: %v", id, libraryID, err)
 			continue
 		}
+		out.expired++
 	}
 
 	after, err := st.Census(head)
@@ -169,7 +193,7 @@ func runHistoryExpiry(keep time.Duration, del bool, quiet bool) error {
 		return err
 	}
 
-	var expired, kept int
+	var expired, kept, deferred int
 	var freed int64
 	for _, id := range ids {
 		var e historyExpiry
@@ -185,19 +209,32 @@ func runHistoryExpiry(keep time.Duration, del bool, quiet bool) error {
 		}
 		expired += e.expired
 		kept += e.kept
+		deferred += e.deferred
 		freed += e.freed
-		if !quiet && e.expired > 0 {
+		if !quiet && (e.expired > 0 || e.deferred > 0) {
 			verb := "would expire"
 			if del {
 				verb = "expired"
 			}
-			fmt.Printf("%s %s: %d commits, %s\n", verb, id, e.expired, format.Bytes(e.freed))
+			fmt.Printf("%s %s: %d commits, %s", verb, id, e.expired, format.Bytes(e.freed))
+			if e.deferred > 0 {
+				fmt.Printf(" (%d more left where they are)", e.deferred)
+			}
+			fmt.Println()
 		}
 	}
 
 	if del {
 		fmt.Printf("Expired %d commits, %s now collectable. Run gc -orphans -delete to reclaim it.\n",
 			expired, format.Bytes(freed))
+		if deferred > 0 {
+			// Named rather than folded into the count above, because these
+			// commits are still there and still readable. An operator told
+			// their history was truncated when it was not would go looking for
+			// the space in the wrong place.
+			fmt.Printf("%d commits past retention are inside sealed packs and were left there; "+
+				"compaction is what reclaims them.\n", deferred)
+		}
 	} else {
 		fmt.Printf("%d commits past retention, holding %s. Re-run with -delete to expire them.\n",
 			expired, format.Bytes(freed))

@@ -40,6 +40,7 @@ import (
 func RunDF(args []string) error {
 	flags := commandFlags("df")
 	quiet := flags.Bool("q", false, "only print the totals")
+	packs := flags.Bool("packs", false, "report per-pack occupancy and dead fraction instead")
 	rest, done, err := parseCommandArgs("df", flags, args)
 	if err != nil || done {
 		return err
@@ -55,6 +56,9 @@ func RunDF(args []string) error {
 	ids, err := libraryIDsForDF(rest)
 	if err != nil {
 		return err
+	}
+	if *packs {
+		return reportPacks(ids, *quiet)
 	}
 	if len(ids) == 0 {
 		// Still worth the footer: a server with no libraries has a disk, and
@@ -165,6 +169,88 @@ func censusTotal(c objmgr.Census) int64 {
 }
 
 // censusOf measures one library by id.
+// reportPacks is "where did the disk go" asked one pack at a time.
+//
+// The same three-way partition the table above prints, attributed to the packs
+// holding it, plus the dead fraction — which is the number compaction is
+// scheduled on and the only one here an operator can act on directly.
+//
+// Deliberately a separate view rather than more columns on the main table. A
+// library has one census and many packs, so the two do not share a row, and a
+// store that has not been packed has nothing to say here at all.
+func reportPacks(ids []string, quiet bool) error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	if !quiet {
+		fmt.Fprintln(w, "LIBRARY\tPACK\tHEAD\tLIVE\tDEAD\tDEAD%\tON DISK")
+	}
+
+	var frames, live, dead, onDisk int64
+	var counted, failed int
+	for _, id := range ids {
+		_, st, head, err := openLibraryAtHead(id)
+		if err != nil {
+			fmt.Fprintf(w, "%s\t--\t--\t--\t--\t--\t(%v)\n", id, err)
+			failed++
+			continue
+		}
+		stats, err := st.PackCensus(head)
+		if err != nil {
+			fmt.Fprintf(w, "%s\t--\t--\t--\t--\t--\t(%v)\n", id, err)
+			failed++
+			continue
+		}
+		for _, p := range stats {
+			counted++
+			frames += p.FrameBytes
+			live += p.LiveBytes
+			dead += p.DeadBytes()
+			onDisk += p.FileBytes
+			if !quiet {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%.0f%%\t%s\n",
+					id, p.PackID[:12],
+					formatBytes(p.HeadBytes), formatBytes(p.LiveBytes),
+					formatBytes(p.DeadBytes()), p.DeadFraction()*100,
+					formatBytes(p.FileBytes))
+			}
+		}
+	}
+
+	if counted == 0 && failed == 0 {
+		if err := w.Flush(); err != nil {
+			return err
+		}
+		// Not an error, and worth saying plainly rather than printing an empty
+		// table: this is every server until packs become the write path.
+		fmt.Println("No sealed packs. This store writes one file per object; " +
+			"see docs/plans/packs.md.")
+		return nil
+	}
+
+	if !quiet {
+		fmt.Fprintln(w, "\t\t\t\t\t\t")
+	}
+	var pct float64
+	if frames > 0 {
+		pct = float64(dead) / float64(frames) * 100
+	}
+	fmt.Fprintf(w, "TOTAL\t%d packs\t\t%s\t%s\t%.0f%%\t%s\n",
+		counted, formatBytes(live), formatBytes(dead), pct, formatBytes(onDisk))
+	if err := w.Flush(); err != nil {
+		return err
+	}
+
+	if dead > 0 {
+		// Said out loud because the number is otherwise misleading: these
+		// bytes are reclaimable in principle and nothing reclaims them yet.
+		fmt.Printf("\ndead bytes are frames no commit reaches, still inside sealed packs.\n" +
+			"Compaction is what rewrites a pack without them -- see docs/plans/compaction.md.\n")
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d libraries could not be measured", failed, len(ids))
+	}
+	return nil
+}
+
 func censusOf(id string) (objmgr.Census, error) {
 	_, st, head, err := openLibraryAtHead(id)
 	if err != nil {

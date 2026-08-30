@@ -111,6 +111,55 @@ func (s *Store) Census(head store.ID) (Census, error) {
 	return c, nil
 }
 
+// PackCensus measures every sealed pack in a library against the same walk
+// Census uses, so the two answer with one another rather than approximately.
+//
+// The mark is one walk of history plus one of head — the same pair Census
+// takes — and the packs are an attribution of it. No pack's contents are read:
+// a sealed pack's footer already names every id it holds and how long each
+// frame is, so this costs one index walk per pack on top of a walk the census
+// was doing anyway.
+//
+// Both stores are measured. Packs exist for chunks, but objects are packed by
+// the same writer under the same rules, and a compaction scheduler that could
+// only see half the store would leave the other half growing.
+//
+// The numbers are stale by construction and are a scheduling input, never a
+// licence to delete: an object nothing reaches is indistinguishable from one
+// about to be committed. Whatever acts on these re-verifies first.
+func (s *Store) PackCensus(head store.ID) ([]objstore.PackStat, error) {
+	live, err := s.reachable([]store.ID{head}, false)
+	if err != nil {
+		return nil, fmt.Errorf("walking the head commit: %w", err)
+	}
+	all, err := s.reachable([]store.ID{head}, true)
+	if err != nil {
+		return nil, fmt.Errorf("walking the history: %w", err)
+	}
+
+	var out []objstore.PackStat
+	for _, st := range []struct {
+		store   *objstore.ObjectStore
+		isChunk bool
+	}{{s.chunks, true}, {s.objects, false}} {
+		stats, err := st.store.PackStats(s.storeID, func(objID string) objstore.Reach {
+			switch {
+			case live.has(objID, st.isChunk):
+				return objstore.ReachedHead
+			case all.has(objID, st.isChunk):
+				return objstore.ReachedHistory
+			default:
+				return objstore.Unreached
+			}
+		})
+		if err != nil {
+			return nil, fmt.Errorf("measuring packs: %w", err)
+		}
+		out = append(out, stats...)
+	}
+	return out, nil
+}
+
 // Orphan is one stored object that no commit reaches.
 //
 // The id is as objstore spells it -- hex -- because what a caller does with

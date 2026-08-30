@@ -9,6 +9,7 @@ import (
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/internal/format"
 	storefmt "github.com/dkam/silo/store"
 )
 
@@ -350,6 +351,54 @@ func TestExpireByPolicyDoesNothingWhenNothingIsConfigured(t *testing.T) {
 	for i, id := range ids {
 		if !commitExists(t, libraryID, id) {
 			t.Errorf("commit %d was deleted with no policy set", i)
+		}
+	}
+}
+
+// expired counts what was actually removed, not what was eligible.
+//
+// The two diverge the moment a commit lives somewhere it cannot be deleted
+// from: a sealed pack is immutable, so Remove refuses with ErrReclaimDeferred
+// and the object stays exactly where it was. Reporting it as expired tells an
+// operator their history was truncated when it was not — and the bytes are
+// still on the disk they ran this to free.
+func TestExpireDoesNotReportCommitsItCouldNotRemove(t *testing.T) {
+	sqliteTestDB(t)
+	was := option.PackWrites
+	option.PackWrites = true
+	t.Cleanup(func() {
+		option.PackWrites = was
+		_ = objstore.Close()
+	})
+
+	libraryID, ids := historyFixture(t, 40*24*time.Hour, 30*24*time.Hour, 1*24*time.Hour)
+	// Seal, so the commits are inside immutable packs rather than in an open
+	// one this process could still be appending to.
+	if err := objstore.Close(); err != nil {
+		t.Fatalf("sealing: %v", err)
+	}
+
+	got, err := expireHistory(libraryID, 14*24*time.Hour, true)
+	if err != nil {
+		t.Fatalf("expireHistory: %v", err)
+	}
+
+	if got.expired != 0 {
+		t.Errorf("reported %d commits expired, but every one of them is in a sealed pack and could not be removed",
+			got.expired)
+	}
+	if got.deferred != 2 {
+		t.Errorf("reported %d commits deferred, want the 2 that a later rewrite reclaims", got.deferred)
+	}
+	if got.freed != 0 {
+		t.Errorf("reported %s freed, but nothing was deleted", format.Bytes(got.freed))
+	}
+	// And they really are still readable, which is why claiming otherwise
+	// matters: this is live data, not a bookkeeping detail.
+	for _, id := range ids[:2] {
+		if _, err := objstore.New("", absDataDir, objstore.TypeObjects).
+			ReadInto(libraryID, id, nil); err != nil {
+			t.Errorf("commit %s is not readable after a supposedly failed expiry: %v", id, err)
 		}
 	}
 }
