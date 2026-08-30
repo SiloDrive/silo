@@ -126,7 +126,7 @@ the password is stretched under. See
 [`auth.md`](auth.md#the-accounts-key-material).
 
 ```
-GET    /api/silo/v1/account/keys                → 200 {public_key, wrapped_key, kdf_params, recovery:[…]}
+GET    /api/silo/v1/account/keys                → 200 {account_id, public_key, wrapped_key, kdf_params, recovery:[…]}
                                                   404 if nothing has been published
 PUT    /api/silo/v1/account/keys                → 200 {"updated_at": …, "recovery": 10}
 {"public_key": "<b64>", "wrapped_key": "<b64>", "kdf_params": "$argon2id$…",
@@ -137,6 +137,13 @@ DELETE /api/silo/v1/account/keys/recovery/{n}   → 200 {"remaining": 9}
 POST   /api/silo/v1/auth/kdf                    → 200 {"kdf_params": "$argon2id$…"}
 {"email": "…"}
 ```
+
+`account_id` is served but not accepted: it is the **holder**, the string every
+wrap here is bound to as associated data, and without it the blobs beside it
+cannot be opened. It rides on this response because it is only ever wanted with
+them, and because it is the one fact about itself an account cannot otherwise
+learn over HTTP — a new device has an address and a password, and the holder is
+neither. On `PUT` it is the server's to know and not the client's to assert.
 
 Every blob is base64. `PUT` replaces the whole set rather than merging into it,
 in one transaction, because a password change re-wraps all of them at once and
@@ -221,7 +228,7 @@ is registered there too, but is authenticated: see the lane note above.
 | POST | `/api/silo/v1/auth/password` | `{"current_password":…,"new_password":…}` — change the password. Needs `rw` and the current password; revokes `session` credentials and leaves `device` ones mounted |
 | POST | `/api/silo/v1/auth/setup` | **No auth**, because it is the request that creates the first account — there is nothing to authenticate it against yet. `{"email":…,"password":…,"setup_token":…}` → `201 {"token":…}`, login's shape exactly. The address and password are the operator's choice; the setup token, printed at boot and by `silo setup-token`, is what proves they own the host. `401` for a wrong *or* malformed token, indistinguishably; `409` once any account exists. Guarded by `setup_required` above rather than by trying it |
 | POST | `/api/silo/v1/auth/kdf` | **No auth.** `{"email":…}` → the argon2id parameters that address's password is stretched under, client-side. Never `404`: an address with no account gets plausible, stable, per-address parameters, so this cannot be used to ask which addresses exist |
-| GET | `/api/silo/v1/account/keys` | The account's published X25519 public key, its wrapped identity private key, its recovery wraps and its `kdf_params`. `404` before anything is published. Readable with a `perm: "r"` credential |
+| GET | `/api/silo/v1/account/keys` | The account's `account_id` — the holder its wraps are bound to — with its published X25519 public key, its wrapped identity private key, its recovery wraps and its `kdf_params`. `404` before anything is published. Readable with a `perm: "r"` credential |
 | PUT | `/api/silo/v1/account/keys` | Publish all of it, replacing what was there. Needs `rw`. `400` names the specific refusal — every one is a client bug whose symptom otherwise appears on a device months later |
 | DELETE | `/api/silo/v1/account/keys/recovery/{n}` | Redeem one recovery wrap; the rest of the set stands. Needs `rw`. `404` if that ordinal is already spent |
 | GET | `/api/silo/v1/account/usage` | `{"usage": n, "quota": n, "kind": "logical-at-head"}` — the account's total. `quota` is absent when there is no ceiling. Feature name `usage`; per-library `size` and `file_count` are on the libraries listing, not here. See [Size and quota](#size-and-quota). `AccountUsageHandler` in `fileserver/api/api.go` |

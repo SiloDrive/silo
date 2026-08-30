@@ -54,7 +54,19 @@ func GetAccountKeysHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, keys)
+	// The holder rides with the blob it opens. Every wrap here is bound to the
+	// account's id as associated data (store.WrapIdentity), so a client that
+	// has the blob and not the id has an unopenable blob -- and the id is the
+	// one thing about itself an account cannot otherwise learn over HTTP.
+	//
+	// Added here rather than to account.Keys because that type is also the PUT
+	// body, where the id is the server's to know and not the client's to
+	// assert. Embedded so the field sits beside the others rather than under
+	// them: this is one object describing one account's key material.
+	writeJSON(w, http.StatusOK, struct {
+		AccountID string `json:"account_id"`
+		account.Keys
+	}{AccountID: acct.ID.String(), Keys: *keys})
 }
 
 // PutAccountKeysHandler handles PUT /api/silo/v1/account/keys.
