@@ -4,8 +4,9 @@ Status: **all five steps built, and the cutover is behind a flag that is off.**
 The index, the sidecar, recovery, sealing, reading a sealed pack, the lookup,
 the writer, the three sealing rules and `gc` through the seam are all in.
 `option.PackWrites` is `false`, so every install still writes loose objects; see
-§ The cutover for why, which is compaction (silo#19) rather than anything in
-this plan. Tracked as silo#17, milestone `packs`.
+§ The cutover for why, which is compaction (silo#19, planned in
+[`compaction.md`](compaction.md)) rather than anything in this plan. Tracked as
+silo#17, closed, with the cutover as silo#50.
 
 Owned by [`../storage.md`](../storage.md) § Packs, which is normative for the
 format and the sealing rules. This document owns the *build*: what order, what
