@@ -257,10 +257,14 @@ Tracked: milestone `sharing-e2ee`, #15 (sharer-written wrap), #16 (revoke).
 Blocked by nothing above. Ordered by how much they cost against what they buy,
 not by dependency.
 
-**The admin HTTP surface.** Every *administrative* operation is CLI-only today
-— `silo user`, `silo token`, `silo retention`, `silo user quota` — and a web UI
-or a remote operator needs all of it over HTTP. These endpoints should call the
-same `account` functions the CLI does rather than reimplement them beside it.
+**The admin HTTP surface.** Every *administrative* operation was CLI-only —
+`silo user`, `silo token`, `silo retention`, `silo user quota` — and a web UI or
+a remote operator needs all of it over HTTP.
+
+**The accounts half is built**: `RequireAdmin` and eight routes, built on the
+same `account`, `authmgr`, `admin` and `libmgr` functions the CLI calls rather
+than beside them, so a rule fixed in one of those is fixed for both callers.
+What remains is the libraries endpoint, the storage endpoint and the page.
 The gate they hang off, the capabilities they enforce and the routes
 themselves are [`plans/admin.md`](plans/admin.md); the roles it stands on are
 [`plans/sharing.md`](plans/sharing.md) § Accounts, and the quota endpoints it

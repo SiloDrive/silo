@@ -1,9 +1,10 @@
 # Plan: administrative authority, and the surface it gates
 
 Date: 2026-08-30
-Status: **partly built** — the `role` column, the capability table and both
-`grant` invariants have landed; the middleware and the HTTP surface are
-designed and not built. Depends on
+Status: **partly built** — the `role` column, the capability table, both
+`grant` invariants, `RequireAdmin` and the accounts endpoints have landed; the
+libraries and storage endpoints and the page are designed and not built.
+Depends on
 [`sharing.md`](sharing.md) § Accounts, which owns the role vocabulary, and on
 [`../auth.md`](../auth.md)'s credential table, which has landed.
 
@@ -138,7 +139,7 @@ say the same thing in the same words.
 
 ## The HTTP surface
 
-None of it exists. Every administrative operation today is CLI-only, which
+The accounts half is built. Every administrative operation was CLI-only, which
 [`../roadmap.md`](../roadmap.md) calls out as independent work, and which is
 right for the reasons `user_cmd.go` gives: the moment administration is most
 needed is the one where nobody can log in, and anyone who can run the CLI
@@ -166,6 +167,33 @@ conjunction from decision 3. It sits beside `CredentialCanWrite`, which exists
 for the same shape of question — the handlers that have no library to ask
 `share.CheckPerm` about. Server administration is the largest such handler: it
 has no library, which is exactly why it does not belong in the grant model.
+
+The capability is named **at the mount**, not inside the handler. A subtree
+gate would be a single admin bit wearing a table's clothes, and the pairing
+above is the design rather than a detail of it. `RequireAdmin` is mounted
+inside the subrouter that resolves credentials, so no credential is `401` from
+there and not enough authority is `403` from here — and a library-scoped
+credential is refused before either, by the narrowing, because these routes name
+no library.
+
+**A method other than `GET` additionally needs a credential whose own ceiling
+permits writing**, checked in the middleware rather than in each handler. The
+ceiling is a property of the credential and the capability is a property of the
+account; neither has ever implied the other, and eight handlers each remembering
+to ask would be eight chances to forget a check whose failure is silent.
+
+The last two rows are not built. `GET admin/libraries` waits on the product
+decision below — whether an admin implicitly sees every library — which belongs
+to a person and not to a handler. `GET admin/storage` waits on the free-disk
+and ceiling work that owns those numbers.
+
+**`PUT accounts/{id}/role` closed a gap the capability model left open.** The
+last-holder rule protects the row; nothing protected the role, and the
+conjunction makes them equally destructive — an account demoted out of `admin`
+keeps every row it held and none of them mean anything, which is a revocation of
+all six spelled a different way. `admin.SetRole` refuses a change that would
+leave no account for which `Can(grant)` is true, which is the same invariant
+asked of both halves at once.
 
 ## The page, and what it can honestly show
 
@@ -238,7 +266,11 @@ reported fact that nothing currently reports.
    escalation, but it is an install left unable to do its own work by somebody
    who could never do it either.
 3. **`RequireAdmin`**, and the accounts endpoints over the functions the CLI
-   already calls.
+   already calls. Built, in `fileserver/middleware/admin.go` and
+   `fileserver/api/admin.go`. The eight accounts routes; `account.ParseID` is
+   the one spelling rule for an id arriving as text, added beside `String` for
+   the reason `Normalize` sits beside an address. The libraries and storage
+   rows of the table are not built, for the reasons § The HTTP surface gives.
 4. **The page**, `embed.FS`, with the libraries and accounts panels — the two
    that are honestly answerable today.
 5. **Free disk and a server ceiling** — built. `quota.md` owns it; the panel

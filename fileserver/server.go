@@ -601,6 +601,29 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/account/keys/recovery/{ordinal:[0-9]+}",
 		api.DeleteRecoveryWrapHandler).Methods("DELETE")
 	apiRouter.HandleFunc("/account/usage", api.AccountUsageHandler).Methods("GET")
+
+	// The administrative surface. Each route names the capability that opens
+	// it at the mount rather than inside the handler, because the pairing is
+	// the design: a subtree gate would be a single admin bit wearing a table's
+	// clothes. docs/plans/admin.md § The HTTP surface holds the same table.
+	//
+	// Mounted inside apiRouter, so a request with no credential is refused
+	// there with 401 and one with a credential but not enough authority is
+	// refused here with 403. A library-scoped credential is refused by the
+	// narrowing before either: these routes name no library, which is exactly
+	// what the narrowing is for.
+	adminRoute := func(path string, capability admin.Capability, h http.HandlerFunc, methods ...string) {
+		apiRouter.Handle(path, middleware.RequireAdmin(capability, h)).Methods(methods...)
+	}
+	adminRoute("/admin/accounts", admin.CapUsers, api.ListAdminAccountsHandler, "GET")
+	adminRoute("/admin/accounts", admin.CapUsers, api.CreateAdminAccountHandler, "POST")
+	adminRoute("/admin/accounts/{id}/active", admin.CapUsers, api.SetAdminAccountActiveHandler, "POST")
+	adminRoute("/admin/accounts/{id}/password", admin.CapPasswords, api.SetAdminAccountPasswordHandler, "POST")
+	adminRoute("/admin/accounts/{id}/quota", admin.CapQuota, api.GetAdminAccountQuotaHandler, "GET")
+	adminRoute("/admin/accounts/{id}/quota", admin.CapQuota, api.SetAdminAccountQuotaHandler, "PUT")
+	adminRoute("/admin/accounts/{id}/role", admin.CapGrant, api.SetAdminAccountRoleHandler, "PUT")
+	adminRoute("/admin/accounts/{id}/caps", admin.CapGrant, api.SetAdminAccountCapabilitiesHandler, "PUT")
+
 	apiRouter.HandleFunc("/libraries", api.ListLibrariesHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries", api.CreateLibraryHandler).Methods("POST")
 	apiRouter.HandleFunc("/libraries/{libraryid}", api.DeleteLibraryHandler).Methods("DELETE")

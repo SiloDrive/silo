@@ -81,6 +81,30 @@ func (id *ID) Scan(src any) error {
 	}
 }
 
+// ParseID reads the text form String writes.
+//
+// The inverse of String, and here beside it for the reason Normalize is the one
+// spelling rule for an address: an id arriving in a URL is text, and a second
+// caller parsing it its own way is a second interpretation of what counts as
+// an id. uuid.Parse accepts several spellings -- braces, urn: prefixes, no
+// hyphens -- and all of them name the same sixteen bytes, so accepting them
+// costs nothing and refusing them would only mean refusing a caller that was
+// right.
+//
+// The nil UUID is refused. It is Zero, which is the value every unset id
+// already holds, so admitting it would let a request name "no account" and be
+// answered as though it had named one.
+func ParseID(s string) (ID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return Zero, fmt.Errorf("not an account id: %v", err)
+	}
+	if ID(u) == Zero {
+		return Zero, fmt.Errorf("not an account id: the nil UUID")
+	}
+	return ID(u), nil
+}
+
 // NewID mints an account id.
 //
 // UUIDv7 rather than v4: it leads with a millisecond timestamp, so accounts
@@ -339,6 +363,33 @@ func SetPasswordAndKDFParams(ctx context.Context, id ID, hash, kdfParams string)
 		dbutil.InsertOrReplace("AccountPassword", "account_id, hash, changed_at, client_kdf_params"),
 		id, hash, time.Now().Unix(), kdfParams); err != nil {
 		return fmt.Errorf("storing a password and client KDF parameters: %v", err)
+	}
+	return nil
+}
+
+// SetRole changes an account's role.
+//
+// The role is parsed rather than trusted, for the reason CreateTx parses it:
+// this is the other door a role comes through, and a column holding something
+// no rule recognises is an account no rule matches.
+//
+// Who may call this is not this package's question -- admin.SetRole is, and it
+// is where the grant capability and the last-administrator rule live. This
+// writes the column.
+func SetRole(ctx context.Context, id ID, role Role) error {
+	if _, err := ParseRole(string(role)); err != nil {
+		return fmt.Errorf("refusing to set a role: %v", err)
+	}
+	res, err := writeDB.ExecContext(ctx, "UPDATE Account SET role = ? WHERE id = ?", role, id)
+	if err != nil {
+		return fmt.Errorf("setting the role: %v", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("setting the role: %v", err)
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

@@ -391,3 +391,71 @@ func validate(caps []Capability) error {
 	}
 	return nil
 }
+
+// ErrLastAdmin reports a role change that would leave the server with nobody
+// who can administer it.
+var ErrLastAdmin = errors.New("this is the only account that is both an admin and holds the grant capability")
+
+// SetRole changes an account's role, on behalf of an actor.
+//
+// Gated by CapGrant because the plan defines that capability as "may change
+// another account's role or capabilities", and because the conjunction makes
+// the two operations equally powerful: an account demoted out of admin keeps
+// every row it held and none of them mean anything, which is a revocation of
+// all six spelled a different way.
+//
+// The actor's must-hold rule does not apply -- a role is not a capability, so
+// there is nothing to hold -- but the install-integrity rule does, and it is
+// the other half of the one Revoke enforces. Revoke protects the row; this
+// protects the role. Taking either away from the last account that has both
+// leaves a server nobody can administer, and until now only one of those two
+// doors was watched.
+func SetRole(ctx context.Context, actor *account.Account, target account.ID, role account.Role) error {
+	if _, err := account.ParseRole(string(role)); err != nil {
+		return err
+	}
+	canGrant, err := Can(ctx, actor, CapGrant)
+	if err != nil {
+		return err
+	}
+	if !canGrant {
+		return ErrNeedsGrant
+	}
+	if !role.IsAdmin() {
+		last, err := isLastAdministrator(ctx, target)
+		if err != nil {
+			return err
+		}
+		if last {
+			return ErrLastAdmin
+		}
+	}
+	return account.SetRole(ctx, target, role)
+}
+
+// isLastAdministrator reports whether target is the only account that both is
+// an admin and holds CapGrant -- which is to say, the only account for which
+// admin.Can(CapGrant) is true. Asked as the conjunction rather than as either
+// half, because either half alone rescues nothing: an admin without the row
+// cannot hand authority out, and a holder of the row who is not an admin holds
+// something that means nothing.
+func isLastAdministrator(ctx context.Context, target account.ID) (bool, error) {
+	const q = `SELECT COUNT(*) FROM Account a
+	           JOIN AccountCapability c ON c.account_id = a.id AND c.capability = ?
+	           WHERE a.role = ? AND a.id <> ?`
+	var others int
+	if err := readDB.QueryRowContext(ctx, q, CapGrant, account.RoleAdmin, target).Scan(&others); err != nil {
+		return false, fmt.Errorf("counting the accounts that can administer this server: %v", err)
+	}
+	if others > 0 {
+		return false, nil
+	}
+	// Nobody else can. Whether refusing is right depends on whether this
+	// account can either: demoting somebody who was never an administrator
+	// must not be reported as the last one going.
+	acct, err := account.ByID(ctx, target)
+	if err != nil {
+		return false, err
+	}
+	return Can(ctx, acct, CapGrant)
+}

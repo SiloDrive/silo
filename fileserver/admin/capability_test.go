@@ -222,3 +222,59 @@ func TestGrantingTwiceIsNotAnError(t *testing.T) {
 		t.Errorf("the target holds %v, want one row", held)
 	}
 }
+
+// Changing a role is gated by grant, because the conjunction makes a demotion
+// exactly as powerful as a revocation: an account demoted out of admin holds
+// its rows and none of them mean anything.
+func TestChangingARoleNeedsTheGrantCapability(t *testing.T) {
+	testDB(t)
+	actor := mkAccount(t, "granter@example.com", account.RoleAdmin, All()...)
+	plain := mkAccount(t, "operator@example.com", account.RoleAdmin, CapUsers)
+	target := mkAccount(t, "target@example.com", account.RoleUser)
+
+	if err := SetRole(ctx(t), plain, target.ID, account.RoleGuest); !errors.Is(err, ErrNeedsGrant) {
+		t.Errorf("a role change without grant = %v, want ErrNeedsGrant", err)
+	}
+	if err := SetRole(ctx(t), actor, target.ID, account.RoleGuest); err != nil {
+		t.Fatalf("SetRole: %v", err)
+	}
+	got, err := account.ByID(ctx(t), target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Role != account.RoleGuest {
+		t.Errorf("the role is %q after the change, want guest", got.Role)
+	}
+	if err := SetRole(ctx(t), actor, target.ID, account.Role("wheel")); err == nil {
+		t.Error("SetRole accepted a role outside the closed set")
+	}
+}
+
+// The last-holder rule protects the row. This protects the other half of the
+// same conjunction: demoting the only account that is both an admin and a
+// holder of grant leaves a server nobody can administer just as surely as
+// taking the row away would, and nothing else would have said so.
+func TestTheLastAdministratorMayNotBeDemoted(t *testing.T) {
+	testDB(t)
+	only := mkAccount(t, "only@example.com", account.RoleAdmin, All()...)
+	// A second admin without grant, and a second grant-holder who is not an
+	// admin, so that neither half alone rescues the install.
+	mkAccount(t, "deputy@example.com", account.RoleAdmin, CapUsers)
+	rowsOnly := mkAccount(t, "rows@example.com", account.RoleUser)
+	if err := Grant(ctx(t), only, rowsOnly.ID, CapGrant); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetRole(ctx(t), only, only.ID, account.RoleUser); !errors.Is(err, ErrLastAdmin) {
+		t.Errorf("demoting the last administrator = %v, want ErrLastAdmin", err)
+	}
+
+	// Promoting the account that already holds the row is what makes the
+	// demotion allowed, because then there are two.
+	if err := SetRole(ctx(t), only, rowsOnly.ID, account.RoleAdmin); err != nil {
+		t.Fatalf("promoting the second holder: %v", err)
+	}
+	if err := SetRole(ctx(t), only, only.ID, account.RoleUser); err != nil {
+		t.Errorf("demoting with a second administrator standing: %v", err)
+	}
+}
