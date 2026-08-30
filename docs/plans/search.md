@@ -3,9 +3,8 @@
 **Status: not built, and parked** until a client actually needs it.
 
 Motivated by the macOS File Provider's search pushdown
-(`NSFileProviderSearching`, macOS 26+ — see
-[`macos-fileprovider-plan.md`](../macos-fileprovider-plan.md)), but useful on
-its own independent of any one client.
+(`NSFileProviderSearching`, macOS 26+ — the porter-macos repository has the
+plan), but useful on its own independent of any one client.
 
 Moved here from `future-features.md` when that file was replaced by
 [`roadmap.md`](../roadmap.md), which holds ordering rather than designs.

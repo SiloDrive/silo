@@ -72,8 +72,7 @@ same shape and placement as `movesIntoOwnSubtree`:
 
 `409` because Porter's error table already maps it to
 `NSFileProviderError.filenameCollision` — "return the existing item so the system
-renames" — so the File Provider client behaves sensibly without further work. See
-`docs/macos-fileprovider-plan.md`.
+renames" — so the File Provider client behaves sensibly without further work.
 
 **File-onto-file still replaces, on purpose.** It is the one collision that
 destroys nothing the caller did not name, and `PUT entries/{path}` already

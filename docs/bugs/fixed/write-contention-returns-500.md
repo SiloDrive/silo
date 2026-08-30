@@ -152,8 +152,8 @@ commits ago: `move-onto-directory-destroys-it.md` gave it to destination
 collisions, and Porter maps that to `NSFileProviderError.filenameCollision` —
 "return the existing item so the system renames". Answering a contended write
 with 409 would tell a File Provider client to rename the user's file. 503 says
-transient, `Retry-After` says when, and `macos-fileprovider-plan.md`'s error
-table already routes 5xx to `.serverUnreachable` with backoff.
+transient, `Retry-After` says when, and Porter's error table already routes
+5xx to `.serverUnreachable` with backoff.
 
 **The same bug, one level worse, also fixed.** Five Silo-lane handlers —
 `mkdirHandler`, `deleteFileHandler`, `renameHandler`, `moveHandler` and the
