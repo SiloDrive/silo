@@ -33,7 +33,7 @@ func TestAccountEmailAllowsOnePrimary(t *testing.T) {
 
 	id := []byte("0123456789abcdef")
 	if _, err := db.Exec(
-		"INSERT INTO Account (id, is_active, is_staff, ctime) VALUES (?, 1, 0, 0)", id); err != nil {
+		"INSERT INTO Account (id, is_active, role, ctime) VALUES (?, 1, 'user', 0)", id); err != nil {
 		t.Fatalf("failed to create an account: %v", err)
 	}
 	if _, err := db.Exec(
@@ -107,7 +107,7 @@ func TestAccountEmailIsExclusive(t *testing.T) {
 
 	for _, id := range [][]byte{[]byte("0123456789abcdef"), []byte("fedcba9876543210")} {
 		if _, err := db.Exec(
-			"INSERT INTO Account (id, is_active, is_staff, ctime) VALUES (?, 1, 0, 0)", id); err != nil {
+			"INSERT INTO Account (id, is_active, role, ctime) VALUES (?, 1, 'user', 0)", id); err != nil {
 			t.Fatalf("failed to create an account: %v", err)
 		}
 	}

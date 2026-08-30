@@ -3,6 +3,7 @@ package silod
 import (
 	"context"
 	"encoding/json"
+	"github.com/dkam/silo/fileserver/account"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -60,7 +61,7 @@ func wire(t *testing.T) (base, token string) {
 	base = serveTestAPI(t)
 
 	const email, password = "wire@example.com", "correct horse battery staple"
-	if _, err := authmgr.CreateAccount(context.Background(), email, password, false); err != nil {
+	if _, err := authmgr.CreateAccount(context.Background(), email, password, account.RoleUser); err != nil {
 		t.Fatalf("create account: %v", err)
 	}
 

@@ -102,7 +102,9 @@ type Account struct {
 	ID       ID
 	Email    string
 	IsActive bool
-	IsStaff  bool
+	// Role is what kind of account this is -- what it may be, as opposed to
+	// what it may reach, which is the grant model's question.
+	Role Role
 }
 
 // Normalize is the single spelling rule for an address.
@@ -116,12 +118,12 @@ type Account struct {
 // schema rather than by everyone remembering it.
 func Normalize(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
 
-const selectAccount = `SELECT a.id, e.email, a.is_active, a.is_staff
+const selectAccount = `SELECT a.id, e.email, a.is_active, a.role
                        FROM Account a JOIN AccountEmail e ON e.account_id = a.id`
 
 func scanOne(row *sql.Row) (*Account, error) {
 	var a Account
-	err := row.Scan(&a.ID, &a.Email, &a.IsActive, &a.IsStaff)
+	err := row.Scan(&a.ID, &a.Email, &a.IsActive, &a.Role)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -157,14 +159,14 @@ func ByID(ctx context.Context, id ID) (*Account, error) {
 // an account that will sign in some other way -- and then no AccountPassword
 // row is written at all, rather than a row holding a sentinel that some future
 // comparison could misread as "matches anything".
-func Create(ctx context.Context, email, passwordHash string, isStaff bool) (id ID, created bool, err error) {
+func Create(ctx context.Context, email, passwordHash string, role Role) (id ID, created bool, err error) {
 	tx, err := writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return Zero, false, fmt.Errorf("creating an account: %v", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	id, created, err = CreateTx(ctx, tx, email, passwordHash, isStaff)
+	id, created, err = CreateTx(ctx, tx, email, passwordHash, role)
 	if err != nil {
 		return Zero, false, err
 	}
@@ -186,10 +188,16 @@ func Create(ctx context.Context, email, passwordHash string, isStaff bool) (id I
 // not nest: it would wait for the connection the outer transaction is holding,
 // until the context times out. Two other callers in fileserver/credential
 // already have that comment; this is the third.
-func CreateTx(ctx context.Context, tx *sql.Tx, email, passwordHash string, isStaff bool) (id ID, created bool, err error) {
+func CreateTx(ctx context.Context, tx *sql.Tx, email, passwordHash string, role Role) (id ID, created bool, err error) {
 	norm := Normalize(email)
 	if norm == "" {
 		return Zero, false, fmt.Errorf("refusing to create an account with no address")
+	}
+	// Checked rather than trusted, because this is the one door an account
+	// comes through and a column holding a role nothing recognises is an
+	// account no permission rule matches.
+	if _, err := ParseRole(string(role)); err != nil {
+		return Zero, false, fmt.Errorf("refusing to create an account: %v", err)
 	}
 
 	var existing ID
@@ -211,8 +219,8 @@ func CreateTx(ctx context.Context, tx *sql.Tx, email, passwordHash string, isSta
 	// Account before AccountEmail: the address references the account, so the
 	// row it points at has to exist first.
 	if _, err := tx.ExecContext(ctx,
-		"INSERT INTO Account (id, display, is_active, is_staff, ctime) VALUES (?, NULL, 1, ?, ?)",
-		id, isStaff, now); err != nil {
+		"INSERT INTO Account (id, display, is_active, role, ctime) VALUES (?, NULL, 1, ?, ?)",
+		id, role, now); err != nil {
 		return Zero, false, fmt.Errorf("creating an account: %v", err)
 	}
 
@@ -421,7 +429,7 @@ func List(ctx context.Context) ([]Listed, error) {
 	// primary address, so an account without one should not exist -- which is
 	// exactly why a listing that silently omitted it would be the wrong tool
 	// to find out with.
-	const q = `SELECT a.id, e.email, a.is_active, a.is_staff, a.ctime,
+	const q = `SELECT a.id, e.email, a.is_active, a.role, a.ctime,
 	                  p.account_id IS NOT NULL
 	           FROM Account a
 	           LEFT JOIN AccountEmail e ON e.account_id = a.id AND e.is_primary = 1
@@ -438,7 +446,7 @@ func List(ctx context.Context) ([]Listed, error) {
 	for rows.Next() {
 		var l Listed
 		var email sql.NullString
-		if err := rows.Scan(&l.ID, &email, &l.IsActive, &l.IsStaff, &l.Ctime, &l.HasPassword); err != nil {
+		if err := rows.Scan(&l.ID, &email, &l.IsActive, &l.Role, &l.Ctime, &l.HasPassword); err != nil {
 			return nil, fmt.Errorf("listing accounts: %v", err)
 		}
 		l.Email = email.String

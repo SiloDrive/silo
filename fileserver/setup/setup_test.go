@@ -55,7 +55,7 @@ func addAccount(t *testing.T, email string) account.ID {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
-	id, created, err := account.Create(ctx, email, storedHash, false)
+	id, created, err := account.Create(ctx, email, storedHash, account.RoleUser)
 	if err != nil {
 		t.Fatalf("creating %s: %v", email, err)
 	}
@@ -186,7 +186,7 @@ func TestRequiredTracksWhetherAnAccountExists(t *testing.T) {
 	}
 }
 
-// The operator chooses the address and the password, and gets staff.
+// The operator chooses the address and the password, and gets admin.
 func TestClaimCreatesTheFirstAccountAsStaff(t *testing.T) {
 	pair := testDB(t)
 
@@ -207,8 +207,8 @@ func TestClaimCreatesTheFirstAccountAsStaff(t *testing.T) {
 	if acct.Email != "chosen@example.com" {
 		t.Errorf("address is %q, want it normalised to chosen@example.com", acct.Email)
 	}
-	if !acct.IsStaff {
-		t.Error("the first account is not staff")
+	if !acct.Role.IsAdmin() {
+		t.Errorf("the first account is %q, want admin", acct.Role)
 	}
 	if !acct.IsActive {
 		t.Error("the first account is not active")

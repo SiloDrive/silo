@@ -105,7 +105,7 @@ func (k keyMaterial) keys() account.Keys {
 func mintPasswordAccount(t *testing.T, email, password string) *account.Account {
 	t.Helper()
 	authmgr.Init(siloPair.Read, siloPair.Write)
-	if _, err := authmgr.CreateAccount(context.Background(), email, password, false); err != nil {
+	if _, err := authmgr.CreateAccount(context.Background(), email, password, account.RoleUser); err != nil {
 		t.Fatalf("create account %s: %v", email, err)
 	}
 	return acctFor(t, email)

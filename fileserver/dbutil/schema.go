@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS Account (
   id         BLOB    PRIMARY KEY,
   display    TEXT,
   is_active  INTEGER NOT NULL DEFAULT 1,
-  is_staff   INTEGER NOT NULL DEFAULT 0,
+  role       TEXT    NOT NULL DEFAULT 'user',
   ctime      INTEGER NOT NULL
 );
 
@@ -426,7 +426,12 @@ CREATE INDEX IF NOT EXISTS credential_expires_idx ON Credential (expires_at);
 // an existing table rather than a new one -- CREATE TABLE IF NOT EXISTS cannot
 // apply it to a database already holding the old shape, which is exactly what
 // this constant is for.
-const SchemaVersion = 2
+//
+// Version 3 replaced Account.is_staff with Account.role. A flag and a role are
+// not two facts about an account, they are one fact written twice, and two
+// spellings of "is this an administrator" is exactly the drift a closed set
+// exists to prevent -- so the flag went rather than gaining a neighbour.
+const SchemaVersion = 3
 
 // CreateSiloTables creates all tables if they don't exist, after checking
 // the database's schema version against SchemaVersion.

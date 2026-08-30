@@ -246,7 +246,7 @@ func load(ctx context.Context, id string) (*Credential, error) {
 	// unreadable there -- one rule, not two.
 	const q = `SELECT c.id, c.kind, c.secret_hash, c.public_key, c.account_id, c.label,
 	                  c.scope, c.perm, c.client_id, c.ctime, c.expires_at, c.last_used,
-	                  a.is_active, a.is_staff, e.email
+	                  a.is_active, a.role, e.email
 	           FROM Credential c
 	           JOIN Account a ON a.id = c.account_id
 	           JOIN AccountEmail e ON e.account_id = a.id AND e.is_primary = 1
@@ -263,7 +263,7 @@ func load(ctx context.Context, id string) (*Credential, error) {
 	)
 	err := readDB.QueryRowContext(ctx, q, id).Scan(
 		&c.ID, &kind, &c.secretHash, &c.publicKey, &c.AccountID, &c.Label, &scope, &c.Perm,
-		&clientID, &c.Ctime, &expires, &lastUsed, &acct.IsActive, &acct.IsStaff, &acct.Email)
+		&clientID, &c.Ctime, &expires, &lastUsed, &acct.IsActive, &acct.Role, &acct.Email)
 	if err == sql.ErrNoRows {
 		subtle.ConstantTimeCompare(zeroHash, zeroHash)
 		return nil, ErrInvalid

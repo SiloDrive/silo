@@ -159,9 +159,9 @@ The grant table, `CheckPerm` unification across the three principals, the
 **Unblocked, and the largest available product step.** It stands on the credential table and on the account side of
 E2EE, both built — invite redemption is where E2EE bootstrap happens, the one
 moment a client is guaranteed present to generate an identity keypair, and the
-schema it writes into exists. It is also what makes `is_staff` mean something:
-the admin gate is designed in [`plans/sharing.md`](plans/sharing.md) § Accounts
-and consumed by nothing today.
+schema it writes into exists. The `role` column has landed ahead of it; what
+an `admin` may do is designed in [`plans/admin.md`](plans/admin.md) and
+consumed by nothing today.
 
 The event log lands alongside: [`plans/events.md`](plans/events.md) phase 1 can
 start now, and its phase 2 must ship *with* the share surface rather than after
@@ -259,9 +259,10 @@ not by dependency.
 — `silo user`, `silo token`, `silo retention`, `silo user quota` — and a web UI
 or a remote operator needs all of it over HTTP. These endpoints should call the
 same `account` functions the CLI does rather than reimplement them beside it.
-The gate they hang off and the roles they enforce are
-[`plans/sharing.md`](plans/sharing.md) § Accounts; the quota endpoints they
-expose are listed in [`quota.md`](quota.md). Two decisions are still open and
+The gate they hang off, the capabilities they enforce and the routes
+themselves are [`plans/admin.md`](plans/admin.md); the roles it stands on are
+[`plans/sharing.md`](plans/sharing.md) § Accounts, and the quota endpoints it
+exposes are listed in [`quota.md`](quota.md). Two decisions are still open and
 shape the result: whether an admin implicitly sees every library, and soft
 versus hard delete for an account.
 

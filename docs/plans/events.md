@@ -190,7 +190,7 @@ waits for evidence anyone needs it.
 
 - `GET /events?since=<seq>` — authenticated, filtered by what the
   credential's scope can see (an account-scoped credential sees its
-  account's events; staff see everything). Cursor is `seq`; the response
+  account's events; an admin sees everything). Cursor is `seq`; the response
   is rows, newest last, bounded page size.
 - `GET /events/head` — the audit chain head, for pinning.
 - **Later, explicitly not phase 1**: a long-poll/SSE tail as porter's

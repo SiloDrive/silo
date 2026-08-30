@@ -43,7 +43,7 @@ func makeAccount(t *testing.T, email string) *account.Account {
 	t.Helper()
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, _, err := account.Create(ctx, email, "", false); err != nil {
+	if _, _, err := account.Create(ctx, email, "", account.RoleUser); err != nil {
 		t.Fatalf("create account %s: %v", email, err)
 	}
 	acct, err := account.ByEmail(ctx, email)

@@ -47,7 +47,7 @@ func RunUser(args []string) error {
 		fmt.Fprintln(os.Stderr, "\nflags:")
 		flags.PrintDefaults()
 	}
-	staff := flags.Bool("staff", false, "with add: give the account the is_staff flag")
+	roleFlag := flags.String("role", string(account.DefaultRole), "with add: admin, user, or guest")
 	generate := flags.Bool("generate", false, "with add or passwd: invent a password and print it once")
 	jsonOut := flags.Bool("json", false, "with list: output as JSON")
 	rest, done, err := parseCommandArgs("user", flags, args)
@@ -98,7 +98,7 @@ func RunUser(args []string) error {
 		email := rest[1]
 		switch action {
 		case "add":
-			run = func() error { return addUser(email, *staff, *generate) }
+			run = func() error { return addUser(email, *roleFlag, *generate) }
 		case "passwd":
 			run = func() error { return passwdUser(email, *generate) }
 		case "disable":
@@ -130,7 +130,8 @@ func RunUser(args []string) error {
 // saying so is worse than one that refuses.
 const UserUsage = `usage:
   silo user [-json] list                      Show every account
-  silo user [-staff] [-generate] add <email>  Create an account
+  silo user [-role <role>] [-generate] add <email>  Create an account
+                                              (role: admin, user, guest)
   silo user [-generate] passwd <email>        Set a password
   silo user disable <email>                   Stop every credential it holds
   silo user enable <email>                    Undo a disable
@@ -160,14 +161,14 @@ func listUsers(asJSON bool) error {
 	// an operator has to read with a ruler is one they will read wrong, and
 	// hand-computed widths only ever measure the column somebody remembered.
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "EMAIL\tSTATUS\tSTAFF\tPASSWORD\tCREATED")
+	fmt.Fprintln(tw, "EMAIL\tSTATUS\tROLE\tPASSWORD\tCREATED")
 	for _, u := range users {
 		status := "active"
 		if !u.IsActive {
 			status = "DISABLED"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			displayEmail(u), status, yesNo(u.IsStaff), yesNo(u.HasPassword), formatTime(u.Ctime))
+			displayEmail(u), status, string(u.Role), yesNo(u.HasPassword), formatTime(u.Ctime))
 	}
 	return tw.Flush()
 }
@@ -189,10 +190,19 @@ func yesNo(b bool) string {
 	return "no"
 }
 
-func addUser(email string, staff, generate bool) error {
+func addUser(email, roleName string, generate bool) error {
 	norm := account.Normalize(email)
 	if norm == "" {
 		return errors.New("no email address given")
+	}
+
+	// Before the prompt, not after it. account.CreateTx checks the role too and
+	// is the guard that matters, but it is reached on the far side of the
+	// operator typing a password twice -- and a typo in a flag is not worth
+	// making them do that to find out about.
+	role, err := account.ParseRole(roleName)
+	if err != nil {
+		return err
 	}
 
 	// Ask before prompting. Finding out that the address is taken after
@@ -217,7 +227,7 @@ func addUser(email string, staff, generate bool) error {
 	// typing, and a prompt has no deadline.
 	writeCtx, writeCancel := option.WithDBTimeout(context.Background())
 	defer writeCancel()
-	created, err := authmgr.CreateAccount(writeCtx, norm, password, staff)
+	created, err := authmgr.CreateAccount(writeCtx, norm, password, role)
 	if err != nil {
 		return err
 	}
@@ -227,11 +237,7 @@ func addUser(email string, staff, generate bool) error {
 		return fmt.Errorf("%s was created by something else while this ran; nothing was changed", norm)
 	}
 
-	if staff {
-		fmt.Printf("Created staff account %s.\n", norm)
-	} else {
-		fmt.Printf("Created %s.\n", norm)
-	}
+	fmt.Printf("Created %s as %s.\n", norm, role)
 	announceGenerated(password, generated)
 	return nil
 }
@@ -448,7 +454,7 @@ type userJSON struct {
 	ID          string `json:"id"`
 	Email       string `json:"email"`
 	IsActive    bool   `json:"is_active"`
-	IsStaff     bool   `json:"is_staff"`
+	Role        string `json:"role"`
 	HasPassword bool   `json:"has_password"`
 	Created     string `json:"created"`
 }
@@ -460,7 +466,7 @@ func printUsersJSON(users []account.Listed) error {
 			ID:          u.ID.String(),
 			Email:       u.Email,
 			IsActive:    u.IsActive,
-			IsStaff:     u.IsStaff,
+			Role:        string(u.Role),
 			HasPassword: u.HasPassword,
 			Created:     formatTime(u.Ctime),
 		})

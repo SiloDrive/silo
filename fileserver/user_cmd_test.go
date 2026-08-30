@@ -73,7 +73,7 @@ func TestAddUserCreatesAnAccountThatCanLogIn(t *testing.T) {
 	userTestStore(t)
 	withStdin(t, "correct horse battery staple\n")
 
-	if err := addUser("newcomer@example.com", false, false); err != nil {
+	if err := addUser("newcomer@example.com", "user", false); err != nil {
 		t.Fatalf("addUser returned %v", err)
 	}
 
@@ -81,8 +81,8 @@ func TestAddUserCreatesAnAccountThatCanLogIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the account this created cannot log in: %v", err)
 	}
-	if acct.IsStaff {
-		t.Error("an account created without -staff has the staff flag")
+	if acct.Role != account.RoleUser {
+		t.Errorf("an account created without -role is %q, want user", acct.Role)
 	}
 	if !acct.IsActive {
 		t.Error("a newly created account is not active")
@@ -93,7 +93,7 @@ func TestAddUserStoresAHashRatherThanThePassword(t *testing.T) {
 	userTestStore(t)
 	withStdin(t, "hunter2\n")
 
-	if err := addUser("hashed@example.com", false, false); err != nil {
+	if err := addUser("hashed@example.com", "user", false); err != nil {
 		t.Fatalf("addUser returned %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestAddUserNormalizesTheAddress(t *testing.T) {
 	userTestStore(t)
 	withStdin(t, "hunter2\n")
 
-	if err := addUser("  Alice@Example.COM  ", false, false); err != nil {
+	if err := addUser("  Alice@Example.COM  ", "user", false); err != nil {
 		t.Fatalf("addUser returned %v", err)
 	}
 
@@ -142,12 +142,12 @@ func TestAddUserRefusesAnExistingAddressWithoutChangingIt(t *testing.T) {
 	userTestStore(t)
 
 	withStdin(t, "first-password\n")
-	if err := addUser("twice@example.com", false, false); err != nil {
+	if err := addUser("twice@example.com", "user", false); err != nil {
 		t.Fatalf("addUser returned %v", err)
 	}
 
 	withStdin(t, "second-password\n")
-	err := addUser("TWICE@example.com", false, false)
+	err := addUser("TWICE@example.com", "user", false)
 	if err == nil {
 		t.Fatal("addUser accepted an address that already exists")
 	}
@@ -163,11 +163,11 @@ func TestAddUserRefusesAnExistingAddressWithoutChangingIt(t *testing.T) {
 	}
 }
 
-func TestAddUserStaffFlag(t *testing.T) {
+func TestAddUserRoleFlag(t *testing.T) {
 	userTestStore(t)
 	withStdin(t, "hunter2\n")
 
-	if err := addUser("boss@example.com", true, false); err != nil {
+	if err := addUser("boss@example.com", "admin", false); err != nil {
 		t.Fatalf("addUser returned %v", err)
 	}
 
@@ -177,8 +177,8 @@ func TestAddUserStaffFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no account: %v", err)
 	}
-	if !acct.IsStaff {
-		t.Error("-staff did not set is_staff")
+	if !acct.Role.IsAdmin() {
+		t.Errorf("-role admin created a %q account", acct.Role)
 	}
 }
 
@@ -189,7 +189,7 @@ func TestGeneratedPasswordIsTheOneThatWorks(t *testing.T) {
 
 	var addErr error
 	out := captureStdout(t, func() {
-		addErr = addUser("generated@example.com", false, true)
+		addErr = addUser("generated@example.com", "user", true)
 	})
 	if addErr != nil {
 		t.Fatalf("addUser returned %v", addErr)
@@ -222,7 +222,7 @@ func TestPasswdReplacesThePassword(t *testing.T) {
 	userTestStore(t)
 
 	withStdin(t, "old-password\n")
-	if err := addUser("rotate@example.com", false, false); err != nil {
+	if err := addUser("rotate@example.com", "user", false); err != nil {
 		t.Fatalf("addUser returned %v", err)
 	}
 
@@ -255,7 +255,7 @@ func TestDisableAndEnableFlipTheAccount(t *testing.T) {
 	userTestStore(t)
 
 	withStdin(t, "hunter2\n")
-	if err := addUser("lapsed@example.com", false, false); err != nil {
+	if err := addUser("lapsed@example.com", "user", false); err != nil {
 		t.Fatalf("addUser returned %v", err)
 	}
 
@@ -311,7 +311,7 @@ func TestListReportsWhatAnOperatorNeedsToDecide(t *testing.T) {
 	userTestStore(t)
 
 	withStdin(t, "hunter2\n")
-	if err := addUser("listed@example.com", true, false); err != nil {
+	if err := addUser("listed@example.com", "admin", false); err != nil {
 		t.Fatalf("addUser returned %v", err)
 	}
 	if err := setUserActive("listed@example.com", false); err != nil {
@@ -334,8 +334,8 @@ func TestListReportsWhatAnOperatorNeedsToDecide(t *testing.T) {
 		if u.IsActive {
 			t.Error("a disabled account lists as active")
 		}
-		if !u.IsStaff {
-			t.Error("a staff account lists as non-staff")
+		if !u.Role.IsAdmin() {
+			t.Errorf("an admin account lists as %q", u.Role)
 		}
 		if !u.HasPassword {
 			t.Error("an account with a password lists as having none")
@@ -357,7 +357,7 @@ func TestListDistinguishesAnAccountWithNoPassword(t *testing.T) {
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if _, _, err := account.Create(ctx, "identity-only@example.com", "", false); err != nil {
+	if _, _, err := account.Create(ctx, "identity-only@example.com", "", account.RoleUser); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -464,5 +464,28 @@ func TestPasswdRevokesEveryCredential(t *testing.T) {
 	// Resetting one account's password must not sign the rest of the server out.
 	if n := countRows(t, q, acctFor(t, bystander).ID); n != 1 {
 		t.Errorf("bystander holds %d credentials, want 1", n)
+	}
+}
+
+// A typo in -role is caught before the operator is asked to type a password
+// twice. account.CreateTx checks the role as well and is the guard that
+// matters, but it is reached on the far side of the prompt -- so this test
+// gives the command no password at all: reaching the prompt is the failure.
+func TestAnUnknownRoleIsRefusedBeforeThePasswordPrompt(t *testing.T) {
+	userTestStore(t)
+	withStdin(t, "")
+
+	err := addUser("typo@example.com", "administrator", false)
+	if err == nil {
+		t.Fatal("addUser accepted the role \"administrator\"")
+	}
+	if !strings.Contains(err.Error(), "unknown role") {
+		t.Errorf("addUser failed with %v, want the unknown-role refusal", err)
+	}
+
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	if _, err := account.ByEmail(ctx, "typo@example.com"); err == nil {
+		t.Error("a refused role still created an account")
 	}
 }

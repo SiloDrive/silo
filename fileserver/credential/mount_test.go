@@ -2,6 +2,7 @@ package credential
 
 import (
 	"errors"
+	"github.com/dkam/silo/fileserver/account"
 	"testing"
 )
 
@@ -67,8 +68,8 @@ func TestResolveWithNoKindsRefuses(t *testing.T) {
 func TestResolveCarriesTheAccount(t *testing.T) {
 	pair := testDB(t)
 	dan := addUser(t, pair, "dan@example.com", true)
-	if _, err := pair.Write.Exec("UPDATE Account SET is_staff = 1 WHERE id = ?", dan); err != nil {
-		t.Fatalf("setting is_staff: %v", err)
+	if _, err := pair.Write.Exec("UPDATE Account SET role = ? WHERE id = ?", account.RoleAdmin, dan); err != nil {
+		t.Fatalf("setting role: %v", err)
 	}
 
 	_, secret, err := Issue(ctx(t), IssueOpts{
@@ -95,7 +96,7 @@ func TestResolveCarriesTheAccount(t *testing.T) {
 	if !acct.IsActive {
 		t.Error("account should be active")
 	}
-	if !acct.IsStaff {
-		t.Error("is_staff did not survive the join")
+	if !acct.Role.IsAdmin() {
+		t.Errorf("role did not survive the join: %q", acct.Role)
 	}
 }

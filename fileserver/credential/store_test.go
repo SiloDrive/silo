@@ -48,7 +48,7 @@ func addUser(t *testing.T, pair *dbutil.DBPair, email string, active bool) accou
 	t.Helper()
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	id, _, err := account.Create(ctx, email, "", false)
+	id, _, err := account.Create(ctx, email, "", account.RoleUser)
 	if err != nil {
 		t.Fatalf("creating account: %v", err)
 	}

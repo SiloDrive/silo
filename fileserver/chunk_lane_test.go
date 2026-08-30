@@ -3,6 +3,7 @@ package silod
 import (
 	"bytes"
 	"context"
+	"github.com/dkam/silo/fileserver/account"
 	"io"
 	"math/rand"
 	"net/http"
@@ -54,7 +55,7 @@ func laneClient(t *testing.T) (*client.APIClient, string, *atomic.Int64) {
 	authmgr.Init(siloPair.Read, siloPair.Write)
 
 	const email, password = "lane@example.com", "correct horse battery staple"
-	if _, err := authmgr.CreateAccount(context.Background(), email, password, false); err != nil {
+	if _, err := authmgr.CreateAccount(context.Background(), email, password, account.RoleUser); err != nil {
 		t.Fatalf("create account: %v", err)
 	}
 

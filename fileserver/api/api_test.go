@@ -72,7 +72,7 @@ func setupPerms(t *testing.T) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	for _, email := range []string{ownerUser, rwShareUser, roShareUser, strangerUser} {
-		if _, _, err := account.Create(ctx, email, "", false); err != nil {
+		if _, _, err := account.Create(ctx, email, "", account.RoleUser); err != nil {
 			t.Fatalf("create account %s: %v", email, err)
 		}
 	}

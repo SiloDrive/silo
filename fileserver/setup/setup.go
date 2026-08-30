@@ -117,8 +117,8 @@ func Required(ctx context.Context) (bool, error) {
 	return !stored.IsZero(), nil
 }
 
-// Claim spends the setup token and creates this server's first account, as
-// staff, in one transaction.
+// Claim spends the setup token and creates this server's first account, with
+// the admin role, in one transaction.
 //
 // One transaction is the whole design. Consuming the token and inserting the
 // account cannot be two, in either order: burn first and a failed insert leaves
@@ -159,7 +159,7 @@ func Claim(ctx context.Context, presented Token, email, passwordHash string) (ac
 		return account.Zero, ErrBadToken
 	}
 
-	id, created, err := account.CreateTx(ctx, tx, email, passwordHash, true)
+	id, created, err := account.CreateTx(ctx, tx, email, passwordHash, account.RoleAdmin)
 	if err != nil {
 		return account.Zero, err
 	}

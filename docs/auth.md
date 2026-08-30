@@ -61,7 +61,7 @@ CREATE TABLE Account (
   id         BLOB    PRIMARY KEY,        -- UUIDv7, 16 bytes
   display    TEXT,                       -- what a human is called; not an identifier
   is_active  INTEGER NOT NULL DEFAULT 1,
-  is_staff   INTEGER NOT NULL DEFAULT 0,
+  role       TEXT    NOT NULL DEFAULT 'user',  -- admin | user | guest; account.ParseRole is the one rule
   ctime      INTEGER NOT NULL
 );
 
@@ -420,7 +420,7 @@ What it does instead is a **setup token**: sixteen Crockford base32 symbols,
 eighty bits from `crypto/rand`, printed at warning level on every boot until it
 is claimed and reprinted on demand by `silo setup-token`. `POST auth/setup`
 takes it with an address and a password of the operator's choosing and creates
-the first account, as staff. It is refused with `409` the moment any account
+the first account, with the `admin` role. It is refused with `409` the moment any account
 exists, and `GET server-info` carries `setup_required` so a client can offer the
 right screen rather than a login form that cannot work.
 
@@ -772,7 +772,7 @@ parameters the blob itself carries whenever those differ from these.
 
 ```
 silo user list                       every account
-silo user add <email>                create one     (-staff, -generate)
+silo user add <email>                create one     (-role, -generate)
 silo user passwd <email>             set a password (-generate); revokes everything
 silo user disable <email>            stop every credential it holds
 silo user enable <email>             undo a disable
@@ -1114,7 +1114,7 @@ brokering.
 A deployment wanting the IdP to be the only path sets `SILO_PASSWORD_LOGIN=off`.
 The failure mode to answer before that switch exists is the IdP being down with
 nobody able to administer the server; resolve it with `silo user passwd` on the
-host rather than a standing exception for staff accounts. Anyone who can run the
+host rather than a standing exception for admin accounts. Anyone who can run the
 CLI already owns the data directory, so it grants nothing they did not have.
 
 Dependencies: `github.com/coreos/go-oidc/v3` and `golang.org/x/oauth2`, neither
@@ -1249,6 +1249,7 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
    `Credential` row Part 1 describes.
 6. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
-Outside that list: `is_staff` can be set when an account is created but not
-afterwards, which is fine only until the role model in
-[`plans/sharing.md`](plans/sharing.md) § Accounts makes the flag mean something.
+Outside that list: `role` can be set when an account is created but not
+afterwards. Changing it is the `grant` capability in
+[`plans/admin.md`](plans/admin.md), and it does not exist yet — so an install
+that wants a second administrator creates one with `silo user -role admin add`.

@@ -131,7 +131,7 @@ func seedUser(t *testing.T, email, storedPasswd string) account.ID {
 	t.Helper()
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	id, _, err := account.Create(ctx, email, storedPasswd, false)
+	id, _, err := account.Create(ctx, email, storedPasswd, account.RoleUser)
 	if err != nil {
 		t.Fatalf("failed to seed user: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestAMissingAccountCostsWhatAPresentOneDoes(t *testing.T) {
 	authTestDB(t)
 
 	const email, password = "present@example.com", "correct horse battery staple"
-	if _, err := CreateAccount(context.Background(), email, password, false); err != nil {
+	if _, err := CreateAccount(context.Background(), email, password, account.RoleUser); err != nil {
 		t.Fatalf("creating the account: %v", err)
 	}
 

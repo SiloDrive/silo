@@ -326,7 +326,7 @@ func upgradeHash(ctx context.Context, acct *account.Account, password string) {
 //
 // created is false when the address was already claimed, in which case
 // nothing was written and the existing password is still the live one.
-func CreateAccount(ctx context.Context, email, password string, isStaff bool) (created bool, err error) {
+func CreateAccount(ctx context.Context, email, password string, role account.Role) (created bool, err error) {
 	// Ask before deriving. HashPassword is 600k PBKDF2 iterations by design,
 	// and the answer is thrown away whenever the address is taken: account.Create
 	// returns the existing row the moment it finds it. Checking first keeps
@@ -342,7 +342,7 @@ func CreateAccount(ctx context.Context, email, password string, isStaff bool) (c
 		return false, err
 	}
 
-	_, created, err = account.Create(ctx, email, hash, isStaff)
+	_, created, err = account.Create(ctx, email, hash, role)
 	return created, err
 }
 

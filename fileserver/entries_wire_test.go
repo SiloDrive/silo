@@ -26,7 +26,7 @@ func testLibrary(t *testing.T) (string, *account.Account) {
 	share.Init(siloPair.Read, "Group", false)
 
 	ctx := context.Background()
-	if _, _, err := account.Create(ctx, "wire@example.com", "", false); err != nil {
+	if _, _, err := account.Create(ctx, "wire@example.com", "", account.RoleUser); err != nil {
 		t.Fatalf("create account: %v", err)
 	}
 	acct, err := account.ByEmail(ctx, "wire@example.com")
