@@ -77,7 +77,7 @@ func TestParseTokenRejectsMalformed(t *testing.T) {
 		{"truncated", valid[:len(valid)-1]},
 		{"one character over", valid + "a"},
 		{"uppercased", strings.ToUpper(valid)},
-		{"transposed", transpose(valid)},
+		{"transposed", transpose(t, valid)},
 	}
 
 	for _, tt := range tests {
@@ -160,9 +160,24 @@ func TestParseErrorsDoNotLeakTheSecret(t *testing.T) {
 	}
 }
 
-func transpose(s string) string {
+// transpose swaps an adjacent pair inside the secret, choosing one whose two
+// characters differ.
+//
+// The pair has to differ or there is no transposition: swapping "ll" gives
+// back the same token, which parses, and the caller sees a checksum that
+// missed an error rather than a string that was never changed. The alphabet
+// has 32 characters, so a fixed position hits a repeat about three runs in a
+// hundred.
+func transpose(t *testing.T, s string) string {
+	t.Helper()
 	b := []byte(s)
-	i := len(b) - 8 // inside the secret, before the checksum
-	b[i], b[i+1] = b[i+1], b[i]
-	return string(b)
+	// Before the checksum, and inside the secret rather than the prefix.
+	for i := len(b) - 8; i > len(b)-24; i-- {
+		if b[i] != b[i+1] {
+			b[i], b[i+1] = b[i+1], b[i]
+			return string(b)
+		}
+	}
+	t.Fatalf("no adjacent pair in %q differs", s)
+	return ""
 }
