@@ -367,7 +367,12 @@ func setUserActive(email string, active bool) error {
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
-	if err := account.SetActive(ctx, acct.ID, active); err != nil {
+	// admin.SetActive rather than account.SetActive: disabling the last
+	// account able to administer this server is refused at the CLI too. The
+	// invariant is about the install rather than about the caller, and the
+	// operator can enable somebody else first -- which is the thing they meant
+	// to do.
+	if err := admin.SetActive(ctx, acct.ID, active); err != nil {
 		return err
 	}
 

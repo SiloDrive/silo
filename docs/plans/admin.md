@@ -187,13 +187,40 @@ decision below — whether an admin implicitly sees every library — which belo
 to a person and not to a handler. `GET admin/storage` waits on the free-disk
 and ceiling work that owns those numbers.
 
-**`PUT accounts/{id}/role` closed a gap the capability model left open.** The
-last-holder rule protects the row; nothing protected the role, and the
-conjunction makes them equally destructive — an account demoted out of `admin`
-keeps every row it held and none of them mean anything, which is a revocation of
-all six spelled a different way. `admin.SetRole` refuses a change that would
-leave no account for which `Can(grant)` is true, which is the same invariant
-asked of both halves at once.
+**There are three doors to a server nobody can administer, and one question
+behind all of them.** Each was found separately, which is the argument for
+asking once rather than guarding each:
+
+- **The row.** Revoking `grant` — the invariant this plan already named.
+- **The role.** Demoting out of `admin` leaves every row in place meaning
+  nothing, because the rule is a conjunction. A revocation of all six spelled a
+  different way.
+- **Deactivation.** Disabling stops every lane at once — that is what the
+  `is_active` join in `credential.Resolve` is for — so it reaches the same state
+  by a route neither of the other guards watched. It was the worst of the three
+  while it was open, because it *inverted* the escalation boundary: this
+  operation is gated by `users`, so an admin holding only `users` could lock the
+  install out while an admin holding only `grant` was refused the identical
+  outcome. The fix is the guard rather than a capability change — once the door
+  asks the same question, `users` can no longer do what `grant` cannot.
+
+`admin.wouldStrandTheServer` is that question: is this the only account for
+which `Can(grant)` is true. Asked as the whole conjunction and not any part of
+it — counting rows alone credits a holder who is not an admin, counting admins
+alone credits one who holds nothing, and counting either without `is_active`
+credits an account that cannot log in. Each of those is a second administrator
+who does not exist, and the last of them bit on its own: disable an old admin
+today, demote the current one tomorrow, and a guard that ignored `is_active`
+waved it through.
+
+So `Can` carries `is_active` as its third term. On the request path it is
+already true, since `Resolve` would not have produced the account otherwise; it
+is there for the caller that counts accounts read straight from the table.
+
+An administrator may still disable themselves when a second one is standing,
+and their own credential dies with the request. Somebody else lets them back in.
+The guard keeps the server administrable; it does not promise any one
+administrator a way to undo what they did to themselves.
 
 ## The page, and what it can honestly show
 

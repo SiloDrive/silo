@@ -278,3 +278,92 @@ func TestTheLastAdministratorMayNotBeDemoted(t *testing.T) {
 		t.Errorf("demoting with a second administrator standing: %v", err)
 	}
 }
+
+// A disabled account can administer nothing, and the guard has to count that
+// way or it miscounts.
+//
+// credential.load refuses an inactive account outright, so an account that is
+// disabled holds no authority whatever its role and rows say. That makes
+// is_active the third term of the conjunction, and leaving it out of the
+// counting query is not a cosmetic gap: a disabled administrator standing in
+// the table looks exactly like a live second holder, so the guard waves through
+// the change that leaves nobody able to administer the server.
+func TestADisabledAccountCanNothing(t *testing.T) {
+	pair := testDB(t)
+	acct := mkAccount(t, "sleeping@example.com", account.RoleAdmin, All()...)
+	if _, err := pair.Write.Exec("UPDATE Account SET is_active = 0 WHERE id = ?", acct.ID); err != nil {
+		t.Fatal(err)
+	}
+	reread, err := account.ByID(ctx(t), acct.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if can, err := Can(ctx(t), reread, CapGrant); err != nil || can {
+		t.Errorf("Can on a disabled administrator = %v, %v, want false", can, err)
+	}
+}
+
+// The counting question, asked with a disabled administrator standing in the
+// table. Disable an old admin today and demote the current one tomorrow, and
+// nothing catches it.
+func TestADisabledAdministratorDoesNotCountAsTheSecondOne(t *testing.T) {
+	pair := testDB(t)
+	live := mkAccount(t, "live@example.com", account.RoleAdmin, All()...)
+	sleeping := mkAccount(t, "sleeping@example.com", account.RoleAdmin, All()...)
+	if _, err := pair.Write.Exec("UPDATE Account SET is_active = 0 WHERE id = ?", sleeping.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetRole(ctx(t), live, live.ID, account.RoleUser); !errors.Is(err, ErrLastAdmin) {
+		t.Errorf("demoting the last live administrator = %v, want ErrLastAdmin", err)
+	}
+	if err := Revoke(ctx(t), live, live.ID, CapGrant); !errors.Is(err, ErrLastGrant) {
+		t.Errorf("revoking from the last live administrator = %v, want ErrLastGrant", err)
+	}
+}
+
+// The third door. Deactivation stops every lane at once -- that is what the
+// is_active join in credential.Resolve does -- so disabling the last
+// administrator reaches the same state as demoting them, by a route the other
+// two guards never saw.
+//
+// It is the worst of the three while it is open, because it inverts the
+// escalation boundary: an admin holding only users could lock the install out,
+// while an admin holding only grant is refused the identical outcome. The fix
+// is the guard rather than a capability change -- once deactivation asks the
+// same question, users can no longer do what grant cannot.
+func TestTheLastAdministratorMayNotBeDeactivated(t *testing.T) {
+	testDB(t)
+	only := mkAccount(t, "only@example.com", account.RoleAdmin, All()...)
+	mkAccount(t, "deputy@example.com", account.RoleAdmin, CapUsers)
+
+	if err := SetActive(ctx(t), only.ID, false); !errors.Is(err, ErrLastAdmin) {
+		t.Errorf("disabling the last administrator = %v, want ErrLastAdmin", err)
+	}
+
+	// With a second live administrator it is an ordinary disable, and
+	// re-enabling never needs the guard at all.
+	second := mkAccount(t, "second@example.com", account.RoleAdmin)
+	if err := Grant(ctx(t), only, second.ID, CapGrant); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetActive(ctx(t), only.ID, false); err != nil {
+		t.Errorf("disabling with a second administrator standing: %v", err)
+	}
+	if err := SetActive(ctx(t), only.ID, true); err != nil {
+		t.Errorf("re-enabling: %v", err)
+	}
+}
+
+// Disabling an ordinary account is not the guard's business, and a guard that
+// made an operator prove otherwise on every disable would be one they route
+// around.
+func TestDisablingAnOrdinaryAccountIsNotGuarded(t *testing.T) {
+	testDB(t)
+	mkAccount(t, "only@example.com", account.RoleAdmin, All()...)
+	ordinary := mkAccount(t, "ordinary@example.com", account.RoleUser)
+
+	if err := SetActive(ctx(t), ordinary.ID, false); err != nil {
+		t.Errorf("disabling an ordinary account: %v", err)
+	}
+}

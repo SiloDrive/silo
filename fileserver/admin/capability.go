@@ -121,9 +121,16 @@ func Init(read, write *sql.DB) { readDB, writeDB = read, write }
 // into a silent widening of what the first one meant, which is the argument
 // the whole table exists to answer.
 //
-// A nil account is the unauthenticated caller and holds nothing.
+// A nil account is the unauthenticated caller and holds nothing, and so does a
+// disabled one. Deactivation stops every lane at once -- credential.load
+// refuses an inactive account outright -- so an account that cannot present a
+// credential cannot hold authority either. On the request path that term is
+// already true, since Resolve would not have produced the account otherwise;
+// it is here for the other caller, which counts accounts it has read straight
+// from the table and would otherwise count a disabled administrator as a live
+// one.
 func Can(ctx context.Context, acct *account.Account, c Capability) (bool, error) {
-	if acct == nil || !acct.Role.IsAdmin() {
+	if acct == nil || !acct.IsActive || !acct.Role.IsAdmin() {
 		return false, nil
 	}
 	return holds(ctx, acct.ID, c)
@@ -338,7 +345,7 @@ func withdraw(ctx context.Context, target account.ID, caps []Capability) error {
 	}
 	for _, c := range caps {
 		if c == CapGrant {
-			last, err := isLastGrantHolder(ctx, target)
+			last, err := wouldStrandTheServer(ctx, target)
 			if err != nil {
 				return err
 			}
@@ -357,25 +364,43 @@ func withdraw(ctx context.Context, target account.ID, caps []Capability) error {
 	return nil
 }
 
-// isLastGrantHolder reports whether target is the only account holding
-// CapGrant. Asked of the rows rather than of the admins, because the rule is
-// about the last holder of grant specifically -- an install can have several
-// administrators of whom one manages authority.
-func isLastGrantHolder(ctx context.Context, target account.ID) (bool, error) {
+// wouldStrandTheServer reports whether target is the only account that can
+// administer this server -- the only one for which Can(CapGrant) is true.
+//
+// One question behind three doors, because there are three ways to reach the
+// same state and each of them was found separately. Taking the row away is a
+// revocation. Taking the role away leaves every row in place meaning nothing,
+// because the rule is a conjunction. Disabling the account stops every lane at
+// once. All three end with nobody able to hand authority out, and a server
+// nobody can administer is a data-loss event with extra steps.
+//
+// Asked as the whole conjunction rather than as any part of it. Counting rows
+// alone credits a holder who is not an admin; counting admins alone credits one
+// who holds nothing; counting either without is_active credits an account that
+// cannot log in. Each of those is a second administrator that does not exist.
+func wouldStrandTheServer(ctx context.Context, target account.ID) (bool, error) {
+	const q = `SELECT COUNT(*) FROM Account a
+	           JOIN AccountCapability c ON c.account_id = a.id AND c.capability = ?
+	           WHERE a.role = ? AND a.is_active = 1 AND a.id <> ?`
 	var others int
-	err := readDB.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM AccountCapability WHERE capability = ? AND account_id <> ?",
-		CapGrant, target).Scan(&others)
-	if err != nil {
-		return false, fmt.Errorf("counting the holders of %s: %v", CapGrant, err)
+	if err := readDB.QueryRowContext(ctx, q, CapGrant, account.RoleAdmin, target).Scan(&others); err != nil {
+		return false, fmt.Errorf("counting the accounts that can administer this server: %v", err)
 	}
 	if others > 0 {
 		return false, nil
 	}
-	// Nobody else holds it. Whether refusing is right depends on whether this
-	// account holds it at all: removing a row that is not there is a no-op and
-	// must not be reported as the last one going.
-	return holds(ctx, target, CapGrant)
+	// Nobody else can. Whether refusing is right now depends on whether this
+	// account can either: taking authority from somebody who never had it, or
+	// disabling an ordinary account, must not be reported as the last
+	// administrator going.
+	acct, err := account.ByID(ctx, target)
+	if errors.Is(err, account.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return Can(ctx, acct, CapGrant)
 }
 
 // validate refuses a set containing anything outside the vocabulary, at the
@@ -422,7 +447,7 @@ func SetRole(ctx context.Context, actor *account.Account, target account.ID, rol
 		return ErrNeedsGrant
 	}
 	if !role.IsAdmin() {
-		last, err := isLastAdministrator(ctx, target)
+		last, err := wouldStrandTheServer(ctx, target)
 		if err != nil {
 			return err
 		}
@@ -433,29 +458,30 @@ func SetRole(ctx context.Context, actor *account.Account, target account.ID, rol
 	return account.SetRole(ctx, target, role)
 }
 
-// isLastAdministrator reports whether target is the only account that both is
-// an admin and holds CapGrant -- which is to say, the only account for which
-// admin.Can(CapGrant) is true. Asked as the conjunction rather than as either
-// half, because either half alone rescues nothing: an admin without the row
-// cannot hand authority out, and a holder of the row who is not an admin holds
-// something that means nothing.
-func isLastAdministrator(ctx context.Context, target account.ID) (bool, error) {
-	const q = `SELECT COUNT(*) FROM Account a
-	           JOIN AccountCapability c ON c.account_id = a.id AND c.capability = ?
-	           WHERE a.role = ? AND a.id <> ?`
-	var others int
-	if err := readDB.QueryRowContext(ctx, q, CapGrant, account.RoleAdmin, target).Scan(&others); err != nil {
-		return false, fmt.Errorf("counting the accounts that can administer this server: %v", err)
+// SetActive enables or disables an account, refusing the disable that would
+// leave nobody able to administer this server.
+//
+// The third door, and the one that was open longest because it does not look
+// like an authority change. Disabling stops every lane at once -- that is what
+// the is_active join in credential.Resolve is for -- so it reaches the same
+// state as a demotion by a route neither of the other two guards watched.
+//
+// Worse while it was open, it inverted the escalation boundary: this operation
+// is gated by CapUsers, so an admin holding only users could lock the install
+// out, while an admin holding only grant is refused the identical outcome by
+// SetRole. The fix is the guard rather than a capability change -- once this
+// door asks the same question, users can no longer do what grant cannot.
+//
+// Enabling is never guarded: it can only add an administrator.
+func SetActive(ctx context.Context, target account.ID, active bool) error {
+	if !active {
+		last, err := wouldStrandTheServer(ctx, target)
+		if err != nil {
+			return err
+		}
+		if last {
+			return ErrLastAdmin
+		}
 	}
-	if others > 0 {
-		return false, nil
-	}
-	// Nobody else can. Whether refusing is right depends on whether this
-	// account can either: demoting somebody who was never an administrator
-	// must not be reported as the last one going.
-	acct, err := account.ByID(ctx, target)
-	if err != nil {
-		return false, err
-	}
-	return Can(ctx, acct, CapGrant)
+	return account.SetActive(ctx, target, active)
 }

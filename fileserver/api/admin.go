@@ -158,6 +158,10 @@ type setActiveRequest struct {
 // is_active join in credential.Resolve does -- and it revokes nothing, so
 // re-enabling restores what they had. The CLI says so in prose; here it is the
 // response field.
+//
+// Which is also why it is guarded. Stopping every lane is what a demotion does
+// by another name, so disabling the last account able to administer this
+// server is refused here exactly as demoting them is.
 func SetAdminAccountActiveHandler(w http.ResponseWriter, r *http.Request) {
 	target, ok := adminTarget(w, r)
 	if !ok {
@@ -171,9 +175,12 @@ func SetAdminAccountActiveHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := option.WithDBTimeout(r.Context())
 	defer cancel()
 
-	if err := account.SetActive(ctx, target.ID, req.Active); err != nil {
-		log.Errorf("Failed to set an account active: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	// Through admin.SetActive rather than account.SetActive, because
+	// deactivation is the third door to a server nobody can administer and the
+	// guard lives with the other two. account.SetActive writes the column; this
+	// is the operation.
+	if err := admin.SetActive(ctx, target.ID, req.Active); err != nil {
+		adminRefusal(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {

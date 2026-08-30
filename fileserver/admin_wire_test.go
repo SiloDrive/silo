@@ -382,11 +382,41 @@ func TestTheRouteRefusesToLeaveNobodyAbleToAdminister(t *testing.T) {
 		t.Errorf("demoting the last administrator = %d, want 403; body %s", code, body)
 	}
 
-	// With a second full administrator standing, both are ordinary changes.
+	// The third door: disabling stops every lane at once, which is a demotion
+	// by another name. It was open while the other two were guarded, and it is
+	// gated by users rather than grant -- so until it asked the same question,
+	// an admin holding only users could do what an admin holding only grant
+	// could not.
+	code, body = call(t, "POST", base+"/api/silo/v1/admin/accounts/"+id+"/active", adminToken,
+		`{"active":false}`)
+	if code != http.StatusForbidden {
+		t.Errorf("disabling the last administrator = %d, want 403; body %s", code, body)
+	}
+
+	// With a second full administrator standing, all three are ordinary changes.
 	second, _ := makeAccount(t, base, "second@example.com", "a second administrator", account.RoleAdmin)
+	// A real second administrator, holding grant so the guard counts them and
+	// users so they can act on an account.
 	if code, _ := call(t, "PUT", base+"/api/silo/v1/admin/accounts/"+second.String()+"/caps",
-		adminToken, `{"capabilities":["grant"]}`); code != http.StatusOK {
+		adminToken, `{"capabilities":["users","grant"]}`); code != http.StatusOK {
 		t.Fatal("granting a second holder failed")
+	}
+	if code, body := call(t, "POST", base+"/api/silo/v1/admin/accounts/"+id+"/active", adminToken,
+		`{"active":false}`); code != http.StatusOK {
+		t.Errorf("disabling with a second administrator standing = %d; body %s", code, body)
+	}
+	// And having disabled itself, that credential is gone -- disabling stops
+	// every lane, including the one the request came in on. Somebody else lets
+	// them back in, which is the property rather than a wrinkle: the guard
+	// keeps the server administrable, and does not promise any one
+	// administrator a way to undo what they just did to themselves.
+	if code, _ := call(t, "GET", base+"/api/silo/v1/admin/accounts", adminToken, ""); code == http.StatusOK {
+		t.Error("a disabled administrator's own credential still works")
+	}
+	secondToken := loginToken(t, base, "second@example.com", "a second administrator")
+	if code, body := call(t, "POST", base+"/api/silo/v1/admin/accounts/"+id+"/active", secondToken,
+		`{"active":true}`); code != http.StatusOK {
+		t.Fatalf("the second administrator cannot re-enable the first: %d, body %s", code, body)
 	}
 	if code, body := call(t, "PUT", base+"/api/silo/v1/admin/accounts/"+id+"/role", adminToken,
 		`{"role":"user"}`); code != http.StatusOK {
