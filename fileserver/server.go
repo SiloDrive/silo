@@ -342,7 +342,7 @@ func Run(args []string) error {
 
 	libmgr.Init(siloPair.Read, siloPair.Write, dataDir)
 
-	share.Init(siloPair.Read, option.GroupTableName, option.CloudMode)
+	share.Init(siloPair.Read, siloPair.Write, option.GroupTableName, option.CloudMode)
 
 	account.Init(siloPair.Read, siloPair.Write)
 	admin.Init(siloPair.Read, siloPair.Write)

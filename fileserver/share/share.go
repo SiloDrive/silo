@@ -7,8 +7,6 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
-	"strconv"
-	"strings"
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/libmgr"
@@ -31,9 +29,14 @@ var db *sql.DB
 var groupTableName string
 var cloudMode bool
 
-// Init sets the database handle, the group table name and cloud mode.
-func Init(readDB *sql.DB, grpTableName string, clMode bool) {
+// Init sets the database handles, the group table name and cloud mode.
+//
+// Two handles now. Checking a permission is a read and this package held only
+// a read handle for as long as that was all it did; recording a grant is a
+// write, and the grant model is the first thing here that writes.
+func Init(readDB, siloWriteDB *sql.DB, grpTableName string, clMode bool) {
 	db = readDB
+	writeDB = siloWriteDB
 	groupTableName = grpTableName
 	cloudMode = clMode
 }
@@ -180,248 +183,138 @@ func getGroupPaths(sqlStr string) (string, error) {
 	}
 	return paths, nil
 }
-
-func checkGroupPermByUser(libraryID string, user account.ID) (string, error) {
-	groups, err := getGroupsByUser(user, false)
-	if err != nil {
-		return "", err
-	}
-	if len(groups) == 0 {
-		return "", nil
-	}
-
-	var sqlBuilder strings.Builder
-	sqlBuilder.WriteString("SELECT permission FROM LibraryGroup WHERE library_id = ? AND group_id IN (")
-	for i := 0; i < len(groups); i++ {
-		sqlBuilder.WriteString(strconv.Itoa(groups[i].id))
-		if i+1 < len(groups) {
-			sqlBuilder.WriteString(",")
-		}
-	}
-	sqlBuilder.WriteString(")")
-
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	rows, err := db.QueryContext(ctx, sqlBuilder.String(), libraryID)
-	if err != nil {
-		err := fmt.Errorf("failed to get group permission by user %s: %v", user, err)
-		return "", err
-	}
-
-	defer func() { _ = rows.Close() }()
-
-	var perm string
-	var origPerm string
-	for rows.Next() {
-		if err := rows.Scan(&perm); err == nil {
-			if perm == "rw" {
-				origPerm = perm
-			} else if perm == "r" && origPerm == "" {
-				origPerm = perm
-			}
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		err := fmt.Errorf("failed to get group permission for user %s: %v", user, err)
-		return "", err
-	}
-
-	return origPerm, nil
-}
-
-func checkSharedLibraryPerm(libraryID string, to account.ID) (string, error) {
-	sqlStr := "SELECT permission FROM SharedLibrary WHERE library_id=? AND to_account_id=?"
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	row := db.QueryRowContext(ctx, sqlStr, libraryID, to)
-
-	var perm string
-	if err := row.Scan(&perm); err != nil {
-		if err != sql.ErrNoRows {
-			err := fmt.Errorf("failed to check shared library permission: %v", err)
-			return "", err
-		}
-	}
-	return perm, nil
-}
-
-func checkInnerPubLibraryPerm(libraryID string) (string, error) {
-	sqlStr := "SELECT permission FROM InnerPubLibrary WHERE library_id=?"
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	row := db.QueryRowContext(ctx, sqlStr, libraryID)
-
-	var perm string
-	if err := row.Scan(&perm); err != nil {
-		if err != sql.ErrNoRows {
-			err := fmt.Errorf("failed to check inner public library permission: %v", err)
-			return "", err
-		}
-	}
-
-	return perm, nil
-}
-
 func checkLibrarySharePerm(libraryID string, user account.ID) string {
 	owner, err := libmgr.GetLibraryOwner(libraryID)
 	if err != nil {
 		log.Errorf("Failed to get library owner: %v", err)
 	}
 	if !owner.IsZero() && owner == user {
-		perm := "rw"
-		return perm
+		return "rw"
 	}
-	perm, err := checkSharedLibraryPerm(libraryID, user)
+
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+
+	perm, err := permFor(ctx, libraryID, rootPath, PrincipalsFor(user))
 	if err != nil {
-		log.Errorf("Failed to get shared library permission: %v", err)
+		log.Errorf("Failed to read grants on library %s: %v", libraryID, err)
+		return ""
 	}
 	if perm != "" {
 		return perm
 	}
-	perm, err = checkGroupPermByUser(libraryID, user)
+	if cloudMode {
+		return ""
+	}
+	perm, err = permFor(ctx, libraryID, rootPath, []Principal{Anon})
 	if err != nil {
-		log.Errorf("Failed to get group permission by user %s: %v", user, err)
+		log.Errorf("Failed to read the anonymous grant on library %s: %v", libraryID, err)
+		return ""
 	}
-	if perm != "" {
-		return perm
-	}
-	if !cloudMode {
-		perm, err = checkInnerPubLibraryPerm(libraryID)
-		if err != nil {
-			log.Errorf("Failed to get inner pulic library permission by library id %s: %v", libraryID, err)
-			return ""
-		}
-		return perm
-	}
-	return ""
+	return perm
 }
 
-func getSharedDirsToUser(originLibraryID string, to account.ID) (map[string]string, error) {
+// grantedDirs maps each shared subfolder of an origin library to what these
+// principals may do in it.
+//
+// A subfolder share is a grant on a virtual library -- the entity that gives a
+// folder its own id -- so in the grant model this is an ordinary whole-library
+// grant joined back to the path the virtual library stands for. Two functions
+// became one because the only thing that differed between them was which
+// principals were being asked about, which is now a parameter rather than a
+// second query.
+func grantedDirs(ctx context.Context, originLibraryID string, principals []Principal) (map[string]string, error) {
 	dirs := make(map[string]string)
-	sqlStr := "SELECT v.path, s.permission FROM SharedLibrary s, VirtualLibrary v WHERE " +
-		"s.library_id = v.library_id AND s.to_account_id = ? AND v.origin_library = ?"
-
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	rows, err := db.QueryContext(ctx, sqlStr, to, originLibraryID)
-	if err != nil {
-		err := fmt.Errorf("failed to get shared directories by user %s: %v", to, err)
-		return nil, err
+	if len(principals) == 0 {
+		return dirs, nil
 	}
-
+	q := `SELECT v.path, g.perm
+	      FROM LibraryGrant g JOIN VirtualLibrary v ON v.library_id = g.library_id
+	      WHERE v.origin_library = ? AND g.path = ? AND g.principal IN (` +
+		placeholders(len(principals)) + `)`
+	args := make([]any, 0, len(principals)+2)
+	args = append(args, originLibraryID, rootPath)
+	for _, p := range principals {
+		args = append(args, p)
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get shared directories in %s: %v", originLibraryID, err)
+	}
 	defer func() { _ = rows.Close() }()
 
-	var path string
-	var perm string
 	for rows.Next() {
-		if err := rows.Scan(&path, &perm); err == nil {
-			dirs[path] = perm
+		var path, perm string
+		if err := rows.Scan(&path, &perm); err != nil {
+			return nil, err
 		}
+		// A folder reached through two principals takes the stronger, the same
+		// rule two groups sharing one library already followed.
+		dirs[path] = stronger(dirs[path], perm)
 	}
 	if err := rows.Err(); err != nil {
-		err := fmt.Errorf("failed to get shared directories by user %s: %v", to, err)
-		return nil, err
+		return nil, fmt.Errorf("failed to get shared directories in %s: %v", originLibraryID, err)
 	}
-
 	return dirs, nil
 }
 
+// checkPermOnParentLibrary answers for a path inside a library, by finding the
+// nearest shared folder above it.
+//
+// The precedence is the same one permFor applies to a whole library, and for
+// the same reason: a grant naming you is a decision about you, and one naming a
+// group you belong to is not. Kept as two lookups rather than one because the
+// answer is a nearest-ancestor walk per principal kind, not a strongest-wins
+// over a set -- a folder shared to you directly must answer even when a
+// shallower folder was shared to a group you are in.
+// getDirPerm walks up from a path to the nearest folder that was shared,
+// because a share on a folder reaches everything under it.
+//
+// If the path is empty, filepath.Dir returns "."; if it is all separators, it
+// returns a single separator. Both terminate the loop.
 func getDirPerm(perms map[string]string, path string) string {
 	tmp := path
-	var perm string
-	// If the path is empty, filepath.Dir returns ".". If the path consists entirely of separators,
-	// filepath.Dir returns a single separator.
 	for tmp != "/" && tmp != "." && tmp != "" {
 		if perm, exists := perms[tmp]; exists {
 			return perm
 		}
 		tmp = filepath.Dir(tmp)
 	}
-	return perm
-}
-
-func convertGroupListToStr(groups []group) string {
-	var groupIDs strings.Builder
-
-	for i, group := range groups {
-		groupIDs.WriteString(strconv.Itoa(group.id))
-		if i+1 < len(groups) {
-			groupIDs.WriteString(",")
-		}
-	}
-	return groupIDs.String()
-}
-
-func getSharedDirsToGroup(originLibraryID string, groups []group) (map[string]string, error) {
-	dirs := make(map[string]string)
-	groupIDs := convertGroupListToStr(groups)
-
-	sqlStr := fmt.Sprintf("SELECT v.path, s.permission "+
-		"FROM LibraryGroup s, VirtualLibrary v WHERE "+
-		"s.library_id = v.library_id AND v.origin_library = ? "+
-		"AND s.group_id in (%s)", groupIDs)
-
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	rows, err := db.QueryContext(ctx, sqlStr, originLibraryID)
-	if err != nil {
-		err := fmt.Errorf("failed to get shared directories: %v", err)
-		return nil, err
-	}
-
-	defer func() { _ = rows.Close() }()
-
-	var path string
-	var perm string
-	for rows.Next() {
-		if err := rows.Scan(&path, &perm); err == nil {
-			dirs[path] = perm
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		err := fmt.Errorf("failed to get shared directories: %v", err)
-		return nil, err
-	}
-
-	return dirs, nil
+	return ""
 }
 
 func checkPermOnParentLibrary(originLibraryID string, user account.ID, vPath string) string {
-	var perm string
-	userPerms, err := getSharedDirsToUser(originLibraryID, user)
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+
+	userDirs, err := grantedDirs(ctx, originLibraryID, []Principal{UserPrincipal(user)})
 	if err != nil {
-		log.Errorf("Failed to get all shared folder perms in parent library %.8s for user %s", originLibraryID, user)
+		log.Errorf("Failed to get shared folders in %.8s for user %s: %v", originLibraryID, user, err)
 		return ""
 	}
-	if len(userPerms) > 0 {
-		perm = getDirPerm(userPerms, vPath)
-		if perm != "" {
-			return perm
-		}
+	if perm := getDirPerm(userDirs, vPath); perm != "" {
+		return perm
 	}
 
 	groups, err := getGroupsByUser(user, false)
 	if err != nil {
 		log.Errorf("Failed to get groups by user %s: %v", user, err)
+		return ""
 	}
 	if len(groups) == 0 {
-		return perm
+		return ""
 	}
-
-	groupPerms, err := getSharedDirsToGroup(originLibraryID, groups)
+	principals := make([]Principal, 0, len(groups))
+	for _, g := range groups {
+		principals = append(principals, GroupPrincipal(g.id))
+	}
+	groupDirs, err := grantedDirs(ctx, originLibraryID, principals)
 	if err != nil {
-		log.Errorf("Failed to get all shared folder perm from parent library %.8s to all user groups", originLibraryID)
+		log.Errorf("Failed to get shared folders in %.8s for the groups of %s: %v",
+			originLibraryID, user, err)
 		return ""
 	}
-	if len(groupPerms) == 0 {
-		return ""
-	}
-
-	perm = getDirPerm(groupPerms, vPath)
-
-	return perm
+	return getDirPerm(groupDirs, vPath)
 }
 
 // SharedLibrary is a shared library object

@@ -82,19 +82,29 @@ func setupPerms(t *testing.T) {
 		testLibraryID, accountOf(t, ownerUser).ID); err != nil {
 		t.Fatalf("seed LibraryOwner: %v", err)
 	}
-	for _, s := range []struct{ user, perm string }{
+	libmgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
+	share.Init(siloPair.Read, siloPair.Write, "Group", false)
+
+	// Seeded through the grant model, after share.Init, because that is what
+	// CheckPerm reads. A seeder writing the table the checker no longer
+	// consults would describe a world the server does not live in.
+	for _, sh := range []struct{ user, perm string }{
 		{rwShareUser, "rw"},
 		{roShareUser, "r"},
 	} {
-		if _, err := siloPair.Write.Exec(
-			"INSERT INTO SharedLibrary (library_id, from_account_id, to_account_id, permission) VALUES (?, ?, ?, ?)",
-			testLibraryID, accountOf(t, ownerUser).ID, accountOf(t, s.user).ID, s.perm); err != nil {
-			t.Fatalf("seed SharedLibrary for %s: %v", s.user, err)
+		ctx, cancel := option.WithDBTimeout(context.Background())
+		if err := share.Add(ctx, share.Grant{
+			Principal: share.UserPrincipal(accountOf(t, sh.user).ID),
+			LibraryID: testLibraryID,
+			Perm:      sh.perm,
+			CreatedBy: accountOf(t, ownerUser).ID,
+		}); err != nil {
+			cancel()
+			t.Fatalf("grant %s on the test library: %v", sh.user, err)
 		}
+		cancel()
 	}
 
-	libmgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
-	share.Init(siloPair.Read, "Group", false)
 	Init(siloPair.Read, siloPair.Write)
 }
 

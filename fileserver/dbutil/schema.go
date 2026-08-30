@@ -410,6 +410,45 @@ CREATE UNIQUE INDEX IF NOT EXISTS lastgcid_libraryid_clientid_idx ON LastGCID (l
 --
 -- An s3 row carries neither secret_hash nor public_key -- it derives its
 -- secret from the master key -- which is why the CHECK permits both being NULL.
+-- One table answers "may this principal do op at (library, path)".
+--
+-- principal is the kind and its identifier: 'user:<uuid>', 'group:<id>',
+-- 'anon', and later 'link:<credential-id>'. Encoded as one string rather than
+-- as a kind column beside a nullable id column per kind, because the question
+-- CheckPerm asks is "does any of these principals hold a grant here", and a
+-- list of strings is one IN clause where three nullable columns are three
+-- joins that can disagree.
+--
+-- path is the subtree the grant reaches, '/' for the whole library. It is what
+-- makes a subfolder share expressible without a second mechanism.
+--
+-- listed means something only for the anon principal: a public library that
+-- appears in the public listing, as against one reachable only by its link.
+-- Same grant, different discovery, which is the whole point of unifying them.
+--
+-- The unique index is the model's shape rather than a nicety: two grants to
+-- one principal on one path are not two facts, and without it "share again
+-- with a different permission" silently accumulates rows that later disagree.
+--
+-- Named LibraryGrant rather than Grant because GRANT is SQL. The plan's table
+-- is spelled Grant; a bare keyword as a table name works only quoted, and one
+-- unquoted mention anywhere is a syntax error nobody sees until that path runs.
+--
+-- See docs/plans/sharing.md § The grant model.
+CREATE TABLE IF NOT EXISTS LibraryGrant (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  principal  TEXT    NOT NULL,
+  library_id CHAR(37) NOT NULL,
+  path       TEXT    NOT NULL DEFAULT '/',
+  perm       TEXT    NOT NULL,
+  listed     INTEGER NOT NULL DEFAULT 0,
+  created_by BLOB    REFERENCES Account(id),
+  ctime      INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS library_grant_one_idx
+  ON LibraryGrant (principal, library_id, path);
+CREATE INDEX IF NOT EXISTS library_grant_library_idx ON LibraryGrant (library_id);
+
 CREATE TABLE IF NOT EXISTS Credential (
   id          TEXT   PRIMARY KEY,
   kind        TEXT   NOT NULL,

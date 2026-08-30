@@ -50,7 +50,7 @@ import (
 func laneClient(t *testing.T) (*client.APIClient, string, *atomic.Int64) {
 	t.Helper()
 	sqliteTestDB(t)
-	share.Init(siloPair.Read, "Group", false)
+	share.Init(siloPair.Read, siloPair.Write, "Group", false)
 	api.Init(siloPair.Read, siloPair.Write)
 	authmgr.Init(siloPair.Read, siloPair.Write)
 

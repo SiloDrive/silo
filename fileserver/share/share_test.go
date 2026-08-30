@@ -35,7 +35,7 @@ func setupShareTest(t *testing.T, cloud bool) *sql.DB {
 
 	account.Init(pair.Read, pair.Write)
 	libmgr.Init(pair.Read, pair.Write, t.TempDir())
-	Init(pair.Read, "Group", cloud)
+	Init(pair.Read, pair.Write, "Group", cloud)
 	return pair.Write
 }
 
@@ -75,10 +75,18 @@ func makeVirtualLibrary(t *testing.T, write *sql.DB, originLibraryID, path strin
 	return vLibraryID
 }
 
+// shareLibrary grants one account read or write on a whole library. It goes
+// through the package's own Add rather than an INSERT, because the seeding
+// path and the checking path reading the same model is most of what the
+// unification bought -- a helper that wrote rows CheckPerm no longer consults
+// would pass by describing a world the server does not live in.
 func shareLibrary(t *testing.T, write *sql.DB, libraryID string, from, to account.ID, perm string) {
 	t.Helper()
-	if _, err := write.Exec("INSERT INTO SharedLibrary (library_id, from_account_id, to_account_id, permission) VALUES (?, ?, ?, ?)",
-		libraryID, from, to, perm); err != nil {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	if err := Add(ctx, Grant{
+		Principal: UserPrincipal(to), LibraryID: libraryID, Perm: perm, CreatedBy: from,
+	}); err != nil {
 		t.Fatalf("share library: %v", err)
 	}
 }
@@ -103,8 +111,11 @@ func makeGroup(t *testing.T, write *sql.DB, name string, creator, member account
 
 func shareLibraryToGroup(t *testing.T, write *sql.DB, libraryID string, groupID int, sharer account.ID, perm string) {
 	t.Helper()
-	if _, err := write.Exec("INSERT INTO LibraryGroup (library_id, group_id, account_id, permission) VALUES (?, ?, ?, ?)",
-		libraryID, groupID, sharer, perm); err != nil {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	if err := Add(ctx, Grant{
+		Principal: GroupPrincipal(groupID), LibraryID: libraryID, Perm: perm, CreatedBy: sharer,
+	}); err != nil {
 		t.Fatalf("share library to group: %v", err)
 	}
 }
@@ -224,11 +235,13 @@ func TestCheckPermPrefersReadWriteWhenTwoGroupsDisagree(t *testing.T) {
 	}
 }
 
-// InnerPubLibrary is the self-hosted "anyone signed in may read this" switch,
-// and it must not leak into cloud mode: a multi-tenant deployment has no
-// business granting access on the strength of a row meant for a single
-// self-hosted instance's whole user base.
-func TestCheckPermInnerPubLibraryOnlyAppliesOutsideCloudMode(t *testing.T) {
+// A grant to the anonymous principal is the self-hosted "anyone signed in may
+// read this" switch -- what InnerPubLibrary used to be -- and it must not leak
+// into cloud mode: a multi-tenant deployment has no business granting access on
+// the strength of a row meant for a single self-hosted instance's whole user
+// base. The row moved into the grant model; the rule did not move with it by
+// accident, so this still pins it.
+func TestCheckPermAnAnonymousGrantOnlyAppliesOutsideCloudMode(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		cloud bool
@@ -238,12 +251,16 @@ func TestCheckPermInnerPubLibraryOnlyAppliesOutsideCloudMode(t *testing.T) {
 		{"cloud mode ignores it", true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			write := setupShareTest(t, tc.cloud)
+			setupShareTest(t, tc.cloud)
 			owner := makeAccount(t, "iowner-"+tc.name+"@example.com")
 			stranger := makeAccount(t, "istranger-"+tc.name+"@example.com")
 			libraryID := makeLibrary(t, owner)
-			if _, err := write.Exec("INSERT INTO InnerPubLibrary (library_id, permission) VALUES (?, ?)", libraryID, "r"); err != nil {
-				t.Fatalf("insert inner pub library: %v", err)
+			ctx, cancel := option.WithDBTimeout(context.Background())
+			defer cancel()
+			if err := Add(ctx, Grant{
+				Principal: Anon, LibraryID: libraryID, Perm: "r", Listed: true, CreatedBy: owner.ID,
+			}); err != nil {
+				t.Fatalf("grant the anonymous principal: %v", err)
 			}
 
 			if got := CheckPerm(libraryID, stranger.ID); got != tc.want {

@@ -15,6 +15,7 @@ import (
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/setup"
+	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -606,13 +607,24 @@ func ListLibrariesHandler(w http.ResponseWriter, r *http.Request) {
 		seen[r.ID] = true
 	}
 
+	// Shared with me, read through the grant model rather than through
+	// SharedLibrary. A listing that answered from a table CheckPerm no longer
+	// consults would show a library the caller cannot open, or hide one they
+	// can -- which is the second-reader drift the unification exists to end.
+	//
+	// Group grants come along for free: principalsFor expands the account into
+	// every principal it carries, so a library shared to a team the caller is
+	// in now appears here. It did not before, and that was a gap rather than a
+	// decision.
+	principals := share.PrincipalsFor(id)
 	sharedRows, err := readDB.QueryContext(ctx,
-		librarySelect("s")+
-			"FROM SharedLibrary s LEFT JOIN LibraryInfo i ON s.library_id = i.library_id "+
-			"LEFT JOIN Branch b ON b.library_id = s.library_id AND b.name = 'master' "+
-			usageJoin+"s.library_id "+
-			formatJoin+"s.library_id "+
-			"WHERE s.to_account_id = ?", id)
+		librarySelect("g")+
+			"FROM LibraryGrant g LEFT JOIN LibraryInfo i ON g.library_id = i.library_id "+
+			"LEFT JOIN Branch b ON b.library_id = g.library_id AND b.name = 'master' "+
+			usageJoin+"g.library_id "+
+			formatJoin+"g.library_id "+
+			"WHERE g.path = '/' AND g.principal IN ("+sharePlaceholders(principals)+")",
+		principalArgs(principals)...)
 	if err != nil {
 		log.Errorf("Failed to query shared libraries: %v", err)
 	} else {
@@ -1022,4 +1034,20 @@ func withFileSizes(library *libmgr.Library, page []dirEntry) {
 			page[i].Size = &size
 		}
 	}
+}
+
+// sharePlaceholders and principalArgs turn a principal set into an IN clause.
+// Two tiny helpers rather than a string-built list, because a principal is
+// caller-influenced text the moment link principals exist, and an IN clause
+// assembled by concatenation is the one place that stops being safe.
+func sharePlaceholders(p []share.Principal) string {
+	return strings.TrimSuffix(strings.Repeat("?,", len(p)), ",")
+}
+
+func principalArgs(p []share.Principal) []any {
+	args := make([]any, 0, len(p))
+	for _, one := range p {
+		args = append(args, one)
+	}
+	return args
 }
