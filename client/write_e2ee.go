@@ -66,7 +66,7 @@ func (l *EncryptedLibrary) WriteFile(p string, data []byte, mtime int64) error {
 		}
 		return l.link(p, m, mtime)
 	}
-	return l.WriteFrom(p, bytes.NewReader(data), mtime)
+	return l.WriteFrom(p, BytesBody(data), mtime)
 }
 
 // WriteFrom is WriteFile reading from a stream.
@@ -75,7 +75,7 @@ func (l *EncryptedLibrary) WriteFile(p string, data []byte, mtime int64) error {
 // batches, so what is held is one batch rather than one file. What is not
 // bounded is the chunk list, which is the manifest and has to be complete
 // before the manifest can be sealed.
-func (l *EncryptedLibrary) WriteFrom(p string, r io.Reader, mtime int64) error {
+func (l *EncryptedLibrary) WriteFrom(p string, body func() (io.ReadCloser, int64, error), mtime int64) error {
 	segs, err := segments(p)
 	if err != nil {
 		return err
@@ -83,6 +83,13 @@ func (l *EncryptedLibrary) WriteFrom(p string, r io.Reader, mtime int64) error {
 	if len(segs) == 0 {
 		return errors.New("client: the root is not a file")
 	}
+	// Called once: what goes on the wire here is sealed chunks, each of which
+	// carries its own retryable source, so nothing re-reads the plaintext.
+	r, _, err := body()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = r.Close() }()
 	manifest, err := l.writeContent(r)
 	if err != nil {
 		return err

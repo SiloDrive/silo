@@ -630,18 +630,7 @@ func (c *APIClient) UploadFile(libraryID, parentDir, localPath string) error {
 func (c *APIClient) uploadWhole(libraryID, parentDir, localPath string) error {
 	remote := path.Join("/", parentDir, filepath.Base(localPath))
 	resp, err := c.doStream("PUT", entriesURL(libraryID, remote), "application/octet-stream",
-		func() (io.ReadCloser, int64, error) {
-			file, err := os.Open(localPath)
-			if err != nil {
-				return nil, 0, fmt.Errorf("failed to open file: %v", err)
-			}
-			info, err := file.Stat()
-			if err != nil {
-				_ = file.Close()
-				return nil, 0, fmt.Errorf("failed to stat file: %v", err)
-			}
-			return file, info.Size(), nil
-		})
+		FileBody(localPath))
 	if err != nil {
 		return err
 	}

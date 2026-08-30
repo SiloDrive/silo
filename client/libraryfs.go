@@ -12,10 +12,12 @@ package client
 // grows a plain-only path that quietly does not work on half its libraries.
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/dkam/silo/store"
@@ -47,7 +49,13 @@ type LibraryFS interface {
 	// would take the capability away from the half that has it.
 	WriteFile(path string, data []byte, mtime int64) error
 	// WriteFrom is WriteFile reading from a stream.
-	WriteFrom(path string, r io.Reader, mtime int64) error
+	//
+	// body is a factory rather than an io.Reader because a write is retried
+	// after a 401 and a drained reader cannot be sent twice. It returns the
+	// stream, the number of bytes it will produce, and any error opening it;
+	// it may be called more than once and must produce the same bytes each
+	// time. See BytesBody and FileBody for the two ordinary sources.
+	WriteFrom(path string, body func() (io.ReadCloser, int64, error), mtime int64) error
 	// MkdirAll creates a directory and any missing parents, and is content
 	// with one that already exists.
 	MkdirAll(path string) error
@@ -198,15 +206,24 @@ func (p *plainLibrary) WriteFile(file string, data []byte, mtime int64) error {
 	return err
 }
 
-// WriteFrom buffers, because doStream's body factory has to be able to produce
-// the request a second time after a 401 and an arbitrary reader cannot be read
-// twice. A caller with a file on disk wants UploadFile, which streams it.
-func (p *plainLibrary) WriteFrom(file string, r io.Reader, mtime int64) error {
-	buf, err := io.ReadAll(r)
+// WriteFrom streams: the factory is handed straight to doStream, which reads
+// it into the request body rather than into memory. It used to buffer, and the
+// reason was the parameter type -- an io.Reader cannot satisfy the replay
+// contract, so io.ReadAll was the only way to be able to send the body twice
+// after a 401. A factory can be called again, so the buffer went with it.
+//
+// mtime is not sent: the path surface takes none. See LibraryFS.WriteFile.
+func (p *plainLibrary) WriteFrom(file string, body func() (io.ReadCloser, int64, error), mtime int64) error {
+	resp, err := p.c.doStream("PUT", entriesURL(p.ID, file), "application/octet-stream", body)
 	if err != nil {
 		return err
 	}
-	return p.WriteFile(file, buf, mtime)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		msg, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("client: writing %s: %s: %s", file, resp.Status, string(msg))
+	}
+	return nil
 }
 
 func (p *plainLibrary) MkdirAll(dir string) error {
@@ -229,4 +246,31 @@ func (p *plainLibrary) MkdirAll(dir string) error {
 
 func (p *plainLibrary) Remove(entry string) error {
 	return notFound(p.c.DeleteFile(p.ID, entry))
+}
+
+// BytesBody is a WriteFrom source over bytes already in memory.
+func BytesBody(b []byte) func() (io.ReadCloser, int64, error) {
+	return func() (io.ReadCloser, int64, error) {
+		return io.NopCloser(bytes.NewReader(b)), int64(len(b)), nil
+	}
+}
+
+// FileBody is a WriteFrom source over a file on disk.
+//
+// It opens on every call rather than seeking one handle back to the start,
+// because a retry can happen after the first attempt has already closed it,
+// and a factory that hands back a closed file is worse than one that fails.
+func FileBody(localPath string) func() (io.ReadCloser, int64, error) {
+	return func() (io.ReadCloser, int64, error) {
+		f, err := os.Open(localPath)
+		if err != nil {
+			return nil, 0, err
+		}
+		info, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return nil, 0, err
+		}
+		return f, info.Size(), nil
+	}
 }
