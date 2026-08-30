@@ -314,18 +314,25 @@ still reclaims space, and the default flips when compaction makes it safe. The
 flag is not a tuning knob and no deployment should set it; it is deleted rather
 than documented.
 
-### 5. Ingest, and `gc` stops walking the layout
+### 5. `gc` stops walking the layout
 
-Read each loose object, append its frame to the open pack, index it, delete the
-loose copy once the index is durable. Ids do not change and a frame is copied
-rather than re-sealed. Restartable at every step because it is the same
-sequence step 1 already made restartable.
+`gc.go` walks the fan-out with `objstore.LibraryDir` + `filepath.WalkDir` and
+deletes with `os.RemoveAll` — what `ObjectStore.List` and `RemoveLibrary` do
+behind the interface. Two walkers of the layout, and only one of them can ever
+see a pack. This is where measure and reclaim go through the seam (silo#29).
 
-silo#29 stops being optional here: `gc.go` walks the fan-out with
-`objstore.LibraryDir` + `filepath.WalkDir` and deletes with `os.RemoveAll`,
-and its tests reach past the seam the same way (`gc_orphans_test.go`,
-`gc_test.go`). This is where measure and reclaim go through `List` and
-`RemoveLibrary`.
+**Ingest is dropped.** It was here to migrate a store that already held loose
+objects, and there are no installs to migrate: the write path flips before the
+first one exists, so no store ever accumulates loose objects that need moving.
+What that removes is the writer half — reading each loose object and appending
+its frame to a pack. It does *not* remove the loose read lane, which step 3
+built and which costs nothing to keep; a development store written before the
+flip is deleted rather than converted.
+
+This reverses the argument `storage.md` made for ingest, which was that the
+first install would be running the loose store. That is only true if the flag
+is still off when it arrives, and the answer to that is to flip the flag, not
+to write a migration for a population of zero.
 
 `backup.md` needs a pass too: the object store stops being "an immutable
 content-addressed file tree; any ordinary copy tool handles it" and becomes

@@ -895,16 +895,17 @@ the open pack, then the filters. A loose object, in a store that has not
 finished ingesting, is the third and last place to look, and that lane exists
 only until ingest completes.
 
-**The recovery scan also has to ingest a loose store.** Everything above is
-justified by there being no installs, and that is true right up until the first
-one, which will be running the loose store. Leaving it unwritten would make the
-one migration this project claims not to need the one it discovers in
-production. It is cheap when planned: ids do not change across the boundary, a
-pack is a container rather than a new naming scheme, and the scan that rebuilds
-an index from pack bytes is most of the machinery. Ingest is that scan pointed
-at loose objects — read each, append its frame to an open pack, index it,
-delete the loose copy once the index is durable — restartable at every step,
-because it is the same append → fsync → index update the writer uses.
+**There is no ingest of a loose store, and there is deliberately no migration.**
+The earlier plan here was to write one anyway, on the reasoning that the first
+install would be running the loose store. That holds only if packs are still
+off when it arrives, and the answer to that is to turn them on first rather
+than to write a migration for a population of zero. A development store written
+before the switch is deleted, not converted.
+
+What remains is the *read* lane: a lookup asks the packs and then falls through
+to a loose object if there is one. It costs nothing to keep, it is what let
+packs land beside a working store rather than in place of one, and it is what
+makes a half-converted directory readable rather than a puzzle.
 
 ## Storage encryption, universal
 
