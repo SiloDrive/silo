@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/libmgr"
 )
 
 func TestCheckEntryName(t *testing.T) {
@@ -330,4 +331,41 @@ func idInListing(t *testing.T, libraryID string, acct *account.Account, dir, nam
 	}
 	t.Fatalf("%s is not in the listing of %s (%s)", name, dir, w.Body.String())
 	return ""
+}
+
+// Replacing is not destroying, while the retention window still holds the
+// commit that came before it. The bytes a move or a copy displaced stay
+// readable at that commit, which is what makes replacement an acceptable
+// default rather than a silent loss — and it is bounded, because `silo
+// retention` and the expiry pass behind it eventually reclaim history.
+//
+// Pinned because the documentation now says so, and a doc that promises
+// recoverable bytes should fail a test rather than a user when it stops being
+// true.
+func TestTheReplacedBytesSurviveAtThePriorCommit(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+	put(t, libraryID, acct, "/src.txt", []byte("the replacement"))
+	put(t, libraryID, acct, "/target.txt", []byte("the original bytes"))
+
+	library := libmgr.Get(libraryID)
+	if library == nil {
+		t.Fatal("library vanished after a write")
+	}
+	before := library.HeadCommitID
+
+	if w := postOp(t, libraryID, acct, "/src.txt", "move", "/target.txt"); w.Code != http.StatusOK {
+		t.Fatalf("move onto a file = %d (%s), want 200", w.Code, w.Body.String())
+	}
+	if got := get(t, libraryID, acct, "/target.txt"); got != "the replacement" {
+		t.Fatalf("head holds %q, want the replacement", got)
+	}
+
+	vars := map[string]string{"libraryid": libraryID, "path": "target.txt"}
+	w := do(t, entriesHandler, acct, "GET", "/x?at="+before, vars, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET at=%s = %d (%s), want 200", before, w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "the original bytes" {
+		t.Errorf("the prior commit holds %q, want the bytes the move replaced", got)
+	}
 }

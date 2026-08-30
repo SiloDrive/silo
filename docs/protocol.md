@@ -967,6 +967,14 @@ drops its whole subtree in one commit: data loss the caller never asked for,
 reported as a success. A file is not, because the only thing lost is the one
 entry the request named.
 
+**And replacing a file does not destroy its bytes.** The commit before the
+replacement still holds them, so `GET entries/{path}?at={commit}` reads what
+was there — which is the reason replacement is an acceptable default rather
+than an unrecoverable one. It is bounded: history is reclaimed by `silo
+retention` and the expiry pass behind it, so the window is a deployment's
+policy and not a guarantee this endpoint makes.
+`fileserver/api_handlers_test.go` pins the recovery.
+
 So **do not read "no `409`" as "nothing was there."** On a `PUT` a client that
 wants to know sends `If-None-Match: *`, which asks exactly that about the path
 being written and answers `412` when something is there. On a `move` or a
@@ -975,6 +983,12 @@ table — so it cannot be used to ask about the destination, and sending it
 there just fails against a source that by definition exists. A client that
 needs to know before replacing looks first with `HEAD`, and accepts that
 looking and writing are two requests with a gap between them.
+
+This is sharpest for a File Provider extension, which believes it knows the
+destination's state: a replace it did not hear about leaves the replica
+disagreeing with the server, and nothing signals it until the next
+`GET changes`. Treat that feed as the authority on what the destination holds
+rather than inferring it from a write's status code.
 
 **`412` is the mechanism working, not an error.** Someone else wrote first.
 Re-read, reapply, write again. Note the header changes meaning with the
