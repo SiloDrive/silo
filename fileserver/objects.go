@@ -28,9 +28,9 @@ import (
 // This exists because of one fact and its consequences. The server holds no
 // content key for an E2EE library, so it cannot chunk a file, cannot build a
 // manifest, and cannot name an entry — every write is therefore something the
-// client computes and the server merely stores. `entries/{path}` keeps working
-// for *structure* on such a library, because names route as ciphertext; what
-// cannot go through it is content and every write.
+// client computes and the server merely stores. `entries/{path}` answers 403 on
+// such a library in both directions -- routing on ciphertext names is designed
+// and not built, silo#30 -- so this surface is the only way to read one.
 //
 // The surface is deliberately the same for both library types. A plain library
 // could be written either way, and a client that implements this one does not

@@ -93,9 +93,12 @@ func (k *Keyring) OpenChunk(hp ID, frame []byte) ([]byte, error) {
 	return OpenChunk(k.ck, hp, frame)
 }
 
-// SealDirectory and SealCommit are the writing halves of OpenDirectory and
-// OpenCommit. There is no SealManifest yet because nothing writes one: the
-// E2EE write path is not built.
+// SealManifest, SealDirectory and SealCommit are the writing halves of the
+// three opens below.
+func (k *Keyring) SealManifest(m *Manifest) ([]byte, error) {
+	return m.EncodeSealed(k.ck)
+}
+
 func (k *Keyring) SealDirectory(d *Directory) ([]byte, error) {
 	return d.EncodeSealed(k.ck)
 }

@@ -1250,6 +1250,10 @@ GET  libraries/{library}/objects/{manifest}   → chunk list, or the inline byte
 POST libraries/{library}/chunks/fetch         → chunk ciphertext → decrypt
 ```
 
+`client.EncryptedLibrary` is that walk in the reference client:
+`OpenEncryptedLibrary` from an opened account, then `List`, `Stat`,
+`ReadFile` and `ReadAt` by plaintext path.
+
 **Resolving a depth-N path costs N sequential fetches the first time**, and
 no cleverness removes it: each segment's name key is derived from its parent
 directory's salt, so the parent has to be read before the child can be named.
