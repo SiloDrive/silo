@@ -62,12 +62,12 @@ type EncryptedLibrary struct {
 	head     store.ID
 	root     store.ID
 	haveHead bool
-	dirs     map[store.ID]*directory
+	dirs     *lru[*directory]
 	// manifests is cached on the same argument as dirs: an object id names one
 	// set of bytes forever. Without it a sequential read through ReadAt refetches
 	// and reopens the whole chunk list for every call, which on a large file is
 	// more traffic than the file.
-	manifests map[store.ID]*store.Manifest
+	manifests *lru[*store.Manifest]
 }
 
 // directory is one decoded directory object and the cipher its children's
@@ -97,8 +97,8 @@ func NewEncryptedLibrary(c *APIClient, libraryID string, kr *store.Keyring) *Enc
 	return &EncryptedLibrary{
 		ID: libraryID, c: c, kr: kr,
 		Now:       func() int64 { return time.Now().Unix() },
-		dirs:      map[store.ID]*directory{},
-		manifests: map[store.ID]*store.Manifest{},
+		dirs:      newLRU[*directory](defaultDirCacheBytes),
+		manifests: newLRU[*store.Manifest](defaultManifestCacheBytes),
 	}
 }
 
@@ -108,9 +108,10 @@ func (l *EncryptedLibrary) Keyring() *store.Keyring { return l.kr }
 // Refresh forgets the head, so the next read sees writes that have landed
 // since.
 //
-// The directory cache is kept: what it holds is addressed by id, and an id
-// that was reachable from one commit and is not reachable from the next still
-// names the same bytes.
+// The caches are kept: what they hold is addressed by id, and an id that was
+// reachable from one commit and is not reachable from the next still names the
+// same bytes. They are bounded rather than cleared -- see cache.go, where the
+// same content-addressing argument is what makes eviction safe.
 func (l *EncryptedLibrary) Refresh() {
 	l.mu.Lock()
 	l.haveHead = false
@@ -179,12 +180,9 @@ func (l *EncryptedLibrary) serverHead() (store.ID, error) {
 // directory fetches and decodes one directory object, or returns the cached
 // one. Content-addressed, so a hit is always correct.
 func (l *EncryptedLibrary) directory(id store.ID) (*directory, error) {
-	l.mu.Lock()
-	if d, ok := l.dirs[id]; ok {
-		l.mu.Unlock()
+	if d, ok := l.cachedDirectory(id); ok {
 		return d, nil
 	}
-	l.mu.Unlock()
 
 	b, err := l.c.Object(l.ID, id)
 	if err != nil {
@@ -200,10 +198,34 @@ func (l *EncryptedLibrary) directory(id store.ID) (*directory, error) {
 	}
 	d := &directory{dir: dir, names: names}
 
-	l.mu.Lock()
-	l.dirs[id] = d
-	l.mu.Unlock()
+	l.cacheDirectory(id, d)
 	return d, nil
+}
+
+// cachedDirectory and cacheDirectory are the only two doors to the directory
+// cache, so that what bounds it is written once rather than at each use.
+func (l *EncryptedLibrary) cachedDirectory(id store.ID) (*directory, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dirs.get(id)
+}
+
+func (l *EncryptedLibrary) cacheDirectory(id store.ID, d *directory) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.dirs.put(id, d, directoryWeight(d))
+}
+
+func (l *EncryptedLibrary) cachedManifest(id store.ID) (*store.Manifest, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.manifests.get(id)
+}
+
+func (l *EncryptedLibrary) cacheManifest(id store.ID, m *store.Manifest) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.manifests.put(id, m, manifestWeight(m))
 }
 
 // segments splits a library path. The root is no segments rather than one
@@ -389,9 +411,7 @@ func (l *EncryptedLibrary) Manifest(p string) (*store.Manifest, error) {
 		return nil, fmt.Errorf("client: %s is a directory", p)
 	}
 
-	l.mu.Lock()
-	m, ok := l.manifests[at.ID]
-	l.mu.Unlock()
+	m, ok := l.cachedManifest(at.ID)
 	if ok {
 		return m, nil
 	}
@@ -405,9 +425,7 @@ func (l *EncryptedLibrary) Manifest(p string) (*store.Manifest, error) {
 		return nil, fmt.Errorf("client: opening the manifest for %s: %w", p, err)
 	}
 
-	l.mu.Lock()
-	l.manifests[at.ID] = m
-	l.mu.Unlock()
+	l.cacheManifest(at.ID, m)
 	return m, nil
 }
 
