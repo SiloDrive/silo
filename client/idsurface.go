@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/dkam/silo/store"
 )
@@ -26,6 +27,18 @@ var ErrNotFound = errors.New("client: not found")
 // (fileserver/chunks_fetch.go). Asking for more is a 400, so a caller with a
 // long list is batched here rather than at every call site.
 const maxFetchChunks = 256
+
+// fetchConcurrency is how many chunk batches FetchChunks will have in flight
+// at once.
+//
+// Bounded rather than one-per-batch, and the bound is about memory rather than
+// about being polite to the server. Each request in flight holds its own
+// response buffer live, and frames alias that buffer -- so N concurrent
+// batches is N batch bodies resident, which is the peak that opening frames
+// one at a time was there to remove. Four is enough to hide the round trips
+// behind each other on a link where latency is what costs, and small enough
+// that the peak stays a multiple nobody has to think about.
+const fetchConcurrency = 4
 
 // ErrHeadMoved reports a PUT head that lost the compare-and-swap: something
 // else committed since the head this write was built on.
@@ -117,15 +130,72 @@ func (c *APIClient) PutHead(libraryID string, newHead, expected store.ID) error 
 // once. A chunk the server does not hold is absent from the map rather than
 // being an error -- which of the missing ones matters is the caller's
 // question, and it can see all of them at once this way.
+// Batches run together rather than in turn. They are independent requests over
+// one connection pool, and sending them one after the other made a
+// 1024-chunk read four sequential round trips where it is one plus transfer --
+// four times the latency on the link where latency is what costs, and nothing
+// on a local one. See fetchConcurrency for why together is bounded.
+//
+// Nothing has to be put back in order afterwards, which is the property that
+// made the map the return type in the first place: the stream is id-labelled,
+// so a batch's answer is self-describing wherever it lands.
 func (c *APIClient) FetchChunks(libraryID string, ids []store.ID) (map[store.ID][]byte, error) {
 	out := make(map[store.ID][]byte, len(ids))
-	for start := 0; start < len(ids); start += maxFetchChunks {
-		end := min(start+maxFetchChunks, len(ids))
-		if err := c.fetchChunkBatch(libraryID, ids[start:end], out); err != nil {
-			return out, err
-		}
+	if len(ids) == 0 {
+		return out, nil
 	}
-	return out, nil
+
+	type span struct{ start, end int }
+	spans := make(chan span)
+
+	var (
+		mu    sync.Mutex
+		first error
+		wg    sync.WaitGroup
+	)
+
+	workers := min(fetchConcurrency, (len(ids)+maxFetchChunks-1)/maxFetchChunks)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for s := range spans {
+				// A batch's frames alias its own response buffer, so each one
+				// accumulates into a map of its own and merges after: sharing
+				// out would mean holding the lock across the request.
+				got := make(map[store.ID][]byte, s.end-s.start)
+				err := c.fetchChunkBatch(libraryID, ids[s.start:s.end], got)
+
+				mu.Lock()
+				for id, b := range got {
+					out[id] = b
+				}
+				if err != nil && first == nil {
+					first = err
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for start := 0; start < len(ids); start += maxFetchChunks {
+		// Stop feeding once something has failed. Sequentially this was free
+		// -- the loop returned -- and here it is the difference between one
+		// failed request against a server that is gone and forty.
+		mu.Lock()
+		failed := first != nil
+		mu.Unlock()
+		if failed {
+			break
+		}
+		spans <- span{start, min(start+maxFetchChunks, len(ids))}
+	}
+	close(spans)
+	wg.Wait()
+
+	// Partial results with the error, as before: which chunks did arrive is
+	// the caller's question to ask.
+	return out, first
 }
 
 func (c *APIClient) fetchChunkBatch(libraryID string, ids []store.ID, out map[store.ID][]byte) error {
