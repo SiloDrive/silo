@@ -17,6 +17,7 @@ package api
 // handler. docs/plans/admin.md § The HTTP surface holds the table.
 
 import (
+	"database/sql"
 	"errors"
 	"net/http"
 
@@ -515,4 +516,105 @@ func adminRefusal(w http.ResponseWriter, err error) {
 		log.Errorf("Administrative change failed: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+// adminLibrary is one row of the administrative libraries listing.
+//
+// Metadata, and deliberately only metadata. An administrator may enumerate
+// every library on the server and reach into none of them: reading content is
+// a grant question, and for an end-to-end encrypted library the server holds
+// ciphertext it cannot open at all. That is a structural bound rather than a
+// policy this handler enforces, which is why it can be stated once here
+// instead of defended at every route that grows later.
+type adminLibrary struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Owner      string `json:"owner"`
+	OwnerID    string `json:"owner_id"`
+	UpdateTime int64  `json:"update_time"`
+	// E2EE says the server cannot read this library's content. It is not the
+	// whole encryption story and must not be rendered as though it were: every
+	// object on this server is sealed at rest under storage.key regardless, so
+	// a plain library is not sitting in cleartext on disk. Two independent
+	// facts, and an either/or control would tell the operator something untrue
+	// about the plain half of their server.
+	E2EE         bool   `json:"e2ee"`
+	HeadCommitID string `json:"head_commit_id,omitempty"`
+	// Size and FileCount are logical size at head, the same currency
+	// libraryInfo reports and not bytes on disk. The two numbers disagree on
+	// purpose and the page labels which is which; stored bytes divided into
+	// head, history and unreferenced is objmgr.Census, behind `silo df`, and it
+	// walks a library's whole store -- which is a command an operator runs, not
+	// a thing a page does on every load.
+	Size      int64 `json:"size"`
+	FileCount int64 `json:"file_count"`
+}
+
+// ListAdminLibrariesHandler handles GET /api/silo/v1/admin/libraries.
+//
+// Gated by quota rather than users. A listing of every library with its owner
+// and its size is usage information, which is what that capability already
+// means and what `silo df` already answers in aggregate -- and it is the view
+// the server-level ceiling needs, since a refusal at that ceiling is otherwise
+// a refusal with no way to see what filled it.
+//
+// Virtual libraries are excluded, for the reason libmgr.ServerUsage excludes
+// them: they are a view of another library's content, and listing them would
+// show the same bytes twice under two names.
+func ListAdminLibrariesHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := option.WithDBTimeout(r.Context())
+	defer cancel()
+
+	const q = `SELECT o.library_id, i.name, o.account_id, e.email, i.update_time,
+	                  f.e2ee, b.commit_id, u.size, u.file_count
+	           FROM LibraryOwner o
+	           LEFT JOIN LibraryInfo i ON i.library_id = o.library_id
+	           LEFT JOIN AccountEmail e ON e.account_id = o.account_id AND e.is_primary = 1
+	           LEFT JOIN Library f ON f.library_id = o.library_id
+	           LEFT JOIN Branch b ON b.library_id = o.library_id AND b.name = 'master'
+	           LEFT JOIN LibraryUsage u ON u.library_id = o.library_id
+	           LEFT JOIN VirtualLibrary v ON v.library_id = o.library_id
+	           LEFT JOIN GarbageLibraries g ON g.library_id = o.library_id
+	           WHERE v.library_id IS NULL AND g.library_id IS NULL
+	           ORDER BY i.update_time DESC, o.library_id`
+
+	rows, err := readDB.QueryContext(ctx, q)
+	if err != nil {
+		log.Errorf("Failed to list libraries for an administrator: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+
+	// Allocated rather than declared, so an empty server marshals as [] and not
+	// null -- which is the state every fresh install is in, and so the first
+	// response the page ever sees.
+	out := make([]adminLibrary, 0)
+	for rows.Next() {
+		var l adminLibrary
+		var ownerID account.ID
+		var name, email, commitID sql.NullString
+		var e2ee sql.NullBool
+		var updateTime, size, fileCount sql.NullInt64
+		if err := rows.Scan(&l.ID, &name, &ownerID, &email, &updateTime,
+			&e2ee, &commitID, &size, &fileCount); err != nil {
+			log.Warnf("Failed to scan a library row: %v", err)
+			continue
+		}
+		l.Name = name.String
+		l.OwnerID = ownerID.String()
+		l.Owner = email.String
+		l.UpdateTime = updateTime.Int64
+		l.E2EE = e2ee.Bool
+		l.HeadCommitID = commitID.String
+		l.Size = size.Int64
+		l.FileCount = fileCount.Int64
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		log.Errorf("Failed to read libraries for an administrator: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }

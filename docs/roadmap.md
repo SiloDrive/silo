@@ -107,12 +107,15 @@ recovery scan, and the loose-store ingest that scan doubles as — the frame
 ingest above, pointed at a pack. Owned by [`storage.md`](storage.md) § Packs.
 
 Loose objects do not survive the measured workload — roughly six million chunks
-at 6 TB — and every item below this one is a pack operation. The ingest path is
-not optional: the first install runs the loose store, and the migration this
-project claims not to need is the one it would otherwise discover in
-production.
+at 6 TB — and every item below this one is a pack operation.
 
-Tracked: milestone `packs`, #17 — blocked by #18, which is done.
+The ingest path was dropped. It existed so the first install could migrate off
+the loose store, and that only holds if packs are still off when it arrives —
+the answer is to turn them on first, not to write a migration for a population
+of zero. See [`plans/packs.md`](plans/packs.md) § 5.
+
+Tracked: milestone `packs`, #17 — **built and closed.** What is left is the
+cutover, #50, which is one flag and is blocked by compaction below.
 
 #### 3. The tracing mark, and compaction
 
@@ -125,7 +128,13 @@ two bills. Owned by [`storage.md`](storage.md) § The tracing mark, and
 mark phase, chunk liveness is global reachability and cannot be refcounted, and
 building them apart means building the mark twice.
 
-Tracked: milestone `compaction`, #19 — blocked by #17.
+The build is planned in [`plans/compaction.md`](plans/compaction.md), which
+defers the parts that are really about tiers — the egress budget, remote
+ordering, eviction, and undersize merging — on the grounds that there is no
+backend to test them against yet.
+
+Tracked: milestone `compaction`, #19 — unblocked; #17 is closed. It in turn
+blocks #50, the cutover.
 
 #### 4. Durable tiers
 
@@ -261,16 +270,19 @@ not by dependency.
 `silo user`, `silo token`, `silo retention`, `silo user quota` — and a web UI or
 a remote operator needs all of it over HTTP.
 
-**The accounts half is built**: `RequireAdmin` and eight routes, built on the
-same `account`, `authmgr`, `admin` and `libmgr` functions the CLI calls rather
-than beside them, so a rule fixed in one of those is fixed for both callers.
-What remains is the libraries endpoint, the storage endpoint and the page.
+**It is built**: `RequireAdmin`, ten routes over the same `account`, `authmgr`,
+`admin` and `libmgr` functions the CLI calls rather than beside them, and a page
+off `embed.FS` at `/admin`. What remains is the three panels that have nothing
+to report yet — throughput, storage locations, and cache-versus-copy — each of
+which is blocked on a measurement rather than on the page.
 The gate they hang off, the capabilities they enforce and the routes
 themselves are [`plans/admin.md`](plans/admin.md); the roles it stands on are
 [`plans/sharing.md`](plans/sharing.md) § Accounts, and the quota endpoints it
-exposes are listed in [`quota.md`](quota.md). Two decisions are still open and
-shape the result: whether an admin implicitly sees every library, and soft
-versus hard delete for an account.
+exposes are listed in [`quota.md`](quota.md). One decision is still open and shapes what
+comes next: soft versus hard delete for an account. The other — whether an admin
+implicitly sees every library — is settled: metadata for every library, content
+for none, which [`plans/admin.md`](plans/admin.md) argues is structural rather
+than a policy.
 
 Note what is *not* missing, because the gap is narrower than "no quota API"
 suggests: `GET /account/usage` answers the self lookup with both usage and cap,

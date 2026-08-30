@@ -1,10 +1,10 @@
 # Plan: administrative authority, and the surface it gates
 
 Date: 2026-08-30
-Status: **partly built** — the `role` column, the capability table, both
-`grant` invariants, `RequireAdmin` and the accounts endpoints have landed; the
-libraries and storage endpoints and the page are designed and not built.
-Depends on
+Status: **built** — the `role` column, the capability table, the three doors to
+a server nobody can administer, `RequireAdmin`, the accounts, libraries and
+storage endpoints, and the page. What remains is the three panels that have
+nothing to report yet, each of which is its own issue. Depends on
 [`sharing.md`](sharing.md) § Accounts, which owns the role vocabulary, and on
 [`../auth.md`](../auth.md)'s credential table, which has landed.
 
@@ -182,10 +182,20 @@ ceiling is a property of the credential and the capability is a property of the
 account; neither has ever implied the other, and eight handlers each remembering
 to ask would be eight chances to forget a check whose failure is silent.
 
-The last two rows are not built. `GET admin/libraries` waits on the product
-decision below — whether an admin implicitly sees every library — which belongs
-to a person and not to a handler. `GET admin/storage` waits on the free-disk
-and ceiling work that owns those numbers.
+**`GET admin/libraries` is gated by `quota`, not `users`.** A listing of every
+library with its owner and its size is usage information, which is what that
+capability already means and what `silo df` answers in aggregate — and it is the
+view the server-level ceiling needs, since a refusal at that ceiling is
+otherwise a refusal with no way to see what filled it. `users` is about
+accounts.
+
+**An admin sees every library's metadata and reaches into none of them.** That
+is decision 8 holding: the listing carries id, name, owner, size, file count,
+`e2ee` and head, and no route from it leads to content. Reading a library is
+still a grant question, and for an end-to-end encrypted one the server holds
+ciphertext it cannot open — so "sees every library" cannot widen into "reads
+every library" however the page evolves. A structural bound rather than a policy
+anybody has to keep enforcing.
 
 **There are three doors to a server nobody can administer, and one question
 behind all of them.** Each was found separately, which is the argument for
@@ -299,7 +309,23 @@ reported fact that nothing currently reports.
    the reason `Normalize` sits beside an address. The libraries and storage
    rows of the table are not built, for the reasons § The HTTP surface gives.
 4. **The page**, `embed.FS`, with the libraries and accounts panels — the two
-   that are honestly answerable today.
+   that are honestly answerable today. Built, in `fileserver/adminui`, plus a
+   storage panel that #45's ceiling made answerable while this was being
+   written.
+
+   One embedded file and no build step: a server that needed `npm run` before it
+   could show an operator their own disk usage would be a server nobody could
+   debug from a shell. It is served unauthenticated because it carries no data —
+   a form and two empty tables — and every number on it arrives from a fetch the
+   browser makes with a credential the person typed in. That credential lives in
+   memory for the life of the tab and is written to no storage, so a reload signs
+   the operator out; a token in `localStorage` outlives the tab and is readable
+   by anything on the origin, and signing in again is the cheaper half of that
+   trade.
+
+   Each panel fetches and fails on its own. A capability the operator does not
+   hold is a `403` on one endpoint and a message in one panel, rather than a
+   blank page — which is the shape the capability split exists to produce.
 5. **Free disk and a server ceiling** — built. `quota.md` owns it; the panel
    reads what `silo df` reads.
 6. **Byte counters**, which unblocks throughput.

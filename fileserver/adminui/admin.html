@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Silo — administration</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --panel: #fff; --ink: #1a1a19; --dim: #66635d;
+    --line: #e2ded7; --accent: #4a5d3a; --warn: #8a5a20; --sealed: #3d5a80;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --panel: #1f1f23; --ink: #e8e6e1; --dim: #99958d;
+      --line: #32323a; --accent: #a3bd8a; --warn: #d0a15c; --sealed: #8fb3d9;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 1.2rem 1.5rem; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap;
+  }
+  h1 { font-size: 1.05rem; margin: 0; font-weight: 600; letter-spacing: .01em; }
+  header .who { color: var(--dim); font-size: .85rem; margin-left: auto; }
+  main { padding: 1.5rem; max-width: 1100px; }
+  section { margin-bottom: 2rem; }
+  h2 {
+    font-size: .78rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: 0 0 .6rem; font-weight: 600;
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; overflow: hidden;
+  }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+  th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 600; font-size: .78rem; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
+  .tag {
+    display: inline-block; padding: .05rem .4rem; border-radius: 3px;
+    font-size: .74rem; border: 1px solid currentColor; white-space: nowrap;
+  }
+  .tag.e2ee { color: var(--accent); }
+  .tag.rest { color: var(--sealed); }
+  .caps { color: var(--dim); font-size: .82rem; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0; }
+  .fact { padding: .8rem 1rem; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .fact .k { color: var(--dim); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
+  .fact .v { font-size: 1.15rem; margin-top: .15rem; font-variant-numeric: tabular-nums; }
+  .fact .n { color: var(--dim); font-size: .78rem; margin-top: .2rem; }
+  .note { color: var(--dim); font-size: .84rem; margin: .6rem 0 0; }
+  ul.unmeasured { margin: 0; padding: .6rem .75rem .6rem 1.9rem; color: var(--dim); font-size: .85rem; }
+  ul.unmeasured li { margin: .25rem 0; }
+  form.login { padding: 1.2rem; display: grid; gap: .6rem; max-width: 340px; }
+  label { font-size: .8rem; color: var(--dim); }
+  input {
+    font: inherit; padding: .45rem .55rem; border: 1px solid var(--line);
+    border-radius: 4px; background: var(--bg); color: var(--ink); width: 100%;
+  }
+  button {
+    font: inherit; padding: .45rem .9rem; border: 1px solid var(--line);
+    border-radius: 4px; background: var(--panel); color: var(--ink); cursor: pointer;
+  }
+  button:hover { border-color: var(--dim); }
+  .err { color: var(--warn); font-size: .85rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Silo</h1>
+  <span class="caps">administration</span>
+  <span class="who" id="who"></span>
+</header>
+
+<main>
+  <section id="signin">
+    <h2>Sign in</h2>
+    <div class="panel">
+      <form class="login" id="loginForm">
+        <div><label for="email">Address</label><input id="email" type="email" autocomplete="username" required></div>
+        <div><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required></div>
+        <div><button type="submit">Sign in</button></div>
+        <p class="err" id="loginErr" hidden></p>
+        <p class="note">
+          The credential stays in this tab and is never written to storage, so a
+          reload signs you out.
+        </p>
+      </form>
+    </div>
+  </section>
+
+  <div id="panels" hidden>
+    <section id="storageSection">
+      <h2>Storage</h2>
+      <div class="panel">
+        <div class="facts" id="storageFacts"></div>
+        <ul class="unmeasured" id="unmeasured"></ul>
+      </div>
+      <p class="note" id="storageNote"></p>
+    </section>
+
+    <section id="librariesSection">
+      <h2>Libraries</h2>
+      <div class="panel scroll"><table id="libraries"></table></div>
+      <p class="note">
+        Size is logical at head — the files the head commit reaches — not bytes
+        on disk. Every object is sealed at rest under <code>storage.key</code>
+        whatever a library’s own setting says; <span class="tag e2ee">e2ee</span>
+        means the server additionally cannot read it.
+      </p>
+    </section>
+
+    <section id="accountsSection">
+      <h2>Accounts</h2>
+      <div class="panel scroll"><table id="accounts"></table></div>
+      <p class="note">
+        Capabilities grant nothing on their own: the rule is a conjunction, so an
+        account must be an <code>admin</code> <em>and</em> hold the capability.
+        Rows on a non-admin are shown as they are, because hiding them would hide
+        what a demotion left behind.
+      </p>
+    </section>
+  </div>
+
+  <p class="err" id="fatal" hidden></p>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var API = "/api/silo/v1";
+  // In memory only. A token in localStorage outlives the tab and is readable by
+  // anything running on this origin; an operator signing in again after a
+  // reload is the cheaper half of that trade.
+  var token = null;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function api(path) {
+    return fetch(API + path, { headers: { Authorization: "Bearer " + token } })
+      .then(function (r) {
+        if (r.ok) { return r.json(); }
+        return r.text().then(function (t) {
+          throw new Error(path + ": " + r.status + " " + t.trim());
+        });
+      });
+  }
+
+  function bytes(n) {
+    if (n === null || n === undefined) { return "—"; }
+    var u = ["B", "kB", "MB", "GB", "TB", "PB"], i = 0, v = n;
+    while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }
+    return (i === 0 ? v : v.toFixed(v < 10 ? 1 : 0)) + " " + u[i];
+  }
+
+  function when(unix) {
+    if (!unix) { return "—"; }
+    return new Date(unix * 1000).toISOString().slice(0, 16).replace("T", " ");
+  }
+
+  function el(tag, text, cls) {
+    var e = document.createElement(tag);
+    if (text !== undefined && text !== null) { e.textContent = String(text); }
+    if (cls) { e.className = cls; }
+    return e;
+  }
+
+  function table(node, headers, rows, build) {
+    node.textContent = "";
+    var thead = node.appendChild(document.createElement("thead"));
+    var hr = thead.appendChild(document.createElement("tr"));
+    headers.forEach(function (h) { hr.appendChild(el("th", h)); });
+    var tbody = node.appendChild(document.createElement("tbody"));
+    if (!rows.length) {
+      var tr = tbody.appendChild(document.createElement("tr"));
+      var td = tr.appendChild(el("td", "Nothing yet."));
+      td.colSpan = headers.length;
+      td.className = "caps";
+      return;
+    }
+    rows.forEach(function (r) { tbody.appendChild(build(r)); });
+  }
+
+  function fact(k, v, note) {
+    var d = el("div", null, "fact");
+    d.appendChild(el("div", k, "k"));
+    d.appendChild(el("div", v, "v"));
+    if (note) { d.appendChild(el("div", note, "n")); }
+    return d;
+  }
+
+  function renderStorage(s) {
+    var f = $("storageFacts");
+    f.textContent = "";
+    f.appendChild(fact("Logical at head", bytes(s.logical_size),
+      s.file_count.toLocaleString() + " files"));
+    f.appendChild(fact("Server ceiling",
+      s.server_quota === null ? "None set" : bytes(s.server_quota),
+      s.server_quota === null ? "no ceiling configured"
+        : bytes(Math.max(s.server_quota - s.logical_size, 0)) + " admissible"));
+    f.appendChild(fact("Free on disk",
+      s.disk_free === null ? "Unreadable" : bytes(s.disk_free),
+      s.disk_free === null ? s.disk_error
+        : "keeping " + bytes(s.disk_reserve) + " back"));
+    f.appendChild(fact("At rest", s.at_rest_sealed ? "Sealed" : "Not sealed",
+      "every object, under storage.key"));
+
+    var ul = $("unmeasured");
+    ul.textContent = "";
+    s.unmeasured.forEach(function (u) { ul.appendChild(el("li", u)); });
+    $("storageNote").textContent =
+      "A write is refused at the lower of the ceiling and free space less the " +
+      "reserve. These are three currencies and are not reconciled.";
+  }
+
+  function renderLibraries(list) {
+    table($("libraries"),
+      ["Library", "Owner", "Encryption", "Size", "Files", "Updated"],
+      list, function (l) {
+        var tr = document.createElement("tr");
+        var name = el("td");
+        name.appendChild(el("div", l.name || "(unnamed)"));
+        name.appendChild(el("div", l.id, "caps mono"));
+        tr.appendChild(name);
+        tr.appendChild(el("td", l.owner || "(no address)"));
+        var enc = el("td");
+        enc.appendChild(el("span", "at rest", "tag rest"));
+        if (l.e2ee) {
+          enc.appendChild(document.createTextNode(" "));
+          enc.appendChild(el("span", "e2ee", "tag e2ee"));
+        }
+        tr.appendChild(enc);
+        tr.appendChild(el("td", bytes(l.size), "num"));
+        tr.appendChild(el("td", l.file_count.toLocaleString(), "num"));
+        tr.appendChild(el("td", when(l.update_time), "num"));
+        return tr;
+      });
+  }
+
+  function renderAccounts(list) {
+    table($("accounts"),
+      ["Address", "Role", "Capabilities", "Status", "Password", "Created"],
+      list, function (a) {
+        var tr = document.createElement("tr");
+        tr.appendChild(el("td", a.email || "(no address)"));
+        tr.appendChild(el("td", a.role));
+        tr.appendChild(el("td", a.capabilities.length ? a.capabilities.join(", ") : "—", "caps"));
+        tr.appendChild(el("td", a.is_active ? "active" : "DISABLED"));
+        tr.appendChild(el("td", a.has_password ? "yes" : "no"));
+        tr.appendChild(el("td", when(a.ctime), "num"));
+        return tr;
+      });
+  }
+
+  // Each panel is fetched and rendered on its own. A capability an operator
+  // does not hold is a 403 on one endpoint, and the panel says so rather than
+  // taking the page down -- which is the shape the whole capability split
+  // exists to produce.
+  function panel(path, sectionId, render) {
+    return api(path).then(render).catch(function (e) {
+      var s = $(sectionId);
+      var p = el("p", String(e.message), "err");
+      s.appendChild(p);
+    });
+  }
+
+  function load() {
+    $("signin").hidden = true;
+    $("panels").hidden = false;
+    api("/account").then(function (a) {
+      $("who").textContent = a.email;
+    }).catch(function () {});
+    panel("/admin/storage", "storageSection", renderStorage);
+    panel("/admin/libraries", "librariesSection", renderLibraries);
+    panel("/admin/accounts", "accountsSection", renderAccounts);
+  }
+
+  $("loginForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = $("loginErr");
+    err.hidden = true;
+    fetch(API + "/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: $("email").value,
+        password: $("password").value
+      })
+    }).then(function (r) {
+      if (!r.ok) { throw new Error("Sign-in refused (" + r.status + ")."); }
+      return r.json();
+    }).then(function (out) {
+      token = out.token || out.credential;
+      if (!token) { throw new Error("The server returned no credential."); }
+      $("password").value = "";
+      load();
+    }).catch(function (e) {
+      err.textContent = e.message;
+      err.hidden = false;
+    });
+  });
+})();
+</script>
+</body>
+</html>

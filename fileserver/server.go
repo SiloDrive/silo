@@ -18,6 +18,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/admin"
+	"github.com/dkam/silo/fileserver/adminui"
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/credential"
@@ -590,6 +591,11 @@ func newHTTPRouter() *mux.Router {
 	// hazards that keeps it from being an account-enumeration oracle.
 	r.HandleFunc("/api/silo/v1/auth/kdf", api.KDFParamsHandler).Methods("POST")
 	r.HandleFunc("/api/silo/v1/server-info", api.ServerInfoHandler).Methods("GET")
+	// The administrative page. Unauthenticated because it carries no data: it
+	// is a form and two empty tables, and every number on it arrives from a
+	// fetch the browser makes with a credential the person typed in. Gating the
+	// shell would only mean an operator could not reach the login box.
+	r.HandleFunc("/admin", adminui.Handler).Methods("GET")
 	// Logging out is about the credential presenting it rather than about the
 	// account, so it is mounted outside the subrouter with the lane that does
 	// not apply the narrowing. A mount cut to one library must be able to sign
@@ -630,6 +636,13 @@ func newHTTPRouter() *mux.Router {
 	adminRoute("/admin/accounts/{id}/quota", admin.CapQuota, api.SetAdminAccountQuotaHandler, "PUT")
 	adminRoute("/admin/accounts/{id}/role", admin.CapGrant, api.SetAdminAccountRoleHandler, "PUT")
 	adminRoute("/admin/accounts/{id}/caps", admin.CapGrant, api.SetAdminAccountCapabilitiesHandler, "PUT")
+	// Gated by quota rather than users. A listing of every library with its
+	// owner and its size is usage information, which is what that capability
+	// already means -- and it is the view the server-level ceiling needs, since
+	// a refusal at that ceiling is otherwise a refusal with no way to see what
+	// filled it.
+	adminRoute("/admin/libraries", admin.CapQuota, api.ListAdminLibrariesHandler, "GET")
+	adminRoute("/admin/storage", admin.CapRetention, adminStorageHandler, "GET")
 
 	apiRouter.HandleFunc("/libraries", api.ListLibrariesHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries", api.CreateLibraryHandler).Methods("POST")
