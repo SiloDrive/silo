@@ -3,25 +3,28 @@
 **Status: not built, and parked deliberately.** Nothing here is scheduled, and
 the first step is worth more than everything under it combined.
 
-Moved here from `future-features.md` when that file was replaced by
-[`roadmap.md`](../roadmap.md), which holds ordering rather than designs.
 [`target.md`](../target.md) names replication with a single authority as a genuine
 stretch goal rather than a non-goal, and asks that nothing in the target make
 it harder later; this is what that would look like.
 
-## The engine is already running
+## There is no merge engine, and a secondary does not need one
 
-The store is git-shaped. `commitmgr.Commit` carries both `ParentID` and
-`SecondParentID`; `mergeTrees` (`merge.go:21`) is a real three-way merge over
-base, head and remote roots; `fastForwardOrMerge` (`fileop.go:1991`) mints
-merge commits with a second parent and CASes the branch forward. That engine
-already runs on every concurrent client write. Pointing it at a peer rather
-than at a desktop client is a smaller change than "multi-server sync" sounds.
+The store is git-shaped: commits point at trees, and a branch is one head
+pointer. The server does not merge. `PUT head` is a compare-and-swap on the
+branch head — a writer whose `If-Match` is stale gets a refusal and rebuilds
+its change on the new root — because merging trees means reading names, which
+an E2EE server cannot do
+([`porter-brief.md`](../porter-brief.md) § Server-side merge is gone,
+[`protocol.md`](../protocol.md)). Every merge happens in a client that holds
+the keys.
 
-The one genuinely missing piece is **the merge base**. Today the client hands
-in `base`, because it knows what it last saw. Two servers have to compute their
-common ancestor themselves, by walking the commit DAG — a `git merge-base` walk
-over parent pointers.
+That settles the shape of replication before it starts. A secondary that
+never mints commits has nothing to merge: it copies a DAG whose only mutable
+point is the head, and the head moves by the same compare-and-swap it moves by
+today. Anything bidirectional would need a merge base computed by walking the
+DAG — a `git merge-base` over parent pointers — *and* a merge, which the
+server cannot perform. That is a client's job, and it is already the client's
+job.
 
 ## Two products, not one
 
@@ -31,10 +34,11 @@ over parent pointers.
   is permission to write. **This is the piece actually worth building, and it
   needs none of the merge machinery above.**
 - **Two people mirroring each other is collaboration.** That one is genuinely
-  bidirectional, and upstream's answer is already implemented and is the right
-  one: never block. Both edits survive and one is renamed
-  `foo (SFConflict user time)` (`merge.go:348`) — convergence by making the
-  conflict visible rather than by choosing a winner.
+  bidirectional, and the only place it can be resolved is a client holding the
+  keys. The right rule there is upstream's: never block. Both edits survive and
+  one is renamed to a visible conflict file — convergence by making the
+  conflict visible rather than by choosing a winner. Nothing server-side
+  implements that, and this plan does not ask it to.
 
 Bundled, they give a system that is good at neither. The replica is also the
 transport for the mirror, so build it first and stop there if nothing else is
@@ -42,15 +46,17 @@ wanted.
 
 ## What a secondary needs, and it is not only bytes
 
-A read-only secondary needs three things, and only one of them is solved by
-[`storage.md`](../storage.md)'s tiering work:
+A read-only secondary needs three things, and only one of them is answered by
+[`storage.md`](../storage.md)'s tiering design — which is designed, not built:
 
-1. **The packs.** Solved, and cheaply: packs are immutable and byte-identical
-   on every tier under `storage.key`, so replication is plain file copy. A
-   secondary configured with a nearby cache tier and a shared authoritative
-   tier gets locality with no new mechanism — see storage.md § Durable tiers.
-   Per-pack indexes are uploaded beside their packs, so bootstrap fetches a few
-   hundred KB per pack rather than the pack.
+1. **The packs.** Answered on paper, and cheaply: packs are immutable and
+   byte-identical on every tier under `storage.key`, so replication is plain
+   file copy. A secondary configured with a nearby cache tier and a shared
+   authoritative tier gets locality with no new mechanism — see storage.md §
+   Durable tiers. Per-pack indexes are uploaded beside their packs, so bootstrap
+   fetches a few hundred KB per pack rather than the pack. None of this exists
+   yet: packs, `storage.key` and durable tiers are designed, not built, and the
+   store today is loose objects.
 2. **The catalog.** Not solved and not designed. Libraries, branches,
    membership, chunker parameters and totals live in SQLite, and a secondary
    that cannot read those cannot serve anything, however many packs it holds.
@@ -99,7 +105,7 @@ Which lands it on the compactor. [`chunking.md`](../chunking.md) already
 concludes that packing and the mark-phase GC are one project; parity stripes
 are the same unit at the same layer. **Parity over packs rather than over loose
 chunks** makes a sealed pack the stripe and compaction the only event that
-recomputes anything.
+recomputes anything. Packs are designed, not built, so parity waits on them.
 
 ## What stays out
 

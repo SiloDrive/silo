@@ -4,12 +4,6 @@ Silo speaks one HTTP API, `/api/silo/v1/`. This document is a survey of what
 *else* could be bolted onto the front of the same store, what each one buys, and
 what it costs.
 
-> Written while the legacy sync lane and its two compatibility APIs still
-> existed; they were deleted in `5d4baa0`. The line numbers below name
-> `fileop.go` and `fsmgr`, which went with them. The survey's reasoning — what
-> each frontend buys, and that all of them need a protocol-neutral core first —
-> is what survives.
-
 Nothing here is committed. It exists so the decision is made once, on the
 architecture, rather than re-argued per protocol.
 
@@ -17,14 +11,15 @@ architecture, rather than re-argued per protocol.
 
 Silo is a git-shaped store: commits point at directory trees, which point at
 file manifests, which are lists of content-addressed chunks. Every mutation
-goes through `GenNewCommit` (`fileserver/fileop.go:1951`) and `updateBranch`
-(`fileop.go:2104`), with `fastForwardOrMerge` (`fileop.go:1991`) resolving
-contention. There is no partial-file update anywhere in the model: changing one
-byte means re-indexing the whole file into blocks and minting a new commit.
+ends in `updateBranch` (`fileserver/commit.go`) moving the head by
+compare-and-swap; a writer that loses the race is refused, not merged, and
+rebuilds on the new root ([`protocol.md`](protocol.md)). There is no
+partial-file update anywhere in the model: changing one byte means re-chunking
+the whole file and minting a new commit.
 
-Reads are the easy direction. `doFileRange` (`fileop.go:316`) already serves
-HTTP ranges, and the block-map endpoint (`sync_api.go:324`) hands out per-block
-offsets, so ranged reads don't require materialising a whole file.
+Reads are the easy direction. `serveFile` (`fileserver/entries.go`) honours
+`Range`, and a manifest carries every chunk's plaintext size, so ranged reads
+don't require materialising a whole file.
 
 That asymmetry sorts every candidate protocol into two piles:
 
@@ -38,12 +33,11 @@ Pick from the first pile unless there's a specific reason not to.
 
 ## Prerequisite: build a back before adding a front
 
-The operations are currently welded to `http.ResponseWriter`. `accessCB`
-(`fileop.go:155`), `doUpload` (`fileop.go:1048`) and `postMultiFiles`
-(`fileop.go:1616`) all take `(rsp, r)` and write status codes inline. The
-reusable layer beneath them — the object-id and directory lookups by path,
-`DoPostMultiFiles` (`fileop.go:2201`), `DelFileFromTree` (`fileop.go:2218`) —
-sits one level too low to build a protocol on.
+The operations are welded to `http.ResponseWriter`: the `entries` handlers in
+`fileserver/entries.go` and the batch handler take `(w, r)` and write status
+codes inline. The reusable layer beneath them — the tree lookups by path and
+the diffing in `fileserver/objmgr` — sits one level too low to build a
+protocol on.
 
 Any second frontend means extracting a protocol-neutral core first:
 
@@ -81,7 +75,7 @@ Gotchas:
 - `LOCK`/`UNLOCK` can start as an in-memory no-op that satisfies clients. It
   becomes real once file locking lands (see [`plans/locking.md`](plans/locking.md)).
 - Finder sprays `._*` and `.DS_Store` at any mount. `shouldIgnoreFile`
-  (`fileop.go:2458`) already exists for exactly this.
+  (`fileserver/api_handlers.go`) already exists for exactly this.
 - The Windows client is fussy about Basic auth and `Depth` handling. Budget a
   day for its quirks alone.
 
@@ -128,10 +122,10 @@ write sequentially from zero. `SETSTAT`/`chmod`/times are safely ignorable.
   write through another protocol.
 - **Nextcloud/ownCloud chunked upload API.** WebDAV plus extensions. Only worth
   it to pick up the Nextcloud mobile and desktop client fleet.
-- **Public share links** (`/d/{token}/`). Already on the roadmap. The
-  "protocol" is just a browser; it needs the signed URL
-  [`capability-urls.md`](capability-urls.md) specifies and a short-code
-  generator, nothing more.
+- **Public share links.** Designed in [`plans/sharing.md`](plans/sharing.md)
+  as credential rows served at `/s/{code}`. The "protocol" is just a browser;
+  signed URLs, per [`capability-urls.md`](capability-urls.md), arrive only
+  when the share page renders media inline.
 - **An MCP server.** A small surface over the core ops layer (list, read,
   write, search a library) that makes libraries directly available to coding
   agents. Cheap once `core` exists.
@@ -148,23 +142,24 @@ catch is that Silo object ids and git object ids hash different bytes, so
 none of the existing IDs can be reused. It means computing git SHA-1s, building
 packfiles, and caching the ID mapping — real work.
 
-The payoff is that every git tool becomes a history browser for Silo libraries,
-which is precisely the capability the roadmap currently lists as missing (no
-trash/restore, no history or revision endpoints).
+The payoff is that every git tool becomes a history browser for Silo libraries.
+`GET /commits` and `entries/{path}?at=` already expose the commit log and a
+file at a past commit; what the roadmap still lists as missing is per-path
+history, a deleted-but-reachable listing, and restore.
 
 ## Explicitly not
 
 Federation, Syncthing's block exchange protocol, CalDAV/CardDAV, gRPC and
 GraphQL. None buy reach that the tier-1 three don't already cover, and the
-first two contradict the one-binary-one-node non-goal in
-[`roadmap.md`](roadmap.md).
+first two contradict the "peer-to-peer anything" non-goal in
+[`target.md`](target.md) § Deliberately not.
 
 ## Cross-cutting work every frontend needs
 
 ### Issued credentials
 
-Login runs 600,000 rounds of PBKDF2 (`authmgr.PBKDF2Iterations`,
-`fileserver/authmgr/authmgr.go:192`). WebDAV and S3 authenticate *every
+Login runs 600,000 rounds of PBKDF2 (`authmgr.PBKDF2Iterations` in
+`fileserver/authmgr/authmgr.go`). WebDAV and S3 authenticate *every
 request*, so reusing the account password means running the login KDF per
 request — a self-inflicted denial of service that the login rate limiter cannot
 help with, because these are all successful verifications.
@@ -194,17 +189,17 @@ hang a window on, which is where this bites.
 
 ### Encrypted libraries are opaque
 
-The server cannot read an encrypted library without the password cached in
-`keycache`. Every server-side gateway either excludes encrypted libraries with a
-clear error, or requires the password to be primed first. Decide which,
-explicitly — the alternative is the failure mode the TUI already has, where
-browsing an encrypted library silently renders garbage.
+The server never holds the keys to an E2EE library — names and content are
+ciphertext to it, by design ([`storage.md`](storage.md)). A server-side gateway
+therefore cannot serve one at all, and must exclude E2EE libraries with a
+clear error rather than rendering ciphertext as if it were a tree. Only plain
+libraries are reachable through any frontend in this document.
 
 ### Permissions
 
-`share.CheckPerm` (`fileserver/share/share.go:40`) exists, but there is no
-sharing API and no `is_staff` check, so every frontend inherits "owner-only,
-all users equal". That's acceptable for now. What matters is that no protocol
+`share.CheckPerm` (`fileserver/share/share.go`) exists, but the grant model in
+[`plans/sharing.md`](plans/sharing.md) is not built, so every frontend
+inherits "owner-only, all users equal". That's acceptable for now. What matters is that no protocol
 frontend *implies* a permission model richer than the one actually enforced.
 
 ## Recommendation

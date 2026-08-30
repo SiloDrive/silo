@@ -6,9 +6,6 @@ Motivated by the macOS File Provider's search pushdown
 (`NSFileProviderSearching`, macOS 26+ — the porter-macos repository has the
 plan), but useful on its own independent of any one client.
 
-Moved here from `future-features.md` when that file was replaced by
-[`roadmap.md`](../roadmap.md), which holds ordering rather than designs.
-
 ## What exists today: nothing
 
 Silo has **no search of any kind**. Files live as content-addressed objects
@@ -39,7 +36,7 @@ actually ask for.
 existing "list every filename in a library" call to seed from, so it needs a
 full tree walk once and then incremental maintenance per commit. Reuse the
 commit-diffing machinery already backing the change feed
-(`fileserver/api/changes.go`, `fileserver/diff/diff.go`) rather than re-walking
+(`fileserver/api/changes.go`, `fileserver/objmgr/diff.go`) rather than re-walking
 whole trees on every write.
 
 **Permission-filtered at query time**, not through separate per-grantee

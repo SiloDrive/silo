@@ -4,9 +4,6 @@
 editing the same document do not clobber each other — a feature upstream had,
 and one Porter would want for the same reason.
 
-Moved here from `future-features.md` when that file was replaced by
-[`roadmap.md`](../roadmap.md), which holds ordering rather than designs.
-
 ## Endpoints, on the Silo lane
 
 - `PUT    /api/silo/v1/libraries/{id}/locks/{path}`

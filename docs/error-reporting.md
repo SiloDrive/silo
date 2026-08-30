@@ -121,20 +121,18 @@ Events carry the request URL, headers, client address, and the account behind
 the request where the SDK can see it. That is deliberate: the point of a report
 is to be able to say whose sync broke.
 
-**Bodies are not collected, and that is stated rather than assumed.** This
-section used to say they were never captured, on the strength of the SDK's
-default. That stopped being true: in sentry-go 0.48, `SendDefaultPII` with no
+**Bodies are not collected, and that is stated rather than assumed.** The
+SDK's default is not relied on: in sentry-go 0.48, `SendDefaultPII` with no
 `DataCollection` block resolves to `HTTPBodies: allBodyTypes()`, and the scope
-tees up to 10 KiB of every body a handler reads. The SDK's key filter caught
-`password` and `setup_token` by name, so credentials were never the exposure —
-but a library name, a path, or any other key it does not recognise went out
-verbatim, which is exactly what this paragraph promised could not happen.
+tees up to 10 KiB of every body a handler reads — the SDK's key filter catches
+`password` and `setup_token` by name, but a library name, a path, or any other
+key it does not recognise would go out verbatim.
 
-`clientOptions` now names the collection explicitly:
+`clientOptions` therefore names the collection explicitly:
 `HTTPBodies` empty, cookies off, headers and query parameters on the SDK's
-denylist, user info on. Note that a non-nil `DataCollection` supersedes
-`SendDefaultPII` entirely, so that flag is now a summary of the intent rather
-than the thing doing the work.
+denylist, user info on. A non-nil `DataCollection` supersedes `SendDefaultPII`
+entirely, so that flag is a summary of the intent rather than the thing doing
+the work.
 
 **Setup tokens are stripped from event text.** A `BeforeSend` hook redacts
 anything matching the setup token's format from messages, tags, exception values

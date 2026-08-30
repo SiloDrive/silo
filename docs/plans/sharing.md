@@ -363,8 +363,9 @@ purity here was already imperfect.
 - **Server-side decryption stays scoped to link redemption.** The compatible
   and password curl paths are the only places the server ever derives a
   content key, gated on the link row. That code must never generalise into
-  `entries/` for E2EE libraries — this is the keycache guardrail restated for the
-  one place we deliberately punch through it.
+  `entries/` for E2EE libraries — the server-never-holds-CK rule of
+  [`storage.md`](../storage.md), restated for the one place we deliberately
+  punch through it.
 - **No short or vanity codes.** Credential format or nothing.
 - **The anonymous principal never writes** until upload links arrive with
   their own plan.
@@ -404,20 +405,14 @@ and per-file share manifests; file links first).
 
 ## Doc changes
 
-- `roadmap.md` — the sharing and public-links sections point here;
-  the `/d/{token}/` + tokenstore sketch under "Public / link shares" is
-  superseded by the credential-backed design.
-- `capability-urls.md` — status note: the predicted browser-shaped consumer
-  arrived (the share page); signed URLs remain deferred and the old mechanism
-  remains dead.
+When this plan is built, these documents change with it:
+
 - `auth.md` — kind table gains `link` and `invite`; the tombstone-inheritance
-  warning points at this plan's invite section as its enforcement site. (The
-  `scope` `:path` extension this plan asked for has already landed with the
-  credential table.)
+  warning points at this plan's invite section as its enforcement site.
 - `docs/plans/events.md` — the `share.*` events in its taxonomy are minted
   here; build-order step 3 names the emission points.
 - `responses.md` — `406` gains its row: the e2e byte-request answer, "the
   server holds no plaintext to serve; go to `/meta`".
-- `encryption.md` — add the share-manifest / SK-wrapping pattern alongside
-  the CK member-wrapping section; same indirection, one level down.
-- `backup.md` — `link.key` joins `storage.key` in the must-not-lose set.
+- `backup.md` — `link.key` joins the must-not-lose set beside `storage.key`,
+  once `storage.key` exists ([`storage.md`](../storage.md) designs it; it is
+  not built, and backup.md does not yet name it).

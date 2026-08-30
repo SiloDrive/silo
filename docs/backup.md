@@ -173,20 +173,7 @@ removes the fast, clear refusal in favour of whatever error the schema
 statements produce on their own, which is where every version predating this
 check already stood.
 
-## Upgrading from an install older than 0.5.0
-
-There is no upgrade path, and the guard that used to describe one is gone.
-
-Releases up to and including 0.4.4 kept two SQLite files inherited from
-upstream — one for users and groups, one for libraries, shares and tokens —
-which 0.5.0 merged into a single `silo.db`. A server used to refuse to start on
-a directory holding the old pair and print the `sqlite3` commands that
-concatenate them; that check was deleted in `d644f8f`, because the object
-format, the wire protocol and the schema have all been replaced since, and a
-database that merged cleanly would still hold objects this server cannot read.
-
-What a current server does check is `PRAGMA user_version`. A mismatch is
-refused outright with a message saying to delete the data directory and
-recreate it. That is sanctioned rather than regretted: there are no
-deployments, so there is nothing to migrate — see
-[`storage.md`](storage.md).
+There is no upgrade path from any earlier release — including the two-file
+databases of 0.4.4 and before — and none is planned: there are no deployments,
+so there is nothing to migrate; delete the data directory and let the server
+recreate it (see [`storage.md`](storage.md)).

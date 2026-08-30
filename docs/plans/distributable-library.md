@@ -3,9 +3,6 @@
 **Status: parked, not scheduled.** Recorded because the format already does
 most of the work, and it would be a shame to drift away from that by accident.
 
-Moved here from `future-features.md` when that file was replaced by
-[`roadmap.md`](../roadmap.md), which holds ordering rather than designs.
-
 ## The observation
 
 A plain library is, structurally, what casync was invented to be — a
