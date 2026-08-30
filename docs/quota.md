@@ -30,9 +30,7 @@ because answering any of them alone produces a number nobody can act on.
 | Date-based history expiry | `silo gc -expire-history`, `expireHistory` | built (`c99b745`) |
 | Server-wide ceiling | — | not built |
 | Charging chunks rather than logical size | — | not built |
-| Date-based history expiry | — | not built |
-| Collecting history-only objects | — | not built (`gc.go:37`) |
-| Admin API to read or set another account's cap | — | not built, and gated on there being an admin role at all (`plans/admin-check.md`) |
+| Admin API to read or set another account's cap | — | not built, and gated on there being an admin role at all (`plans/sharing.md` § Accounts) |
 
 ## Whose ceiling
 

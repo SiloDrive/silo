@@ -31,7 +31,10 @@ out (deferred, not rejected; see the end).
 The credential model is auth.md's; this plan adds what sits around it.
 
 **Roles.** A `role` column on the account: `admin` / `user` / `guest`, plus
-the existing `is_staff` semantics folding into `admin`. Guest cannot create
+the existing `is_staff` semantics folding into `admin`. Until then `is_staff`
+is already on the resolved account (`credential.Resolve` joins it), so the
+admin middleware is a `GetAccount(r).IsStaff` check, wired when the first
+admin route exists. Guest cannot create
 libraries and sees only what is shared to them — the "consumer deployment"
 shape, where the admin curates the libraries and everybody else syncs what
 they have been given. A config key

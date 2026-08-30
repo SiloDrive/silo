@@ -22,6 +22,13 @@ format in [`spec/store-format.md`](spec/store-format.md), and the database
 schema diverged early. The fork is why the package layout looks the way it
 does, and it is no longer why anything else does.
 
+What replaced what: the web layer's login became `POST auth/login` and a
+`Credential` row (`fileserver/credential/`); the 174 RPC handlers became the
+`/api/silo/v1/` handlers in `fileserver/api/`; the separate notification
+server runs in-process on `/notification`; the RPC client, its socket and the
+controller were removed outright. The one compatibility constraint that
+survived the migration is password hashes — see § Password formats below.
+
 One consequence worth knowing: anything that used to be authorized by the web
 layer is simply absent. The share-link routes (`/f/`, `/u/`, `/d/`) and the web
 file-access route were removed rather than ported, because every one of them
@@ -29,11 +36,6 @@ authorized by calling out to a service Silo does not run. See
 `docs/capability-urls.md`.
 
 ## Authentication — one path
-
-> The two-path section that stood here described a second auth lane — its own
-> token endpoint, its own request header and its own token table. All three
-> were deleted with the sync lanes (`5d4baa0`); it was describing a server that
-> no longer existed.
 
 ```
 Client  → POST /api/silo/v1/auth/login    {email, password}
@@ -52,17 +54,6 @@ cache in front of it. `silo token list|revoke <email>` is the operator side.
 
 Serving bytes on the endpoint itself, rather than redirecting to a URL that
 carries a credential, is deliberate — see `docs/capability-urls.md`.
-
-## Replaced RPC calls
-
-The three calls the Go fileserver used to make into the C server are gone, two
-of them without a replacement:
-
-| Was | Now |
-|---|---|
-| mint a web access token | ~~`fileserver/tokenstore/`~~ — **gone**; the capability URLs it minted for went with the legacy lanes, and a signed URL is what replaces them ([`capability-urls.md`](capability-urls.md)) |
-| fetch a library's decrypt key | ~~`fileserver/keycache/`~~ — **gone**; the server holds no key for an encrypted library at all, by design ([`storage.md`](storage.md)) |
-| publish an event | logrus, plus the WebSocket notification server in `fileserver/notif/` |
 
 ## Database
 
@@ -87,7 +78,6 @@ pair — `docs/backup.md` says why, and what a current server checks instead.
 - `LibraryGroup` — group shares
 - `VirtualLibrary` — virtual library mappings (subdirs shared as libraries)
 - `LibraryInfo` — library metadata/settings
-- `FileLocks` — file locking
 - `InnerPubLibrary` — publicly shared libraries
 - Various permission tables
 
@@ -130,13 +120,8 @@ A manifest is the file object: the list of chunk ids that reconstitutes one
 file. [`spec/store-format.md`](spec/store-format.md) is normative for all of
 it.
 
-**Settled.** This paragraph used to record an open question — whether chunking
-was at fixed 8 MiB offsets, as `native-client.md` and `protocol.md` then said,
-or content-defined — and cited `chunkFile`/`FixedBlockSize` in `fileop.go` as
-evidence for the fixed answer. store-v2 answered it by replacing both: chunking
-is `fastcdc-gear64/v1`, the parameters are per library, and every file it named
-was deleted in `5d4baa0`. [`chunking.md`](chunking.md) is the decision and the
-measurements.
+Chunking is `fastcdc-gear64/v1` with per-library parameters;
+[`chunking.md`](chunking.md) is the decision and the measurements.
 
 ## Go internals
 
@@ -165,7 +150,10 @@ type appHandler func(http.ResponseWriter, *http.Request) *appError
 - `notif` — WebSocket notification server
 - `option` — config loading (`silo.conf`, env vars)
 - `dbutil` — connection management, schema, query helpers
-- `ratelimit`, `workerpool`, `metrics`, `diff`, `utils`
+- `setup` — claiming a fresh server with the single-use setup token
+- `serversecret` — secrets that are the server's own and outlive the process
+- `share` — library sharing and `CheckPerm`
+- `ratelimit`, `utils`
 
 ### Password hash formats
 

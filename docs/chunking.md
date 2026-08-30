@@ -164,10 +164,9 @@ above it changes shape.
   reason is that packs stay self-describing, the store stays reconstructible
   with no database, and [`backup.md`](backup.md)'s "database first, objects
   second" ordering keeps protecting something.
-- **Compression composes here, and only here** — the ZSTD seekable format
-  over a sealed pack; see [`compression.md`](compression.md) for the identity
-  rule (hash the plaintext form of the stored bytes, store compressed) that
-  makes it legal.
+- **Compression** — see [`storage.md`](storage.md) § Compression, which
+  places it client-side before encryption and supersedes the server-side
+  sketch this file used to carry.
 - **Large files want pack locality**: a file's chunks written contiguously,
   in order, into the same pack, so a sequential read is one contiguous range.
   It falls out of packing in write order — but only if dedup is never allowed

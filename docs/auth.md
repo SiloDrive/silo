@@ -1216,5 +1216,5 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
 6. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
 Outside that list: `is_staff` can be set when an account is created but not
-afterwards, which is fine only until [`plans/admin-check.md`](plans/admin-check.md)
-makes the flag mean something.
+afterwards, which is fine only until the role model in
+[`plans/sharing.md`](plans/sharing.md) § Accounts makes the flag mean something.
