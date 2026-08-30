@@ -449,6 +449,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS library_grant_one_idx
   ON LibraryGrant (principal, library_id, path);
 CREATE INDEX IF NOT EXISTS library_grant_library_idx ON LibraryGrant (library_id);
 
+-- An invite, and the address it is for.
+--
+-- The credential row carries the secret, the expiry and the revocation; this
+-- carries what an invite is that a credential is not. Two tables rather than
+-- columns on Credential because an invite is the only kind with an intended
+-- recipient, and four kinds that never use a column is how a table stops
+-- describing anything.
+--
+-- email is the binding, and the redeemer does not choose it. Delivery of the
+-- invite to that inbox *is* the address verification, which is the whole reason
+-- registration goes through an invite rather than a signup form. label on the
+-- credential is display and is not this.
+--
+-- redeemed_at is what makes it single-use. NULL until spent; a second
+-- redemption is refused by the write that sets it rather than by a check some
+-- caller might skip.
+--
+-- See docs/plans/sharing.md § Accounts.
+CREATE TABLE IF NOT EXISTS Invite (
+  credential_id TEXT    PRIMARY KEY REFERENCES Credential(id),
+  email         TEXT    NOT NULL,
+  role          TEXT    NOT NULL,
+  created_by    BLOB    NOT NULL REFERENCES Account(id),
+  ctime         INTEGER NOT NULL,
+  redeemed_at   INTEGER
+);
+CREATE INDEX IF NOT EXISTS invite_email_idx ON Invite (email);
+
 CREATE TABLE IF NOT EXISTS Credential (
   id          TEXT   PRIMARY KEY,
   kind        TEXT   NOT NULL,

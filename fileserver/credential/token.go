@@ -17,11 +17,16 @@ const (
 	KindSession Kind = "session" // the TUI, the CLI
 	KindAccess  Kind = "access"  // capability URLs
 	KindS3      Kind = "s3"      // an S3 frontend, if it is ever built
+	// KindInvite is the one lane that authenticates somebody who does not have
+	// an account yet. It opens exactly one route -- redemption -- and is
+	// refused everywhere else by the API's kind list, which is what keeps a
+	// leaked invite from being a session token for the address it names.
+	KindInvite Kind = "invite"
 )
 
 func (k Kind) valid() bool {
 	switch k {
-	case KindDevice, KindSession, KindAccess, KindS3:
+	case KindDevice, KindSession, KindAccess, KindS3, KindInvite:
 		return true
 	}
 	return false

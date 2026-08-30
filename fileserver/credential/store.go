@@ -125,6 +125,46 @@ func (c *Credential) Bearer() bool { return len(c.secretHash) > 0 }
 // caller has to answer, and an empty set matches nothing: a caller that named
 // no kind forgot to say which lane it was, and reading that as "any lane will
 // do" would accept a credential from the wrong one.
+// ResolveInvite verifies an invite token presented as a string.
+//
+// It exists because Resolve cannot serve this lane, and the reason is not an
+// oversight in either: Resolve refuses a credential whose account is inactive,
+// and an invite's account is inactive by definition -- being inactive is the
+// state redeeming changes. Loosening that check inside Resolve would loosen it
+// for every lane, to buy one.
+//
+// Everything else Resolve checks still applies here: the token's checksum, the
+// proof of the secret, the stored kind having the last word, and the expiry.
+// What is deliberately absent is the is_active test, and nothing else.
+//
+// It takes a token rather than a request, so it cannot be reached by the header
+// path at all. That, and the API's kind list excluding invite, are the two
+// things that keep a leaked invite from being a session token for the address
+// it names: one route consumes it, and it is not this package's job to find it.
+func ResolveInvite(ctx context.Context, token string) (*Credential, error) {
+	tok, err := ParseToken(token)
+	if err != nil {
+		return nil, err
+	}
+	if tok.Kind != KindInvite {
+		return nil, ErrWrongKind
+	}
+	cred, err := load(ctx, tok.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := prove(cred, tok); err != nil {
+		return nil, err
+	}
+	if cred.Kind != tok.Kind {
+		return nil, ErrWrongKind
+	}
+	if cred.ExpiresAt != 0 && cred.ExpiresAt <= time.Now().Unix() {
+		return nil, ErrExpired
+	}
+	return cred, nil
+}
+
 func Resolve(r *http.Request, kinds ...Kind) (*Credential, error) {
 	tok, err := tokenFromRequest(r)
 	if err != nil {
