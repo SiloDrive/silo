@@ -71,9 +71,9 @@ real server.
 Login is split on both sides. `client.Enrol` publishes an identity key and
 crosses the account over in one call, and `client.OpenAccount` logs in with the
 derived `authKey`, so an account this client enrolled never sends the server
-the secret that opens its identity blob. What remains is migrating accounts
-that predate the crossover — which only a client can do, since the server does
-not hold `master` — along with sharing and the grant model. The sequence is
+the secret that opens its identity blob. A password change carries the
+identity key across rather than orphaning it. What remains is sharing and the
+grant model. The sequence is
 [`plans/e2ee-completion.md`](plans/e2ee-completion.md).
 
 ## Guardrails — what not to build

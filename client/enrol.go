@@ -46,12 +46,18 @@ func (c *APIClient) AccountInfo() (AccountInfo, error) {
 // The whole set at once, because that is what the endpoint is: a password
 // change produces a new wrapKey, so every blob the account holds is re-wrapped
 // together or the account is left holding one its parameters no longer open.
-func (c *APIClient) PublishKeys(public, wrapped []byte, params store.KDFParams) error {
+//
+// recovery is passed through rather than rebuilt. A recovery wrap seals the
+// identity key under a key derived from its code, so it does not depend on the
+// password and survives a change of it unaltered -- but this endpoint replaces
+// the whole set, so a caller that omits them deletes them.
+func (c *APIClient) PublishKeys(public, wrapped []byte, params store.KDFParams, recovery []RecoveryWrap) error {
 	return c.doRequest("PUT", "/api/silo/v1/account/keys", struct {
-		PublicKey  []byte `json:"public_key"`
-		WrappedKey []byte `json:"wrapped_key"`
-		KDFParams  string `json:"kdf_params"`
-	}{public, wrapped, params.String()}, nil)
+		PublicKey  []byte         `json:"public_key"`
+		WrappedKey []byte         `json:"wrapped_key"`
+		KDFParams  string         `json:"kdf_params"`
+		Recovery   []RecoveryWrap `json:"recovery"`
+	}{public, wrapped, params.String(), recovery}, nil)
 }
 
 // Enrol gives an account an identity key and moves it onto derived login.
@@ -98,7 +104,7 @@ func (c *APIClient) Enrol(email, password string) (*Account, error) {
 		return nil, fmt.Errorf("client: wrapping the identity key: %w", err)
 	}
 	pub := identity.Public()
-	if err := c.PublishKeys(pub[:], wrapped, params); err != nil {
+	if err := c.PublishKeys(pub[:], wrapped, params, nil); err != nil {
 		return nil, fmt.Errorf("client: publishing the identity key: %w", err)
 	}
 
@@ -106,6 +112,33 @@ func (c *APIClient) Enrol(email, password string) (*Account, error) {
 		return nil, err
 	}
 	return &Account{ID: info.AccountID, Identity: identity, c: c}, nil
+}
+
+// rewrapIdentity re-seals the identity key under a new password and publishes
+// it, carrying the recovery wraps forward.
+//
+// Fresh parameters, which means a fresh salt: the old ones describe a
+// derivation from a password that is being retired, and reusing the salt would
+// leave a new password stretched under the same input as the old one.
+func (c *APIClient) rewrapIdentity(id *store.Identity, keys AccountKeys, next string) (store.Credentials, store.KDFParams, error) {
+	var salt [store.KDFSaltSize]byte
+	if _, err := rand.Read(salt[:]); err != nil {
+		return store.Credentials{}, store.KDFParams{}, fmt.Errorf("client: generating a KDF salt: %w", err)
+	}
+	params := store.DefaultKDFParams(salt)
+	creds, err := store.DeriveCredentials(next, params)
+	if err != nil {
+		return store.Credentials{}, store.KDFParams{}, err
+	}
+	priv := id.Private()
+	wrapped, err := store.WrapIdentity(creds.WrapKey, keys.AccountID, params, priv)
+	if err != nil {
+		return store.Credentials{}, store.KDFParams{}, fmt.Errorf("client: re-wrapping the identity key: %w", err)
+	}
+	if err := c.PublishKeys(keys.PublicKey, wrapped, params, keys.Recovery); err != nil {
+		return store.Credentials{}, store.KDFParams{}, fmt.Errorf("client: republishing the identity key: %w", err)
+	}
+	return creds, params, nil
 }
 
 // crossOver moves the account's login secret from the password to the authKey
@@ -132,6 +165,85 @@ func (c *APIClient) crossOver(password string, creds store.Credentials, params s
 	c.password = authKey
 	c.mu.Unlock()
 	return c.Login(c.emailOf(), authKey)
+}
+
+// changeSecret performs the password change and returns the secret the account
+// now logs in with -- the new password, or the authKey derived from it.
+//
+// On an enrolled account the identity key is re-wrapped and republished BEFORE
+// the login secret moves. Neither order is atomic and both leave a window, so
+// the choice is about which window is survivable: this one leaves the account
+// reachable with the password the caller still has, and the identity opened by
+// the one they just chose. The other order leaves an account whose login has
+// moved and whose blob was never re-wrapped, where the secret that opens the
+// identity is the one being retired.
+//
+// A retry of the same call closes that window, which is why the identity is
+// opened under either password: a second attempt finds a blob already sealed
+// under next, opens it with next, republishes the same bytes, and completes the
+// half that failed.
+func (c *APIClient) changeSecret(current, next string) (string, int, error) {
+	email := c.emailOf()
+	// What the server accepts as this account's secret today. login answers
+	// the question on the way in: non-empty credentials mean it crossed over.
+	creds, err := c.login(email, current)
+	if err != nil {
+		return "", 0, err
+	}
+	currentSecret := current
+	if len(creds.AuthKey) > 0 {
+		currentSecret = creds.AuthKeyString()
+	}
+
+	keys, err := c.AccountKeys()
+	switch {
+	case isNotFound(err):
+		// No identity key, so nothing to re-wrap and nothing to cross over.
+		// An ordinary password change, which is what an account that has never
+		// enrolled has.
+		revoked, err := c.postPasswordChange(currentSecret, next, "")
+		return next, revoked, err
+	case err != nil:
+		return "", 0, err
+	}
+
+	id, err := openIdentity(current, creds, keys)
+	if err != nil {
+		// The blob may already be under next, from an attempt that published
+		// and then failed to move the login secret.
+		id, err = openIdentity(next, store.Credentials{}, keys)
+		if err != nil {
+			return "", 0, fmt.Errorf("client: opening the identity key to re-wrap it: %w", err)
+		}
+	}
+
+	nextCreds, nextParams, err := c.rewrapIdentity(id, keys, next)
+	if err != nil {
+		return "", 0, err
+	}
+	authKey := nextCreds.AuthKeyString()
+	revoked, err := c.postPasswordChange(currentSecret, authKey, nextParams.String())
+	return authKey, revoked, err
+}
+
+// postPasswordChange is the request itself. params turns it into the
+// split-derivation crossover; empty leaves it an ordinary password change.
+func (c *APIClient) postPasswordChange(current, next, params string) (int, error) {
+	body := map[string]string{"current_password": current, "new_password": next}
+	if params != "" {
+		body["client_kdf_params"] = params
+	}
+	var result struct {
+		Revoked int `json:"revoked"`
+		// Set when the password changed but the sessions it should have signed
+		// out are still live. A success with a caveat, not a failure -- the
+		// server reports it as 200 for exactly that reason.
+		SessionsStillLive bool `json:"sessions_still_live"`
+	}
+	if err := c.doRequest("POST", "/api/silo/v1/auth/password", body, &result); err != nil {
+		return 0, err
+	}
+	return result.Revoked, nil
 }
 
 func (c *APIClient) emailOf() string {

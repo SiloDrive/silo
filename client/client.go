@@ -384,32 +384,44 @@ func (c *APIClient) Setup(email, password, setupToken string) error {
 // leaves the client holding the password that is now true; the next request
 // retries against it and succeeds. Swapping afterwards would strand the client
 // on a password the server has forgotten.
+// ChangePassword sets a new password on the signed-in account and reports how
+// many session credentials the server signed out.
+//
+// The current password is required even though the request is authenticated,
+// and the server is the one insisting: a credential handed to a device must not
+// be able to promote itself into the account. See api.ChangePasswordHandler.
+//
+// On an enrolled account this is more than a password change, and changeSecret
+// is where that lives: the identity key is wrapped under a key derived from the
+// password, so a change that told only the server would leave the account
+// holding a blob nothing it knows can open.
+//
+// The two things after the request are not tidying. The server revokes every
+// session credential, and the TUI holds one, so by the time this returns the
+// token that made the call is dead and the cached secret it would replay on the
+// resulting 401 is the one that no longer works. Swapping the cache and signing
+// in again is what keeps a successful change from presenting as being signed
+// out with a complaint about a password the caller just proved they knew.
+//
+// The order matters on the failure paths. The cache is swapped before the
+// re-login rather than after, so that a re-login which fails for its own
+// reasons -- the server restarting in the gap, a network that dropped -- still
+// leaves the client holding the secret that is now true; the next request
+// retries against it and succeeds. Swapping afterwards would strand the client
+// on a secret the server has forgotten.
 func (c *APIClient) ChangePassword(current, next string) (int, error) {
-	var result struct {
-		Revoked int `json:"revoked"`
-		// Set when the password changed but the sessions it should have
-		// signed out are still live. A success with a caveat, not a failure —
-		// the server reports it as 200 for exactly that reason.
-		SessionsStillLive bool `json:"sessions_still_live"`
-	}
-	if err := c.doRequest("POST", "/api/silo/v1/auth/password", map[string]string{
-		"current_password": current,
-		"new_password":     next,
-	}, &result); err != nil {
+	secret, revoked, err := c.changeSecret(current, next)
+	if err != nil {
 		return 0, err
 	}
-
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.password = next
-	// Nothing to sign back in as. A client driven by a token it was handed
-	// rather than by a login has no address to present, and it never had the
-	// automatic re-login either; the caller gets the count and the fact that
-	// its token is now spent.
-	if c.email == "" {
-		return result.Revoked, nil
+	c.password = secret
+	email := c.email
+	c.mu.Unlock()
+	if err := c.Login(email, secret); err != nil {
+		return revoked, fmt.Errorf("password changed, but signing back in failed: %w", err)
 	}
-	return result.Revoked, c.reloginLocked()
+	return revoked, nil
 }
 
 func (c *APIClient) ListLibraries() ([]Library, error) {

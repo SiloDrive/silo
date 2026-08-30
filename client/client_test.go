@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"github.com/dkam/silo/store"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -188,6 +189,16 @@ func TestChangingThePasswordLeavesTheClientSignedIn(t *testing.T) {
 		_ = json.Unmarshal(body, &req)
 
 		switch r.URL.Path {
+		case "/api/silo/v1/auth/kdf":
+			// A change now asks what this address derives under, because on an
+			// enrolled account it has an identity key to re-wrap. This account
+			// has none, so the answer only has to parse.
+			_, _ = w.Write([]byte(`{"kdf_params":"` +
+				store.DefaultKDFParams([store.KDFSaltSize]byte{1, 2, 3}).String() + `"}`))
+		case "/api/silo/v1/account/keys":
+			// No identity key, which is what makes this an ordinary password
+			// change rather than a re-wrap.
+			http.Error(w, "This account has published no identity key", http.StatusNotFound)
 		case "/api/silo/v1/auth/login":
 			if req["password"] != current {
 				http.Error(w, "Invalid password", http.StatusUnauthorized)

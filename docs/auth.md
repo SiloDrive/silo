@@ -611,6 +611,14 @@ account over in the same call; `client.OpenAccount` derives under the
 parameters `POST auth/kdf` serves and logs in with the `authKey`. An account
 enrolled by this client never sends its password to the server again.
 
+`client.ChangePassword` carries the identity key across. A new password is a
+new `wrapKey`, so the blob is re-wrapped under it and republished — with the
+recovery wraps passed through unchanged, since those seal the identity under a
+code rather than under the password — and only then does the login secret move.
+Neither order is atomic; that one leaves the account reachable with the
+password the caller still has, and a retry of the same call closes the window,
+because the identity is opened under either password.
+
 The derived key is tried first and the password second, because this endpoint
 will not say which kind an address is. That ordering is what makes the fallback
 safe: an account that has crossed over never sends its password, and one that
@@ -1193,13 +1201,10 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
 
 1. **Proof of possession** — public keys registered at enrolment, RFC 9421
    signatures on the Silo lane. Independent of OIDC; whichever is wanted first.
-2. **Migrating the accounts that predate the crossover.** Split-derivation
-   login is built on both sides, but an account only crosses over when a client
-   enrols it or changes its password — the server cannot do it in a batch,
-   because crossing over needs `master`, which it does not have. **argon2id
-   behind a concurrency semaphore** is moot for a crossed-over account —
-   `AccountPassword.hash` is a fast hash there, by the rule above — and still
-   wanted for the accounts that have not crossed.
+2. **argon2id behind a concurrency semaphore.** Moot for a crossed-over
+   account — `AccountPassword.hash` is a fast hash there, by the rule above —
+   and still wanted for the accounts that have not crossed: enrolment, link
+   redemption, and any account that has not yet been enrolled.
 3. **A persistent JWT signing key**, so a restart does not disconnect every
    watching client. Nothing but notification tokens depends on it. The
    `ServerSecret` table holds exactly this shape of value — a secret that is

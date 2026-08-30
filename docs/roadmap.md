@@ -188,11 +188,11 @@ parameters `auth/kdf` serves and logs in with the `authKey`. Argon2id behind a
 concurrency semaphore is moot for a crossed-over account and still wanted for
 the accounts that have not crossed.
 
-**What is left is migration.** An account crosses over when a client enrols it
-or changes its password, and no server-side batch can do it: crossing over
-needs `master`, which the server does not have. A password change on an
-enrolled account has to re-wrap the identity key at the same time, which is the
-one part of silo#13 not built here.
+An account crosses over when a client enrols it or changes its password, and no
+server-side batch can do it: crossing over needs `master`, which the server does
+not have. That is a property rather than a shortfall — an account created by
+`POST auth/setup` has no client to enrol it yet, so password login has to keep
+working, and the client tries the derived key first for exactly that reason.
 
 This is the gate on *offering* an E2EE client to a person, not on building
 one: item 8 can be built and tested before it and cannot ship before it.

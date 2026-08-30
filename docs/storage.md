@@ -746,10 +746,11 @@ what an operator reset does and does not touch — is
 [`auth.md`](auth.md) § Split-derivation login, on this side.
 
 An account crosses over when a client enrols it or changes its password, and
-never on the server's own initiative: crossing over needs `master`, which is
-the one value the server does not have. So accounts that predate the crossover
-stay on password login until a client moves them, and both shapes have to keep
-working for as long as any of them remain.
+never on the server's own initiative: crossing over needs `master`, which is the
+one value the server does not have. Until a client enrols it, an account logs in
+with its password — which is every account at the moment it is created, since
+`POST auth/setup` mints one before there is a client to enrol it. Both shapes
+have to keep working, and the client tries the derived one first.
 
 ## What Part 1 does not do
 
