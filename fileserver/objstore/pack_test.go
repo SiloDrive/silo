@@ -209,49 +209,6 @@ func TestASidecarThatIsNotOneIsRefused(t *testing.T) {
 	}
 }
 
-func TestTruncatingASidecarLeavesItReadableAndEmpty(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "p.idx")
-	s, err := createSidecar(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.append(indexEntry{ID: strings.Repeat("44", 32), Offset: 8, Length: 40}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.sync(); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.truncate(); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
-
-	// Still a sidecar, and empty — which is what the next pack starts from.
-	got, err := readSidecar(path)
-	if err != nil {
-		t.Fatalf("a truncated sidecar did not read back: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("a truncated sidecar holds %d records, want 0", len(got))
-	}
-
-	// And it appends from the header rather than from where it used to be.
-	next := indexEntry{ID: strings.Repeat("55", 32), Offset: 8, Length: 12}
-	if err := s.append(next); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.sync(); err != nil {
-		t.Fatal(err)
-	}
-	_ = s.close()
-	got, err = readSidecar(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0] != next {
-		t.Errorf("after truncate and append, read %+v, want just %+v", got, next)
-	}
-}
-
 // --- the pack -----------------------------------------------------------
 
 func TestAPackAppendsAndReadsBackEveryFrame(t *testing.T) {

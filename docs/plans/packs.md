@@ -1,6 +1,8 @@
 # Packs
 
-Status: **planned, not built.** Tracked as silo#17, milestone `packs`.
+Status: **steps 1 and 2 built** — the index, the sidecar, recovery, sealing
+and reading a sealed pack. Steps 3 to 5 are still ahead, and the loose store is
+still the write path. Tracked as silo#17, milestone `packs`.
 
 Owned by [`../storage.md`](../storage.md) § Packs, which is normative for the
 format and the sealing rules. This document owns the *build*: what order, what
@@ -68,9 +70,11 @@ fsyncs and renames for them.
 *Open pack, index in a sidecar beside it.* **Built.** Frames are appended to
 the pack. The index accumulates in a sidecar **in the same format the footer
 will use**, so there is one index writer, one parser and one thing to get
-right, serving the live index, the sealed footer, and recovery. Sealing appends
-the sidecar to the pack as its footer, fsyncs, publishes, and truncates the
-sidecar for the next pack.
+right, serving the live index, the sealed footer, and recovery. Sealing sorts the
+sidecar's records, appends them to the pack as its footer, fsyncs, and removes
+the sidecar — removes rather than empties, because a sidecar is named after its
+pack and pack ids are random, so there is no next pack to hand an emptied one
+to.
 
 Each byte is written once. The batch surface becomes 256 appends and one fsync.
 And `storage.md`'s existing model — "crash safety is append → fsync → atomic
@@ -99,20 +103,27 @@ to them instead of mapping one object to one degenerate "pack".
 ## Decision 3: the footer, and why it cannot be a header
 
 ```
-SILP  <version>                     magic, opening
+SILP  <version> <reserved×3>        magic, opening
 <frame> <frame> …                   SILF frames, appended in arrival order
-<index>                             sorted by id, fixed-width records
-<bloom filter> <bloom params>
-<footer length>                     fixed width, at a known offset from the end
+SILX  <version> <records>           the index, sorted by id, fixed-width
+SILB  <params> <bits>               the bloom filter
+<footer length> <index length>      fixed width, at a known offset from the end
 SILP                                magic, closing
 ```
+
+Two lengths, because the reader has to split the footer and neither section
+can say where it ends on its own: the index is a run of records with no count,
+and the filter's size is a function of a parameter stored at its start. Both
+go in the tail rather than in a section header, which is what keeps the index
+section byte-identical to a sidecar — the property the one-format argument
+rests on.
 
 A pack does not know its own frame offsets until the frames are written, so a
 header would need a second pass or reserved space to seek back into. Parquet
 reaches this layout from the same constraint. Two details are copied with it:
-the fixed-width length at a known offset from the end, so the footer is found
+the fixed-width lengths at a known offset from the end, so the footer is found
 in one seek; and **magic at both ends**, because a truncated pack is the normal
-crash case here and a missing tail magic says so in eight bytes.
+crash case here and a missing tail magic says so in four bytes.
 
 One object per pack rather than a pack plus a sidecar is what this buys on a
 tier: half the PUTs, half the LIST entries, and no way for the two to be
@@ -130,7 +141,7 @@ the same dead end that put optional bloom filters into Parquet for
 high-cardinality equality.
 
 So: one filter per sealed pack, in memory. "No" is certain; "yes" costs one
-binary search over an mmap'd index to confirm.
+binary search over that pack's index to confirm.
 
 **The rate is set against the pack count, and this is the part that is easy to
 get wrong.** A 512 MB pack holds ~500 chunks at a 1 MiB target, so 6 TB is
@@ -167,7 +178,7 @@ stays the write path until step 4.
 
 ### 1. The index format, the sidecar, and recovery
 
-First, because the sidecar is the centre of the design rather than an
+**Built.** First, because the sidecar is the centre of the design rather than an
 implementation detail: it is the live index, it becomes the footer, and it is
 what recovery reads. Getting its format settled first means steps 2 and 3 have
 nothing to invent.
@@ -179,13 +190,24 @@ append, after the sidecar fsync — and asserting the same store every time.
 
 ### 2. Sealing, the footer, and reading a sealed pack
 
-Append the sidecar as the footer, fsync, publish, truncate. Then read back: the
-footer is found from the tail, the index is mmap'd, every frame is where the
-index says. A crash mid-seal truncates and re-appends, which is idempotent
-because the sidecar is still the authority.
+**Built.** Sort the sidecar's records, append them as the footer, fsync, remove
+the sidecar. Then read back: the footer is found from the tail, the index is
+binary-searched in place, every frame is where the index says. A crash mid-seal
+truncates and re-seals, which is idempotent because the sidecar is still the
+authority — and *exact*, because sorting and the filter are deterministic, so
+the test compares a re-sealed pack byte-for-byte against an uninterrupted one.
+
+The filter is written here rather than in step 3, because it lives *in* the
+footer: writing the format now means step 3 adds a registry of filters rather
+than a second footer version.
+
+The index is read into memory rather than mmap'd. The search runs over raw
+bytes either way, so an mmap is one line when it is wanted — and what wants it
+is the resident-set question across twelve thousand packs, which is step 3's to
+answer with numbers rather than step 2's to guess at.
 
 Vectors for the sealed format land here, on the `-update` protocol
-`store/vectors_test.go` established.
+`store/vectors_test.go` established: `objstore/testdata/packfooter.json`.
 
 ### 3. Lookup, and reads through the pack layer
 

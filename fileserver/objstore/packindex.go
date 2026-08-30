@@ -127,17 +127,16 @@ type sidecar struct {
 	buf  [idxRecordSize]byte
 }
 
-// createSidecar starts a new one, replacing anything at the path. Sealing
-// truncates rather than deletes, so an existing file here is either a fresh
-// truncation or debris from a crash before one, and both want the same
-// treatment.
+// createSidecar starts a new one, replacing anything at the path. A sidecar is
+// named after its pack and a pack id is random, so nothing should be here —
+// anything that is, is debris from a crash before a seal finished, and
+// replacing it is the same answer recovery would give.
 func createSidecar(path string) (*sidecar, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	header := append([]byte(idxMagic), idxVersion)
-	if _, err := f.Write(header); err != nil {
+	if _, err := f.Write(indexHeader()); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -176,18 +175,6 @@ func (s *sidecar) append(e indexEntry) error {
 func (s *sidecar) sync() error  { return s.f.Sync() }
 func (s *sidecar) close() error { return s.f.Close() }
 
-// truncate empties the sidecar back to its header, which is what sealing does
-// to it once its records are safely inside the pack's footer.
-func (s *sidecar) truncate() error {
-	if err := s.f.Truncate(int64(idxHeaderSize)); err != nil {
-		return err
-	}
-	if _, err := s.f.Seek(int64(idxHeaderSize), io.SeekStart); err != nil {
-		return err
-	}
-	return s.f.Sync()
-}
-
 // readSidecar returns every complete record in a sidecar, in the order they
 // were appended.
 //
@@ -201,17 +188,25 @@ func readSidecar(path string) ([]indexEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(b) < idxHeaderSize {
-		return nil, fmt.Errorf("%w: %s is %d bytes, shorter than its header", ErrIndexCorrupt, path, len(b))
-	}
-	if string(b[:len(idxMagic)]) != idxMagic {
-		return nil, fmt.Errorf("%w: %s does not begin %q", ErrIndexCorrupt, path, idxMagic)
-	}
-	if b[len(idxMagic)] != idxVersion {
-		return nil, fmt.Errorf("%w: %s is version %d, and this build reads %d",
-			ErrIndexCorrupt, path, b[len(idxMagic)], idxVersion)
-	}
+	return parseIndex(b, path)
+}
 
+// parseIndex reads an index wherever it is: a sidecar file, or the index
+// section of a sealed pack's footer.
+//
+// One parser for both is the point of the format, so this is deliberately the
+// only place that knows what an index looks like. What differs between the two
+// callers is the order of the records — arrival order in a sidecar, id order in
+// a footer — and neither is checked here, because a sidecar has no order to
+// check and a footer's is checked by the search that relies on it failing to
+// find things.
+//
+// name is only for the error messages; it is a path for a sidecar and a pack
+// path for a footer.
+func parseIndex(b []byte, name string) ([]indexEntry, error) {
+	if err := checkIndexHeader(b, name); err != nil {
+		return nil, err
+	}
 	body := b[idxHeaderSize:]
 	n := len(body) / idxRecordSize
 	entries := make([]indexEntry, 0, n)
@@ -219,6 +214,27 @@ func readSidecar(path string) ([]indexEntry, error) {
 		entries = append(entries, decodeIndexRecord(body[i*idxRecordSize:]))
 	}
 	return entries, nil
+}
+
+// checkIndexHeader gates both readers on the magic and the version.
+func checkIndexHeader(b []byte, name string) error {
+	if len(b) < idxHeaderSize {
+		return fmt.Errorf("%w: %s is %d bytes, shorter than its header", ErrIndexCorrupt, name, len(b))
+	}
+	if string(b[:len(idxMagic)]) != idxMagic {
+		return fmt.Errorf("%w: %s does not begin %q", ErrIndexCorrupt, name, idxMagic)
+	}
+	if b[len(idxMagic)] != idxVersion {
+		return fmt.Errorf("%w: %s is version %d, and this build reads %d",
+			ErrIndexCorrupt, name, b[len(idxMagic)], idxVersion)
+	}
+	return nil
+}
+
+// indexHeader is the two bytes-worth of preamble every index carries, written
+// by whichever of the two writers is producing one.
+func indexHeader() []byte {
+	return append([]byte(idxMagic), idxVersion)
 }
 
 // sortedIndex returns the records ordered by id, which is the order a sealed

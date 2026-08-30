@@ -278,12 +278,8 @@ func recoverPack(objDir, libraryID, packID string) (*openPack, error) {
 	if _, err := io.ReadFull(f, header); err != nil {
 		return closeOnErr(fmt.Errorf("%w: %s is too short to hold a header", ErrPackCorrupt, packPath))
 	}
-	if string(header[:len(packMagic)]) != packMagic {
-		return closeOnErr(fmt.Errorf("%w: %s does not begin %q", ErrPackCorrupt, packPath, packMagic))
-	}
-	if header[len(packMagic)] != packVersion {
-		return closeOnErr(fmt.Errorf("%w: %s is version %d, and this build reads %d",
-			ErrPackCorrupt, packPath, header[len(packMagic)], packVersion))
+	if err := checkPackHeader(header, packPath); err != nil {
+		return closeOnErr(err)
 	}
 
 	indexed := int64(packHeaderSize)

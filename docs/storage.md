@@ -805,17 +805,23 @@ required.
 
 ### A sealed pack carries its own index, in a footer
 
-Magic, frames, index, bloom filter, a fixed-width length, magic again. A reader
-seeks to the end, reads the length out of a known offset, and seeks back — one
-ranged GET on a tier that has no local copy, or two if it does not guess the
-tail size generously enough.
+Magic, frames, index, bloom filter, two fixed-width lengths, magic again. A
+reader seeks to the end, reads the lengths out of a known offset, and seeks
+back — one ranged GET on a tier that has no local copy, or two if it does not
+guess the tail size generously enough.
+
+Two lengths rather than one because the reader has to split the footer, and
+neither section can say where it ends on its own: the index is a run of
+fixed-width records with no count, and the filter's size is a function of a
+parameter stored at *its* start. Putting both in the tail is what keeps the
+index section byte-identical to a sidecar.
 
 The footer is not a stylistic choice; it is the only place the index can go. A
 pack does not know its own frame offsets until the frames are written, so a
 header would need either a second pass or reserved space seeked back into.
 Parquet reaches the same layout from the same constraint, and the magic at both
 ends is worth copying with it: a truncated pack is the *normal* crash case
-here, not an exotic one, and a missing tail magic says so in eight bytes.
+here, not an exotic one, and a missing tail magic says so in four bytes.
 
 One object per pack rather than a pack and a sidecar is what this buys on a
 durable tier: half the PUTs, half the LIST entries, and no way for a pack and
@@ -830,11 +836,18 @@ accumulates in a sidecar file beside the pack, in **the same format the footer
 uses** — so there is one index writer, one parser, and one thing to get right,
 used for the live index, for the footer, and for recovery.
 
-Sealing appends the sidecar to the pack as its footer, fsyncs, publishes, and
-truncates the sidecar for the next pack. A crash part-way through is the same
-rule as any other: truncate to the last offset the sidecar indexes and re-do
-the step, which is idempotent because the sidecar is still the authority on
-what is in the pack.
+Sealing sorts the sidecar's records, appends them to the pack as its footer,
+fsyncs, and removes the sidecar. It is removed rather than emptied because a
+sidecar is named after its pack and pack ids are random, so there is no next
+pack to hand an emptied one to — and "a sidecar exists" is then an exact answer
+to "was this pack open", with no second piece of state anywhere to disagree
+with it.
+
+A crash part-way through is the same rule as any other: truncate to the last
+offset the sidecar indexes and re-do the step. That is idempotent because the
+sidecar is still the authority on what is in the pack, and it is *exact*,
+because sorting and the filter are both deterministic — the second attempt
+writes the bytes the first one would have.
 
 The ordering is load-bearing, for the reason the loose store's already is:
 append → fsync the pack → append the sidecar → fsync the sidecar → acknowledge.
@@ -852,8 +865,10 @@ fsyncs and renames.
 
 ### Finding the pack a chunk is in
 
-Per-pack indexes are sorted by id and mmap'd, so a lookup within a known pack
-is a binary search and never a round trip. What names the pack is a **bloom
+Per-pack indexes are sorted by id, so a lookup within a known pack is a binary
+search over raw records and never a round trip. Whether those records are held
+in memory or mmap'd is a resident-set decision rather than a format one — the
+search is the same either way. What names the pack is a **bloom
 filter per sealed pack**, held in memory: "no" is certain and ends the search,
 "yes" is a probability and costs one binary search to confirm.
 
