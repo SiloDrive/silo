@@ -1,8 +1,9 @@
 # Packs
 
-Status: **steps 1 and 2 built** — the index, the sidecar, recovery, sealing
-and reading a sealed pack. Steps 3 to 5 are still ahead, and the loose store is
-still the write path. Tracked as silo#17, milestone `packs`.
+Status: **steps 1 to 3 built** — the index, the sidecar, recovery, sealing,
+reading a sealed pack, and the lookup that serves every read verb out of one.
+Steps 4 and 5 are still ahead, and the loose store is still the *write* path,
+so nothing on disk is packed yet. Tracked as silo#17, milestone `packs`.
 
 Owned by [`../storage.md`](../storage.md) § Packs, which is normative for the
 format and the sealing rules. This document owns the *build*: what order, what
@@ -211,13 +212,37 @@ Vectors for the sealed format land here, on the `-update` protocol
 
 ### 3. Lookup, and reads through the pack layer
 
-Bloom filters over sealed packs, the open pack asked first from the in-memory
-sidecar. Then `ObjectStore.Read`/`ReadInto`/`ReadAt`/`Stat`/`Exists` served
-from packs, with `Stat` answering out of the index so it stays one lookup and
-no read.
+**Built.** Three places are asked in order: the open pack, from the index its
+writer already holds in memory; then every sealed pack, filter first; then the
+loose store. `Read`, `ReadInto`, `ReadAt`, `Stat` and `Exists` all go through
+it, and `Stat` answers out of the index, so it stays one lookup and no read.
 
-**The check that the invariant held: the existing `objstore` suite should pass
-against a pack-backed store, unchanged.**
+**The pack is asked before the loose store, and that ordering is load-bearing
+rather than an optimisation.** Ingest appends a frame to a pack and deletes the
+loose copy once the index is durable, so an object exists in both places at
+once, and the pack is the copy that will still be there afterwards. The test
+damages the loose copy so that reading it would fail, which is what stops the
+assertion passing by luck.
+
+**The invariant held**: the existing `objstore` suite passes unchanged.
+
+Three things this step settled that the plan had not:
+
+- **A sealed pack holds no file descriptor.** 6 TB is ~12,000 packs and the
+  default descriptor limit is about a thousand, so a pack is its footer in
+  memory plus a path, and a read opens, reads its range, and closes. The two
+  extra syscalls are nothing against the read, and it is the shape a ranged GET
+  against a tier has anyway, where there is no handle to hold.
+- **`List`, `Remove` and `RemoveLibrary` stay loose-only.** `Remove` of a
+  packed object is not a deletion at all — a sealed pack is immutable, so
+  reclaiming a frame inside one is compaction (silo#19). Those verbs move with
+  the write path in steps 4 and 5, not before it.
+- **Sealed packs are not behind the `storageBackend` seam yet.** They live in
+  `<library>/packs/`, beside the fan-out rather than in it, which is what keeps
+  the loose walk working untouched. Moving them into the fan-out — where a
+  sealed pack simply *is* what the backend stores, and a frame read becomes
+  `backend.readAt` — belongs with step 5, when loose objects stop existing and
+  `gc` stops walking the layout.
 
 ### 4. Seal on age and at shutdown, and packs become the write path
 

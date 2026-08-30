@@ -58,7 +58,6 @@ func TestASealedPackHandsBackEveryFrameItWasGiven(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openSealedPack: %v", err)
 	}
-	defer s.close()
 
 	if s.count() != len(ids) {
 		t.Fatalf("the sealed index holds %d records, want %d", s.count(), len(ids))
@@ -104,7 +103,6 @@ func TestASealedIndexIsSortedByID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.close()
 
 	got := s.entries()
 	for i := 1; i < len(got); i++ {
@@ -143,7 +141,6 @@ func TestASealedIndexHoldsEachIDOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.close()
 
 	if s.count() != 1 {
 		t.Fatalf("the sealed index holds %d records for one id, want 1", s.count())
@@ -202,7 +199,6 @@ func TestSealingAnEmptyPackIsStillASealedPack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening an empty sealed pack: %v", err)
 	}
-	defer s.close()
 	if s.count() != 0 {
 		t.Errorf("an empty pack holds %d records", s.count())
 	}
@@ -294,7 +290,6 @@ func TestAnInterruptedSealIsRedoneExactly(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the re-sealed pack does not open: %v", err)
 			}
-			defer s.close()
 			for _, id := range ids {
 				if _, ok := s.lookup(id); !ok {
 					t.Fatalf("%s did not survive the interrupted seal", id)
@@ -374,7 +369,7 @@ func TestASealedPackWithADamagedTailIsRefused(t *testing.T) {
 			c.damage(t, path)
 			s, err := openSealedPack(objDir, lib, packID)
 			if err == nil {
-				s.close()
+				_ = s
 				t.Fatalf("a pack with %s opened anyway", c.name)
 			}
 			if !errors.Is(err, ErrPackCorrupt) && !errors.Is(err, ErrIndexCorrupt) && !errors.Is(err, ErrBloomCorrupt) {
@@ -396,7 +391,6 @@ func TestASealedPackDoesNotHoldWhatWasNeverWrittenToIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.close()
 
 	for i := 0; i < 500; i++ {
 		var raw [32]byte

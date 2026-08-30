@@ -88,6 +88,10 @@ type ObjectStore struct {
 	// key is storage.key: what every object in this store is sealed under.
 	// See frame.go and key.go.
 	key []byte
+	// packs is the lookup: which pack, if any, holds an object. It sits above
+	// the backend rather than inside one, because the seam takes whole sealed
+	// packs and knows nothing about what is in them. See packstore.go.
+	packs *packStore
 	// initErr is why there is no backend or no key, if there is not. See New.
 	initErr error
 }
@@ -163,6 +167,7 @@ func New(confPath string, dataDir string, objType string) *ObjectStore {
 	}
 	obj.backend = backend
 	obj.key = key
+	obj.packs = newPackStore(TypeDir(dataDir, objType))
 	return obj
 }
 
@@ -226,6 +231,38 @@ func (s *ObjectStore) ReadInto(libraryID string, objID string, buf []byte) ([]by
 // dozen times and memcpys twice its own length before it is even decrypted —
 // and the size is already one syscall away.
 func (s *ObjectStore) object(libraryID string, objID string, dst []byte) ([]byte, error) {
+	frame, err := s.frame(libraryID, objID)
+	if err != nil {
+		return nil, err
+	}
+	// Everything in the store is a frame. Anything that is not is corruption,
+	// and openFrame says so — there is no reading of unsealed bytes here,
+	// because a store that holds any is one that must not have started.
+	return openFrame(s.key, objID, frame, dst)
+}
+
+// frame reads the sealed frame an object is stored in, from whichever of the
+// two places holds it.
+//
+// A pack is asked first. That order is not an optimisation — it is what makes
+// ingest safe to interrupt: ingest appends a frame to a pack and deletes the
+// loose copy once the index is durable, so an object can exist in both places
+// at once, and the pack is the copy that will still be there afterwards.
+//
+// The loose read is sized from stat and read in one pass rather than copied
+// into a growing buffer. The growth is not free at these sizes — a 4 MiB chunk
+// reallocates a dozen times and memcpys twice its own length before it is even
+// decrypted — and the size is already one syscall away. A packed read needs no
+// stat at all: the index already said how long the frame is.
+func (s *ObjectStore) frame(libraryID string, objID string) ([]byte, error) {
+	pack, e, ok, err := s.packs.find(libraryID, objID)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return pack.readFrameAt(e)
+	}
+
 	size, err := s.backend.stat(libraryID, objID)
 	if err != nil {
 		return nil, err
@@ -234,10 +271,7 @@ func (s *ObjectStore) object(libraryID string, objID string, dst []byte) ([]byte
 	if _, err := s.backend.readAt(libraryID, objID, frame, 0); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
-	// Everything in the store is a frame. Anything that is not is corruption,
-	// and openFrame says so — there is no reading of unsealed bytes here,
-	// because a store that holds any is one that must not have started.
-	return openFrame(s.key, objID, frame, dst)
+	return frame, nil
 }
 
 // ReadAt reads len(p) bytes of an object starting at off, with io.ReaderAt
@@ -382,6 +416,17 @@ func (s *ObjectStore) Stat(libraryID string, objID string) (int64, error) {
 	if err := s.ready(); err != nil {
 		return -1, err
 	}
+	// Out of the index when a pack holds it, which keeps this one lookup and
+	// no read — the same property the fixed-width frame header was built to
+	// give the loose store, arrived at the other way round.
+	_, e, ok, err := s.packs.find(libraryID, objID)
+	if err != nil {
+		return -1, err
+	}
+	if ok {
+		return e.plaintextLen(), nil
+	}
+
 	size, err := s.backend.stat(libraryID, objID)
 	if err != nil {
 		return -1, err
@@ -448,5 +493,9 @@ func (s *ObjectStore) RemoveLibrary(libraryID string) error {
 	if err := s.ready(); err != nil {
 		return err
 	}
+	// The cached packs go first. They are footers in memory and file paths,
+	// and keeping them past the deletion would leave this store answering
+	// reads out of files that are no longer there.
+	s.packs.forget(libraryID)
 	return s.backend.removeLibrary(libraryID)
 }

@@ -155,10 +155,17 @@ func dedupedIndex(sorted []indexEntry) []indexEntry {
 
 // sealedPack is a pack that will not change again: its frames, its index and
 // its filter, all in one file.
+//
+// It holds no file handle, and that is a budget decision rather than a
+// stylistic one. A 6 TB store is ~12,000 packs, and a process that kept one
+// descriptor per pack would want twelve thousand of them against a default
+// limit of about a thousand. So a sealed pack is data — the footer, in memory —
+// and a read opens the file, reads its range and closes it. The two extra
+// syscalls are nothing against the read itself, and it is the same shape a
+// ranged GET against a tier has, where there is no handle to hold at all.
 type sealedPack struct {
 	id   string
 	path string
-	f    *os.File
 
 	// index is the footer's index section with its header sliced off, so that
 	// it is exactly a run of records and record i starts at i*idxRecordSize.
@@ -171,8 +178,8 @@ type sealedPack struct {
 	bloom *bloomFilter
 }
 
-// openSealedPack reads a sealed pack's footer and leaves the file open for
-// reads.
+// openSealedPack reads a sealed pack's footer into memory. The file is closed
+// again before it returns; see sealedPack on why nothing holds it open.
 //
 // The read order is the one a tier can afford: the tail first, because on a
 // backend with no local copy it is one ranged GET, and everything else is
@@ -183,8 +190,8 @@ func openSealedPack(objDir, libraryID, packID string) (*sealedPack, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = f.Close() }()
 	closeOnErr := func(e error) (*sealedPack, error) {
-		_ = f.Close()
 		return nil, e
 	}
 
@@ -246,7 +253,7 @@ func openSealedPack(objDir, libraryID, packID string) (*sealedPack, error) {
 		return closeOnErr(fmt.Errorf("%s: %w", packPath, err))
 	}
 
-	return &sealedPack{id: packID, path: packPath, f: f, index: index, bloom: filter}, nil
+	return &sealedPack{id: packID, path: packPath, index: index, bloom: filter}, nil
 }
 
 // checkPackHeader gates a pack on its opening magic and version.
@@ -298,8 +305,13 @@ func (s *sealedPack) lookup(objID string) (indexEntry, bool) {
 
 // readFrameAt reads one frame out of the pack.
 func (s *sealedPack) readFrameAt(e indexEntry) ([]byte, error) {
+	f, err := os.Open(s.path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s from pack %s: %v", e.ID, s.id, err)
+	}
+	defer func() { _ = f.Close() }()
 	buf := make([]byte, e.Length)
-	if _, err := s.f.ReadAt(buf, e.Offset); err != nil {
+	if _, err := f.ReadAt(buf, e.Offset); err != nil {
 		return nil, fmt.Errorf("reading %s from pack %s: %v", e.ID, s.id, err)
 	}
 	return buf, nil
@@ -314,5 +326,3 @@ func (s *sealedPack) entries() []indexEntry {
 	}
 	return out
 }
-
-func (s *sealedPack) close() error { return s.f.Close() }
