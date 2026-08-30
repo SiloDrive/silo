@@ -42,7 +42,10 @@ const headAttempts = 10
 //
 // mtime is the file's own, in unix seconds -- it is preserved and is not the
 // time of this write. The parent directory must exist; MkdirAll makes one.
-func (l *EncryptedLibrary) WriteFile(p string, data []byte, mtime int64) (store.ID, error) {
+//
+// The new head is not returned because it is already known: a write updates
+// this library's cached head, so Head answers with it and costs nothing.
+func (l *EncryptedLibrary) WriteFile(p string, data []byte, mtime int64) error {
 	return l.WriteFrom(p, bytes.NewReader(data), mtime)
 }
 
@@ -52,14 +55,14 @@ func (l *EncryptedLibrary) WriteFile(p string, data []byte, mtime int64) (store.
 // batches, so what is held is one batch rather than one file. What is not
 // bounded is the chunk list, which is the manifest and has to be complete
 // before the manifest can be sealed.
-func (l *EncryptedLibrary) WriteFrom(p string, r io.Reader, mtime int64) (store.ID, error) {
+func (l *EncryptedLibrary) WriteFrom(p string, r io.Reader, mtime int64) error {
 	segs := segments(p)
 	if len(segs) == 0 {
-		return store.ID{}, errors.New("client: the root is not a file")
+		return errors.New("client: the root is not a file")
 	}
 	manifest, err := l.writeContent(r)
 	if err != nil {
-		return store.ID{}, err
+		return err
 	}
 	name := segs[len(segs)-1]
 	return l.mutate(segs[:len(segs)-1], false, func(sp *spine, now int64) error {
@@ -72,20 +75,21 @@ func (l *EncryptedLibrary) WriteFrom(p string, r io.Reader, mtime int64) (store.
 
 // MkdirAll creates a directory and any missing parents, and is content with
 // one that already exists.
-func (l *EncryptedLibrary) MkdirAll(p string) (store.ID, error) {
+func (l *EncryptedLibrary) MkdirAll(p string) error {
 	segs := segments(p)
 	if len(segs) == 0 {
-		return l.Root()
+		_, err := l.Root()
+		return err
 	}
 	return l.mutate(segs, true, func(sp *spine, now int64) error { return nil })
 }
 
 // Remove deletes one entry. A directory is removed with whatever it holds:
 // nothing else names those objects, and the next collection reclaims them.
-func (l *EncryptedLibrary) Remove(p string) (store.ID, error) {
+func (l *EncryptedLibrary) Remove(p string) error {
 	segs := segments(p)
 	if len(segs) == 0 {
-		return store.ID{}, errors.New("client: the root cannot be removed")
+		return errors.New("client: the root cannot be removed")
 	}
 	name := segs[len(segs)-1]
 	return l.mutate(segs[:len(segs)-1], false, func(sp *spine, now int64) error {
@@ -166,42 +170,42 @@ func (sp *spine) markChanged(i int) {
 //
 // segs names the directory the change acts on. create makes the missing part
 // of that path rather than refusing it.
-func (l *EncryptedLibrary) mutate(segs []string, create bool, apply func(*spine, int64) error) (store.ID, error) {
+func (l *EncryptedLibrary) mutate(segs []string, create bool, apply func(*spine, int64) error) error {
 	var last error
 	for attempt := 0; attempt < headAttempts; attempt++ {
 		head, root, err := l.at()
 		if err != nil {
-			return store.ID{}, err
+			return err
 		}
 		now := l.Now()
 
 		sp, err := l.openSpine(root, segs, create, now)
 		if err != nil {
-			return store.ID{}, err
+			return err
 		}
 		if err := apply(sp, now); err != nil {
-			return store.ID{}, err
+			return err
 		}
 		newRoot, err := l.publish(sp, now)
 		if err != nil {
-			return store.ID{}, err
+			return err
 		}
 		// Nothing changed: an already-existing MkdirAll, or a write of the
 		// bytes that were there. Publishing an empty commit would move the
 		// head and report every watcher a change that did not happen.
 		if newRoot == root {
-			return head, nil
+			return nil
 		}
 
 		commit, err := l.kr.SealCommit(&store.Commit{
 			Root: newRoot, Parents: []store.ID{head}, CreatedAt: now,
 		})
 		if err != nil {
-			return store.ID{}, err
+			return err
 		}
 		commitID := store.ObjectID(commit)
 		if err := l.c.PutObject(l.ID, commitID, commit); err != nil {
-			return store.ID{}, fmt.Errorf("client: storing the commit: %w", err)
+			return fmt.Errorf("client: storing the commit: %w", err)
 		}
 
 		switch err := l.c.PutHead(l.ID, commitID, head); {
@@ -209,7 +213,7 @@ func (l *EncryptedLibrary) mutate(segs []string, create bool, apply func(*spine,
 			l.mu.Lock()
 			l.head, l.root, l.haveHead = commitID, newRoot, true
 			l.mu.Unlock()
-			return commitID, nil
+			return nil
 		case errors.Is(err, ErrHeadMoved):
 			// Somebody else committed. The objects just written are not
 			// wasted -- they are addressed by content, so the rebuild reuses
@@ -218,10 +222,10 @@ func (l *EncryptedLibrary) mutate(segs []string, create bool, apply func(*spine,
 			last = err
 			l.Refresh()
 		default:
-			return store.ID{}, err
+			return err
 		}
 	}
-	return store.ID{}, fmt.Errorf("client: the head moved on %d attempts in a row: %w", headAttempts, last)
+	return fmt.Errorf("client: the head moved on %d attempts in a row: %w", headAttempts, last)
 }
 
 // openSpine reads the directories from the root down to segs, as copies that

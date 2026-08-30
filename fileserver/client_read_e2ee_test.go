@@ -41,7 +41,7 @@ func sealTree(t *testing.T, c *client.APIClient, acct *client.Account) tree {
 
 	// notes.txt inlines: under the threshold there are no chunks at all.
 	notes := []byte("the quick brown fox jumps over the lazy dog")
-	if _, err := w.WriteFile("notes.txt", notes, 1756339200); err != nil {
+	if err := w.WriteFile("notes.txt", notes, 1756339200); err != nil {
 		t.Fatalf("writing notes.txt: %v", err)
 	}
 
@@ -52,10 +52,10 @@ func sealTree(t *testing.T, c *client.APIClient, acct *client.Account) tree {
 	if _, err := rand.Read(big); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.MkdirAll("photos"); err != nil {
+	if err := w.MkdirAll("photos"); err != nil {
 		t.Fatalf("MkdirAll(photos): %v", err)
 	}
-	if _, err := w.WriteFile("photos/big.bin", big, 1756339200); err != nil {
+	if err := w.WriteFile("photos/big.bin", big, 1756339200); err != nil {
 		t.Fatalf("writing photos/big.bin: %v", err)
 	}
 

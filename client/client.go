@@ -163,6 +163,13 @@ func isNotFound(err error) bool {
 	return errors.As(err, &se) && se.Code == http.StatusNotFound
 }
 
+// asStatus unwraps err to the status the server answered with, if it answered
+// at all: a connection that never got a reply is not a status and must not be
+// mistaken for one.
+func asStatus(err error, out **StatusError) bool {
+	return err != nil && errors.As(err, out)
+}
+
 // doStream performs an authenticated request whose body is streamed rather than
 // buffered, and — like doRequest — re-logs in and retries once on a 401.
 //

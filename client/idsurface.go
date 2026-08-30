@@ -37,6 +37,15 @@ var ErrHeadMoved = errors.New("client: the head has moved")
 
 // doBytes performs an authenticated request whose response is raw bytes.
 func (c *APIClient) doBytes(method, path, contentType string, header http.Header, body []byte) ([]byte, error) {
+	out, _, err := c.doBytesHeaders(method, path, contentType, header, body)
+	return out, err
+}
+
+// doBytesHeaders is doBytes with the response headers, for the callers that
+// have to know what they were given -- a GET on the path surface answers a
+// listing or a file body at the same address, and only Content-Type says
+// which.
+func (c *APIClient) doBytesHeaders(method, path, contentType string, header http.Header, body []byte) ([]byte, http.Header, error) {
 	var newBody func() (io.ReadCloser, int64, error)
 	if body != nil {
 		newBody = func() (io.ReadCloser, int64, error) {
@@ -45,7 +54,7 @@ func (c *APIClient) doBytes(method, path, contentType string, header http.Header
 	}
 	resp, err := c.doStreamHeaders(method, path, contentType, header, newBody)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -54,13 +63,14 @@ func (c *APIClient) doBytes(method, path, contentType string, header http.Header
 		se := &StatusError{Code: resp.StatusCode, Status: resp.Status, Body: string(msg)}
 		switch resp.StatusCode {
 		case http.StatusNotFound:
-			return nil, fmt.Errorf("%w: %s", ErrNotFound, se)
+			return nil, resp.Header, fmt.Errorf("%w: %s", ErrNotFound, se)
 		case http.StatusPreconditionFailed:
-			return nil, fmt.Errorf("%w: %s", ErrHeadMoved, se)
+			return nil, resp.Header, fmt.Errorf("%w: %s", ErrHeadMoved, se)
 		}
-		return nil, se
+		return nil, resp.Header, se
 	}
-	return io.ReadAll(resp.Body)
+	out, err := io.ReadAll(resp.Body)
+	return out, resp.Header, err
 }
 
 // Object fetches one object -- a manifest, a directory or a commit -- exactly

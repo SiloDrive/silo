@@ -40,7 +40,7 @@ func TestAClientWritesAndReadsBackAnEncryptedLibrary(t *testing.T) {
 	lib.Now = func() int64 { return 2000 }
 
 	notes := []byte("the quick brown fox jumps over the lazy dog")
-	if _, err := lib.WriteFile("notes.txt", notes, 1000); err != nil {
+	if err := lib.WriteFile("notes.txt", notes, 1000); err != nil {
 		t.Fatalf("WriteFile(notes.txt): %v", err)
 	}
 
@@ -48,10 +48,10 @@ func TestAClientWritesAndReadsBackAnEncryptedLibrary(t *testing.T) {
 	if _, err := rand.Read(big); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lib.MkdirAll("photos"); err != nil {
+	if err := lib.MkdirAll("photos"); err != nil {
 		t.Fatalf("MkdirAll(photos): %v", err)
 	}
-	if _, err := lib.WriteFile("photos/big.bin", big, 1001); err != nil {
+	if err := lib.WriteFile("photos/big.bin", big, 1001); err != nil {
 		t.Fatalf("WriteFile(photos/big.bin): %v", err)
 	}
 
@@ -81,7 +81,7 @@ func TestAClientWritesAndReadsBackAnEncryptedLibrary(t *testing.T) {
 	}
 
 	// Rewriting a file replaces it rather than adding a second entry.
-	if _, err := lib.WriteFile("notes.txt", []byte("rewritten"), 1002); err != nil {
+	if err := lib.WriteFile("notes.txt", []byte("rewritten"), 1002); err != nil {
 		t.Fatalf("rewriting notes.txt: %v", err)
 	}
 	entries, err := lib.List("/")
@@ -101,15 +101,15 @@ func TestAClientWritesAndReadsBackAnEncryptedLibrary(t *testing.T) {
 // changes?since= then reports the whole library modified on every commit.
 func TestARewrittenDirectoryCarriesItsSaltForward(t *testing.T) {
 	lib, _ := writable(t)
-	if _, err := lib.MkdirAll("photos"); err != nil {
+	if err := lib.MkdirAll("photos"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lib.WriteFile("photos/one.txt", []byte("one"), 1000); err != nil {
+	if err := lib.WriteFile("photos/one.txt", []byte("one"), 1000); err != nil {
 		t.Fatal(err)
 	}
 	first := saltOf(t, lib, "photos")
 
-	if _, err := lib.WriteFile("photos/two.txt", []byte("two"), 1001); err != nil {
+	if err := lib.WriteFile("photos/two.txt", []byte("two"), 1001); err != nil {
 		t.Fatal(err)
 	}
 	if second := saltOf(t, lib, "photos"); second != first {
@@ -133,10 +133,10 @@ func saltOf(t *testing.T, lib *client.EncryptedLibrary, p string) [store.DirSalt
 func TestOnlyTheChangedDirectoryGetsANewMtime(t *testing.T) {
 	lib, _ := writable(t)
 	lib.Now = func() int64 { return 2000 }
-	if _, err := lib.MkdirAll("a/b"); err != nil {
+	if err := lib.MkdirAll("a/b"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lib.WriteFile("a/b/one.txt", []byte("one"), 1000); err != nil {
+	if err := lib.WriteFile("a/b/one.txt", []byte("one"), 1000); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,7 +144,7 @@ func TestOnlyTheChangedDirectoryGetsANewMtime(t *testing.T) {
 
 	// A second write, later, into a/b. Only b's entry list changes.
 	lib.Now = func() int64 { return 3000 }
-	if _, err := lib.WriteFile("a/b/two.txt", []byte("two"), 1001); err != nil {
+	if err := lib.WriteFile("a/b/two.txt", []byte("two"), 1001); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,7 +176,7 @@ func entryMtime(t *testing.T, lib *client.EncryptedLibrary, dir, name string) in
 // failure would drop a write whenever two devices were awake at once.
 func TestAWriterThatLosesTheHeadRebuildsAndRetries(t *testing.T) {
 	lib, acct := writable(t)
-	if _, err := lib.WriteFile("first.txt", []byte("first"), 1000); err != nil {
+	if err := lib.WriteFile("first.txt", []byte("first"), 1000); err != nil {
 		t.Fatal(err)
 	}
 
@@ -189,12 +189,12 @@ func TestAWriterThatLosesTheHeadRebuildsAndRetries(t *testing.T) {
 	if _, err := other.List("/"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lib.WriteFile("second.txt", []byte("second"), 1001); err != nil {
+	if err := lib.WriteFile("second.txt", []byte("second"), 1001); err != nil {
 		t.Fatal(err)
 	}
 
 	// other is now building on a head that is no longer the head.
-	if _, err := other.WriteFile("third.txt", []byte("third"), 1002); err != nil {
+	if err := other.WriteFile("third.txt", []byte("third"), 1002); err != nil {
 		t.Fatalf("the losing writer did not recover: %v", err)
 	}
 
@@ -228,7 +228,7 @@ func TestConcurrentWritersAllLand(t *testing.T) {
 				errs[i] = err
 				return
 			}
-			_, errs[i] = w.WriteFile(string(rune('a'+i))+".txt", []byte{byte('a' + i)}, 1000)
+			errs[i] = w.WriteFile(string(rune('a'+i))+".txt", []byte{byte('a' + i)}, 1000)
 		}(i)
 	}
 	wg.Wait()

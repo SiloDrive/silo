@@ -55,6 +55,7 @@ move replay and conflict-copy naming harder for each of them. Dropbox shipped
 |---|---|---|
 | **No search of any kind** | a client enumerates to find a name | designed in [`plans/search.md`](plans/search.md), parked |
 | **A big directory is still read whole server-side** | paging bounds the response and the client's loop, not the read: dirents are one JSON object addressed by the hash of all of them, so a range of one cannot be read without changing what a directory *is*. A level up, a Merkle diff is proportional to what changed and cannot be resumed part-way, so `changes` recomputes per page | store-level, much larger than it sounds, and nobody is asking |
+| **A plain write cannot carry the file's mtime** | `PUT entries/{path}` stamps the server's clock, so a tree uploaded to a plain library records every file as modified at upload time. The encrypted write path does not have this problem — the client builds the dirent — so the two halves of `client.LibraryFS` disagree on it | an mtime on the write, and the same on `?type=chunks`, the batch `create` op and `mkdir` |
 | **No compression negotiation** | chunks are stored as `storage.md` § Compression describes; nothing is negotiated per connection | see [`storage.md`](storage.md#compression) |
 
 ## What this is not

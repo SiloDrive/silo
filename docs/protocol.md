@@ -1240,6 +1240,13 @@ than branching on `e2ee` at each call site. The id-addressed surface is the
 same for both library types, so the E2EE implementation is also a complete
 plain-library implementation.
 
+`client.LibraryFS` is that interface in the reference client, and
+`Account.Open` is the one place the choice is made: the listing says whether a
+library is encrypted, and the answer is a handle that behaves the same either
+way. The one capability the two halves do not share is preserving a file's
+mtime through a write, which the path surface has no room for —
+[`protocol-gaps.md`](protocol-gaps.md).
+
 **Reading** is a walk down the object graph from the head:
 
 ```
