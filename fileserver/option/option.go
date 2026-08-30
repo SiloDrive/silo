@@ -306,12 +306,17 @@ func LoadFileServerOptions(configFile string) {
 	}
 
 	if section, err := config.GetSection("quota"); err == nil {
+		// Both of these say so when a value was given and could not be read.
+		// The parser can only answer InfiniteQuota, which is indistinguishable
+		// from "nobody configured one" -- so the difference is reported here,
+		// where the configured string is still in hand, rather than lost.
 		if key, err := section.GetKey("default"); err == nil {
-			quotaStr := key.String()
-			DefaultQuota = parseQuota(quotaStr)
+			DefaultQuota = parseQuota(key.String())
+			warnIfUnreadable("default", key.String(), DefaultQuota)
 		}
 		if key, err := section.GetKey("server"); err == nil {
 			ServerQuota = parseQuota(key.String())
+			warnIfUnreadable("server", key.String(), ServerQuota)
 		}
 		// A reserve that failed to parse falls back to the default rather than
 		// to none. parseQuota answers InfiniteQuota for anything it cannot
@@ -369,46 +374,77 @@ func parseFileServerSection(section *ini.Section) {
 	}
 }
 
+// parseQuota turns a configured size into bytes, and answers InfiniteQuota for
+// anything it cannot read.
+//
+// Normalised before it is read, because the failure of a strict parser here is
+// silent and points the wrong way: an operator writing the unit the way it is
+// usually written -- "900GB" -- got InfiniteQuota, which is to say no ceiling
+// at all. A quota that comes to be unenforced without anybody noticing is the
+// exact failure checkQuota's own comment says that code exists to prevent, and
+// it was reachable from the config file by pressing shift.
+//
+// A bare number is gigabytes, which is what the multiplier defaults to and is
+// kept for the installs that rely on it.
+//
+// InfiniteQuota for an unreadable value is still the only answer a parser can
+// give -- it cannot invent the number the operator meant -- so the callers
+// that would silently lose a limit say so instead. See LoadFileServerOptions.
+// warnIfUnreadable reports a ceiling that was configured and could not be
+// read, which is the one case where InfiniteQuota is not what the operator
+// asked for.
+//
+// A warning rather than a refusal: a server that would not start because of a
+// typo in a quota is worse than one that starts and says the quota is not in
+// force, and the second is what an operator can act on at three in the morning.
+func warnIfUnreadable(key, given string, parsed int64) {
+	if parsed == InfiniteQuota && strings.TrimSpace(given) != "" {
+		log.Warnf("[quota] %s = %q is not a size, so no %s ceiling is in force", key, given, key)
+	}
+}
+
 func parseQuota(quotaStr string) int64 {
-	var quota int64
-	var multiplier int64 = GB
-	if end := strings.Index(quotaStr, "kb"); end > 0 {
-		multiplier = KB
-		quotaInt, err := strconv.ParseInt(quotaStr[:end], 10, 0)
-		if err != nil {
-			return InfiniteQuota
+	s := strings.ToLower(strings.TrimSpace(quotaStr))
+
+	for _, unit := range []struct {
+		suffix string
+		size   int64
+	}{{"kb", KB}, {"mb", MB}, {"gb", GB}, {"tb", TB}} {
+		// end > 0 rather than >= 0: a string that is only a unit has no number
+		// in front of it and is not a size.
+		end := strings.Index(s, unit.suffix)
+		if end <= 0 {
+			continue
 		}
-		quota = quotaInt * multiplier
-	} else if end := strings.Index(quotaStr, "mb"); end > 0 {
-		multiplier = MB
-		quotaInt, err := strconv.ParseInt(quotaStr[:end], 10, 0)
-		if err != nil {
-			return InfiniteQuota
-		}
-		quota = quotaInt * multiplier
-	} else if end := strings.Index(quotaStr, "gb"); end > 0 {
-		multiplier = GB
-		quotaInt, err := strconv.ParseInt(quotaStr[:end], 10, 0)
-		if err != nil {
-			return InfiniteQuota
-		}
-		quota = quotaInt * multiplier
-	} else if end := strings.Index(quotaStr, "tb"); end > 0 {
-		multiplier = TB
-		quotaInt, err := strconv.ParseInt(quotaStr[:end], 10, 0)
-		if err != nil {
-			return InfiniteQuota
-		}
-		quota = quotaInt * multiplier
-	} else {
-		quotaInt, err := strconv.ParseInt(quotaStr, 10, 0)
-		if err != nil {
-			return InfiniteQuota
-		}
-		quota = quotaInt * multiplier
+		return scale(strings.TrimSpace(s[:end]), unit.size)
 	}
 
-	return quota
+	return scale(s, GB)
+}
+
+// scale multiplies a parsed number by its unit, and answers InfiniteQuota
+// rather than a wrong number when it cannot.
+//
+// The overflow check is the point. A quota too large to hold in an int64 is
+// not a large quota, it is a negative one, and everything downstream reads
+// anything at or below zero as no ceiling at all -- so the arithmetic silently
+// produces the opposite of what was configured. That is the same failure as
+// reading "900GB" as unlimited, reached by typing a big number instead of a
+// capital letter, and it is worth catching in the same place.
+//
+// user_quota_cmd.go's parseQuotaSize makes the same check for the same reason.
+// Two parsers for one job is a real duplication -- see silo#49 -- and this one
+// answers a sentinel where that one answers an error, which is why they are
+// not yet one function.
+func scale(digits string, unit int64) int64 {
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil || n < 0 {
+		return InfiniteQuota
+	}
+	if n > (1<<63-1)/unit {
+		return InfiniteQuota
+	}
+	return n * unit
 }
 
 func LoadJWTConfig() error {
