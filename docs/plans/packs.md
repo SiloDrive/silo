@@ -155,13 +155,27 @@ take `k` disjoint bit-ranges out of the 256 bits. Parameters go in the footer
 rather than being compiled in, so a later pack can choose differently without
 invalidating an earlier one.
 
-## Decision 5: packs are per library
+## Decision 5: packs are per store, not per library
 
 `removeLibrary` is the reason. It is a `RemoveAll` today and wants to stay
-cheap; packs shared across libraries would make deleting one library a
-compaction of every pack it touched. The cost is undersized packs on small
-libraries, which is what compaction merges — and what seal-on-age already
-accepts.
+cheap; packs shared across stores would make deleting one a compaction of every
+pack it touched — rewriting live frames and swapping them — so the cheapest
+operation here becomes one of the most expensive, at exactly the moment someone
+is trying to reclaim space.
+
+Two things fall out of it that would justify it on their own. **Dedup already
+does not cross stores**: objects live under `storage/<type>/<store-id>/`, so a
+chunk in two libraries is already two copies and a shared pack would not
+recover a byte. And **the lookup stays scoped** — a read names a store, so only
+that store's filters are asked rather than every filter in the installation.
+
+*Store* rather than *library* is the precise word, and the difference is real:
+`objmgr` passes `StoreID`, which for a virtual library is its origin's id. So a
+virtual library shares its origin's packs, which is right — it already shares
+that origin's dedup and its GC.
+
+The cost is undersized packs on small stores, which is what compaction merges —
+and what seal-on-age already accepts.
 
 ## Decision 6: the pack format is not in the spec
 
