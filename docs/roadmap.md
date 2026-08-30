@@ -208,10 +208,28 @@ sees the shape and not the names. It was built before item 7 deliberately: it
 gives the login change a consumer to test against, and `OpenAccount` is the one
 function both touch.
 
+**One thing in its scope did not land: nothing mints recovery codes.**
+`store/recovery.go` and the server side are both complete — the codes, the
+kind-2 wrap, the table, the redemption that leaves the rest of a set standing —
+and `GenerateRecoveryCode` has no caller outside a test, so no account holds
+any. Until that changes, a forgotten password and an operator reset are the
+same event: `silo user passwd` cannot re-wrap an identity key, because
+re-wrapping means unwrapping and that needs the old password, so the blob is
+left in place and unopenable.
+
+It belongs here rather than after, and the ordering is the argument: the code
+that generates an identity key is the code that should generate its recovery
+set. Built later, it arrives to a population of accounts holding no codes and
+needs a migration to give them some — which is the shape of problem this
+project keeps declining to create.
+
 Tracked: milestone `e2ee-client`, #6 (key bootstrap), #7
 (`CreateEncryptedLibrary`), #8 (read path), #9 (write path), #10 (one
-interface, two implementations), #11 (round-trip test). Porter's side:
-porter-fuse #1, #2; porter-macos #1.
+interface, two implementations), #11 (round-trip test), #32 (recovery codes,
+not built). Porter's side: porter-fuse #1, #2; porter-macos #1 — each an
+independent implementation against
+[`spec/store-format.md`](spec/store-format.md), so each reproduces the kind-2
+wrap rather than inheriting it, and none of that is actionable before #32.
 
 #### 9. Sharing an encrypted library
 
