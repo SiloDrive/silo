@@ -23,7 +23,7 @@ POST /api/silo/v1/libraries/{id}/sync-token   Authorization: Bearer …   → {"
 GET  /repo/{id}/jwt-token                 <library-token header>: …  → {"jwt_token":…}
 ```
 
-`porter-brief.md` is upfront that this is history: the notification endpoint
+`protocol.md` § Writing a client is upfront that this is history: the notification endpoint
 predates the Silo lane and authenticates the way the upstream client does.
 Porter implements it exactly as documented, and it works — verified against a
 live 0.4.2, push landing in tens of milliseconds.
@@ -199,7 +199,7 @@ added, as predicted.
 
 `expires_at` ships as a number. The hazard this document raises about that is
 now its own note, `adding-a-number-to-a-token-response-breaks-clients.md` in
-`docs/bugs/fixed/`, and `porter-brief.md` warns the next client author in the place
+`docs/bugs/fixed/`, and `protocol.md` § Push warns the next client author in the place
 they will be reading when it matters.
 
 **Tests** (`fileserver/api/notify_test.go`) cover the handler's four exits and,
@@ -215,6 +215,6 @@ A stranger and an absent library both answer 403, matching
 `CreateAccessTokenHandler`, so the endpoint cannot be used to probe for valid
 library ids.
 
-**Documented** in `docs/protocol.md` and `docs/porter-brief.md`, where the
+**Documented** in `docs/protocol.md` (the reference, and § Push under *Writing a client*), where the
 two-call legacy recipe has been replaced by the one call and demoted to a
 paragraph about older servers.

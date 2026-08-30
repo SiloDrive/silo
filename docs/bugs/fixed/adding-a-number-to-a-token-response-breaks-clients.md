@@ -7,7 +7,7 @@ was a Silo change, and because the same trap is waiting for the next field
 added to any response an existing client already parses.
 
 This is not a Silo defect. `expires_at` is right and it has shipped. This is
-the note `porter-brief.md` points a client author at, so that the next one does
+the note `protocol.md` § Writing a client points a client author at, so that the next one does
 not walk into it.
 
 ## What happened

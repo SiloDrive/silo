@@ -253,7 +253,7 @@ if it holds, the quota surfaces in two other places instead:
   Provider the write has already been accepted into the local replica and the
   refusal arrives during upload, so it has to become a user-visible item state
   rather than an error return — the file stays, marked, with an actionable
-  message. `porter-brief.md` already says 507 is a user-facing condition and not
+  message. `protocol.md` § Size and quota already says 507 is a user-facing condition and not
   a transport error; this is what that means in practice.
 
 ### Refreshing
@@ -384,7 +384,7 @@ on describing the world it replaced.
 | `fileserver/chunks.go`, the delta comment | "must never reach quota, which is logical size at head" |
 | `LibraryUsage` in `fileserver/dbutil/schema.go` | the table comment |
 | `objmgr.Usage`, `fileserver/objmgr/measure.go` | what `Usage` is |
-| `docs/porter-brief.md` § `account/usage` | the wire contract clients are written against |
+| `docs/protocol.md` § Size and quota | the wire contract clients are written against |
 | [`docs/roadmap.md`](roadmap.md) | the roadmap entry |
 | [`docs/storage.md`](storage.md) § What the numbers mean | "cutting history reclaims disk, never quota" |
 | `TestDeletingAFileMakesRoomImmediately`, `fileserver/quota_test.go` | the test pinning "freeing space makes room" |

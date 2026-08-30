@@ -45,7 +45,7 @@ because a client author has to grep for it.
 | if you are | read |
 |---|---|
 | running a server | the [`README`](../README.md), then [`backup.md`](backup.md) |
-| writing a client | [`protocol.md`](protocol.md) → [`porter-brief.md`](porter-brief.md) → [`responses.md`](responses.md) |
+| writing a client | [`protocol.md`](protocol.md) → [`responses.md`](responses.md) |
 | changing the server | [`notes.md`](notes.md), then [`storage.md`](storage.md) and [`responses.md`](responses.md) for what binds a change |
 | choosing a status code | [`responses.md`](responses.md). Before writing the handler, not after |
 | deciding what to build next | [`roadmap.md`](roadmap.md), then the plans below |
@@ -54,9 +54,8 @@ because a client author has to grep for it.
 
 | file | what it covers |
 |---|---|
-| [`protocol.md`](protocol.md) | **current.** Every HTTP endpoint, grouped by lane, plus what is deliberately not implemented. The contract with the clients |
+| [`protocol.md`](protocol.md) | **current.** Every HTTP endpoint, plus what is deliberately not implemented, plus — under *Writing a client* — the guidance a client author needs that the endpoint table does not say: quota arithmetic, the `412` inside `modifyItem`, the E2EE client shape, `.history/`, the request inventory. The single contract with the clients |
 | [`responses.md`](responses.md) | **current.** What each status code means, and which are already spoken for. The registry that stops two handlers giving one code opposite meanings |
-| [`porter-brief.md`](porter-brief.md) | **current.** The wire contract for a native client, with responses captured from a running server |
 | [`notes.md`](notes.md) | **current.** Architecture: where the code came from, what the packages are, the storage layout, the data model |
 | [`backup.md`](backup.md) | **current.** Why `cp silo.db` is not a backup, the order the two halves are captured in, restore and verification |
 | [`error-reporting.md`](error-reporting.md) | **current.** Sentry-compatible error reporting: what is sent, how issues group, how to turn it off |
@@ -69,7 +68,7 @@ because a client author has to grep for it.
 |---|---|
 | [`auth.md`](auth.md) | **current and plan, in one file, split down the middle.** Part 1 describes the credential model as it runs — the token format, the one `Resolve`, the permission ceiling, password enrolment — and is normative: if the code disagrees with it, one of them is a bug. Part 2 is designed and not built — proof of possession, Argon2id, OIDC — and ends with what is left, in order. The account key material and the single-use setup token it used to list as unbuilt have both landed |
 | [`roadmap.md`](roadmap.md) | **plan.** What is built, what is next, and what each thing waits on. It owns **ordering and dependency only** and links to the document that owns each design — where it and an owning document disagree, the owning document wins |
-| [`protocol-gaps.md`](protocol-gaps.md) | **plan.** What the Silo lane would need to be an ideal protocol for a Dropbox-shaped client, ranked, with the reasoning attached |
+| [`protocol-gaps.md`](protocol-gaps.md) | **plan.** What the Silo lane still lacks for a Dropbox-shaped client — a delta for wholesale-rewritten files, stable per-file identity, search — ranked, with the reasoning attached. What exists is in `protocol.md`, not here |
 | [`encryption.md`](encryption.md) | **plan.** Why the inherited encrypted-library format was not adopted, and the sketch of the end-to-end scheme that replaces it. Also the list of things not to build |
 | [`protocol-frontends.md`](protocol-frontends.md) | **plan.** A survey of what else could front the same store — WebDAV, S3, SFTP — and what each costs |
 | [`spec/store-format.md`](spec/store-format.md) | **specification, complete.** The normative byte-level contract between the Go `store/` package and porter-mac's Swift port — ids, chunking, the manifest/directory/commit codecs, the content crypto, AES-SIV names and key wrapping. Test vectors live beside it in `store/testdata/vectors`; a port is conforming when it reproduces them |

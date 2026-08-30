@@ -6,11 +6,11 @@ HTTP endpoints the Go fileserver implements.
 **The legacy sync lane — `/repo/*`, `/api2/*`, `/api/v2.1/*`,
 `/files/{token}/*` and their prefixed variants — was deleted in `5d4baa0` (0.5.0).** Every
 one of those paths answers 404 now; nothing here still stubs or shims them.
-See [`docs/target.md`](target.md) for why, and
-[`porter-brief.md`](porter-brief.md#the-legacy-lanes-are-gone) for the
-one-paragraph version. This document now covers the one lane that remains.
+See [`docs/target.md`](target.md) for why. This document covers the one lane
+that remains.
 
-It says which endpoints exist. For what the *status codes* mean — and which are
+It says which endpoints exist, and — under [Writing a client](#writing-a-client)
+at the end — what a client built on them has to get right. For what the *status codes* mean — and which are
 already spoken for — see [`responses.md`](responses.md), which is the file to
 check before a new handler picks one. For what a client would want that is *not*
 here, and why, see [`protocol-gaps.md`](protocol-gaps.md).
@@ -23,13 +23,9 @@ decide whether to shim it.
 
 | if you are | read |
 |---|---|
-| writing a new client | the Silo lane below, then [`porter-brief.md`](porter-brief.md) for the wire contract with captured responses |
+| writing a new client | the endpoint reference below, then [Writing a client](#writing-a-client), then [`responses.md`](responses.md) |
 | choosing a status code for a new handler | [`responses.md`](responses.md). Always, and before you write the handler |
 | wondering why something is missing | [`protocol-gaps.md`](protocol-gaps.md) |
-
-Audience-shaped documents are the *briefs* — `porter-brief.md` is one, written
-for someone building a File Provider extension. A brief names a subset and the
-traps in it, and links here rather than restating.
 
 ## Tested clients
 
@@ -210,7 +206,7 @@ a scoped credential reaches its own library's key and no other.
 JSON request/response bodies. Used by the silo TUI, the CLI in `client/`, and
 the sync clients. Protected by `RequireCredential`, except the four marked
 **No auth** below — they are registered above the authenticated subrouter
-(`fileserver/server.go:555`) because they are what a client needs *before* it
+(`NewServer` in `fileserver/server.go`) because they are what a client needs *before* it
 has a credential: one to learn what it is talking to, one to get the parameters
 that turn a password into what it sends, one to get a token, and one to create
 the first account on a server that has none. `auth/logout`
@@ -228,25 +224,28 @@ is registered there too, but is authenticated: see the lane note above.
 | GET | `/api/silo/v1/account/keys` | The account's published X25519 public key, its wrapped identity private key, its recovery wraps and its `kdf_params`. `404` before anything is published. Readable with a `perm: "r"` credential |
 | PUT | `/api/silo/v1/account/keys` | Publish all of it, replacing what was there. Needs `rw`. `400` names the specific refusal — every one is a client bug whose symptom otherwise appears on a device months later |
 | DELETE | `/api/silo/v1/account/keys/recovery/{n}` | Redeem one recovery wrap; the rest of the set stands. Needs `rw`. `404` if that ordinal is already spent |
+| GET | `/api/silo/v1/account/usage` | `{"usage": n, "quota": n, "kind": "logical-at-head"}` — the account's total. `quota` is absent when there is no ceiling. Feature name `usage`; per-library `size` and `file_count` are on the libraries listing, not here. See [Size and quota](#size-and-quota). `AccountUsageHandler` in `fileserver/api/api.go` |
 | GET | `/api/silo/v1/libraries` | List the caller's libraries — owned, plus any shared directly to them through `SharedLibrary` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |
 | POST | `/api/silo/v1/libraries` | Create a new library. `{"name":…}` for a plain one; add `"e2ee": true` and the four fields above for an encrypted one |
 | GET | `/api/silo/v1/libraries/{libraryid}/key` | The library's content key, wrapped to the calling account. `404` on a plain library, and on an encrypted one nobody has shared with you |
 | DELETE | `/api/silo/v1/libraries/{libraryid}` | Delete a library |
 | PATCH | `/api/silo/v1/libraries/{libraryid}` | `{"name":"New name"}` — rename a library. `PATCH` because the body names only what changes |
 | POST | `/api/silo/v1/libraries/{libraryid}/batch` | `{"ops":[…]}` — many operations, one commit. See the batch surface below |
+| GET | `/api/silo/v1/libraries/{libraryid}/commits` | `{"commits":[{id, created_at, author?, message?},…]}`, newest first. Pages with `?limit=`. `author` and `message` are absent under E2EE. The list ends where history ends — a collected commit stops the walk rather than erroring. `CommitsHandler` in `fileserver/api/history.go` |
 | POST | `/api/silo/v1/libraries/{libraryid}/notify-token` | Mint a notification JWT for `WS /notification` (72h; `404` if notifications are disabled) |
 
 #### The entries surface
 
 One addressable noun with the HTTP methods as its verbs. This is what new
-clients speak, and what `client/` speaks; the wire contract with captured
-responses is in [`porter-brief.md`](porter-brief.md), and the status codes are
-in [`responses.md`](responses.md).
+clients speak, and what `client/` speaks; the traps are under
+[Writing a client](#writing-a-client), and the status codes are in
+[`responses.md`](responses.md).
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Read a file's bytes, or list a directory. Ranged; `ETag`/`304` |
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=manifest` | The file's manifest — the same object `objects/{id}` serves, reachable with a path-scoped credential. See the chunk surface below |
+| GET, HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}?at={commit}` | The same read, resolved against that commit's tree instead of the head's. `400` if `at` is not a commit id or is sent with `PUT`, `POST` or `DELETE` — history refuses writes rather than silently taking them; `410` if the commit is no longer reachable; `404` if the path is absent in that commit. `rootFor` in `fileserver/entries.go` |
 | HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | The same headers as `GET`, no body. On a directory `Content-Length` is the size of the listing, not of its contents |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Store a file — body is the content |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter) |
@@ -428,26 +427,21 @@ A commit naming a chunk the server does not hold is `424 Failed Dependency`,
 with the missing ids in the body. It is not `400`: the request is not wrong and
 the identical one succeeds once the chunks are up.
 
-Encrypted libraries are excluded (`400`). Their chunks are ciphertext, so a
-client cannot name one without performing the encryption itself; `PUT` of the
-file content still works there, and the server encrypts from the cached key.
+A path-addressed write on an encrypted library — `PUT entries/{path}` with
+content or with `?type=chunks`, and a `create` inside `batch` — answers `403`
+with a body naming the id-addressed surface (`errE2EEWriteByID` in
+`fileserver/commit.go`). The server holds no content key there, so it cannot
+chunk what it is given or name the entry; the client seals the chunks and
+writes the objects itself. See [The E2EE client shape](#the-e2ee-client-shape).
 
-Edits in the middle of a file are cheap, and this is the paragraph that used to
-say the opposite. Chunking is `fastcdc-gear64/v1` (`store/params.go`) —
-content-defined, 256 KiB minimum, 1 MiB target, 4 MiB maximum. An edit shifts
-the boundaries around it and the rolling hash re-syncs within a chunk or two, so
-a change in the middle of a 1 GB file re-transfers single-digit megabytes rather
-than the file. Appends and unchanged regions cost nothing, as before.
+Edits in the middle of a file are cheap. Chunking is `fastcdc-gear64/v1`
+(`store/params.go`) — content-defined, 256 KiB minimum, 1 MiB target, 4 MiB
+maximum. An edit shifts the boundaries around it and the rolling hash re-syncs
+within a chunk or two, so a change in the middle of a 1 GB file re-transfers
+single-digit megabytes rather than the file. Appends and unchanged regions cost
+nothing.
 
-The claim this replaces — that a byte inserted near the front reshapes every
-boundary after it and nothing dedups — was true of the fixed offsets this
-surface started with, and stopped being true when store-v2 landed
-content-defined chunking. It is worth naming as a correction rather than
-silently deleting: a client author who read it would reasonably have decided the
-chunk surface was not worth implementing for edit-heavy content, which is the
-workload it helps most.
-
-What remains true is narrower. Dedup depends on both sides cutting at the same
+Two limits remain. Dedup depends on both sides cutting at the same
 places, so a client that uploads without reading the library's `chunker`
 parameters produces ids that match nothing already stored — see above. And no
 amount of chunk negotiation helps a file whose bytes are rewritten wholesale on
@@ -521,11 +515,13 @@ sent, so the pair is also the receipt — a client that gets a smaller total has
 found a server it cannot reason about and should not go on to name those ids in
 an entry.
 
-At most **256 chunks** and **256 MiB** in one request, whichever binds first. A
-library chunking at the format's 4 MiB maximum therefore reaches the size limit
-at 64 frames rather than the count limit at 256, which is the intended
-behaviour: the limit that binds should be whichever comes first, and a client
-batching by bytes never meets either.
+At most **256 chunks** and **256 MiB** in one request, whichever binds first,
+and over either is `413` (`maxUploadChunks` and `maxUploadBody` in
+`fileserver/chunks_upload.go`) — the request was too large, and the fix is to
+split it. A library chunking at the format's 4 MiB maximum therefore reaches
+the size limit at 64 frames rather than the count limit at 256, which is the
+intended behaviour: the limit that binds should be whichever comes first, and a
+client batching by bytes never meets either.
 
 Three refusals are worth stating because each is a decision:
 
@@ -742,8 +738,8 @@ for every request and flags 404s as `WARN`. Off by default.
 Anything outside `/api/silo/v1/*` and `/notification` is a 404, including
 every path listed in older revisions of this document under the
 legacy sync lane — see the note at the top. That includes
-`/protocol-version` itself: `handleProtocolVersion` (`server.go:577`) still
-exists but nothing mounts it, so it's dead code rather than a live route.
+`/protocol-version` itself: `handleProtocolVersion` in `fileserver/server.go`
+still exists but nothing mounts it, so it's dead code rather than a live route.
 
 ## Divergence policy
 
@@ -751,3 +747,614 @@ We track our own **protocol**, not any upstream codebase. When
 `/api/silo/v1` gains an operation, it lands here in the same commit — see
 [`docs/plan.md`](plan.md) for the migration record and
 [`docs/target.md`](target.md) for what this server is aiming at now.
+
+## Writing a client
+
+The reference above says what each call does. This part says what a client
+built on it has to get right — the things the wire does not say, ordered
+roughly as a client meets them. The status codes are in
+[`responses.md`](responses.md); nothing here restates a table.
+
+### Start with `features`, not the version
+
+`GET server-info` is the first request, before any credential exists. Branch on
+a name in `features`, never on a version range and never by probing behaviour:
+a name is added in the release its capability ships and is never removed or
+reused, so `has("entries-copy")` stays a safe question forever, and an older
+server that sends no list reads as "no features", which is the correct answer
+— absent means do not call it. `notifications` is the one name that depends on
+how the server was started rather than on which build it is; seeing it is how
+a client knows to mint a `notify-token` instead of learning from a `404`.
+
+`version` is semver with no leading `v`. A build from an untagged or dirty tree
+keeps its suffix — `0.5.0-3-gabc1234`, `0.5.0-dirty` — so parse the leading
+`major.minor.patch` and ignore the rest, and strip a leading `v` anyway; it
+costs one line and turns a silent failure into a clear one.
+
+### The credential on the device
+
+Ask for a `device` credential at domain setup, not a session: it lasts 90 days
+against 24 hours and carries the label an operator revokes by. Call
+`POST auth/logout` when the user removes the account, or the credential stays
+live for the rest of its 90 days on a machine that has stopped using it.
+
+**Do not architect around a password at rest.** Re-presenting the password on
+a `401` is what works today, and it is also what
+[`auth.md`](auth.md#proof-of-possession) and
+[`storage.md`](storage.md)'s split derivation go on to remove: the password
+becomes an enrolment credential, presented once and discarded, and the identity
+key in the platform key store is what a device holds. Keep the credential
+behind a narrow interface — something that answers *authenticate this request*,
+not *give me the password* — so the swap is a new implementation rather than
+an unwind.
+
+If several requests are in flight when a credential expires they all `401` at
+once. Collapse that into one re-login rather than a stampede; `client/` does it
+by recording which token a caller observed and re-logging in only if it has not
+already been replaced.
+
+### Paths on the wire
+
+`{path}` is part of the URL, not a query parameter. Escape it **per segment**:
+separators must survive as separators or the route stops matching, and
+everything else must be escaped or a file named `awkward name?.txt` truncates
+the request at the `?`. In Swift, build it with `URLComponents` and set `path`
+(not `string`), or percent-encode each component with a character set that
+excludes `/`. Do not use a query-string escaper: it encodes a space as `+`,
+which is wrong in a path.
+
+Prefer `?type=dir` to a trailing slash for the same reason. `path.Join`,
+`path.Clean` and `url.PathEscape` all lose or mangle the slash, proxies
+normalise it, and a bare `PUT` that has lost its marker stores an empty *file*
+— silently, with a `201`. A query parameter survives all of that and says the
+same word `type` that the listing says back.
+
+The library root cannot be moved or deleted (`400`), and creating it is a
+`409`. Deleting a library is `DELETE libraries/{libraryid}`, a different
+operation from emptying one.
+
+### An id is not an identity
+
+A directory listing:
+
+```json
+[
+  {"name":"a.txt", "type":"file",
+   "id":"f7eef0341b337c218dce12bb06c55e52bf98f863a0a749097682016e3ae84cb1",
+   "size":2,"mtime":1787578220},
+  {"name":"empty", "type":"dir",
+   "id":"fb50dc0717ff266cf9baf82b1ce7a1c2ef6d9247859680b11a19fb7077f5f222",
+   "mtime":1787578220},
+  {"name":"sub",   "type":"dir",
+   "id":"fb50dc0717ff266cf9baf82b1ce7a1c2ef6d9247859680b11a19fb7077f5f222",
+   "mtime":1787578220}
+]
+```
+
+Those are the only keys: a file row carries `id`, `mtime`, `name`, `size` and
+`type`; a directory row the same without `size`. Pinned by a test, so the
+example and the wire cannot drift apart.
+
+**Two of those rows share an id, and that is the format working.** `empty` and
+`sub` are both empty directories, so they are the same object. An id names
+content, never an item: two paths holding identical bytes share one, and a
+file edited back to its previous content returns to the id it had. If you need
+a handle that survives a rename and stays distinct between two identical files
+— and macOS requires exactly that — the id cannot be it. Keep your own mapping.
+As a *cache* key it is not merely safe but ideal, since two identical objects
+sharing one entry is the point.
+
+Objects are typed, so an empty directory and a zero-byte file hash
+differently; there is no sentinel id for either, and a client should carry no
+constant for one. An empty library's root listing reports the empty
+directory's id as its `ETag`, because the root *is* an empty directory —
+consistent rather than special.
+
+### `HEAD`, and how to get attributes cheaply
+
+`HEAD entries/{path}` on a **file** gives `getattr` everything it needs:
+`Content-Length` is the size, `Last-Modified` the mtime, `ETag` the content
+hash. On a **directory** `ETag` and `Last-Modified` are correct but
+**`Content-Length` is the size of the listing JSON**, not of the directory.
+Never take a size from a directory `HEAD`. The library root has no dirent of
+its own, so it carries an `ETag` and no `Last-Modified`.
+
+Two things matter more than `HEAD` itself:
+
+- **`HEAD` on a directory is not cheaper than `GET`.** The listing is still
+  built; only the body is discarded. What makes it cheap is `If-None-Match`,
+  which answers `304` before any of that work happens.
+- **Do not `HEAD` each child to populate attributes.** The parent's listing
+  already carries `name`, `type`, `id`, `size` and `mtime` for every entry, so
+  one readdir fills the whole attribute cache. Revalidate the parent with
+  `If-None-Match` and N `HEAD`s collapse into one conditional `GET` that
+  usually `304`s.
+
+Every `GET` and `HEAD` sets `ETag: "v1-{id}"`. Send it back as `If-None-Match`
+and an unchanged object answers `304` having read no chunks — the check costs
+one dirent lookup in the parent. This is the cheapest question in the API; ask
+it often. Treat the whole quoted string as opaque and never parse the id out of
+it: the `v1-` prefix versions the representation, and it changes if the listing
+JSON ever changes shape, which is exactly what stops a client validating a
+cache entry against a body format that no longer exists. The id maps straight
+into `NSFileProviderItemVersion.contentVersion`.
+
+### What a write hands back, and how to check it
+
+A `PUT` answers `201` with the new `ETag` and a body naming the entry:
+
+```json
+{"id":"b8d0fa06c1e4a2f7d9b3e5c8a1f4d7b0e3c6a9f2d5b8e1c4a7f0d3b6e9c2a5f8","name":"greeting.txt","size":14,"type":"file"}
+```
+
+**That id is the file's manifest id, not a hash of the bytes you sent.** A
+client that hashes as it uploads computes the wrong thing and mismatches on
+every file, including the ones that transferred perfectly — so do not read a
+mismatch as corruption until the check itself is right.
+
+Computing it means building the manifest, which a client holding `store/` can
+do: chunk the content under the library's **own** `chunker` parameters from
+its listing row, take each chunk's id as the SHA-256 of its bytes, encode the
+manifest, and hash that. A file under 64 KiB never reaches the chunker — its
+bytes are inlined into the manifest — so the id is still the hash of a
+manifest and never of the bytes alone. Done that way it is a complete
+end-to-end integrity check for the transfer, and it costs a comparison;
+`fileserver/manifest_id_test.go` runs exactly this against a live server for
+an inline and a chunked file.
+
+### The three write refusals a sync client meets
+
+**`503` on a write means nothing was applied, retry unchanged.** Concurrent
+writers race for the branch head and the loser is told `503` with
+`Retry-After: 1` and a body of `write contention; retry`. The identical request
+will usually succeed on the retry; retry it rather than surfacing a failure.
+This is the case where a wrong status code costs data: a `500` means the server
+hit an unexpected condition and *may have applied part of the request*, so the
+only safe handling there is to stop and surface it — `EIO` from a FUSE client,
+which to the application that already wrote the bytes is data loss.
+
+**`409` means exactly one thing: the state here is not what your request
+assumed.** A destination collision (`Destination exists…`), a `mkdir` over a
+file, an attempt to create the root. Change something — rename, usually — and
+send it again. It is never a request to retry unchanged; that is `503`'s job.
+
+**`412` is the mechanism working, not an error.** Someone else wrote first.
+Re-read, reapply, write again. Note the header changes meaning with the
+method: on `GET`, `If-None-Match` asks "skip the body if unchanged" and yields
+`304`; on a write it asks "fail if it exists" and yields `412`. Same header,
+different question, as RFC 9110 specifies.
+
+Both preconditions are opt-in. A request with neither header is last-writer-
+wins, which is still available — it just has to be chosen rather than arrived
+at by accident. For a File Provider extension, send `If-Match` on every
+`modifyItem`: the `baseVersion` you were handed is precisely the tag to send.
+
+#### What a `412` means inside `modifyItem`
+
+Not an error. `modifyItem` reports a conflict on the **success** path.
+
+The system hands `modifyItem` a `baseVersion` — the version it believes is on
+disk. Send its `contentVersion` as `If-Match`. On a `412` someone else moved
+the entry underneath you, so re-read it and call the completion handler with
+the **server's** item, carrying the server's new `contentVersion`, and
+`shouldFetchContent: true`. The system sees the content version move, calls
+`fetchContents`, and replaces the local copy. Returning an error instead gets
+the whole modification retried from the top, against the same stale version,
+forever.
+
+That resolution discards the local edit — the right default for a first cut
+and the wrong one in general. *Which* version wins is a policy decision the
+extension makes item by item, and the API is built to let it make that
+decision rather than to make it for you.
+
+Two traps in the same completion handler:
+
+- The second argument is `stillPendingFields`, the subset of `changedFields`
+  you did **not** apply. Since macOS 12, returning a set *identical* to the
+  fields you were passed does not mean "try me again later" — the system reads
+  it as "this provider does not support these fields" and stops sending them
+  until the item changes again. Never return the whole set to signal a
+  temporary failure.
+- `NSFileProviderError.localVersionConflictingWithServer` does mean exactly
+  this conflict, but only under the `failUploadOnConflict` policy, which needs
+  `NSExtensionFileProviderSupportsFailingUploadOnConflict` in the extension's
+  `Info.plist` — and it is macOS 26.0 and later. Under it the provider *does*
+  fail the call and the system merges and re-calls with a fresh `baseVersion`.
+  Below 26.0 the paragraph above is the only route.
+
+Outside `modifyItem` — a conditional write the extension issues on its own
+behalf — a `412` is just a `412`: re-read, reapply, write again.
+
+### What a `404` on the library means, and what it does not
+
+A `404` whose body names the library is a positive assertion: it is gone, and
+removing your copy is the correct handling — it is how a library deleted from
+the web UI reaches you. The server says it only when the library has no row. A
+library the server holds but cannot read — its head commit object is missing
+from the store — answers `500`, and a database it cannot reach answers `503`.
+Both mean *something on the server is broken, nothing has been deleted, do not
+act on it*: `EIO` for a FUSE client, a transient error for a File Provider
+extension, never an `NSFileProviderItem` removal. Neither is worth a full
+re-enumeration; retry, and surface it if it persists.
+
+### Size and quota
+
+Feature name `usage`. Each row of `GET libraries` carries `size` and
+`file_count` for that library, and the account's total lives on its own
+endpoint:
+
+```
+GET /api/silo/v1/account/usage
+{"usage": 5000000, "quota": 6000000, "kind": "logical-at-head"}
+```
+
+**`quota` is absent when there is no ceiling** — not `-1`, not `0`, absent.
+Render a missing key as "no limit", never as a number. The same rule holds on
+the listing: `size` and `file_count` are absent, not zero, when the server
+could not work out a library's size. Zero means an empty library, and showing
+"0 bytes" for "unknown" states a fact you were never told.
+
+**Per-library sizes are on the listing and not under `account/usage`.** A
+library shared with you appears in your listing but is charged to its
+*owner's* quota, so the two surfaces do not add up and are not meant to. Do
+not sum the listing to reproduce `usage`.
+
+**`kind` says which number this is.** `logical-at-head` is the sum of the
+sizes of the files the library currently holds — what you get back by deleting
+them, and not bytes on disk: dedup and deferred compaction make those diverge
+by multiples in both directions. If you show a figure next to anything a user
+might compare with `du`, label it. `kind` is on the wire because
+[`quota.md`](quota.md) argues for charging the chunks an account occupies
+instead, and when `chunks-occupied` arrives the number becomes the bill rather
+than the file total, cannot be estimated locally by summing listing sizes, and
+stops dropping the moment a file is deleted, because the chunks stay reachable
+from history. **Branch on `kind` or display it; never hard-code the string.**
+A client that ignores it shows an account halving overnight and calls it a
+server bug.
+
+**Over quota is `507`**, from `PUT entries/{path}` (before the body is read if
+you sent a `Content-Length`, and again after), from `POST batch` (before
+anything is applied) and from `PUT chunks/{id}`. It is a user-facing condition
+with an actionable message — free some space — not a transport error to retry
+blindly. A single write is admitted against the figure before it, so the last
+one through can cross the line and the account can sit marginally over; do
+not build a client that depends on `usage <= quota` holding.
+
+**If you are filling in `df`:** `statfs(2)` reports block counts, and you pick
+the divisor. Dividing the account figures by a block size truncates twice —
+once for the total, once for what is free — so the used column lands within
+one block of the real number, on whichever side depends on where the quota
+falls relative to a block boundary; it is not reliably a round up, and it is
+not per-file occupancy. Report it as "the aggregate divided by the block size".
+Porter uses 4096 because that is what every local filesystem on the machine
+reports, which is a tradeoff rather than a property of the interface.
+
+### Chunks: what the reference does not say
+
+**If the library's row carries no `chunker`, upload whole files.** Do not
+substitute defaults: chunking under the wrong parameters uploads *correctly*
+and dedups against nothing, and nothing detects it. It is the one failure on
+this surface with no error to see.
+
+**Already-present chunks answer `200` before reading the body.** Send
+`Expect: 100-continue` on `PUT chunks/{id}` and you skip the transfer entirely
+when a `chunks/missing` answer has gone stale under you.
+
+**The manifest id is already in your hand.** A listing's file `id` *is* the
+manifest id, unprefixed, so `?type=manifest` is a fetch you make when you
+decide to read the file, not a lookup you make first. Decode it with
+`store.DecodeManifest`, not a JSON parser: an ordered `[]ChunkRef` of
+`{ID, Size}` with the file's size, where `Size` is the **plaintext** length —
+specified that way because mapping a read offset to a chunk needs it.
+
+**Key your content cache on the chunk id, not on the file.** A cache keyed by
+`(file-id, window)` collects nothing: one byte changing invalidates every
+window of that file, and two files sharing a gigabyte share nothing. Keyed by
+chunk id, an append invalidates one chunk and identical content is stored once
+however many files hold it.
+
+**Ask by id rather than by range for anything you mean to keep.** A range is
+addressed by `(path, offset, length)`, which only means anything relative to a
+version — between fetching a manifest and its four-hundredth chunk the file can
+change, and the read assembles a file that matches no version of anything.
+`If-Match` on every range defends against it; content addressing does not have
+the problem. For a file read once with nothing cached, `GET entries/{path}` is
+still the right call: one request, and the server assembles.
+
+**Verify every chunk on arrival.** `store.DecodeChunkFrames` does it for a
+stream. The hash check is what makes a source other than this server — a cache
+of uncertain provenance, a peer, a mirror — legal to read from at all.
+
+**Splicing an edit is where this pays, and it is the one dangerous part.**
+Fetch the chunks around an edit, re-chunk from there until the boundaries
+re-sync with the manifest you hold, and reuse every id on either side. A
+re-sync that is wrong by one chunk produces *valid chunks* and a manifest that
+reproduces nothing, and it surfaces at `close(2)` with nothing naming the
+cause. Ship it with a verifier that re-chunks the whole file and asserts the
+result — on in tests, behind a flag in production. Two cheaper guards worth
+having anyway: assert the manifest's `FileSize` equals the sum of its
+`ChunkRef.Size` before you `PUT` it, and treat `chunks/missing` returning a
+*shorter* list than the ids you spliced in as free evidence the reused ids
+were real.
+
+### Reading `changes`
+
+```json
+{
+  "anchor": "9f016e4b3e5c4ffb99776ab6e155b10bce15e6542c8d7a1f0b3e6c9d2a5f8b1e",
+  "changes": [
+    {"op":"create","path":"/deep/nested/z.txt",
+     "id":"cb01668407c71277b010774ffdceb5fe2a85a72a4d1e7f0b3c6a9d2e5f8b1c4a",
+     "size":2,"is_dir":false}
+  ]
+}
+```
+
+`id` is absent on deletes; `changes` is always an array, never null. The
+first anchor is `head_commit_id` from `GET libraries` — listing libraries is
+the first thing a sync client does, and without it the opening enumeration
+would have no name for the state it just read. Use it for `currentSyncAnchor`.
+
+**A subtree is reported in full.** Every directory that appeared is reported
+in its own right, alongside every path inside it:
+
+```
+mkdir /deep, /deep/nested, put z.txt → create d /deep
+                                       create d /deep/nested
+                                       create f /deep/nested/z.txt
+delete a non-empty /d                → delete d /d
+                                       delete f /d/z.txt
+```
+
+`is_dir` says which is which; you do not have to infer parents, though
+creating them anyway is harmless. Renames are emitted server-side because the
+server holds both trees; the inference is imperfect — deleting one file and
+creating another with identical bytes looks like a rename — but the failure is
+benign, an identifier following the "wrong" copy of byte-identical content.
+
+`410` is not an error. The anchor is no longer reachable and the recovery is
+to enumerate from scratch — the natural source for
+`NSFileProviderError.syncAnchorExpired`.
+
+### History, and building `.history/` on top
+
+`GET libraries/{libraryid}/commits` lists history newest first as
+`{"commits":[{"id","created_at","author","message"},…]}`, paged like
+everything else. `author` and `message` are **absent under E2EE**, not empty
+— they are sealed under a key the server never holds — while `id` and
+`created_at` stay public because the walk needs them; decode them from the
+commit object if you hold the key. The listing ends where history ends: when
+retention collects old commits, the walk meeting one that is gone is reported
+by the list stopping, not by an error. That is the difference from
+`changes?since=`, where *you* named a commit and are owed a `410`.
+
+`?at={commit}` on `entries/{path}` is the ordinary read with a different
+starting id — files, listings, `Range`, `If-None-Match`, all unchanged. A file
+deleted three commits ago is still there in the commit that had it. `400` if
+`at` is not a commit id or is sent on a `PUT`, `POST` or `DELETE` — writes
+carrying `at` are refused, never ignored, because a client that believes it
+is editing the past while silently editing the present is the worst outcome
+available; `410` if it is well-formed and no longer reachable; `404` if the
+path does not exist in that commit.
+
+The `.history/` directory is yours to synthesize; the server will not invent
+one. A synthetic entry has no id and appears in no manifest, so it would have
+to be excluded from GC's mark, from `changes?since=`, from size accounting and
+from every other walk, and the whole store rests on an id naming content. Two
+properties fall out of that: reading history costs nothing against quota under
+`logical-at-head` (under a `chunks-occupied` charge the history being read is
+part of what its owner is billed for, which is what makes retention a lever),
+and what the commits list returns *is* the retention window, so the user can
+see how far back they can go. ETags work across time: an unchanged file has
+the same ETag at an old commit as at the head, and a `.history/` copy of a
+file you already hold revalidates to `304`.
+
+### The E2EE client shape
+
+An end-to-end encrypted library splits the API, and the split is worth
+designing for before the first plain-library code is written. On a plain
+library everything above applies. On an E2EE library the server holds no
+content key, so it cannot chunk a file, build a manifest, name an entry — or
+resolve a path: every request on `entries/{path}` answers `403` with a body
+naming the id-addressed surface, in both directions. What still answers by
+path-free means is `changes?since=`, which reads public directory sections and
+carries names as unpadded base64url (RFC 4648 §5) of their AES-SIV ciphertext.
+
+So on an E2EE library the client reads and writes the object graph itself,
+through `objects/{id}`, `chunks/{id}`, `chunks/fetch`, `POST chunks` and
+`PUT head`. Build one interface with two implementations — the thing that
+answers *list this directory*, *read this file*, *write these bytes* — rather
+than branching on `e2ee` at each call site. The id-addressed surface is the
+same for both library types, so the E2EE implementation is also a complete
+plain-library implementation.
+
+**Reading** is a walk down the object graph from the head:
+
+```
+GET  libraries                                → head_commit_id for the library
+GET  libraries/{library}/objects/{commit}     → decode → root directory id
+GET  libraries/{library}/objects/{dir}        → decrypt names → child ids and types
+GET  libraries/{library}/objects/{manifest}   → chunk list, or the inline bytes
+POST libraries/{library}/chunks/fetch         → chunk ciphertext → decrypt
+```
+
+**Resolving a depth-N path costs N sequential fetches the first time**, and
+no cleverness removes it: each segment's name key is derived from its parent
+directory's salt, so the parent has to be read before the child can be named.
+Cache the salt map beside your local index — a cold resolve is a tree walk,
+which is why the local index earns its keep here in a way it does not on a
+plain library.
+
+**Writing** is the same shape for both library types:
+
+```
+POST libraries/{library}/chunks/missing       {"chunks":[id,…]} → {"missing":[id,…]}
+POST libraries/{library}/chunks               many chunks, one framed request
+PUT  libraries/{library}/objects/{id}         manifest, then each directory up the spine,
+                                              then the commit
+PUT  libraries/{library}/head                 If-Match: <current head commit id>
+```
+
+The server verifies that each object's id is the SHA-256 of its bytes and that
+it decodes, and nothing else, because there is nothing else it can check.
+
+**A write rewrites the spine, and that is your job.** Changing one file means
+a new manifest, a new parent directory, a new grandparent, up to a new root
+and a new commit. Three rules the server cannot enforce for you:
+
+- **Carry the salt forward.** A rewritten directory keeps the salt of the
+  object it replaces. Mint a fresh one and its id changes, so every ancestor's
+  does, so the root does — and `changes` reports the entire library modified
+  on every commit.
+- **Only the directory whose entry list changed gets a new mtime**, and that
+  mtime lives one level up, in its parent's entry for it. Stamping the whole
+  spine makes every commit look like it touched everything between the change
+  and the root.
+- **The mutation's timestamp is not the file's mtime.** You preserve a file's
+  mtime, which may be years old; the directory it lands in changed just now.
+
+**There is no server-side merge on `PUT head`.** Merging trees means reading
+names. `PUT head` is a compare-and-swap, and a writer that loses gets `412`,
+not a merge: re-read the head, rebuild your change on the new root, retry.
+Write that loop deliberately — it is not the `503`-and-retry above, because
+the root you built on is stale rather than the server being busy.
+
+**Libraries are created with a client-supplied UUID.** `store.WrapCK` binds
+the library id into the wrap as associated data, so the client mints the id
+and the server accepts it; `409` means mint another and rebuild the wrap.
+
+Four facts about the format that shape the client:
+
+- **Ids are 64 hex characters**, SHA-256 of the stored bytes, everywhere:
+  chunks, objects, commits, `head_commit_id`, `since` anchors, ETags.
+  `store.ParseID` refuses any other width at the door.
+- **Chunking is per library and keyed.** The seed is derived from the
+  library's content key, so the same file cut in two encrypted libraries lands
+  on different boundaries — deliberately, so the server cannot confirm what a
+  file is from its boundary fingerprint. **The boundary cache is per-library**,
+  never shared across them.
+- **Small files inline.** Below `store.Inlined`'s threshold the bytes live
+  inside the manifest and there are no chunks. Whether a file inlines is
+  decided by its size and never by the writer: two clients disagreeing about a
+  30 KB file would mint two ids for identical content. Do not carry a second
+  answer.
+- **Import `store/` rather than reimplementing it** if you are writing Go. It
+  is a package in this module with no server dependencies — the chunker, the
+  ids, the codecs, the content crypto, name encryption and key wrapping —
+  built to ship inside a client. A Swift port conforms when it reproduces the
+  vectors in `store/testdata/vectors`, per
+  [`spec/store-format.md`](spec/store-format.md).
+
+#### Where the encryption boundary is
+
+**What is in a library is private; that the library exists and what it is
+called is not.** E2EE covers a library's content and the names of the files
+inside it. A library's own display name and description are server-plaintext,
+permanently and by decision: the server has to sort them, search them and put
+them in `GET libraries` for a client that has not unlocked anything. Sealing
+them would produce a listing of untitled libraries, or a second name kept in
+the clear beside the sealed one, which is the same disclosure with an extra
+step.
+
+Two more things the server knows: **who wrote last, and when.** The account is
+the one that authenticated when the head moved and the timestamp is the
+server's clock at that moment, recorded outside the commit. They may differ
+from the author and `created_at` you sealed inside it — you may seal whatever
+attribution you like — and that is the intended relationship. Surface the
+sealed pair where you show history and the server pair where you show sync
+state; do not try to reconcile them.
+
+#### Keys, in one paragraph
+
+The password splits client-side: an auth key that goes to the server and a
+wrap key that never leaves the device. The wrap key unwraps the X25519
+identity key; the identity key unwraps each library's content key
+(`GET libraries/{libraryid}/key`). **Store the identity key in the platform
+key store and discard both the password and the wrap key.** `store/` has the
+whole path: `DeriveCredentials`, `OpenIdentityWithPassword`, `UnwrapCK`.
+
+#### Things that will never be added, so do not wait for them
+
+- **No password-to-the-server endpoint for an encrypted library.** The content
+  key reaches a new device wrapped to that account's identity key, never by
+  the server holding it.
+- **No path-addressed write on an E2EE library.** The server cannot chunk what
+  it cannot read.
+- **No pack ids or offsets on the wire.** Compaction moves chunks between
+  packs, so a pack id in a response would be a lie by the time it was used.
+  Address chunks by id and nothing else.
+- **No chunk-parameter renegotiation.** A library's parameters are frozen at
+  creation; changing them is a full rewrite, done deliberately or not at all.
+
+### Push
+
+`commit_id` in a `library-update` is exactly the anchor `changes` wants, so
+the frame translates directly into `GET changes?since=<your last anchor>`. Do
+not treat the pushed `commit_id` as your new anchor without fetching — you may
+have missed events; push is a hint and the pull is the truth. Re-mint the
+notification token on `expires_at` rather than on `jwt-expired`, so a
+long-running mount never sees the disconnect. `expires_at` is a number where
+every other token response on this lane is strings; decode into a typed struct
+(`docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md`). A
+`404` from `notify-token` means fall back to polling, not an error.
+
+### If you are building a FUSE client
+
+FUSE serves `read(fd, buf, len, offset)`, and `GET entries/{path}` with a
+`Range` header is one authenticated round trip, repeatable on the same URL.
+Build the read path directly on it; there is no block lane to reassemble
+from, and no whole-file local cache is needed for correctness, though you may
+still want one for latency. What is worth doing:
+
+1. **Cache attributes**, keyed by path, revalidated with `If-None-Match`. A
+   `304` reads no chunks, so `getattr` storms are nearly free.
+2. **Invalidate from `changes`** rather than by polling paths.
+3. **Read through to `entries/` with `Range`** for anything read once, and go
+   through the manifest for anything you mean to keep, keyed on the chunk id.
+
+### The request inventory
+
+Every row has been exercised against a running server.
+
+| Callback | Method + path |
+|---|---|
+| domain setup | `POST auth/login`, `GET server-info` |
+| `enumerateItems` (root) | `GET libraries` — rows carry `size`/`file_count` |
+| show storage used | `GET account/usage` |
+| `enumerateItems` (dir) | `GET libraries/{id}/entries/{path}` |
+| `currentSyncAnchor` | `head_commit_id` from `GET libraries` |
+| `enumerateChanges` | `GET libraries/{id}/changes?since={commit}` |
+| `item(for:)` | *none* — local `IdMap` ⋈ `WorkingSet` |
+| `fetchContents` | `GET libraries/{id}/entries/{path}` — bytes on the response |
+| revalidate a cached item | the same `GET` with `If-None-Match` → `304` |
+| read at an offset | the same `GET` with `Range` → `206`, repeatable |
+| `createItem` (dir) | `PUT libraries/{id}/entries/{path}?type=dir` |
+| `createItem` (file) | `PUT libraries/{id}/entries/{path}` — body is the file |
+| `modifyItem` (contents) | the same `PUT` — it replaces |
+| `modifyItem` (rename, reparent) | `POST libraries/{id}/entries/{path}` `{"op":"move",…}` |
+| duplicate an item | `POST libraries/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
+| upload a large file | `POST chunks/missing`, then `POST chunks` with the ones it named (or `PUT chunks/{id}` each, without `chunks-upload`), then `PUT entries/{path}?type=chunks` |
+| download a large file you hold a version of | `GET entries/{path}?type=manifest`, then `POST chunks/fetch` for the ids your chunk cache lacks |
+| read a file once, nothing cached | `GET entries/{path}` — one request, the server assembles |
+| enumerate a huge directory | `GET entries/{path}?limit=1000`, then follow `Link: …; rel="next"` |
+| write many things at once | `POST libraries/{id}/batch` — one commit, all or nothing |
+| `deleteItem` | `DELETE libraries/{id}/entries/{path}` |
+| list history | `GET libraries/{id}/commits` |
+| read at a past commit | `GET libraries/{id}/entries/{path}?at={commit}` |
+| push invalidation | `WS /notification` |
+
+Identifiers never cross the wire: every request is `(library_id, path)`,
+resolved client-side from `IdMap`.
+
+### Checking your work
+
+The Go CLI speaks exactly this surface, so it is a reference implementation to
+diff against — `client/client.go` is the transport, and `silo libraries`,
+`ls`, `put`, `get`, `mkdir`, `mv`, `rm` and `changes` each map to one call
+above. Server-side Sentry shows anything a client sends that the server does
+not expect, with the route template as the transaction name, so
+`entries/{path}` groups rather than fragmenting per file.
+
+The server is ours and additive endpoints are cheap. If a client wants
+something else, ask rather than working around it: reimplementing server logic
+client-side is what makes sync clients enormous.

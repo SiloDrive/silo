@@ -363,13 +363,14 @@ GET    /account/usage
 
 All of it is under `/api/silo/v1`.
 
-**Structure by path, content and writes by id.** `entries/{path}` keeps working
-on an E2EE library for everything structural, because AES-SIV is deterministic
-precisely so that routing on ciphertext works: a client encrypts each segment,
-base64urls it, and sends it, and the server matches ciphertext against
-ciphertext without learning what either says. Resolve, `HEAD`, listing, delete
-and move all work. `changes?since=` carries ciphertext paths for the same
-reason.
+**Structure by path is designed, not built.** AES-SIV is deterministic
+precisely so that `entries/{path}` can route on ciphertext: a client encrypts
+each segment, base64urls it, and sends it, and the server matches ciphertext
+against ciphertext without learning what either says. Today `objmgr.Resolve`
+refuses a keyless E2EE store outright, so every `entries/{path}` call on an
+encrypted library is `403` and structure is read by walking objects from the
+head commit; only `changes?since=` carries ciphertext paths. Building the
+keyless lookup is issue #30.
 
 What the server cannot do on such a library is anything with the *bytes*. A
 byte range of the plaintext is not a byte range of a per-chunk sealed object,

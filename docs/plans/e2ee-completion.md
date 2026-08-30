@@ -65,7 +65,7 @@ and it is the one new type the step needs: CK plus everything derived from it
   key, `POST /libraries` with `"e2ee": true`. The test seed in
   `encrypted_library_test.go` is this function in prototype; move it.
 - **Read.** Resolve a path by walking directory objects and encrypting each
-  segment under its parent's salt ([`../porter-brief.md`](../porter-brief.md)
+  segment under its parent's salt ([`../protocol.md`](../protocol.md#the-e2ee-client-shape)
   § Reading an E2EE library); read a manifest; fetch chunks by
   `chunks/fetch`; decrypt per chunk. A plaintext `ReadAt(off, n)` is
   arithmetic over the manifest — this is where "ranged reads on E2EE" come
@@ -95,7 +95,7 @@ gives 2 a consumer to test against, and `OpenAccount` is the one function
 both steps touch. Landing 2 first would mean writing the login twice.
 
 **Where it lands:** `docs/roadmap.md` § What is built gets a row;
-`porter-brief.md`'s E2EE section stops describing and starts pointing.
+`protocol.md` § The E2EE client shape stops describing and starts pointing.
 
 ### 2. Split-derivation login
 
@@ -179,9 +179,12 @@ Lands with the steps above rather than after them; silo#22 (a status table)
 is the one item here worth doing first, because it is what would have
 answered "is at-rest encryption built?" without reading the code.
 
-- `entries/{ct-path}?type=manifest` and `Accept-Ranges: none` are already
-  right; add `e2ee-read` to the feature list once step 1 has a consumer so a
-  client can tell a server that serves wraps from one that merely stores them.
+- `entries/{path}` on a keyless E2EE store answers `403` for everything today;
+  routing on ciphertext names is designed and not built (silo#30). The client
+  in step 1 reads structure by walking objects from the head commit, which
+  works now; #30 is what lets a path-scoped credential read an E2EE library.
+- Add `e2ee-read` to the feature list once step 1 has a consumer, so a client
+  can tell a server that serves wraps from one that merely stores them.
 - `docs/encryption.md` § Status moves "a client that does the sealing" to
   built; `roadmap.md` § critical path drops items 1 and 2 as they land.
 

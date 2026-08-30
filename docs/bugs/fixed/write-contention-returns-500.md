@@ -113,7 +113,7 @@ Two things found in the same session that turned out to be correct behaviour,
 noted so they are not re-investigated:
 
 - **A `PUT` into a missing directory is a 404.** Documented in
-  `docs/porter-brief.md`: not an implicit `mkdir -p`, because a typo should not
+  `docs/protocol.md` § Writing a client: not an implicit `mkdir -p`, because a typo should not
   build a path. Clients must create parents themselves.
 - **No upload size limit was hit.** A 50 MB `PUT` returns 201. An earlier
   connection reset at that size was an artifact of a broken object store, not a
@@ -184,7 +184,7 @@ destination collision answers 409 `Destination exists…`. They want opposite
 handling — retry versus rename — and are distinguishable only by body text.
 Moving GC conflict to 503 would resolve it cleanly and is a one-line change in
 `writeCommitErr`, but it is a shipped status code that a client may key on, so
-it is written down here rather than changed quietly. `porter-brief.md` now warns
+it is written down here rather than changed quietly. `protocol.md` § Writing a client now warns
 about it.
 
 **The newline-in-filename 404** noted at the end of this report is untouched;

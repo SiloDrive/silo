@@ -175,4 +175,4 @@ and CLI together.
 - **Silo TUI** (`cmd/silo`) — ships in this repository, same binary as the server
 - **porter-fuse** — a FUSE filesystem over `/api/silo/v1/`
 - **Porter** — the macOS File Provider client; see
-  [`porter-brief.md`](porter-brief.md) for the wire contract both of them use
+  [`protocol.md`](protocol.md#writing-a-client) § Writing a client for the wire contract both of them use

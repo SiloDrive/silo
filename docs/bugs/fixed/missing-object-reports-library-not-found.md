@@ -91,7 +91,7 @@ The clients in flight both walk into it:
   404 during enumeration is how deletions arrive, and `NSFileProviderItem`
   removal is what it triggers.
 
-The `docs/porter-brief.md` guidance to require 0.4.1 and fail loudly rests on the
+The `docs/protocol.md` § Writing a client guidance to require 0.4.1 and fail loudly rests on the
 idea that a confusing failure is worse than a stopped one. This is that argument
 applied to a status code: a client that stops cannot make it worse, and a client
 that believes a 404 can.

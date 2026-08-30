@@ -651,8 +651,9 @@ In an E2EE library each path segment is encrypted with **AES-CMAC-SIV
 (RFC 5297), AES-256 halves**, under a key derived per directory.
 
 SIV is used because this job needs a cipher that is **deterministic by
-design**: `entries/{path}` routes on the ciphertext, so a client must be able
-to compute the same bytes the directory object holds. There is therefore **no
+design**: `entries/{path}` is meant to route on the ciphertext (designed, not
+yet built on the server — the object walk is the read path today), so a client
+must be able to compute the same bytes the directory object holds. There is therefore **no
 nonce parameter anywhere in the name API**, and there should never be one — a
 caller wanting randomness would be asking for a different scheme, not a
 different argument. The determinism is Option A's stated and accepted equality

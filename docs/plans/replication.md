@@ -14,7 +14,7 @@ pointer. The server does not merge. `PUT head` is a compare-and-swap on the
 branch head — a writer whose `If-Match` is stale gets a refusal and rebuilds
 its change on the new root — because merging trees means reading names, which
 an E2EE server cannot do
-([`porter-brief.md`](../porter-brief.md) § Server-side merge is gone,
+([`protocol.md`](../protocol.md#the-e2ee-client-shape) § The E2EE client shape,
 [`protocol.md`](../protocol.md)). Every merge happens in a client that holds
 the keys.
 

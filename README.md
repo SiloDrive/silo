@@ -8,7 +8,7 @@ Status: pre-1.0 and young, but no longer reckless with your data. Object writes 
 
 Silo is one Go binary. It speaks HTTP directly and talks directly to its database — no daemon to supervise, no web application beside it, no process manager tying the two together.
 
-It began as a rewrite of an older server built that way, and for its first releases it kept wire compatibility with that server's clients. That compatibility was dropped on purpose in favour of Silo's own protocol and object format — `/api/silo/v1/`, content-defined chunking, per-library E2EE — and no client of the old kind can talk to a current Silo server. See [`docs/target.md`](docs/target.md) for why, and [`docs/porter-brief.md`](docs/porter-brief.md) for the wire contract that replaced it.
+It began as a rewrite of an older server built that way, and for its first releases it kept wire compatibility with that server's clients. That compatibility was dropped on purpose in favour of Silo's own protocol and object format — `/api/silo/v1/`, content-defined chunking, per-library E2EE — and no client of the old kind can talk to a current Silo server. See [`docs/target.md`](docs/target.md) for why, and [`docs/protocol.md`](docs/protocol.md) for the wire contract that replaced it.
 
 Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.com/charmbracelet/bubbletea) for interactive file management without a browser.
 
@@ -365,7 +365,7 @@ Tested clients:
 - **Silo TUI** (`cmd/silo`) — full CRUD and browse
 - **porter-fuse** and the macOS File Provider client (Porter) — `entries`,
   `changes`, `notify-token` and the notification socket; see
-  [`docs/porter-brief.md`](docs/porter-brief.md)
+  [`docs/protocol.md`](docs/protocol.md#writing-a-client) § Writing a client
 
 ## What's not implemented
 
