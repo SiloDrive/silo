@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -237,5 +238,68 @@ func TestUsageIsExactAfterAnOverwrite(t *testing.T) {
 	}
 	if u.Size != 3000 || u.FileCount != 1 {
 		t.Fatalf("usage = %+v after three writes to one path, want 3000 bytes in 1 file", u)
+	}
+}
+
+// withServerLimits sets the two server-level ceilings for one test and puts
+// them back afterwards. They are package globals read on every admission, so
+// a test that left one set would refuse writes in every test that ran after
+// it -- and the failure would land somewhere else entirely.
+func withServerLimits(t *testing.T, serverQuota, reserve int64) {
+	t.Helper()
+	origQuota, origReserve := option.ServerQuota, option.DiskReserve
+	option.ServerQuota, option.DiskReserve = serverQuota, reserve
+	t.Cleanup(func() { option.ServerQuota, option.DiskReserve = origQuota, origReserve })
+}
+
+// The reserve is the half of the server ceiling that catches a disk filling
+// from outside Silo, so the test asks for a reserve larger than any disk: no
+// free space can satisfy it, and every write must be refused regardless of
+// what the owner's own quota says.
+func TestAWriteIsRefusedWhenTheDiskReserveWouldBeBreached(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+	withServerLimits(t, option.InfiniteQuota, 1<<62)
+
+	vars := map[string]string{"libraryid": libraryID, "path": "blocked.bin"}
+	w := do(t, entriesHandler, acct, "PUT", "/x", vars, bytes.Repeat([]byte("a"), 100))
+	if w.Code != http.StatusInsufficientStorage {
+		t.Fatalf("write under a reserve nothing can satisfy = %d (%s), want %d",
+			w.Code, w.Body.String(), http.StatusInsufficientStorage)
+	}
+	// The owner is not over quota, and saying they are would send an operator
+	// looking at the wrong number.
+	if body := w.Body.String(); !strings.Contains(body, "server") {
+		t.Errorf("the refusal said %q; it should name the server, not the owner", body)
+	}
+}
+
+// The configured ceiling is the other half, and it is not the account default
+// applied server-wide: this account has no quota of its own at all.
+func TestAWriteIsRefusedWhenTheServerCeilingIsReached(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+	withServerLimits(t, 1000, 0)
+
+	vars := map[string]string{"libraryid": libraryID, "path": "first.bin"}
+	if w := do(t, entriesHandler, acct, "PUT", "/x", vars, bytes.Repeat([]byte("a"), 900)); w.Code != http.StatusCreated {
+		t.Fatalf("first write = %d (%s), want 201", w.Code, w.Body.String())
+	}
+
+	vars = map[string]string{"libraryid": libraryID, "path": "second.bin"}
+	w := do(t, entriesHandler, acct, "PUT", "/x", vars, bytes.Repeat([]byte("b"), 200))
+	if w.Code != http.StatusInsufficientStorage {
+		t.Fatalf("write over the server ceiling = %d (%s), want %d",
+			w.Code, w.Body.String(), http.StatusInsufficientStorage)
+	}
+}
+
+// A server that has been told nothing still admits writes. The default has to
+// be no ceiling, or an upgrade turns every install read-only.
+func TestAnUnconfiguredServerCeilingRefusesNothing(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+	withServerLimits(t, option.InfiniteQuota, 0)
+
+	vars := map[string]string{"libraryid": libraryID, "path": "fine.bin"}
+	if w := do(t, entriesHandler, acct, "PUT", "/x", vars, bytes.Repeat([]byte("a"), 5000)); w.Code != http.StatusCreated {
+		t.Fatalf("write with no server ceiling = %d (%s), want 201", w.Code, w.Body.String())
 	}
 }

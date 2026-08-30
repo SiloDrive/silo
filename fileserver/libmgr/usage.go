@@ -187,6 +187,68 @@ func AccountUsage(id account.ID) (objmgr.Usage, error) {
 	return total, nil
 }
 
+// ServerUsage totals what every real library on this server holds, as logical
+// size at head.
+//
+// It walks from Branch rather than from LibraryOwner, which is the one
+// difference from AccountUsage that matters: a library whose owner row is
+// missing still occupies the disk, and a server total that quietly omitted it
+// would under-report exactly the libraries an operator most wants to hear
+// about. Virtual libraries are excluded for the reason they always are -- they
+// are a view of another library's content and counting them would charge the
+// same bytes twice.
+//
+// Stale rows are recomputed rather than skipped, on the same reasoning as
+// AccountUsage: a total that silently drops the libraries that changed most
+// recently is worse than a slower one.
+func ServerUsage() (objmgr.Usage, error) {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	rows, err := readDB.QueryContext(ctx,
+		"SELECT b.library_id, b.root_id, u.size, u.file_count, u.root_id "+
+			"FROM Branch b "+
+			"LEFT JOIN LibraryUsage u ON u.library_id = b.library_id "+
+			"LEFT JOIN VirtualLibrary v ON v.library_id = b.library_id "+
+			"WHERE b.name = 'master' AND v.library_id IS NULL")
+	if err != nil {
+		return objmgr.Usage{}, fmt.Errorf("failed to query libraries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var total objmgr.Usage
+	var stale []string
+	for rows.Next() {
+		var libraryID, headRoot string
+		var size, fileCount sql.NullInt64
+		var at sql.NullString
+		if err := rows.Scan(&libraryID, &headRoot, &size, &fileCount, &at); err != nil {
+			return objmgr.Usage{}, err
+		}
+		if at.Valid && at.String == headRoot {
+			total = total.Add(objmgr.Usage{Size: size.Int64, FileCount: fileCount.Int64})
+			continue
+		}
+		stale = append(stale, libraryID)
+	}
+	if err := rows.Err(); err != nil {
+		return objmgr.Usage{}, err
+	}
+
+	for _, libraryID := range stale {
+		library := Get(libraryID)
+		if library == nil {
+			continue
+		}
+		u, err := Usage(library)
+		if err != nil {
+			log.Warnf("Skipping library %s in the server total: %v", libraryID, err)
+			continue
+		}
+		total = total.Add(u)
+	}
+	return total, nil
+}
+
 // AccountQuota is the ceiling an account's usage is measured against, or
 // option.InfiniteQuota for no ceiling at all.
 //

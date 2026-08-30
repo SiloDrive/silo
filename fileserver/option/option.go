@@ -18,6 +18,10 @@ import (
 // InfiniteQuota indicates that the quota is unlimited.
 const InfiniteQuota = -2
 
+// DefaultDiskReserve is the free space a server keeps back when nobody has
+// said otherwise. See DiskReserve for why it is not zero.
+const DefaultDiskReserve = 1 * GB
+
 // Storage unit.
 const (
 	KB = 1000
@@ -48,6 +52,26 @@ var (
 
 	// quota options
 	DefaultQuota int64
+
+	// ServerQuota bounds what every account together may hold, in the same
+	// currency as DefaultQuota: logical size at head. InfiniteQuota is no
+	// ceiling, and is the default.
+	//
+	// It is not DefaultQuota applied server-wide. That key is the default
+	// *account* ceiling and has never been a statement about the server --
+	// ten uncapped accounts, or capped accounts whose caps sum to more than
+	// the disk, are exactly the case this exists for.
+	ServerQuota int64
+
+	// DiskReserve is how much free space the server refuses to spend, so that
+	// the volume never reaches zero.
+	//
+	// Nonzero by default, which is a behaviour change for an install that has
+	// never configured a quota, and deliberate: SQLite in WAL mode needs room
+	// to write before it can commit, so a filesystem driven to the last block
+	// takes the database down with it. Refusing a sync a gigabyte early is
+	// recoverable; the other outcome is not. Set it to 0 to opt out.
+	DiskReserve int64
 
 	// DefaultKeepDays is how long a library keeps history when it has no
 	// LibraryRetention row of its own. Zero means keep everything, which is
@@ -136,6 +160,8 @@ func initDefaultOptions() {
 	Host = "127.0.0.1"
 	Port = 8082
 	DefaultQuota = InfiniteQuota
+	ServerQuota = InfiniteQuota
+	DiskReserve = DefaultDiskReserve
 	DBOpTimeout = 60 * time.Second
 	SyncObjectWrites = true
 	VerifyFSObjectHashes = true
@@ -264,6 +290,21 @@ func LoadFileServerOptions(configFile string) {
 		if key, err := section.GetKey("default"); err == nil {
 			quotaStr := key.String()
 			DefaultQuota = parseQuota(quotaStr)
+		}
+		if key, err := section.GetKey("server"); err == nil {
+			ServerQuota = parseQuota(key.String())
+		}
+		// A reserve that failed to parse falls back to the default rather than
+		// to none. parseQuota answers InfiniteQuota for anything it cannot
+		// read, which is the right answer for a ceiling -- no limit -- and the
+		// wrong one here, where it would mean "keep -2 bytes free" and quietly
+		// disable the protection because of a typo.
+		if key, err := section.GetKey("reserve"); err == nil {
+			if n := parseQuota(key.String()); n >= 0 {
+				DiskReserve = n
+			} else {
+				log.Warnf("[quota] reserve = %q is not a size; keeping the default reserve", key.String())
+			}
 		}
 	}
 

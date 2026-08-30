@@ -2,6 +2,9 @@ package silod
 
 import (
 	"fmt"
+	"github.com/dkam/silo/fileserver/diskfree"
+	"github.com/dkam/silo/fileserver/libmgr"
+	"github.com/dkam/silo/fileserver/option"
 	"text/tabwriter"
 
 	"os"
@@ -54,7 +57,11 @@ func RunDF(args []string) error {
 		return err
 	}
 	if len(ids) == 0 {
+		// Still worth the footer: a server with no libraries has a disk, and
+		// "how much room is there" is a fair question to ask before putting
+		// anything on it.
 		fmt.Println("No libraries.")
+		printServerHeadroom()
 		return nil
 	}
 
@@ -96,6 +103,8 @@ func RunDF(args []string) error {
 		return err
 	}
 
+	printServerHeadroom()
+
 	if total.History.Bytes > 0 || total.Unreferenced.Bytes > 0 {
 		fmt.Printf("\nhistory is what a retention policy would reclaim; unreferenced is reclaimable now.\n" +
 			"Neither is collected yet -- see docs/quota.md.\n")
@@ -104,6 +113,47 @@ func RunDF(args []string) error {
 		return fmt.Errorf("%d of %d libraries could not be measured", failed, len(ids))
 	}
 	return nil
+}
+
+// printServerHeadroom says how much more this server will accept, which is
+// the question the three columns above do not answer.
+//
+// It is here rather than in a command of its own because an operator asking
+// where the disk went is one refusal away from asking why a sync stopped, and
+// the answer to the second is not in a census: a write is refused at the lower
+// of the configured ceiling and free space less the reserve, and neither of
+// those is a figure any column above reports.
+//
+// The numbers are deliberately in two currencies and labelled as such. Stored
+// bytes above, logical-at-head against the ceiling, and physical free space --
+// see checkServerLimits for why they are not reconciled.
+func printServerHeadroom() {
+	fmt.Println()
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+
+	if free, err := diskfree.Available(absDataDir); err != nil {
+		fmt.Fprintf(w, "free on disk\t--\t(%v)\n", err)
+	} else if option.DiskReserve > 0 {
+		fmt.Fprintf(w, "free on disk\t%s\t(keeping %s back, so %s admissible)\n",
+			formatBytes(free), formatBytes(option.DiskReserve),
+			formatBytes(max(free-option.DiskReserve, 0)))
+	} else {
+		fmt.Fprintf(w, "free on disk\t%s\t(no reserve set)\n", formatBytes(free))
+	}
+
+	if option.ServerQuota > 0 {
+		used, err := libmgr.ServerUsage()
+		if err != nil {
+			fmt.Fprintf(w, "server ceiling\t%s\t(usage unreadable: %v)\n", formatBytes(option.ServerQuota), err)
+		} else {
+			fmt.Fprintf(w, "server ceiling\t%s\t(%s used, %s admissible; logical-at-head)\n",
+				formatBytes(option.ServerQuota), formatBytes(used.Size),
+				formatBytes(max(option.ServerQuota-used.Size, 0)))
+		}
+	} else {
+		fmt.Fprintf(w, "server ceiling\tnone\t(set [quota] server to bound what everybody together may hold)\n")
+	}
+	_ = w.Flush()
 }
 
 func addExtent(a, b objmgr.Extent) objmgr.Extent {

@@ -194,10 +194,11 @@ logical size at head. `objmgr.Census` — behind `silo df` — is stored bytes i
 three parts: head, history, unreferenced. They will not match, they are not
 meant to, and the page labels which is which rather than picking one.
 
-**Maximum size does not exist.** There is no server ceiling anywhere and free
-disk is never read. `quota.md` wants a refusal at the lower of a configured
-ceiling and free-space-minus-reserve; until that lands the panel says "no limit
-set" and shows free disk, which is at least a true number.
+**Maximum size now exists.** `[quota] server` and `[quota] reserve` bound what
+everybody together may hold, refused at the lower of the configured ceiling and
+free-space-minus-reserve. The panel shows both, labelled, and says "none set"
+for a ceiling nobody configured rather than inventing one. `silo df` prints the
+same two lines.
 
 **Throughput is unmeasured.** There are no byte counters on the chunk upload or
 fetch paths, and `middleware/logging.go` counts requests rather than bytes.
@@ -240,8 +241,8 @@ reported fact that nothing currently reports.
    already calls.
 4. **The page**, `embed.FS`, with the libraries and accounts panels — the two
    that are honestly answerable today.
-5. **Free disk and a server ceiling**, which unblocks the size panel and is
-   `quota.md`'s to own.
+5. **Free disk and a server ceiling** — built. `quota.md` owns it; the panel
+   reads what `silo df` reads.
 6. **Byte counters**, which unblocks throughput.
 7. **Storage locations**, when durable tiers exist and there is something to
    name.

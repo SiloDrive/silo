@@ -6,7 +6,9 @@ import (
 	"sync"
 
 	"github.com/dkam/silo/fileserver/account"
+	"github.com/dkam/silo/fileserver/diskfree"
 	"github.com/dkam/silo/fileserver/libmgr"
+	"github.com/dkam/silo/fileserver/option"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -19,6 +21,16 @@ import (
 // from a 403, which would tell a client the request was not allowed and to
 // stop rather than to free some space and try again.
 const errOverQuota = "The owner of this library is out of quota"
+
+// errServerFull is the refusal when the server as a whole has no room, which
+// is a different fact from the owner being over their ceiling even though it
+// carries the same 507.
+//
+// Two messages rather than one, because they send an operator to different
+// places: the first is fixed by raising somebody's quota, and this one is not
+// fixed by raising anybody's. A single message would have every disk-full
+// incident reported as a quota bug.
+const errServerFull = "This server is out of space"
 
 // checkQuota refuses a write that would put a library's owner over quota.
 // nil admits it.
@@ -88,6 +100,9 @@ func checkQuotaLocked(library *libmgr.Library, owner account.ID, delta int64) *b
 		log.Errorf("Failed to read the quota of the owner of %s: %v", library.ID, err)
 		return &batchFailure{http.StatusInternalServerError, "Internal server error"}
 	}
+	if fail := checkServerLimits(delta); fail != nil {
+		return fail
+	}
 	if quota <= 0 {
 		return nil // no ceiling was ever set
 	}
@@ -98,6 +113,60 @@ func checkQuotaLocked(library *libmgr.Library, owner account.ID, delta int64) *b
 	}
 	if usage.Size+delta > quota {
 		return &batchFailure{http.StatusInsufficientStorage, errOverQuota}
+	}
+	return nil
+}
+
+// checkServerLimits refuses a write the server as a whole has no room for.
+// nil admits it.
+//
+// Two ceilings, and the write has to be under both: a configured total
+// (option.ServerQuota, in the same logical-at-head currency as an account
+// quota) and actual free space less a reserve (option.DiskReserve). Neither
+// alone is sufficient, which is the reasoning docs/quota.md records -- the
+// configured number does not know about the other tenant on the volume, and
+// free space does not know the operator meant to keep 100 GB back for
+// something else.
+//
+// The two are in different currencies on purpose and are not reconciled. A
+// configured ceiling is a policy about what Silo may hold; free space is a
+// fact about a disk. Each yields a headroom in bytes, the smaller wins, and
+// pretending they measure the same thing would mean converting one into the
+// other with a dedup ratio nobody can know in advance.
+//
+// Free space that cannot be read is not a refusal. Unlike an unreadable
+// account quota -- where admitting the write is how a quota comes to be
+// unenforced without anybody noticing -- an unreadable disk is a platform
+// this build cannot ask, and refusing every write on a machine whose free
+// space Silo merely cannot measure would take the server down rather than
+// protect it. It is logged and the configured ceiling still applies.
+//
+// This deliberately does not serialize across owners the way lockOwner does
+// for account quotas. A global admission lock would put every concurrent
+// write on the server behind one mutex, and the overshoot it would prevent is
+// bounded by the writes in flight -- which is a large part of what the
+// reserve is for.
+func checkServerLimits(delta int64) *batchFailure {
+	if option.ServerQuota > 0 {
+		used, err := libmgr.ServerUsage()
+		if err != nil {
+			log.Errorf("Failed to total this server's usage for the server ceiling: %v", err)
+			return &batchFailure{http.StatusInternalServerError, "Internal server error"}
+		}
+		if used.Size+delta > option.ServerQuota {
+			return &batchFailure{http.StatusInsufficientStorage, errServerFull}
+		}
+	}
+
+	if option.DiskReserve > 0 {
+		free, err := diskfree.Available(absDataDir)
+		if err != nil {
+			log.Warnf("Cannot read free space, so only the configured ceiling applies: %v", err)
+			return nil
+		}
+		if free-delta < option.DiskReserve {
+			return &batchFailure{http.StatusInsufficientStorage, errServerFull}
+		}
 	}
 	return nil
 }

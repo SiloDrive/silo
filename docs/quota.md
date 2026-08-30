@@ -55,7 +55,7 @@ it never reaches the wire: `accountUsageResponse.Quota` is a pointer and is
 omitted rather than sent as a sentinel, because a capacity widget rendering
 "-2 bytes" is the predictable end of putting one there.
 
-### Server level — wanted, not built
+### Server level — built
 
 An account ceiling bounds what any one user may hold. Nothing bounds what
 *everybody together* may hold, so a server with ten uncapped accounts, or with
@@ -77,6 +77,43 @@ answer is both:
 Refuse at the *lower* of the two. Neither alone is sufficient: the configured
 number does not know about the other tenant on the volume, and free space does
 not know the operator meant to keep 100 GB for something else.
+
+Both are built, in `checkServerLimits` (`fileserver/quota.go`), at the same
+admission point and with the same 507 — but a different message, because "this
+server is out of space" and "the owner of this library is out of quota" send an
+operator to different places and only one of them is fixed by raising somebody
+a ceiling.
+
+```ini
+[quota]
+default = 100gb   ; per account, as before
+server  = 900gb   ; everybody together; absent means no ceiling
+reserve = 1gb     ; free space never spent; this is the default, not zero
+```
+
+The reserve defaults to 1 GB rather than to nothing, which is a behaviour
+change for an install that has never configured a quota and is deliberate:
+SQLite in WAL mode needs room to write before it can commit, so a volume driven
+to its last block takes the database down with it. Refusing a sync a gigabyte
+early is recoverable and the other outcome is not. `reserve = 0` opts out.
+
+The two ceilings are in different currencies and are **not** reconciled: the
+configured one is logical-at-head, free space is physical. Each yields a
+headroom in bytes and the smaller wins. Converting between them would need a
+dedup ratio nobody can know in advance, so `silo df` prints both and labels
+which is which.
+
+Free space that cannot be read is not a refusal — unlike an unreadable account
+quota, where admitting the write is how a quota comes to be unenforced without
+anybody noticing. An unreadable disk means a platform this build cannot ask,
+and refusing every write on a machine whose free space Silo merely cannot
+measure would take the server down rather than protect it. It is logged, and
+the configured ceiling still applies.
+
+Unlike the per-account check, admission is not serialized across owners: a
+global lock would put every concurrent write on the server behind one mutex,
+and the overshoot it would prevent is bounded by the writes in flight — which
+is a large part of what the reserve is for.
 
 The distinction from `[quota] default` matters and is easy to lose: that key is
 the default *account* ceiling, applied per user. It is not, and has never been,
