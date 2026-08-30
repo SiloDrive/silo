@@ -455,3 +455,98 @@ func TestRemovingALooseObjectIsUnchanged(t *testing.T) {
 		t.Errorf("removing it twice: %v — deletion must stay idempotent", err)
 	}
 }
+
+// A store whose key is gone can still be measured, listed and reclaimed.
+//
+// The key opens and seals frames; it has nothing to do with how many bytes a
+// library occupies or with deleting them. Gating those on it would mean a
+// server that lost storage.key could not free the disk its unreadable objects
+// are sitting on — which is gratuitous, and bites at exactly the moment an
+// operator is trying to recover.
+//
+// The objects are placed by hand rather than written through a store, because
+// the key is cached per data directory for the life of the process: a store
+// that ever had one keeps it, so the only honest way to have objects and no key
+// is for this process never to have loaded one for that directory. Which is
+// also the real scenario — a server starting over a store whose key is missing.
+func TestAStoreWithNoKeyCanStillBeMeasuredAndReclaimed(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "storage-data")
+	body := "written by a run whose key is now lost"
+	id, frame := framed(t, packKey(t), body)
+
+	dir := filepath.Join(LibraryDir(dataDir, TypeChunks, libraryID), id[:2])
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id[2:]), frame, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	keyless := New(confPath, dataDir, TypeChunks)
+	if keyless.keyErr == nil {
+		t.Fatal("the store found a key it should not have — this test is not testing what it claims")
+	}
+
+	// Reading is genuinely impossible, and says why.
+	if _, err := keyless.ReadInto(libraryID, id, nil); err == nil {
+		t.Error("an object was read out of a store with no key")
+	}
+	if err := keyless.Write(libraryID, id, strings.NewReader(body), true); err == nil {
+		t.Error("an object was written into a store with no key")
+	}
+
+	// Everything that does not need the key still works.
+	files, bytes, err := keyless.LibraryUsage(libraryID)
+	if err != nil {
+		t.Fatalf("LibraryUsage with no key: %v", err)
+	}
+	if files != 1 || bytes != int64(len(frame)) {
+		t.Errorf("measured %d files and %d bytes, want 1 and %d", files, bytes, len(frame))
+	}
+	listed := 0
+	if err := keyless.List(libraryID, func(ObjectInfo) error { listed++; return nil }); err != nil {
+		t.Fatalf("List with no key: %v", err)
+	}
+	if listed != 1 {
+		t.Errorf("listed %d objects with no key, want 1", listed)
+	}
+	if size, err := keyless.Stat(libraryID, id); err != nil || size != int64(len(body)) {
+		t.Errorf("Stat with no key = %d (err %v), want %d", size, err, len(body))
+	}
+	if err := keyless.RemoveLibrary(libraryID); err != nil {
+		t.Fatalf("RemoveLibrary with no key: %v", err)
+	}
+	if files, _, err := keyless.LibraryUsage(libraryID); err != nil || files != 0 {
+		t.Errorf("after reclaiming: %d files (err %v), want 0", files, err)
+	}
+}
+
+// LibraryUsage answers about storage and List answers about objects, and the
+// two differ by exactly the framing. Reporting the listing's number in gc would
+// quote a figure smaller than the space that actually came back.
+func TestLibraryUsageCountsTheFramingThatListDoesNot(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "storage-data")
+	s := New(confPath, dataDir, TypeChunks)
+	bodies := []string{"one", "two", "three"}
+	for _, b := range bodies {
+		if err := s.WriteVerified(libraryID, idOf([]byte(b)), strings.NewReader(b), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var listed int64
+	if err := s.List(libraryID, func(o ObjectInfo) error { listed += o.Size; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	files, stored, err := s.LibraryUsage(libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files != len(bodies) {
+		t.Errorf("counted %d files, want %d", files, len(bodies))
+	}
+	if want := listed + int64(len(bodies)*frameOverhead); stored != want {
+		t.Errorf("usage is %d and the listing totals %d; want usage to exceed it by the framing (%d)",
+			stored, listed, want)
+	}
+}

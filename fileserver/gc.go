@@ -4,9 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
 
 	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/fileserver/option"
@@ -18,10 +15,12 @@ import (
 // about it. A non-empty skip means GC refused to touch it and why.
 type garbageLibrary struct {
 	libraryID string
-	dirs      []string
-	bytes     int64
-	files     int
-	skip      string
+	// stores are the object stores that hold anything for it, carried from
+	// measure so that reclaim removes exactly what was measured and reported.
+	stores []*objstore.ObjectStore
+	bytes  int64
+	files  int
+	skip   string
 }
 
 // RunGC reclaims the object-store directories of deleted libraries.
@@ -235,57 +234,55 @@ func rowExists(ctx context.Context, query, arg string) (bool, error) {
 	return true, nil
 }
 
-// measure records which store directories exist for a library and how much they
-// hold, so a dry run can report the same set the delete pass would remove.
-func measure(r *garbageLibrary) error {
-	// The layout and the type names come from objstore rather than being
-	// spelled again here: a directory this does not find is silently nothing
-	// to reclaim, so a disagreement would make gc report success and remove
-	// nothing.
+// stores opens one ObjectStore per object type, which is how this file asks
+// anything about what is on disk.
+//
+// Through the seam rather than around it. This used to walk the layout with
+// filepath.WalkDir and delete with os.RemoveAll — the two things ObjectStore
+// does behind the interface — which was a second implementation of the layout
+// that would go wrong the moment the first one changed shape. It has: objects
+// now live inside packs, in a directory the fan-out walk was never going to
+// find, and a durable tier has no directories to walk at all.
+func stores() []*objstore.ObjectStore {
+	out := make([]*objstore.ObjectStore, 0, len(objstore.Types))
 	for _, objType := range objstore.Types {
-		dir := objstore.LibraryDir(absDataDir, objType, r.libraryID)
-		info, err := os.Stat(dir)
-		if os.IsNotExist(err) {
+		out = append(out, objstore.New("", absDataDir, objType))
+	}
+	return out
+}
+
+// measure records how much a dead library holds, so a dry run can report the
+// same quantity the delete pass will free.
+//
+// LibraryUsage rather than List, because those two answer different questions
+// and only one of them matches reclaim. A listing reports objects — well-formed
+// ids and plaintext sizes — while this has to report storage: frame overhead,
+// a pack's footer and filter, and the debris of an interrupted write. Reporting
+// the listing's number would make gc quote a figure smaller than the space that
+// actually came back, every time.
+func measure(r *garbageLibrary) error {
+	for _, store := range stores() {
+		files, bytes, err := store.LibraryUsage(r.libraryID)
+		if err != nil {
+			return fmt.Errorf("failed to measure %s in the %s store: %v", r.libraryID, store.ObjType, err)
+		}
+		if files == 0 && bytes == 0 {
 			continue
 		}
-		if err != nil {
-			return fmt.Errorf("failed to stat %s: %v", dir, err)
-		}
-		if !info.IsDir() {
-			continue
-		}
-
-		err = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() {
-				return nil
-			}
-			fi, err := d.Info()
-			if err != nil {
-				return err
-			}
-			r.files++
-			r.bytes += fi.Size()
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("failed to walk %s: %v", dir, err)
-		}
-
-		r.dirs = append(r.dirs, dir)
+		r.files += files
+		r.bytes += bytes
+		r.stores = append(r.stores, store)
 	}
 	return nil
 }
 
-// reclaim removes a dead library's store directories, then clears its
-// GarbageLibraries row. The row is cleared last so a failure part-way leaves the
-// library queued for the next run rather than forgotten with objects on disk.
+// reclaim removes a dead library's objects, then clears its GarbageLibraries
+// row. The row is cleared last so a failure part-way leaves the library queued
+// for the next run rather than forgotten with objects on disk.
 func reclaim(r *garbageLibrary) error {
-	for _, dir := range r.dirs {
-		if err := os.RemoveAll(dir); err != nil {
-			return fmt.Errorf("failed to remove %s: %v", dir, err)
+	for _, store := range r.stores {
+		if err := store.RemoveLibrary(r.libraryID); err != nil {
+			return fmt.Errorf("failed to remove %s from the %s store: %v", r.libraryID, store.ObjType, err)
 		}
 	}
 

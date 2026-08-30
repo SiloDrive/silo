@@ -179,8 +179,8 @@ func TestReclaimRemovesOnlyTheDeadLibrary(t *testing.T) {
 	if r.skip != "" {
 		t.Fatalf("expected %s to be reclaimable, got skip %q", dead, r.skip)
 	}
-	if len(r.dirs) != len(objstore.Types) {
-		t.Errorf("expected %d store dirs, got %d: %v", len(objstore.Types), len(r.dirs), r.dirs)
+	if len(r.stores) != len(objstore.Types) {
+		t.Errorf("expected %d stores to reclaim from, got %d", len(objstore.Types), len(r.stores))
 	}
 	if r.files != len(objstore.Types) {
 		t.Errorf("counted %d objects, want %d", r.files, len(objstore.Types))
@@ -247,9 +247,9 @@ func TestCollectSkipsOriginOfLiveVirtualLibrary(t *testing.T) {
 	if libraries[0].skip == "" {
 		t.Fatal("GC would delete the store backing a live virtual library")
 	}
-	if len(libraries[0].dirs) != 0 {
-		t.Errorf("skipped library still had %d directories queued for removal: %v",
-			len(libraries[0].dirs), libraries[0].dirs)
+	if len(libraries[0].stores) != 0 {
+		t.Errorf("skipped library still had %d stores queued for removal",
+			len(libraries[0].stores))
 	}
 
 	if _, err := os.Stat(obj); err != nil {

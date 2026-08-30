@@ -175,10 +175,31 @@ func (ps *packStore) set(libraryID string) (*packSet, error) {
 // forget drops a library's cached packs, so the next lookup rediscovers them.
 // Removing a library is what needs this; a store that kept the packs of a
 // library it had just deleted would answer reads out of files that are gone.
+//
+// The open pack is closed on the way out. Sealed packs hold no descriptor, so
+// there is nothing to release there — but an open one does, and on Linux a
+// RemoveAll over a file somebody still holds unlinks the name and leaves the
+// handle live, so a writer that was never told would go on appending to a file
+// nothing can reach.
 func (ps *packStore) forget(libraryID string) {
 	ps.mu.Lock()
-	defer ps.mu.Unlock()
+	set := ps.libs[libraryID]
 	delete(ps.libs, libraryID)
+	ps.mu.Unlock()
+
+	if set == nil {
+		return
+	}
+	set.writeMu.Lock()
+	defer set.writeMu.Unlock()
+	set.mu.Lock()
+	p := set.open
+	set.open = nil
+	set.sealed = nil
+	set.mu.Unlock()
+	if p != nil {
+		_ = p.close()
+	}
 }
 
 // each calls fn for every object a library's packs hold.

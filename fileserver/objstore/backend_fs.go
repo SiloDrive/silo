@@ -324,3 +324,47 @@ func (b *fsBackend) remove(libraryID string, packID string) error {
 func (b *fsBackend) removeLibrary(libraryID string) error {
 	return os.RemoveAll(b.libraryPath(libraryID))
 }
+
+// libraryUsage adds up everything under a library's directory.
+//
+// Every file, not every object: this is the pair of removeLibrary above, and
+// that one is a RemoveAll. So it counts the fan-out, the packs directory, a
+// pack's footer and filter, and the temp file an interrupted write left — all
+// of which removeLibrary deletes and none of which list reports.
+//
+// A directory that does not exist holds nothing, which is not an error for the
+// same reason it is not one in list: a library never written to and one
+// already reclaimed are the same answer.
+func (b *fsBackend) libraryUsage(libraryID string) (files int, bytes int64, err error) {
+	dir := b.libraryPath(libraryID)
+	err = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			// Removed between the readdir and the stat, so it is not there to
+			// be reclaimed and not there to be counted.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		files++
+		bytes += info.Size()
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to walk %s: %v", dir, err)
+	}
+	return files, bytes, nil
+}

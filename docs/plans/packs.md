@@ -1,11 +1,11 @@
 # Packs
 
-Status: **steps 1 to 4 built, and the cutover is behind a flag that is off.**
+Status: **all five steps built, and the cutover is behind a flag that is off.**
 The index, the sidecar, recovery, sealing, reading a sealed pack, the lookup,
-the writer and the three sealing rules are all in. `option.PackWrites` is
-`false`, so every install still writes loose objects. See § The cutover for why
-it is not on, and step 5 for what is left. Tracked as silo#17, milestone
-`packs`.
+the writer, the three sealing rules and `gc` through the seam are all in.
+`option.PackWrites` is `false`, so every install still writes loose objects; see
+§ The cutover for why, which is compaction (silo#19) rather than anything in
+this plan. Tracked as silo#17, milestone `packs`.
 
 Owned by [`../storage.md`](../storage.md) § Packs, which is normative for the
 format and the sealing rules. This document owns the *build*: what order, what
@@ -316,10 +316,29 @@ than documented.
 
 ### 5. `gc` stops walking the layout
 
-`gc.go` walks the fan-out with `objstore.LibraryDir` + `filepath.WalkDir` and
-deletes with `os.RemoveAll` — what `ObjectStore.List` and `RemoveLibrary` do
-behind the interface. Two walkers of the layout, and only one of them can ever
-see a pack. This is where measure and reclaim go through the seam (silo#29).
+**Built** (silo#29). `gc.go` walked the fan-out with `objstore.LibraryDir` +
+`filepath.WalkDir` and deleted with `os.RemoveAll` — the two things
+`ObjectStore` does behind the interface. Both now go through the seam, and
+`gc.go` no longer imports `os`, `io/fs` or `path/filepath` at all, which is the
+check that it stopped.
+
+**Measure needed a new question rather than an existing one.** `List` answers
+about *objects* — well-formed ids, plaintext sizes, one entry each — and
+`measure` has to report what the delete pass will actually free, which includes
+frame overhead, a pack's footer and filter, and the debris of an interrupted
+write that a listing skips on purpose. So the seam gained `libraryUsage`, the
+pair of `removeLibrary`: on a tier it is a LIST with sizes, which is inside the
+four-verb floor. Using the listing's number would have made `silo gc` quote a
+figure smaller than the space that came back, every time.
+
+**A regression this uncovered, which had nothing to do with packs.** Routing
+`gc` through `ObjectStore` made reclaiming disk require `storage.key`, because
+`New` recorded one init error for both the backend and the key. But the key
+opens and seals frames; it has no bearing on how many bytes a library occupies
+or on deleting them. So the two errors are now separate, and sizes, listings
+and deletions are gated on the backend alone. A server that lost its key cannot
+read its objects — true and unavoidable — but can still free the disk they sit
+on, which is what an operator in that position is trying to do.
 
 **Ingest is dropped.** It was here to migrate a store that already held loose
 objects, and there are no installs to migrate: the write path flips before the

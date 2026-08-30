@@ -105,8 +105,20 @@ type ObjectStore struct {
 	// the backend rather than inside one, because the seam takes whole sealed
 	// packs and knows nothing about what is in them. See packstore.go.
 	packs *packStore
-	// initErr is why there is no backend or no key, if there is not. See New.
-	initErr error
+	// backendErr is why there is no backend, if there is not. Everything fails
+	// on it: with no backend there is nothing to ask.
+	backendErr error
+	// keyErr is why there is no storage key, if there is not — kept apart from
+	// backendErr because far less depends on it than it first appears.
+	//
+	// The key opens and seals frames. It has nothing to do with how many bytes
+	// a library occupies or with deleting them, so a store that cannot find its
+	// key can still be measured, listed and reclaimed. That distinction is the
+	// difference between a server that lost storage.key being unable to read
+	// its objects — which is true and unavoidable — and being unable to free
+	// the disk they are sitting on, which would be gratuitous and would bite at
+	// exactly the worst moment.
+	keyErr error
 }
 
 // storageBackend is the interface every storage tier implements.
@@ -161,6 +173,14 @@ type storageBackend interface {
 	remove(libraryID, packID string) error
 	// removeLibrary deletes every pack a library holds.
 	removeLibrary(libraryID string) error
+	// libraryUsage reports how many files a library occupies and how many
+	// bytes, counting everything removeLibrary would delete.
+	//
+	// The pair matters more than either half. A dry run has to report what the
+	// delete pass will actually free, so these two have to agree about what
+	// "everything this library holds" means — including the debris a listing
+	// deliberately skips, which removeLibrary deletes all the same.
+	libraryUsage(libraryID string) (files int, bytes int64, err error)
 }
 
 // New returns a new object store for a given type of objects: TypeChunks or
@@ -173,34 +193,44 @@ type storageBackend interface {
 // and says what happened.
 func New(confPath string, dataDir string, objType string) *ObjectStore {
 	obj := &ObjectStore{ObjType: objType}
-	backend, key, err := open(dataDir, objType)
+
+	// The key is loaded after the backend because generating one refuses over
+	// a store that already holds objects, and answering that question needs
+	// the store directories to be the ones this backend will use.
+	backend, err := newFSBackend(dataDir, objType)
 	if err != nil {
-		obj.initErr = fmt.Errorf("objstore: no %s store: %w", objType, err)
+		obj.backendErr = fmt.Errorf("objstore: no %s store: %w", objType, err)
 		return obj
 	}
 	obj.backend = backend
-	obj.key = key
 	obj.packs = packStoreFor(TypeDir(dataDir, objType))
+
+	key, err := storageKeyFor(dataDir)
+	if err != nil {
+		obj.keyErr = fmt.Errorf("objstore: no %s store: %w", objType, err)
+		return obj
+	}
+	obj.key = key
 	return obj
 }
 
-// open is everything New has to get right before it has a store, in the order
-// it has to happen: the key is loaded after the backend because generating one
-// refuses over a store that already holds objects, and answering that question
-// needs the store directories to be the ones this backend will use.
-func open(dataDir, objType string) (storageBackend, []byte, error) {
-	backend, err := newFSBackend(dataDir, objType)
-	if err != nil {
-		return nil, nil, err
+// ready reports whether this store can move object bytes, which needs both the
+// backend and the key.
+func (s *ObjectStore) ready() error {
+	if s.backendErr != nil {
+		return s.backendErr
 	}
-	key, err := storageKeyFor(dataDir)
-	if err != nil {
-		return nil, nil, err
-	}
-	return backend, key, nil
+	return s.keyErr
 }
 
-func (s *ObjectStore) ready() error { return s.initErr }
+// present reports whether this store can answer questions about what it holds
+// and remove things, which needs the backend alone.
+//
+// Sizes, listings and deletions never touch a frame's contents: a size is
+// arithmetic or an index lookup, and a deletion is a path. So they are gated on
+// the backend rather than on the key, and "silo gc" keeps working on a store
+// whose key is gone.
+func (s *ObjectStore) present() error { return s.backendErr }
 
 // Read data from storage backends.
 func (s *ObjectStore) Read(libraryID string, objID string, w io.Writer) error {
@@ -432,7 +462,7 @@ func (s *ObjectStore) Exists(libraryID string, objID string) (bool, error) {
 // answering with the file size would be wrong by exactly the frame overhead,
 // on the wire, silently.
 func (s *ObjectStore) Stat(libraryID string, objID string) (int64, error) {
-	if err := s.ready(); err != nil {
+	if err := s.present(); err != nil {
 		return -1, err
 	}
 	// Out of the index when a pack holds it, which keeps this one lookup and
@@ -502,7 +532,7 @@ type ObjectInfo struct {
 // of memory — but it is why this is a walk rather than a stream that could
 // forget what it had seen.
 func (s *ObjectStore) List(libraryID string, fn func(ObjectInfo) error) error {
-	if err := s.ready(); err != nil {
+	if err := s.present(); err != nil {
 		return err
 	}
 
@@ -539,7 +569,7 @@ func (s *ObjectStore) List(libraryID string, fn func(ObjectInfo) error) error {
 // missing file is deliberately not an error here, so it would return success
 // and let "silo gc -delete" report bytes reclaimed that are still on the disk.
 func (s *ObjectStore) Remove(libraryID string, objID string) error {
-	if err := s.ready(); err != nil {
+	if err := s.present(); err != nil {
 		return err
 	}
 	_, _, packed, err := s.packs.find(libraryID, objID)
@@ -552,9 +582,29 @@ func (s *ObjectStore) Remove(libraryID string, objID string) error {
 	return s.backend.remove(libraryID, objID)
 }
 
+// LibraryUsage reports how many files a library occupies and how many bytes,
+// counting everything RemoveLibrary would delete.
+//
+// Deliberately not the same question as List. A listing answers about
+// *objects* — well-formed ids, plaintext sizes, one entry per object — because
+// that is what a census and a collector need. This answers about *storage*:
+// every byte the delete pass frees, including a pack's footer and filter, the
+// frame overhead around each object, and the debris of an interrupted write
+// that a listing skips on purpose.
+//
+// Reporting the listing's number instead would make "silo gc" quote a figure
+// smaller than the space that came back, every time, and an operator
+// reconciling that against df would have nothing to find.
+func (s *ObjectStore) LibraryUsage(libraryID string) (files int, bytes int64, err error) {
+	if err := s.present(); err != nil {
+		return 0, 0, err
+	}
+	return s.backend.libraryUsage(libraryID)
+}
+
 // RemoveLibrary deletes every object a library holds.
 func (s *ObjectStore) RemoveLibrary(libraryID string) error {
-	if err := s.ready(); err != nil {
+	if err := s.present(); err != nil {
 		return err
 	}
 	// The cached packs go first. They are footers in memory and file paths,
