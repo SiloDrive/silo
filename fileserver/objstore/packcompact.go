@@ -162,16 +162,36 @@ func (s *packSet) compact(packID string, live func(objID string) bool) (Compacti
 	return result, nil
 }
 
-// copyFrames moves the live frames of one pack into another, in the order the
-// index gives them.
+// copyFrames moves the live frames of one pack into another, **in the order
+// they physically sit in the old pack**.
 //
-// Sorted by id, because that is the order a sealed pack's footer holds and
-// therefore the order entries() returns. Arrival order is not recoverable and
-// is not worth recovering: what a pack's frame order buys is sequential reads
-// of a file's chunks, and that locality was already lost when the frames were
-// first appended in arrival order across concurrent uploads.
+// That is not the order the index gives them. A footer is sorted by id, so
+// entries() hands back id order, and ids are SHA-256 — uniformly random, and
+// therefore uncorrelated with anything. Copying in that order would scatter a
+// file's chunks across the new pack, and because id order is stable, every
+// later rewrite would preserve the scattering. One compaction would destroy
+// locality permanently rather than degrade it.
+//
+// The physical order is recoverable and costs a sort: the frames were appended
+// in arrival order and every index record carries its offset, so sorting by
+// offset reconstructs exactly the layout the pack was written with. Compaction
+// then preserves whatever locality the writer achieved instead of discarding
+// it — and, because dead frames are dropped, the survivors end up closer
+// together than they were.
+//
+// It also makes the copy itself a forward scan of the old pack rather than a
+// random walk over it.
+//
+// What this does not do is *improve* locality. Chunks of one file that were
+// split across two packs when the first one sealed stay split, because nothing
+// here knows which file a chunk belongs to. storage.md wants file-order
+// locality; that needs information from above this seam.
 func copyFrames(from *sealedPack, to *openPack, keep []indexEntry) error {
-	for _, e := range keep {
+	inPackOrder := make([]indexEntry, len(keep))
+	copy(inPackOrder, keep)
+	sort.Slice(inPackOrder, func(i, j int) bool { return inPackOrder[i].Offset < inPackOrder[j].Offset })
+
+	for _, e := range inPackOrder {
 		frame, err := from.readFrameAt(e)
 		if err != nil {
 			return fmt.Errorf("reading %s out of %s: %v", e.ID, from.id, err)

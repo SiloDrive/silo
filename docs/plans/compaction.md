@@ -116,6 +116,29 @@ believes it has that chunk.
 So: publish the new pack, add it to the set, remove the old from the set, delete
 the old from disk. Every step leaves at least one pack holding every live frame.
 
+## Decision 7: a rewrite preserves the physical order of frames
+
+Copying in index order would have been the obvious reading of "walk the pack",
+and it is wrong in a way that does not show up in a correctness test. A footer
+is sorted by id; ids are SHA-256 and therefore uncorrelated with anything. So
+copying in that order scatters a file's chunks uniformly across the rewritten
+pack — and because id order is *stable*, every later rewrite preserves the
+scattering. One compaction would destroy locality permanently rather than
+degrade it gradually.
+
+The physical order is recoverable and costs a sort. Frames were appended in
+arrival order and every index record carries its offset, so ordering by offset
+reconstructs the layout the pack was written with. The rewrite then keeps
+whatever locality the writer achieved, and the survivors end up closer together
+than they were, because the dead frames between them are gone. It also turns the
+copy into a forward scan of the old pack instead of a random walk over it.
+
+What this does not do is make locality *better*. Chunks of one file split across
+two packs when the first sealed stay split, because nothing at this layer knows
+which file a chunk belongs to. `storage.md` asks for new chunks of a file to be
+written contiguously; that is a property of the *write* path and needs
+information from above the seam, and it is the same gap `packs.md` records.
+
 ## Decision 5: only sealed packs are compacted, ever
 
 The open pack is the writer's, and it is the one file in the store with an
@@ -222,3 +245,6 @@ work was.
   Compaction produces packs in exactly the format `packs.md` defined, and moves
   frames between them without opening one.
 - **No compaction of the open pack.** Decision 5.
+- **No *improvement* of locality.** See below — a rewrite preserves the frame
+  order it found, and cannot do better without knowing which file a chunk
+  belongs to.

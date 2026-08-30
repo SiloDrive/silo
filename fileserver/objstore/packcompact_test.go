@@ -1,8 +1,10 @@
 package objstore
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -445,4 +447,71 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// Compaction preserves the order frames sit in, which is the order they were
+// written in.
+//
+// Ids are SHA-256 and so uncorrelated with anything; copying in index order
+// would scatter a file's chunks across the rewritten pack, and since id order
+// is stable every later rewrite would keep them scattered. That makes one
+// compaction a permanent loss of locality rather than a gradual one, which is
+// why this is asserted rather than assumed.
+func TestCompactionPreservesThePhysicalOrderOfFrames(t *testing.T) {
+	// Bodies whose ids sort differently from the order they are written in, so
+	// that "kept the write order" and "sorted by id" are distinguishable. With
+	// twelve of them the two orders agreeing by chance is negligible.
+	var bodies []string
+	for i := 0; i < 12; i++ {
+		bodies = append(bodies, fmt.Sprintf("chunk %02d of one file, written in sequence", i))
+	}
+	s, dataDir, packID := compactable(t, bodies)
+
+	// Drop every third, so the rewrite is a real rewrite and the survivors
+	// still have a defined relative order.
+	var kept []string
+	live := map[string]bool{}
+	for i, b := range bodies {
+		if i%3 == 2 {
+			continue
+		}
+		kept = append(kept, b)
+		live[idOf([]byte(b))] = true
+	}
+
+	got, err := s.CompactPack(libraryID, packID, func(id string) bool { return live[id] })
+	if err != nil {
+		t.Fatalf("CompactPack: %v", err)
+	}
+	if got.NewPackID == "" {
+		t.Fatal("no rewrite happened")
+	}
+
+	// Read the new pack's index and put it back into physical order.
+	sealed, err := openSealedPack(TypeDir(dataDir, TypeChunks), libraryID, got.NewPackID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := sealed.entries()
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Offset < entries[j].Offset })
+
+	var gotOrder []string
+	for _, e := range entries {
+		gotOrder = append(gotOrder, e.ID)
+	}
+	var wantOrder []string
+	for _, b := range kept {
+		wantOrder = append(wantOrder, idOf([]byte(b)))
+	}
+	if !equalStrings(gotOrder, wantOrder) {
+		t.Errorf("the rewrite reordered the frames.\n got %v\nwant %v", gotOrder, wantOrder)
+	}
+
+	// And the test would be vacuous if the write order happened to be id
+	// order, so check that it is not.
+	byID := append([]string(nil), wantOrder...)
+	sort.Strings(byID)
+	if equalStrings(byID, wantOrder) {
+		t.Fatal("the write order is also id order, so this test cannot tell them apart")
+	}
 }
