@@ -278,6 +278,18 @@ func LoadFileServerOptions(configFile string) {
 			"so a crash or power loss can leave repositories permanently corrupt.")
 	}
 
+	// Packs as the write path. Opt-in only, and env-only: there is no config
+	// file key for it, because a deployment should not carry this in a file it
+	// keeps. It exists so the pack write path can be exercised on a real server
+	// before compaction makes it safe to have on.
+	PackWrites = envBool(PackWrites, "SILO_PACK_WRITES")
+	if PackWrites {
+		log.Warn("SILO_PACK_WRITES is on: new objects go into packs. A sealed pack " +
+			"is immutable and compaction is not built, so `silo gc -delete` will " +
+			"find unreferenced objects, report them as left in place, and free " +
+			"nothing. Do not use this on a store you care about.")
+	}
+
 	if section, err := config.GetSection("httpserver"); err == nil {
 		parseFileServerSection(section)
 	}
