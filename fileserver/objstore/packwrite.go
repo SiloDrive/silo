@@ -188,6 +188,62 @@ func (ps *packStore) append(libraryID, objID string, frame []byte, sync bool) er
 	return set.appendFrame(objID, frame, sync)
 }
 
+// appendBatch writes several frames into a library's open pack as one unit.
+func (ps *packStore) appendBatch(libraryID string, objIDs []string, frames [][]byte, sync bool) error {
+	set, err := ps.set(libraryID)
+	if err != nil {
+		return err
+	}
+	ps.startSealer()
+	return set.appendBatch(objIDs, frames, sync)
+}
+
+// appendBatch writes several frames as one unit of work.
+//
+// This is the shape the whole design is sized for, and doing it per frame gave
+// up both things it buys. **The lock is taken once**, so the frames of one
+// request land contiguously instead of interleaving with a concurrent upload's
+// — which is a file's chunks staying together, and is what makes compaction's
+// order-preservation worth anything. **The fsync happens once**, so a 256-chunk
+// request costs one durability barrier rather than 512.
+//
+// A pack that fills mid-batch is sealed and the rest continue into a fresh one.
+// Sealing fsyncs, so the frames already written are durable before the batch
+// moves on, and only the final pack needs a sync at the end.
+func (s *packSet) appendBatch(objIDs []string, frames [][]byte, sync bool) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	p, err := s.writablePack()
+	if err != nil {
+		return err
+	}
+	for i, frame := range frames {
+		if _, err := p.append(frame, objIDs[i], false); err != nil {
+			return err
+		}
+		if !p.full() {
+			continue
+		}
+		// rotate seals, which fsyncs everything appended so far.
+		if err := s.rotate(p); err != nil {
+			return err
+		}
+		if p, err = s.writablePack(); err != nil {
+			return err
+		}
+	}
+	if sync {
+		if err := p.sync(); err != nil {
+			return err
+		}
+	}
+	if p.full() {
+		return s.rotate(p)
+	}
+	return nil
+}
+
 // appendFrame writes one frame into the library's open pack, opening one if
 // there is none and sealing it if the append filled it.
 //

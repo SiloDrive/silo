@@ -130,6 +130,28 @@ func (s *Store) Params() store.Params { return s.params }
 // what makes this safe to call with bytes a client supplied — and is why the
 // server can accept chunks for a library it cannot read without trusting the
 // uploader about what they are.
+// PutChunks stores several chunks as one unit of work.
+//
+// The batch is the point, not a convenience. Written one at a time, a file's
+// chunks take the store's write lock separately and can interleave with a
+// concurrent upload's — so two files end up shuffled together wherever they
+// land, and nothing downstream can unshuffle them, because only this layer
+// knows which chunks belong to which file. Written together they stay together.
+//
+// It also costs one durability barrier instead of one per chunk.
+//
+// Every chunk is verified against its id before any is stored, so a batch
+// carrying one bad chunk stores none of itself.
+func (s *Store) PutChunks(chunks []objstore.Object) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+	if err := s.chunks.WriteBatch(s.storeID, chunks, option.SyncObjectWrites); err != nil {
+		return fmt.Errorf("failed to store %d chunks: %w", len(chunks), err)
+	}
+	return nil
+}
+
 func (s *Store) PutChunk(id store.ID, data []byte) error {
 	if err := s.chunks.WriteVerified(s.storeID, id.String(), bytes.NewReader(data), option.SyncObjectWrites); err != nil {
 		if errors.Is(err, objstore.ErrContentMismatch) {

@@ -89,7 +89,15 @@ cheap question rather than a scan.
 What it costs is the one genuinely new concurrency concern in this plan:
 **writers serialise to allocate an append offset**, where writes to distinct
 loose paths needed no coordination at all. The batch surface is what keeps that
-cheap — the lock is taken once per request rather than once per chunk.
+cheap — the lock is taken once per group of chunks rather than once per chunk.
+
+**That grouping turned out to be about locality, not only cost.** Taken per
+chunk, two concurrent uploads to one library interleave their frames, and the
+scattering is permanent: only the layer that knows which chunks arrived together
+could regroup them, and it is above `objstore`. Compaction preserves the order
+it finds and cannot invent a better one. So the batch is what makes a file's
+chunks contiguous in the first place, and `uploadBatchBytes` bounds how much of
+a request is held to achieve it.
 
 ## Decision 2: `storageBackend` stays a tier interface
 

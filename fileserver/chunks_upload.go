@@ -7,9 +7,26 @@ import (
 	"mime"
 	"net/http"
 
+	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/store"
 	log "github.com/sirupsen/logrus"
 )
+
+// uploadBatchBytes is how much of a request is held before it is stored.
+//
+// A bound is needed in both directions. Storing each chunk as it arrives —
+// what this did before — means a file's frames interleave with any concurrent
+// upload to the same library, and once interleaved nothing downstream can
+// separate them: only this layer knows which chunks arrived together, so
+// compaction can preserve their order but never recover it. Holding the whole
+// request instead would mean up to 256 chunks resident, which at the sizes the
+// chunker produces is hundreds of megabytes per upload in flight.
+//
+// 16 MB is the compromise: a run of frames long enough to be worth having
+// contiguous, and small enough that many concurrent uploads cost bounded
+// memory. It is not a tuning knob; it is a memory ceiling with a locality
+// benefit, and it should be measured before it is moved.
+const uploadBatchBytes = 16 << 20
 
 // The write half of the batched chunk surface.
 //
@@ -76,6 +93,23 @@ func chunksUploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	body := http.MaxBytesReader(w, r.Body, maxUploadBody)
 	var stored, present int
+	// Chunks are stored in groups rather than one at a time, so that a file's
+	// frames land together instead of interleaving with a concurrent upload's,
+	// and so that one durability barrier covers many of them. first is kept
+	// typed, for the error path's log line.
+	var batch []objstore.Object
+	var batchBytes int64
+	var first store.ID
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := st.PutChunks(batch); err != nil {
+			return err
+		}
+		batch, batchBytes = batch[:0], 0
+		return nil
+	}
 	// One buffer down the whole stream. ReadChunkFrame reads into it and grows
 	// it only when a frame does not fit, so a 256-frame request allocates
 	// about once rather than 256 times — the same bargain GetChunkInto makes
@@ -124,11 +158,33 @@ func chunksUploadHandler(w http.ResponseWriter, r *http.Request) {
 		if refuseOverQuota(w, library, int64(len(frame.Bytes))) {
 			return
 		}
-		if err := st.PutChunk(frame.ID, frame.Bytes); err != nil {
-			putObjectError(w, r, err, "chunk", frame.ID)
-			return
+		// Collected rather than stored one at a time, so that the frames of one
+		// request land together instead of interleaving with a concurrent
+		// upload's. Only this layer knows which chunks arrived as one file, so
+		// an order lost here cannot be recovered underneath.
+		if len(batch) == 0 {
+			first = frame.ID
 		}
+		// Copied, because ReadChunkFrame hands back a slice of the scratch
+		// buffer it is about to reuse. The old code stored each chunk before
+		// reading the next and never had to care.
+		data := make([]byte, len(frame.Bytes))
+		copy(data, frame.Bytes)
+		batch = append(batch, objstore.Object{ID: frame.ID.String(), Data: data})
+		batchBytes += int64(len(data))
 		stored++
+
+		if batchBytes >= uploadBatchBytes {
+			if err := flush(); err != nil {
+				putObjectError(w, r, err, "chunk", first)
+				return
+			}
+		}
+	}
+
+	if err := flush(); err != nil {
+		putObjectError(w, r, err, "chunk", first)
+		return
 	}
 
 	// Chunks written before a failure are left where they are, deliberately.
@@ -137,6 +193,11 @@ func chunksUploadHandler(w http.ResponseWriter, r *http.Request) {
 	// chunks/missing and gets a shorter list, which is this surface's whole
 	// resume story. What is not left behind is a half-created file, because
 	// this endpoint creates nothing.
+	//
+	// Storing in groups does not change that: a group either stores or does
+	// not, and the groups before it stay stored. What a client resends is
+	// bounded by uploadBatchBytes rather than by one chunk, which is the same
+	// bargain as any batching.
 	//
 	// stored + present equals the number of frames the body carried, always,
 	// and that invariant is the receipt: it is how a client confirms the server

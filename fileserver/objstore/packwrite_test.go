@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -344,4 +346,109 @@ func TestWithTheFlagOffNothingIsPacked(t *testing.T) {
 	if _, err := os.Stat(loose); err != nil {
 		t.Errorf("the object is not where the loose store puts it: %v", err)
 	}
+}
+
+// A batch lands as a contiguous run even when another batch is being written
+// at the same time. That is the property the whole batched write path exists
+// for, and it is only observable under concurrency: written one after the
+// other, chunks land contiguously however they are stored.
+//
+// Interleaved, a file's chunks are scattered through the pack and nothing
+// downstream can gather them — only the layer that knows which chunks arrived
+// together could, and it is above this one. Compaction preserves the order it
+// finds, so the order has to be right here.
+//
+// The assertion is exact for the batched path: each batch takes the write lock
+// once, so there are exactly two runs. Against a per-chunk writer it is
+// overwhelmingly likely to fail rather than certain, which is why the batches
+// are large.
+func TestABatchLandsContiguouslyAgainstAConcurrentWriter(t *testing.T) {
+	s, dataDir := writeStore(t)
+
+	const n = 60
+	batches := make([][]Object, 2)
+	for b := range batches {
+		batches[b] = make([]Object, n)
+		for i := range batches[b] {
+			body := fmt.Sprintf("file %d, chunk %03d", b, i)
+			batches[b][i] = Object{ID: idOf([]byte(body)), Data: []byte(body)}
+		}
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(batches))
+	start := make(chan struct{})
+	for b := range batches {
+		wg.Add(1)
+		go func(b int) {
+			defer wg.Done()
+			<-start
+			errs[b] = s.WriteBatch(libraryID, batches[b], true)
+		}(b)
+	}
+	close(start)
+	wg.Wait()
+	for b, err := range errs {
+		if err != nil {
+			t.Fatalf("batch %d: %v", b, err)
+		}
+	}
+	if err := s.packs.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	sealed, err := openSealedPack(TypeDir(dataDir, TypeChunks), libraryID, onlyPackID(t, dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := sealed.entries()
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Offset < entries[j].Offset })
+	if len(entries) != 2*n {
+		t.Fatalf("the pack holds %d frames, want %d", len(entries), 2*n)
+	}
+
+	owner := map[string]int{}
+	for b := range batches {
+		for _, o := range batches[b] {
+			owner[o.ID] = b
+		}
+	}
+
+	// Which batch each frame belongs to, in physical order. Two runs, not
+	// stripes.
+	runs := 1
+	for i := 1; i < len(entries); i++ {
+		if owner[entries[i].ID] != owner[entries[i-1].ID] {
+			runs++
+		}
+	}
+	if runs != 2 {
+		t.Errorf("the two batches are broken into %d runs in the pack, want 2 — they interleaved", runs)
+	}
+
+	// And each batch kept its own order within its run.
+	for b := range batches {
+		var got []string
+		for _, e := range entries {
+			if owner[e.ID] == b {
+				got = append(got, e.ID)
+			}
+		}
+		for i, o := range batches[b] {
+			if got[i] != o.ID {
+				t.Errorf("batch %d frame %d is out of order", b, i)
+				break
+			}
+		}
+	}
+}
+
+// onlyPackID is the id of the single sealed pack a test expects to exist.
+func onlyPackID(t *testing.T, dataDir string) string {
+	t.Helper()
+	names := packFileNames(t, dataDir)
+	if len(names) != 1 {
+		t.Fatalf("%d sealed packs, want exactly 1", len(names))
+	}
+	return strings.TrimSuffix(names[0], ".pack")
 }

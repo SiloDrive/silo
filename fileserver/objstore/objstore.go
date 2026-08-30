@@ -426,6 +426,71 @@ func (s *ObjectStore) write(libraryID string, objID string, r io.Reader, sync bo
 	return s.backend.write(libraryID, objID, bytes.NewReader(frame), sync)
 }
 
+// Object is one object in a batch write: the id it will be stored under, and
+// the bytes the caller is storing.
+type Object struct {
+	ID   string
+	Data []byte
+}
+
+// WriteBatch stores several objects as one unit of work, verifying each
+// against the id it is offered under.
+//
+// This exists because storing a file's chunks one call at a time gives up the
+// two things a pack is for. Written singly, each chunk takes the write lock and
+// pays its own fsync, so a 256-chunk request costs 512 durability barriers —
+// and, worse, two concurrent uploads interleave their frames, scattering both
+// files through the pack. Compaction cannot repair that afterwards: it can
+// preserve the order it finds, but nothing below this layer knows which file a
+// chunk belongs to, so the order has to be right when it is written.
+//
+// Every object is verified before any is stored, so a batch with one bad id
+// stores nothing rather than half of itself. The check is over the bytes the
+// caller offered, never over the frame — see write.
+//
+// On a store that is not packing, this is the loop it replaces: the loose
+// backend has no batch, one file per object is already one publish each, and
+// there is nothing to amortise.
+func (s *ObjectStore) WriteBatch(libraryID string, objs []Object, sync bool) error {
+	if err := s.ready(); err != nil {
+		return err
+	}
+	if len(objs) == 0 {
+		return nil
+	}
+
+	for _, o := range objs {
+		h := verifier()
+		h.Write(o.Data)
+		if got := hex.EncodeToString(h.Sum(nil)); got != o.ID {
+			return fmt.Errorf("object %s/%s hashes to %s: %w", libraryID, o.ID, got, ErrContentMismatch)
+		}
+	}
+
+	// Sealed once, for both destinations. Everything in this store is a frame —
+	// the loose backend holds frames just as a pack does — so the choice of
+	// container comes after the sealing, never instead of it.
+	ids := make([]string, len(objs))
+	frames := make([][]byte, len(objs))
+	for i, o := range objs {
+		frame, err := sealFrame(s.key, o.ID, o.Data)
+		if err != nil {
+			return err
+		}
+		ids[i], frames[i] = o.ID, frame
+	}
+
+	if !s.packWrites {
+		for i := range objs {
+			if err := s.backend.write(libraryID, ids[i], bytes.NewReader(frames[i]), sync); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return s.packs.appendBatch(libraryID, ids, frames, sync)
+}
+
 // readWhole reads r to EOF, sized up front when r can say how much it holds.
 //
 // Both callers of Write and WriteVerified hand this a bytes.Reader over a

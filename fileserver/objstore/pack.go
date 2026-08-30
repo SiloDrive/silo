@@ -254,6 +254,25 @@ func (p *openPack) snapshot() []indexEntry {
 	return out
 }
 
+// sync makes everything appended so far durable: the pack first, then the
+// index that names it.
+//
+// The order is append's, at batch scale. A record must never name bytes that
+// are not on the platter, so the pack is fsynced before the sidecar is — a
+// crash between the two leaves a tail no record points at, which recovery
+// truncates, rather than an index pointing at nothing.
+func (p *openPack) sync() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.f.Sync(); err != nil {
+		return fmt.Errorf("syncing pack %s: %v", p.id, err)
+	}
+	if err := p.side.sync(); err != nil {
+		return fmt.Errorf("syncing the index of pack %s: %v", p.id, err)
+	}
+	return nil
+}
+
 // lookup answers from memory. An open pack has no bloom filter and needs none:
 // it is one pack, the writer is already holding its index, and asking it is a
 // map read rather than anything on disk.
