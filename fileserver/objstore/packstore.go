@@ -57,6 +57,11 @@ type packSet struct {
 	// writeMu serialises appends and the rotation between packs. Separate from
 	// mu on purpose — see appendFrame.
 	writeMu sync.Mutex
+	// compactMu serialises rewrites against each other, and deliberately not
+	// against writeMu: a rewrite copies a whole pack, and holding the write
+	// path's lock for that long would stall every upload. Compaction touches
+	// only sealed packs, which the writer never writes to.
+	compactMu sync.Mutex
 }
 
 // current is the open pack, or nil. One accessor rather than the same three

@@ -111,8 +111,34 @@ func packPaths(objDir, libraryID, packID string) (pack string, side string) {
 	return filepath.Join(dir, packID+".pack"), filepath.Join(dir, packID+".idx")
 }
 
+// packTmpSuffix marks a pack that is being built and is not part of the store
+// yet.
+//
+// Compaction writes under it and publishes by renaming, which is what keeps a
+// rewrite from colliding with the write path: a pack built the ordinary way is
+// an *open* pack with a sidecar, and loadPackSet refuses a library that has two
+// of those — correctly, since that is the signature of two writers. Under this
+// suffix the file's extension is not ".pack" or ".idx", so the load skips it
+// entirely and an interrupted rewrite is debris rather than a second writer.
+const packTmpSuffix = ".tmp"
+
+func tmpPackPaths(objDir, libraryID, packID string) (pack string, side string) {
+	p, s := packPaths(objDir, libraryID, packID)
+	return p + packTmpSuffix, s + packTmpSuffix
+}
+
 // createPack starts a new empty pack and its sidecar.
 func createPack(objDir, libraryID string) (*openPack, error) {
+	return createPackNamed(objDir, libraryID, packPaths)
+}
+
+// createTmpPack starts a pack that nothing will load until it is renamed into
+// place. See packTmpSuffix.
+func createTmpPack(objDir, libraryID string) (*openPack, error) {
+	return createPackNamed(objDir, libraryID, tmpPackPaths)
+}
+
+func createPackNamed(objDir, libraryID string, paths func(string, string, string) (string, string)) (*openPack, error) {
 	id, err := newPackID()
 	if err != nil {
 		return nil, err
@@ -121,7 +147,7 @@ func createPack(objDir, libraryID string) (*openPack, error) {
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
 		return nil, err
 	}
-	packPath, sidePath := packPaths(objDir, libraryID, id)
+	packPath, sidePath := paths(objDir, libraryID, id)
 
 	f, err := os.OpenFile(packPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {

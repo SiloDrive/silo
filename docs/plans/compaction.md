@@ -1,6 +1,9 @@
 # Compaction
 
-Status: **planned, not built.** Tracked as silo#19, milestone `compaction`.
+Status: **steps 1 and 2 built.** The mark attributed to packs, `silo df -packs`,
+the rewrite, and the crash rules. Step 3 (threshold, budget, `gc` wiring) and
+step 4 (the cutover, silo#50) are ahead. Tracked as silo#19, milestone
+`compaction`.
 
 Owned by [`../storage.md`](../storage.md) § The tracing mark, and compaction,
 which is normative for the mark's rules and the scheduler's economics. This
@@ -151,10 +154,15 @@ changes what a client can observe.
 
 ### 1. `PackStats`: attribute the mark to packs
 
-One catalog table — `pack_id`, `library_id`, `total_bytes`, `live_bytes`,
-`head_bytes`, `gc_id`, `measured_at` — filled by intersecting a store's mark
-with each sealed pack's index. Report only: `silo gc -stats` prints dead
-fractions and nothing acts on them.
+**Built.** `objstore.PackStats` intersects a caller's liveness answer with each
+sealed pack's index; `objmgr.PackCensus` supplies that answer from the same walk
+`Census` uses, so the two are two attributions of one mark rather than two
+estimates. Surfaced as `silo df -packs`.
+
+**No catalog table yet.** The plan called for one, and a table nothing reads is
+the speculative code this plan set out to avoid: `PackStats` is a cache for a
+*scheduler*, and the scheduler is step 3. It lands there, with the `gc_id` that
+makes a row's staleness detectable.
 
 Testable on its own against a store with known contents: write files, expire
 some history, assert the three numbers partition the pack the way `Census`
@@ -162,13 +170,35 @@ already asserts they partition the store.
 
 ### 2. Rewrite one pack
 
-Given a pack id: re-verify liveness, copy the live frames into `<new>.pack.tmp`,
-seal, rename, add to the set, remove the old, delete it. Plus the redundant-pack
-rule from Decision 3 as the crash cleanup.
+**Built.** `CompactPack` re-verifies liveness, copies the live frames into a
+temporary name, seals, renames, swaps the set and deletes the old pack.
+`PruneRedundantPacks` is the crash cleanup: it clears temporary debris and
+applies Decision 3.
 
-Tested by interrupting between every pair of steps and asserting the same store
-every time — the same discipline the sealing work used, and for the same reason:
-this is the only operation in the store that deletes data a client still wants.
+Two cases turned out to be worth special-casing rather than falling out:
+
+- **A wholly dead pack is deleted, not rewritten** into an empty one. A library
+  whose history has just been expired produces exactly that, so it is the common
+  case rather than a corner.
+- **A fully live pack is left alone.** Rewriting it would copy the whole thing
+  to produce an identical pack under a new name.
+
+**The swap is one lock hold, which is stronger than Decision 4 asked for.** The
+new pack is appended and the old removed under a single `mu.Lock`, so no reader
+sees a moment with only one of them in either direction — not merely never a
+moment with neither.
+
+**Compaction takes its own lock, not the write path's.** A rewrite copies up to
+a whole pack; holding the lock uploads take would stall every write for that
+long. It touches only sealed packs, which the writer never writes to, so the two
+need no mutual exclusion — only rewrites need excluding from each other.
+
+The redundancy rule's failure mode is the one worth naming: two packs holding
+exactly the same ids are *both* redundant by the plain reading, and deleting
+both destroys the data. A pack gives up its claim on its ids before it is
+removed, so the second is no longer redundant by the time it is considered. The
+test for it deletes both when that line is taken out, and reports the objects as
+missing.
 
 ### 3. Threshold, budget, and wiring into `gc`
 
