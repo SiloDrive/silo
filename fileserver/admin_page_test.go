@@ -9,6 +9,7 @@ import (
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/admin"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/traffic"
 )
 
 // The libraries panel, the storage panel, and the page that renders them.
@@ -84,11 +85,12 @@ func TestTheStoragePanelNamesWhatItCannotMeasure(t *testing.T) {
 		t.Fatalf("storage: %d, body %s", code, body)
 	}
 	var s struct {
-		LogicalSize  int64    `json:"logical_size"`
-		ServerQuota  *int64   `json:"server_quota"`
-		DiskFree     *int64   `json:"disk_free"`
-		AtRestSealed bool     `json:"at_rest_sealed"`
-		Unmeasured   []string `json:"unmeasured"`
+		LogicalSize  int64            `json:"logical_size"`
+		ServerQuota  *int64           `json:"server_quota"`
+		DiskFree     *int64           `json:"disk_free"`
+		AtRestSealed bool             `json:"at_rest_sealed"`
+		Unmeasured   []string         `json:"unmeasured"`
+		Throughput   traffic.Snapshot `json:"throughput"`
 	}
 	if err := json.Unmarshal([]byte(body), &s); err != nil {
 		t.Fatal(err)
@@ -109,10 +111,55 @@ func TestTheStoragePanelNamesWhatItCannotMeasure(t *testing.T) {
 		t.Fatal("the panel claims to measure everything")
 	}
 	joined := strings.ToLower(strings.Join(s.Unmeasured, " "))
-	for _, want := range []string{"throughput", "storage locations", "cache"} {
+	for _, want := range []string{"storage locations", "cache"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("the panel does not admit that %s is unmeasured: %v", want, s.Unmeasured)
 		}
+	}
+	// Throughput used to be on that list and is not any more, which is the
+	// half of this that a new measurement has to remember. A panel that
+	// reports bytes and still says throughput is unmeasured is worse than
+	// either one alone, so the list losing its entry is asserted rather than
+	// left to whoever edits it next.
+	if strings.Contains(joined, "throughput") {
+		t.Errorf("the panel reports throughput and still calls it unmeasured: %v", s.Unmeasured)
+	}
+	if s.Throughput.WindowSeconds != traffic.WindowSeconds {
+		t.Errorf("the throughput window is %d seconds, want %d", s.Throughput.WindowSeconds, traffic.WindowSeconds)
+	}
+	// Both lanes are always present, so a panel never has to distinguish "no
+	// traffic" from "no such counter".
+	for _, lane := range []string{"bulk", "control"} {
+		if _, ok := s.Throughput.Total[lane]; !ok {
+			t.Errorf("the throughput report has no %s lane: %+v", lane, s.Throughput.Total)
+		}
+		if _, ok := s.Throughput.Window[lane]; !ok {
+			t.Errorf("the throughput window has no %s lane: %+v", lane, s.Throughput.Window)
+		}
+	}
+}
+
+// The request that fetched the panel is itself traffic, so a server that has
+// served anything at all reports something. This is the end-to-end check that
+// the middleware is installed: the counters can be perfect and still read zero
+// if nothing calls them.
+func TestTheStoragePanelReportsTrafficItActuallyServed(t *testing.T) {
+	base, adminToken, _ := adminWire(t)
+
+	code, body := call(t, "GET", base+"/api/silo/v1/admin/storage", adminToken, "")
+	if code != http.StatusOK {
+		t.Fatalf("storage: %d, body %s", code, body)
+	}
+	var s struct {
+		Throughput traffic.Snapshot `json:"throughput"`
+	}
+	if err := json.Unmarshal([]byte(body), &s); err != nil {
+		t.Fatal(err)
+	}
+
+	if s.Throughput.Total["control"].Out <= 0 {
+		t.Errorf("the server has served requests and reports %d control bytes out: the counting middleware is not installed",
+			s.Throughput.Total["control"].Out)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/dkam/silo/fileserver/diskfree"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/traffic"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -62,6 +63,18 @@ type adminStorage struct {
 	// independent facts, and this is the one that is not per library.
 	AtRestSealed bool `json:"at_rest_sealed"`
 
+	// Throughput is wire bytes at the HTTP boundary -- what crossed the
+	// socket, not what reached the disk.
+	//
+	// A fourth currency, and the one furthest from the other three. Logical
+	// size, free space and the ceiling all describe bytes at rest; this
+	// describes bytes in motion, and the two do not reconcile even in
+	// principle: dedup means a chunk that arrived is often never written, a
+	// stored frame carries overhead the wire never saw, and a request re-sent
+	// after a 401 crosses twice and lands once. Reading a discrepancy between
+	// them as an error is the mistake this comment exists to prevent.
+	Throughput traffic.Snapshot `json:"throughput"`
+
 	// Unmeasured names what this server cannot answer yet, so a panel can say
 	// so in the server's own words instead of rendering something plausible.
 	// A panel that says "not measured yet" is a correct panel.
@@ -72,8 +85,8 @@ func adminStorageHandler(w http.ResponseWriter, r *http.Request) {
 	out := adminStorage{
 		DiskReserve:  option.DiskReserve,
 		AtRestSealed: true,
+		Throughput:   traffic.Default.Read(),
 		Unmeasured: []string{
-			"Throughput: there are no byte counters on the chunk upload or fetch paths.",
 			"Storage locations: there are no durable tiers to name, so there is nothing to show.",
 			"Cache versus full copy: a device credential records that a device enrolled, not what it kept.",
 			"Stored bytes by part: head, history and unreferenced come from a census that walks a library's whole store. Run silo df.",

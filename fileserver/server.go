@@ -204,6 +204,32 @@ func openStores() error {
 	return nil
 }
 
+// serveHandler wraps a router in the middleware every request passes through.
+//
+// A function rather than a few lines inside RunServer because RunServer is not
+// the only thing that stands this router up: the wire tests build one too, and
+// while this lived inline they were exercising a handler stack that was not
+// the one the server runs. That is the shape of gap where a middleware is
+// added, every test passes, and it is installed nowhere a test can see -- which
+// is exactly what happened to the traffic counters until a test asked the
+// server how many bytes it had served.
+//
+// Order matters and is the reason for each line. DebugLogger is innermost and
+// conditional, because it is a debugging aid. CountTraffic is unconditional:
+// the counters answer a question an operator asks about a server running
+// normally, so hanging them off a debug-only wrapper would mean they read zero
+// on every install that would ask. observability is outermost, so a panic in
+// any of the above is still reported and every request is timed from the
+// moment it arrives rather than from after the prefix rewrite.
+func serveHandler(router http.Handler, debugLog bool) http.Handler {
+	handler := router
+	if debugLog {
+		handler = middleware.DebugLogger(handler)
+	}
+	handler = middleware.CountTraffic(handler)
+	return observability.Middleware(handler)
+}
+
 // DatabaseName is the single SQLite file every table lives in, relative to
 // the data directory.
 const DatabaseName = "silo.db"
@@ -385,15 +411,7 @@ func Run(args []string) error {
 
 	httpServer = new(http.Server)
 	httpServer.Addr = fmt.Sprintf("%s:%d", option.Host, option.Port)
-	var handler http.Handler = router
-	if debugLog {
-		handler = middleware.DebugLogger(handler)
-	}
-	// Outermost, so a panic in any of the above is still reported and every
-	// request is timed from the moment it arrives rather than from after the
-	// prefix rewrite.
-	handler = observability.Middleware(handler)
-	httpServer.Handler = handler
+	httpServer.Handler = serveHandler(router, debugLog)
 	httpServer.ReadHeaderTimeout = readHeaderTimeout
 	httpServer.IdleTimeout = idleTimeout
 	httpServer.MaxHeaderBytes = maxHeaderBytes

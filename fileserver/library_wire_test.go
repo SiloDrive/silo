@@ -52,7 +52,9 @@ func serveTestAPI(t *testing.T) string {
 	admin.Init(siloPair.Read, siloPair.Write)
 	setup.Init(siloPair.Read, siloPair.Write)
 
-	srv := httptest.NewServer(newHTTPRouter())
+	// serveHandler rather than the bare router, so a wire test exercises the
+	// stack the server actually runs.
+	srv := httptest.NewServer(serveHandler(newHTTPRouter(), false))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
