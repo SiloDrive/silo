@@ -42,16 +42,21 @@ var ErrContentMismatch = errors.New("content does not match its object id")
 // sentinel means the tiering logic is written once instead of per backend.
 var ErrNotFound = errors.New("no such object")
 
-// ErrInPack reports an object that cannot be deleted where it is, because a
-// sealed pack is immutable.
+// ErrReclaimDeferred reports an object that cannot be deleted where it is, and
+// whose space a later background rewrite reclaims instead.
 //
 // A sentinel because a caller has to be able to tell it from a failure. It is
-// not "the delete went wrong": the object is exactly where it should be, and
-// the space it occupies is reclaimed by compaction rewriting the pack without
-// it. A collector that treats this as an error stops; one that treats it as
-// success reports space it did not free. Neither is right, and only a named
-// error lets a caller pick the third answer.
-var ErrInPack = errors.New("objstore: the object is in a pack, and a pack reclaims by compaction")
+// not "the delete went wrong": the object is exactly where it should be. A
+// collector that treats this as an error stops; one that treats it as success
+// reports space it did not free. Neither is right, and only a named error lets
+// a caller pick the third answer.
+//
+// Named for the property rather than for the container, so that the caller does
+// not have to learn what a pack is to count it — which is the invariant this
+// package is built to keep. The wrapped text carries the specifics, and a
+// second reason to defer a reclaim (an immutable object on a durable tier, say)
+// arrives as more text rather than as a second special case at every collector.
+var ErrReclaimDeferred = errors.New("objstore: the object cannot be deleted in place, and its space is reclaimed by a later rewrite")
 
 // The two object types, and the directory each one's store occupies.
 //
@@ -105,6 +110,12 @@ type ObjectStore struct {
 	// the backend rather than inside one, because the seam takes whole sealed
 	// packs and knows nothing about what is in them. See packstore.go.
 	packs *packStore
+	// packWrites is whether new objects go into a pack, resolved once here
+	// rather than read per write. Which container a store writes into is a
+	// property of the store: reading the global on each object would let two
+	// writes to one open pack disagree, and would have a test that toggles the
+	// flag mutating shared state under a live sealer.
+	packWrites bool
 	// backendErr is why there is no backend, if there is not. Everything fails
 	// on it: with no backend there is nothing to ask.
 	backendErr error
@@ -204,6 +215,7 @@ func New(confPath string, dataDir string, objType string) *ObjectStore {
 	}
 	obj.backend = backend
 	obj.packs = packStoreFor(TypeDir(dataDir, objType))
+	obj.packWrites = option.PackWrites
 
 	key, err := storageKeyFor(dataDir)
 	if err != nil {
@@ -269,10 +281,7 @@ func (s *ObjectStore) ReadInto(libraryID string, objID string, buf []byte) ([]by
 // be trusted before the last byte has been read. A ranged read of a *pack* is
 // a range over frames; there is no ranged read within one.
 //
-// Sized from stat and read in one pass rather than copied into a growing
-// buffer. The growth is not free at these sizes — a 4 MiB chunk reallocates a
-// dozen times and memcpys twice its own length before it is even decrypted —
-// and the size is already one syscall away.
+// How the frame is fetched, and why it is fetched in one pass, is frame's.
 func (s *ObjectStore) object(libraryID string, objID string, dst []byte) ([]byte, error) {
 	frame, err := s.frame(libraryID, objID)
 	if err != nil {
@@ -408,7 +417,7 @@ func (s *ObjectStore) write(libraryID string, objID string, r io.Reader, sync bo
 	if err != nil {
 		return err
 	}
-	if option.PackWrites {
+	if s.packWrites {
 		// The frame is the same bytes either way. That is the property that
 		// makes ingest a copy rather than a re-seal, and it is why this is a
 		// choice of container at the last moment rather than two write paths.
@@ -562,10 +571,10 @@ func (s *ObjectStore) List(libraryID string, fn func(ObjectInfo) error) error {
 // error.
 //
 // An object inside a pack is refused rather than deleted, and that refusal is
-// the point of this being a sentinel. A pack is immutable once sealed, so there
-// is no delete to perform: the bytes come back when compaction rewrites the
-// pack without them (silo#19). The dangerous version of this function is the
-// one that does not check — the loose path is already gone, os.Remove on a
+// the point of ErrReclaimDeferred being a sentinel. A pack is immutable once
+// sealed, so there is no delete to perform: the bytes come back when compaction
+// rewrites the pack without them (silo#19). The dangerous version of this
+// function is the one that does not check — the loose path is already gone, os.Remove on a
 // missing file is deliberately not an error here, so it would return success
 // and let "silo gc -delete" report bytes reclaimed that are still on the disk.
 func (s *ObjectStore) Remove(libraryID string, objID string) error {
@@ -577,7 +586,8 @@ func (s *ObjectStore) Remove(libraryID string, objID string) error {
 		return err
 	}
 	if packed {
-		return fmt.Errorf("%s/%s: %w", libraryID, objID, ErrInPack)
+		return fmt.Errorf("%s/%s is inside a sealed pack, which is immutable; compaction reclaims it: %w",
+			libraryID, objID, ErrReclaimDeferred)
 	}
 	return s.backend.remove(libraryID, objID)
 }

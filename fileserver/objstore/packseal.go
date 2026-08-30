@@ -30,7 +30,6 @@ package objstore
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,7 +58,7 @@ const (
 //
 // The order is what makes an interrupted seal survivable, and it is the same
 // argument append makes. Until the sidecar is gone the pack is still open, and
-// findOpenPack will hand it back to recoverPack, which truncates it to the last
+// loadPackSet will hand it back to recoverPack, which truncates it to the last
 // frame the sidecar indexes — discarding however much of a footer got written.
 // Sealing again from the same records produces the same bytes, because sorting
 // is deterministic and so is the filter, so re-doing the step is not merely
@@ -104,7 +103,12 @@ func (p *openPack) seal() error {
 func buildFooter(entries []indexEntry) ([]byte, error) {
 	sorted := dedupedIndex(sortedIndex(entries))
 
+	// Sized up front, because every part of it is known: the index header, a
+	// fixed-width record each, the filter, and the trailer.
+	filter := newBloom(len(sorted))
 	var buf bytes.Buffer
+	buf.Grow(idxHeaderSize + len(sorted)*idxRecordSize + bloomHeaderSize + len(filter.bits) + packTrailerSize)
+
 	buf.Write(indexHeader())
 	rec := make([]byte, idxRecordSize)
 	for _, e := range sorted {
@@ -112,13 +116,13 @@ func buildFooter(entries []indexEntry) ([]byte, error) {
 			return nil, err
 		}
 		buf.Write(rec)
+		// The filter is fed from the record that was just encoded. A second
+		// pass would decode every id again to produce bytes that are sitting
+		// right here.
+		filter.add(rec[:idxIDSize])
 	}
 	indexLen := buf.Len()
 
-	filter, err := buildBloom(sorted)
-	if err != nil {
-		return nil, err
-	}
 	buf.Write(filter.encode())
 	footerLen := buf.Len()
 
@@ -141,9 +145,10 @@ func buildFooter(entries []indexEntry) ([]byte, error) {
 // is what reclaims the other. What must not happen is a sealed index with a
 // repeated key in it, because a binary search over one has no defined answer.
 //
-// The input must already be sorted.
+// The input must already be sorted, and is a private copy from sortedIndex, so
+// this filters in place rather than allocating a third array.
 func dedupedIndex(sorted []indexEntry) []indexEntry {
-	out := sorted[:0:0]
+	out := sorted[:0]
 	for i, e := range sorted {
 		if i > 0 && e.ID == sorted[i-1].ID {
 			continue
@@ -182,8 +187,9 @@ type sealedPack struct {
 // again before it returns; see sealedPack on why nothing holds it open.
 //
 // The read order is the one a tier can afford: the tail first, because on a
-// backend with no local copy it is one ranged GET, and everything else is
-// found from what it says.
+// backend with no local copy it is one ranged GET, and everything else is found
+// from what it says. The opening magic is checked last for the same reason —
+// it is a second round trip, and nothing before it depends on it.
 func openSealedPack(objDir, libraryID, packID string) (*sealedPack, error) {
 	packPath, _ := packPaths(objDir, libraryID, packID)
 	f, err := os.Open(packPath)
@@ -191,37 +197,26 @@ func openSealedPack(objDir, libraryID, packID string) (*sealedPack, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	closeOnErr := func(e error) (*sealedPack, error) {
-		return nil, e
-	}
 
 	info, err := f.Stat()
 	if err != nil {
-		return closeOnErr(err)
+		return nil, err
 	}
 	size := info.Size()
 	if size < int64(packHeaderSize+packTrailerSize) {
-		return closeOnErr(fmt.Errorf("%w: %s is %d bytes, too short to be sealed",
-			ErrPackCorrupt, packPath, size))
-	}
-
-	header := make([]byte, packHeaderSize)
-	if _, err := f.ReadAt(header, 0); err != nil {
-		return closeOnErr(fmt.Errorf("%w: %s: reading the header: %v", ErrPackCorrupt, packPath, err))
-	}
-	if err := checkPackHeader(header, packPath); err != nil {
-		return closeOnErr(err)
+		return nil, fmt.Errorf("%w: %s is %d bytes, too short to be sealed",
+			ErrPackCorrupt, packPath, size)
 	}
 
 	trailer := make([]byte, packTrailerSize)
 	if _, err := f.ReadAt(trailer, size-int64(packTrailerSize)); err != nil {
-		return closeOnErr(fmt.Errorf("%w: %s: reading the trailer: %v", ErrPackCorrupt, packPath, err))
+		return nil, fmt.Errorf("%w: %s: reading the trailer: %v", ErrPackCorrupt, packPath, err)
 	}
 	// The closing magic first: an open pack, or one truncated mid-seal, fails
 	// here rather than being asked to explain a length read out of its frames.
 	if string(trailer[packFooterLenSize+packIndexLenSize:]) != packMagic {
-		return closeOnErr(fmt.Errorf("%w: %s does not end %q — it is unsealed or truncated",
-			ErrPackCorrupt, packPath, packMagic))
+		return nil, fmt.Errorf("%w: %s does not end %q — it is unsealed or truncated",
+			ErrPackCorrupt, packPath, packMagic)
 	}
 	footerLen := int64(binary.BigEndian.Uint64(trailer))
 	indexLen := int64(binary.BigEndian.Uint64(trailer[packFooterLenSize:]))
@@ -229,28 +224,40 @@ func openSealedPack(objDir, libraryID, packID string) (*sealedPack, error) {
 	footerStart := size - int64(packTrailerSize) - footerLen
 	switch {
 	case footerLen < 0 || indexLen < 0 || indexLen > footerLen:
-		return closeOnErr(fmt.Errorf("%w: %s claims a %d-byte footer holding a %d-byte index",
-			ErrPackCorrupt, packPath, footerLen, indexLen))
+		return nil, fmt.Errorf("%w: %s claims a %d-byte footer holding a %d-byte index",
+			ErrPackCorrupt, packPath, footerLen, indexLen)
 	case footerStart < int64(packHeaderSize):
-		return closeOnErr(fmt.Errorf("%w: %s claims a %d-byte footer, more than the %d bytes it has",
-			ErrPackCorrupt, packPath, footerLen, size))
+		return nil, fmt.Errorf("%w: %s claims a %d-byte footer, more than the %d bytes it has",
+			ErrPackCorrupt, packPath, footerLen, size)
 	}
 
 	footer := make([]byte, footerLen)
 	if _, err := f.ReadAt(footer, footerStart); err != nil {
-		return closeOnErr(fmt.Errorf("%w: %s: reading the footer: %v", ErrPackCorrupt, packPath, err))
+		return nil, fmt.Errorf("%w: %s: reading the footer: %v", ErrPackCorrupt, packPath, err)
 	}
 	if err := checkIndexHeader(footer[:indexLen], packPath); err != nil {
-		return closeOnErr(err)
+		return nil, err
+	}
+
+	// The opening magic last. It is the cheapest check and the least likely to
+	// fail, and reading it first would have cost a round trip ahead of the tail
+	// on a backend with no local copy — which is the opposite of what the
+	// comment above this function promises.
+	header := make([]byte, packHeaderSize)
+	if _, err := f.ReadAt(header, 0); err != nil {
+		return nil, fmt.Errorf("%w: %s: reading the header: %v", ErrPackCorrupt, packPath, err)
+	}
+	if err := checkPackHeader(header, packPath); err != nil {
+		return nil, err
 	}
 	index := footer[idxHeaderSize:indexLen]
 	if len(index)%idxRecordSize != 0 {
-		return closeOnErr(fmt.Errorf("%w: %s holds %d bytes of index, not a whole number of %d-byte records",
-			ErrPackCorrupt, packPath, len(index), idxRecordSize))
+		return nil, fmt.Errorf("%w: %s holds %d bytes of index, not a whole number of %d-byte records",
+			ErrPackCorrupt, packPath, len(index), idxRecordSize)
 	}
-	filter, err := parseBloom(footer[indexLen:])
+	filter, err := parseBloom(footer[indexLen:], packPath)
 	if err != nil {
-		return closeOnErr(fmt.Errorf("%s: %w", packPath, err))
+		return nil, err
 	}
 
 	return &sealedPack{id: packID, path: packPath, index: index, bloom: filter}, nil
@@ -258,17 +265,7 @@ func openSealedPack(objDir, libraryID, packID string) (*sealedPack, error) {
 
 // checkPackHeader gates a pack on its opening magic and version.
 func checkPackHeader(header []byte, path string) error {
-	if len(header) < packHeaderSize {
-		return fmt.Errorf("%w: %s is too short to hold a header", ErrPackCorrupt, path)
-	}
-	if string(header[:len(packMagic)]) != packMagic {
-		return fmt.Errorf("%w: %s does not begin %q", ErrPackCorrupt, path, packMagic)
-	}
-	if header[len(packMagic)] != packVersion {
-		return fmt.Errorf("%w: %s is version %d, and this build reads %d",
-			ErrPackCorrupt, path, header[len(packMagic)], packVersion)
-	}
-	return nil
+	return checkFormatHeader(header, path, packMagic, packVersion, packHeaderSize, ErrPackCorrupt)
 }
 
 // count is how many objects the pack holds.
@@ -285,10 +282,18 @@ func (s *sealedPack) record(i int) []byte {
 // the point of it is not this pack: it is the other eleven thousand, where the
 // same call returns false without touching an index at all.
 func (s *sealedPack) lookup(objID string) (indexEntry, bool) {
-	raw, err := hex.DecodeString(objID)
-	if err != nil || len(raw) != idxIDSize {
+	raw, err := frameID(objID)
+	if err != nil {
 		return indexEntry{}, false
 	}
+	return s.lookupRaw(raw)
+}
+
+// lookupRaw is lookup with the id already decoded, which is how a fan-out over
+// many packs asks: the thirty-two bytes are the same for every pack, so
+// decoding them once above the loop saves one parse and one allocation per
+// pack asked.
+func (s *sealedPack) lookupRaw(raw []byte) (indexEntry, bool) {
 	if !s.bloom.mayContain(raw) {
 		return indexEntry{}, false
 	}
@@ -320,8 +325,9 @@ func (s *sealedPack) readFrameAt(e indexEntry) ([]byte, error) {
 // entries decodes the whole index, in id order. Compaction and the ingest scan
 // want it; a lookup never does.
 func (s *sealedPack) entries() []indexEntry {
-	out := make([]indexEntry, 0, s.count())
-	for i := 0; i < s.count(); i++ {
+	n := s.count()
+	out := make([]indexEntry, 0, n)
+	for i := 0; i < n; i++ {
 		out = append(out, decodeIndexRecord(s.record(i)))
 	}
 	return out

@@ -258,7 +258,7 @@ func TestShutdownDiscardsAnEmptyPack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := set.writablePack(TypeDir(dataDir, TypeChunks), libraryID); err != nil {
+	if _, err := set.writablePack(); err != nil {
 		t.Fatal(err)
 	}
 	if _, open := packFiles(t, dataDir, TypeChunks); open != 1 {

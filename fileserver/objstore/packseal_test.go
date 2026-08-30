@@ -486,6 +486,41 @@ func TestTheProbesFitInsideAnID(t *testing.T) {
 	}
 }
 
+// The fast probe is a shift and a mask over a padded window; this is the
+// obvious bit-at-a-time reading of the same definition, asserted to agree.
+// Getting the extraction wrong would not fail loudly — it would quietly change
+// which bits an id maps to, and the filter would go on answering plausibly.
+func TestTheProbeAgreesWithTheObviousReadingOfIt(t *testing.T) {
+	slow := func(raw []byte, width, i int) uint64 {
+		var v uint64
+		for j := 0; j < width; j++ {
+			bit := i*width + j
+			v = v<<1 | uint64(raw[bit>>3]>>(7-uint(bit&7))&1)
+		}
+		return v
+	}
+
+	for _, n := range []int{0, 1, 500, 5000, 100000, 5000000} {
+		b := newBloom(n)
+		for trial := 0; trial < 50; trial++ {
+			raw := make([]byte, idxIDSize)
+			if _, err := rand.Read(raw); err != nil {
+				t.Fatal(err)
+			}
+			w := newIDWindow(raw)
+			for i := 0; i < int(b.k); i++ {
+				got, want := b.probe(&w, i), slow(raw, int(b.logBits), i)
+				if got != want {
+					t.Fatalf("n=%d logBits=%d probe %d: got %d, want %d", n, b.logBits, i, got, want)
+				}
+				if got >= 1<<b.logBits {
+					t.Fatalf("n=%d: probe %d gave %d, past the %d bits of filter", n, i, got, 1<<b.logBits)
+				}
+			}
+		}
+	}
+}
+
 func TestAFilterRoundTripsThroughItsEncoding(t *testing.T) {
 	b := newBloom(300)
 	var held [][]byte
@@ -498,7 +533,7 @@ func TestAFilterRoundTripsThroughItsEncoding(t *testing.T) {
 		b.add(raw)
 	}
 
-	got, err := parseBloom(b.encode())
+	got, err := parseBloom(b.encode(), "a filter under test")
 	if err != nil {
 		t.Fatalf("parseBloom: %v", err)
 	}
@@ -542,7 +577,7 @@ func TestAFilterThatIsNotOneIsRefused(t *testing.T) {
 		}()},
 	}
 	for _, c := range cases {
-		if _, err := parseBloom(c.b); !errors.Is(err, ErrBloomCorrupt) {
+		if _, err := parseBloom(c.b, c.name); !errors.Is(err, ErrBloomCorrupt) {
 			t.Errorf("%s: err = %v, want ErrBloomCorrupt", c.name, err)
 		}
 	}

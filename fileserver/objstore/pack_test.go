@@ -2,8 +2,6 @@ package objstore
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -25,8 +23,7 @@ func packScratch(t *testing.T) (objDir, libraryID string) {
 // plaintext, which is what the store guarantees everywhere else.
 func framed(t *testing.T, key []byte, plaintext string) (id string, frame []byte) {
 	t.Helper()
-	sum := sha256.Sum256([]byte(plaintext))
-	id = hex.EncodeToString(sum[:])
+	id = idOf([]byte(plaintext))
 	frame, err := sealFrame(key, id, []byte(plaintext))
 	if err != nil {
 		t.Fatalf("sealing %q: %v", plaintext, err)
@@ -34,13 +31,11 @@ func framed(t *testing.T, key []byte, plaintext string) (id string, frame []byte
 	return id, frame
 }
 
+// packKey is testKey, named for the tests that use it. One storage key for the
+// package's tests, so nothing here can accidentally assert against a second.
 func packKey(t *testing.T) []byte {
 	t.Helper()
-	k := make([]byte, StorageKeySize)
-	for i := range k {
-		k[i] = byte(i * 7)
-	}
-	return k
+	return testKey(t)
 }
 
 // --- the record ---------------------------------------------------------
@@ -654,4 +649,33 @@ func TestTheLooseWalkDoesNotSeePacks(t *testing.T) {
 	if len(seen) != 1 || seen[0] != looseID {
 		t.Errorf("the loose walk reported %v, want just the loose object %s", seen, looseID)
 	}
+}
+
+// findOpenPack names the pack a library was writing to, if it was writing to
+// one. A sealed pack has no sidecar — sealing removes it — so a sidecar on disk
+// is exactly the marker for "this one was open", with no state kept anywhere
+// else to disagree.
+//
+// A test helper rather than production code: loadPackSet does this scan and
+// more, and is what the store actually uses. This asks the narrow question the
+// tests below want to ask, without recovering or opening anything as a side
+// effect.
+func findOpenPack(objDir, libraryID string) (string, error) {
+	entries, err := os.ReadDir(packDir(objDir, libraryID))
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || filepath.Ext(name) != ".idx" {
+			continue
+		}
+		if id := strings.TrimSuffix(name, ".idx"); validPackID(id) {
+			return id, nil
+		}
+	}
+	return "", nil
 }

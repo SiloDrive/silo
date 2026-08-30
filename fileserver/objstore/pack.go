@@ -254,6 +254,13 @@ func (p *openPack) full() bool {
 	return p.size >= packTarget
 }
 
+// empty reports whether the pack holds no frames.
+func (p *openPack) empty() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.entries) == 0
+}
+
 // olderThan reports whether this pack's oldest frame has been waiting longer
 // than d. An empty pack is never old: there is nothing in it whose durability
 // window is open.
@@ -268,18 +275,18 @@ func (p *openPack) olderThan(d time.Duration) bool {
 // Sealing it instead would leave a pack holding a footer, a filter and nothing
 // else, which every later lookup would ask and every listing would walk — a
 // permanent cost for a pack that never held anything.
-func (p *openPack) discard(objDir, libraryID string) error {
+func (p *openPack) discard() error {
+	sidePath := p.side.path
 	if err := p.close(); err != nil {
 		return err
 	}
-	packPath, sidePath := packPaths(objDir, libraryID, p.id)
 	if err := os.Remove(sidePath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.Remove(packPath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(p.path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return syncDir(packDir(objDir, libraryID))
+	return syncDir(filepath.Dir(p.path))
 }
 
 func (p *openPack) close() error {
@@ -381,31 +388,4 @@ func recoverPack(objDir, libraryID, packID string) (*openPack, error) {
 		p.byID[e.ID] = e
 	}
 	return p, nil
-}
-
-// findOpenPack names the pack a library was writing to, if it was writing to
-// one. A sealed pack has no sidecar — sealing folds it into the footer and
-// removes it — so a sidecar on disk is exactly the marker for "this one was
-// open", with no state kept anywhere else to disagree.
-func findOpenPack(objDir, libraryID string) (string, error) {
-	dir := packDir(objDir, libraryID)
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || filepath.Ext(name) != ".idx" {
-			continue
-		}
-		id := name[:len(name)-len(".idx")]
-		if !validPackID(id) {
-			continue
-		}
-		return id, nil
-	}
-	return "", nil
 }

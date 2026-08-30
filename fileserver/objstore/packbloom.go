@@ -111,17 +111,18 @@ func newBloom(n int) *bloomFilter {
 	return &bloomFilter{logBits: logBits, k: k, bits: make([]byte, 1<<logBits/8)}
 }
 
-// buildBloom builds the filter a footer carries, over the ids the pack holds.
-func buildBloom(entries []indexEntry) (*bloomFilter, error) {
-	b := newBloom(len(entries))
-	for _, e := range entries {
-		raw, err := frameID(e.ID)
-		if err != nil {
-			return nil, fmt.Errorf("building a bloom filter: %v", err)
-		}
-		b.add(raw)
-	}
-	return b, nil
+// idWindow is an id with eight bytes of padding after it.
+//
+// The padding is what lets a probe be one 64-bit read. A range can begin at any
+// bit of the id, so the read starts at an arbitrary byte, and without the tail
+// the last probe's read would run off the end — making the final probe a
+// special case rather than the same arithmetic as the others.
+type idWindow [idxIDSize + 8]byte
+
+func newIDWindow(raw []byte) idWindow {
+	var w idWindow
+	copy(w[:], raw)
+	return w
 }
 
 // probe is the i'th bit position an id maps to.
@@ -131,20 +132,26 @@ func buildBloom(entries []indexEntry) (*bloomFilter, error) {
 // buy nothing that taking a slice of it does not already have. Each probe
 // takes its own disjoint range, so the k indices are independent for the same
 // reason the bits are.
-func (b *bloomFilter) probe(raw []byte, i int) uint64 {
-	width := int(b.logBits)
-	start := i * width
-	var v uint64
-	for j := 0; j < width; j++ {
-		bit := start + j
-		v = v<<1 | uint64(raw[bit>>3]>>(7-uint(bit&7))&1)
-	}
-	return v
+//
+// One shift and one mask, rather than a loop over the range's bits. A lookup
+// asks every sealed pack — twelve thousand on a full store — and most of them
+// answer "no" from the first probe or two, so this constant is multiplied by
+// the whole fan-out on every lookup.
+//
+// The arithmetic stays in bounds by construction: bloomParams caps k×logBits at
+// the id's 256 bits, so a range starts at bit 247 at the latest and the bit
+// offset within its first byte is under 8 — 7 + 32 is well inside a 64-bit read.
+func (b *bloomFilter) probe(w *idWindow, i int) uint64 {
+	width := uint(b.logBits)
+	start := uint(i) * width
+	v := binary.BigEndian.Uint64(w[start>>3:])
+	return (v >> (64 - start&7 - width)) & (1<<width - 1)
 }
 
 func (b *bloomFilter) add(raw []byte) {
+	w := newIDWindow(raw)
 	for i := 0; i < int(b.k); i++ {
-		p := b.probe(raw, i)
+		p := b.probe(&w, i)
 		b.bits[p>>3] |= 1 << (p & 7)
 	}
 	b.count++
@@ -156,8 +163,9 @@ func (b *bloomFilter) mayContain(raw []byte) bool {
 	if len(raw) != idxIDSize {
 		return false
 	}
+	w := newIDWindow(raw)
 	for i := 0; i < int(b.k); i++ {
-		p := b.probe(raw, i)
+		p := b.probe(&w, i)
 		if b.bits[p>>3]&(1<<(p&7)) == 0 {
 			return false
 		}
@@ -181,29 +189,23 @@ func (b *bloomFilter) encode() []byte {
 // Every field is checked against what this build can hold before anything is
 // allocated from it, because the bytes come off a disk and logBits is an
 // exponent.
-func parseBloom(b []byte) (*bloomFilter, error) {
-	if len(b) < bloomHeaderSize {
-		return nil, fmt.Errorf("%w: %d bytes, shorter than its header", ErrBloomCorrupt, len(b))
-	}
-	if string(b[:len(bloomMagic)]) != bloomMagic {
-		return nil, fmt.Errorf("%w: does not begin %q", ErrBloomCorrupt, bloomMagic)
-	}
-	if v := b[len(bloomMagic)]; v != bloomVersion {
-		return nil, fmt.Errorf("%w: version %d, and this build reads %d", ErrBloomCorrupt, v, bloomVersion)
+func parseBloom(b []byte, name string) (*bloomFilter, error) {
+	if err := checkFormatHeader(b, name, bloomMagic, bloomVersion, bloomHeaderSize, ErrBloomCorrupt); err != nil {
+		return nil, err
 	}
 	k := b[len(bloomMagic)+1]
 	logBits := b[len(bloomMagic)+2]
 	count := binary.BigEndian.Uint32(b[len(bloomMagic)+3:])
 
 	if logBits < bloomMinLogBits || logBits > bloomMaxLogBits {
-		return nil, fmt.Errorf("%w: %d bits is outside what this build reads", ErrBloomCorrupt, logBits)
+		return nil, fmt.Errorf("%w: %s asks for %d bits, outside what this build reads", ErrBloomCorrupt, name, logBits)
 	}
 	if k < 1 || int(k)*int(logBits) > idxIDSize*8 {
-		return nil, fmt.Errorf("%w: %d probes of %d bits do not fit an id", ErrBloomCorrupt, k, logBits)
+		return nil, fmt.Errorf("%w: %s asks for %d probes of %d bits, which do not fit an id", ErrBloomCorrupt, name, k, logBits)
 	}
 	size := 1 << logBits / 8
 	if len(b) != bloomHeaderSize+size {
-		return nil, fmt.Errorf("%w: %d bytes of filter, want %d", ErrBloomCorrupt, len(b)-bloomHeaderSize, size)
+		return nil, fmt.Errorf("%w: %s holds %d bytes of filter, want %d", ErrBloomCorrupt, name, len(b)-bloomHeaderSize, size)
 	}
 
 	bf := &bloomFilter{logBits: logBits, k: k, count: count, bits: make([]byte, size)}

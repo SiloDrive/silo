@@ -43,8 +43,14 @@ type packReader interface {
 // is a RemoveAll today and packs shared across libraries would make deleting
 // one library a compaction of every pack it touched.
 type packSet struct {
+	// Which library this is, and where its packs live. Held rather than passed
+	// in, so that "these methods only ever touch this library" is structural
+	// instead of something every call site has to keep getting right.
+	objDir    string
+	libraryID string
+
 	// mu guards which packs exist. Readers take it for a moment to look; it is
-	// never held across an fsync.
+	// never held across an fsync or across a caller's callback.
 	mu     sync.RWMutex
 	open   *openPack
 	sealed []*sealedPack
@@ -53,18 +59,47 @@ type packSet struct {
 	writeMu sync.Mutex
 }
 
-// find asks the open pack and then the sealed ones.
-func (s *packSet) find(objID string) (packReader, indexEntry, bool) {
+// current is the open pack, or nil. One accessor rather than the same three
+// lines wherever the question is asked.
+func (s *packSet) current() *openPack {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.open
+}
 
-	if s.open != nil {
-		if e, ok := s.open.lookup(objID); ok {
-			return s.open, e, true
+// packs copies out what the set holds, so a walk can stat and read without
+// holding the lock across any of it. Same argument openPack.snapshot makes one
+// level down: a whole-library listing runs for millions of objects, and a Go
+// RWMutex blocks new readers behind a waiting writer, so holding this would
+// stall pack rotation and every lookup behind it.
+func (s *packSet) packs() (*openPack, []*sealedPack) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sealed := make([]*sealedPack, len(s.sealed))
+	copy(sealed, s.sealed)
+	return s.open, sealed
+}
+
+// find asks the open pack and then the sealed ones.
+//
+// The id is decoded once here rather than inside each pack. A lookup fans out
+// over every sealed pack — twelve thousand of them on a full store — and each
+// one needs the same thirty-two bytes, so decoding per pack would be twelve
+// thousand identical parses and allocations for one question.
+func (s *packSet) find(objID string) (packReader, indexEntry, bool) {
+	raw, err := frameID(objID)
+	if err != nil {
+		return nil, indexEntry{}, false
+	}
+
+	open, sealed := s.packs()
+	if open != nil {
+		if e, ok := open.lookup(objID); ok {
+			return open, e, true
 		}
 	}
-	for _, p := range s.sealed {
-		if e, ok := p.lookup(objID); ok {
+	for _, p := range sealed {
+		if e, ok := p.lookupRaw(raw); ok {
 			return p, e, true
 		}
 	}
@@ -81,29 +116,29 @@ func (s *packSet) find(objID string) (packReader, indexEntry, bool) {
 // the frames in it, so an object in one looks newer than it is. That is the
 // conservative direction: the guard errs towards not collecting.
 func (s *packSet) each(fn func(indexEntry, time.Time) error) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	open, sealed := s.packs()
 
-	if s.open != nil {
-		mt, err := fileModTime(s.open.path)
+	walk := func(path string, entries []indexEntry) error {
+		mt, err := fileModTime(path)
 		if err != nil {
 			return err
 		}
-		for _, e := range s.open.snapshot() {
+		for _, e := range entries {
 			if err := fn(e, mt); err != nil {
 				return err
 			}
+		}
+		return nil
+	}
+
+	if open != nil {
+		if err := walk(open.path, open.snapshot()); err != nil {
+			return err
 		}
 	}
-	for _, p := range s.sealed {
-		mt, err := fileModTime(p.path)
-		if err != nil {
+	for _, p := range sealed {
+		if err := walk(p.path, p.entries()); err != nil {
 			return err
-		}
-		for _, e := range p.entries() {
-			if err := fn(e, mt); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -139,9 +174,8 @@ type packStore struct {
 	// The age sealer, brought up the first time anything writes a pack. See
 	// packwrite.go.
 	sealerOnce sync.Once
-	sealerMu   sync.Mutex
+	stopOnce   sync.Once
 	stop       chan struct{}
-	stopped    bool
 	wg         sync.WaitGroup
 	// maxAge and sweep are copied from the package variables at creation, so
 	// the sweeper goroutine reads fields nobody else writes. See packwrite.go.
@@ -153,6 +187,10 @@ func newPackStore(objDir string) *packStore {
 	return &packStore{
 		objDir: objDir,
 		libs:   map[string]*packSet{},
+		// Created here rather than by the sealer, so that closing it is a
+		// sync.Once over a channel that always exists — no nil check, no
+		// second flag, and no lock to keep the two in step.
+		stop:   make(chan struct{}),
 		maxAge: packMaxAge,
 		sweep:  packSweep,
 	}
@@ -194,8 +232,7 @@ func (ps *packStore) forget(libraryID string) {
 	defer set.writeMu.Unlock()
 	set.mu.Lock()
 	p := set.open
-	set.open = nil
-	set.sealed = nil
+	set.open, set.sealed = nil, nil
 	set.mu.Unlock()
 	if p != nil {
 		_ = p.close()
@@ -233,7 +270,7 @@ func loadPackSet(objDir, libraryID string) (*packSet, error) {
 	if os.IsNotExist(err) {
 		// A library that has never been packed, which is every library until
 		// step 4. Not an error, and not worth a second syscall to confirm.
-		return &packSet{}, nil
+		return &packSet{objDir: objDir, libraryID: libraryID}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -264,7 +301,7 @@ func loadPackSet(objDir, libraryID string) (*packSet, error) {
 	sort.Strings(openIDs)
 	sort.Strings(sealedIDs)
 
-	set := &packSet{}
+	set := &packSet{objDir: objDir, libraryID: libraryID}
 	// Two open packs in one library means two writers appended to it, which
 	// this store cannot produce. Picking one would silently orphan the other's
 	// frames, so it is reported instead.
@@ -276,8 +313,8 @@ func loadPackSet(objDir, libraryID string) (*packSet, error) {
 		// Recovery truncates, so this writes during what may be a read. That
 		// is right where it is: a pack that disagrees with its index has to be
 		// made to agree before anything reads either, and doing it at first
-		// touch is doing it before the first read. Step 4 moves it to startup,
-		// where the writer is opened anyway.
+		// touch is doing it before the first read. The writer moves it to
+		// startup, where the pack is opened anyway.
 		p, err := recoverPack(objDir, libraryID, openIDs[0])
 		if err != nil {
 			return nil, err

@@ -253,12 +253,12 @@ Three things this step settled that the plan had not:
   packed object is not a deletion at all — a sealed pack is immutable, so
   reclaiming a frame inside one is compaction (silo#19). Those verbs move with
   the write path in steps 4 and 5, not before it.
-- **Sealed packs are not behind the `storageBackend` seam yet.** They live in
+- **Sealed packs are not behind the `storageBackend` seam.** They live in
   `<library>/packs/`, beside the fan-out rather than in it, which is what keeps
   the loose walk working untouched. Moving them into the fan-out — where a
   sealed pack simply *is* what the backend stores, and a frame read becomes
-  `backend.readAt` — belongs with step 5, when loose objects stop existing and
-  `gc` stops walking the layout.
+  `backend.readAt` — is **not** step 5's, and this originally said it was; see
+  § The layout is implemented twice.
 
 ### 4. Seal on age and at shutdown, and packs become the write path
 
@@ -358,6 +358,39 @@ content-addressed file tree; any ordinary copy tool handles it" and becomes
 sealed immutable packs plus an open one — still copyable by any ordinary tool,
 but for a different reason and with a different answer about what an
 interrupted copy leaves.
+
+## The layout is implemented twice, and that is a debt
+
+`objstore` now knows the on-disk layout in two places: `fsBackend.packPath` /
+`libraryPath`, and `pack.go`'s `packDir` with the `os` and `filepath` calls in
+`pack.go`, `packseal.go` and `packstore.go`. That is the same fault this plan's
+step 5 congratulates itself on removing from `gc.go`, one level further down.
+
+It is already load-bearing rather than merely untidy:
+
+- `libraryUsage` satisfies its contract — every byte `removeLibrary` frees,
+  including a pack's footer and filter — only because its `WalkDir` happens to
+  descend into `<library>/packs/`. The backend counts bytes it cannot name.
+- `removeLibrary` deletes packs for the same reason: a `RemoveAll` over a
+  directory the pack layer chose to nest inside.
+- Packs are invisible to `fsBackend.list` because that walk skips any entry
+  whose name is not exactly two characters. A cross-seam invariant enforced by
+  a string length.
+
+The cost lands when a second backend exists — which is what packs are *for*.
+Every `os` call in the pack files has to be rewritten, and `libraryUsage` and
+`removeLibrary` stop agreeing on anything that is not a directory tree.
+
+**The fix is a narrow file interface handed to the pack layer at construction**
+— open, create, append, truncate, readAt, list, remove, scoped to a library —
+supplied by the backend, so the layout lives in one place and `libraryUsage`
+becomes backend usage plus pack usage rather than one walk that silently covers
+both. That belongs with the first real tier, not before it: it is the tier that
+supplies the second implementation, and writing the interface without one would
+be guessing at its shape.
+
+Recorded here rather than left implicit, because step 3 promised this to step 5
+and step 5 did not do it.
 
 ## What this plan does not do
 

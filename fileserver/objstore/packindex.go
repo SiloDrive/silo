@@ -81,17 +81,21 @@ type indexEntry struct {
 func (e indexEntry) end() int64 { return e.Offset + e.Length }
 
 // plaintextLen is what Stat answers for this object.
-func (e indexEntry) plaintextLen() int64 {
-	if e.Length <= int64(frameOverhead) {
-		return 0
-	}
-	return e.Length - int64(frameOverhead)
-}
+//
+// objectSize, because that is the same subtraction Stat already does over a
+// file size and this file's own header argues against keeping a second copy of
+// a derived number. A frame's length is a frame's length whether it came from
+// os.Stat or from an index record.
+func (e indexEntry) plaintextLen() int64 { return objectSize(e.Length) }
 
 func encodeIndexRecord(dst []byte, e indexEntry) error {
-	raw, err := hex.DecodeString(e.ID)
-	if err != nil || len(raw) != idxIDSize {
-		return fmt.Errorf("index record for %q: id is not %d hex-encoded bytes", e.ID, idxIDSize)
+	// frameID rather than a hex decode of our own: it is the store's id rule,
+	// and hex.DecodeString would accept an uppercase spelling that validPackID,
+	// packPath and the frame header all reject — the "two spellings of one id"
+	// case id.go exists to close.
+	raw, err := frameID(e.ID)
+	if err != nil {
+		return fmt.Errorf("index record for %q: %v", e.ID, err)
 	}
 	if e.Offset < 0 {
 		return fmt.Errorf("index record for %s: negative offset %d", e.ID, e.Offset)
@@ -218,15 +222,26 @@ func parseIndex(b []byte, name string) ([]indexEntry, error) {
 
 // checkIndexHeader gates both readers on the magic and the version.
 func checkIndexHeader(b []byte, name string) error {
-	if len(b) < idxHeaderSize {
-		return fmt.Errorf("%w: %s is %d bytes, shorter than its header", ErrIndexCorrupt, name, len(b))
+	return checkFormatHeader(b, name, idxMagic, idxVersion, idxHeaderSize, ErrIndexCorrupt)
+}
+
+// checkFormatHeader is the one place that knows how a silo container announces
+// itself: long enough to hold a header, the right magic, a version this build
+// reads.
+//
+// Three formats meet here — the index, the pack, and the bloom filter — and
+// they had three copies of these twelve lines, down to identical wording. What
+// differs between them is a magic, a size and which sentinel a caller will be
+// matching on with errors.Is, so those are the parameters and nothing else is.
+func checkFormatHeader(b []byte, name, magic string, version byte, size int, sentinel error) error {
+	if len(b) < size {
+		return fmt.Errorf("%w: %s is %d bytes, shorter than its header", sentinel, name, len(b))
 	}
-	if string(b[:len(idxMagic)]) != idxMagic {
-		return fmt.Errorf("%w: %s does not begin %q", ErrIndexCorrupt, name, idxMagic)
+	if string(b[:len(magic)]) != magic {
+		return fmt.Errorf("%w: %s does not begin %q", sentinel, name, magic)
 	}
-	if b[len(idxMagic)] != idxVersion {
-		return fmt.Errorf("%w: %s is version %d, and this build reads %d",
-			ErrIndexCorrupt, name, b[len(idxMagic)], idxVersion)
+	if v := b[len(magic)]; v != version {
+		return fmt.Errorf("%w: %s is version %d, and this build reads %d", sentinel, name, v, version)
 	}
 	return nil
 }

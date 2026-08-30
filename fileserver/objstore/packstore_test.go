@@ -418,8 +418,8 @@ func TestRemovingAPackedObjectIsRefusedRatherThanFaked(t *testing.T) {
 	id := ids[0]
 
 	err := s.Remove(libraryID, id)
-	if !errors.Is(err, ErrInPack) {
-		t.Fatalf("Remove of a packed object gave %v, want ErrInPack", err)
+	if !errors.Is(err, ErrReclaimDeferred) {
+		t.Fatalf("Remove of a packed object gave %v, want ErrReclaimDeferred", err)
 	}
 
 	// And it is still readable, which is the whole reason the refusal matters:
