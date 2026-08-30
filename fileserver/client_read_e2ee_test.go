@@ -63,12 +63,7 @@ func sealTree(t *testing.T, c *client.APIClient, acct *client.Account) tree {
 }
 
 func TestAClientReadsAnEncryptedLibrary(t *testing.T) {
-	base, _, _ := enrolled(t)
-	c := client.NewClient(base)
-	acct, err := c.OpenAccount("wire@example.com", wirePassword)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
+	base, _, c, acct := enrolledAccount(t)
 	tr := sealTree(t, c, acct)
 
 	// A second client, holding only the password: everything below comes from
@@ -159,12 +154,7 @@ func TestAClientReadsAnEncryptedLibrary(t *testing.T) {
 // client that reads one is reading the object graph. This pins that the read
 // path above is not quietly going through entries/{path}.
 func TestTheReadPathDoesNotUseTheEntriesSurface(t *testing.T) {
-	base, token, _ := enrolled(t)
-	c := client.NewClient(base)
-	acct, err := c.OpenAccount("wire@example.com", wirePassword)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
+	base, token, c, acct := enrolledAccount(t)
 	tr := sealTree(t, c, acct)
 
 	code, body := call(t, "GET", base+"/api/silo/v1/libraries/"+tr.lib.ID+"/entries/notes.txt", token, "")

@@ -72,6 +72,19 @@ func (s sealedSeed) body(t *testing.T, name string) string {
 	return string(b)
 }
 
+// enrolledAccount is enrolled followed by the client-side open, which is the
+// preamble of every test that drives the client rather than the wire.
+func enrolledAccount(t *testing.T) (base, token string, c *client.APIClient, acct *client.Account) {
+	t.Helper()
+	base, token, _ = enrolled(t)
+	c = client.NewClient(base)
+	acct, err := c.OpenAccount("wire@example.com", wirePassword)
+	if err != nil {
+		t.Fatalf("OpenAccount: %v", err)
+	}
+	return base, token, c, acct
+}
+
 // enrolled stands the server up, publishes key material for the account, and
 // returns the material along with the base URL and a token.
 func enrolled(t *testing.T) (base, token string, km keyMaterial) {

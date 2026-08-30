@@ -63,9 +63,9 @@ func (c *APIClient) doBytesHeaders(method, path, contentType string, header http
 		se := &StatusError{Code: resp.StatusCode, Status: resp.Status, Body: string(msg)}
 		switch resp.StatusCode {
 		case http.StatusNotFound:
-			return nil, resp.Header, fmt.Errorf("%w: %s", ErrNotFound, se)
+			return nil, resp.Header, fmt.Errorf("%w: %w", ErrNotFound, se)
 		case http.StatusPreconditionFailed:
-			return nil, resp.Header, fmt.Errorf("%w: %s", ErrHeadMoved, se)
+			return nil, resp.Header, fmt.Errorf("%w: %w", ErrHeadMoved, se)
 		}
 		return nil, resp.Header, se
 	}

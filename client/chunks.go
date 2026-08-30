@@ -103,37 +103,31 @@ func (c *APIClient) chunkerFor(libraryID string) (store.Params, bool) {
 }
 
 func (c *APIClient) fetchChunkerFor(libraryID string) (store.Params, bool) {
-	libraries, err := c.ListLibraries()
+	library, err := c.Library(libraryID)
 	if err != nil {
 		return store.Params{}, false
 	}
-	for _, library := range libraries {
-		if library.ID != libraryID {
-			continue
-		}
-		if library.Encrypted || library.Chunker == nil {
-			return store.Params{}, false
-		}
-		p := store.Params{
-			Algorithm: library.Chunker.Algorithm,
-			// The published constant, derived rather than transmitted. A plain
-			// library chunks under it by definition, so a server sending one
-			// would be sending a value this client would have to check anyway.
-			Seed:          store.PlainSeed(),
-			MinSize:       library.Chunker.MinSize,
-			TargetSize:    library.Chunker.TargetSize,
-			MaxSize:       library.Chunker.MaxSize,
-			Normalization: library.Chunker.Normalization,
-		}
-		// Validated before use, because these arrived over the wire. A target
-		// below the minimum is a server bug or a hostile server, and either
-		// way chunking under it produces something no other client reproduces.
-		if p.ValidateFor(false, nil) != nil {
-			return store.Params{}, false
-		}
-		return p, true
+	if library.Encrypted || library.Chunker == nil {
+		return store.Params{}, false
 	}
-	return store.Params{}, false
+	p := store.Params{
+		Algorithm: library.Chunker.Algorithm,
+		// The published constant, derived rather than transmitted. A plain
+		// library chunks under it by definition, so a server sending one would
+		// be sending a value this client would have to check anyway.
+		Seed:          store.PlainSeed(),
+		MinSize:       library.Chunker.MinSize,
+		TargetSize:    library.Chunker.TargetSize,
+		MaxSize:       library.Chunker.MaxSize,
+		Normalization: library.Chunker.Normalization,
+	}
+	// Validated before use, because these arrived over the wire. A target below
+	// the minimum is a server bug or a hostile server, and either way chunking
+	// under it produces something no other client reproduces.
+	if p.ValidateFor(false, nil) != nil {
+		return store.Params{}, false
+	}
+	return p, true
 }
 
 // MissingChunks asks which of these chunks the library does not already hold.

@@ -39,9 +39,11 @@ func (n Node) IsDir() bool { return n.Type == store.NodeDir }
 
 // EncryptedLibrary reads one library through the id-addressed surface.
 //
-// Safe for concurrent use: the cache is the only shared state and it is
-// guarded. Two goroutines resolving the same cold path will both fetch it,
-// which costs a duplicate request and never a wrong answer.
+// Safe for concurrent use once built: the caches are the only shared mutable
+// state and they are guarded. Two goroutines resolving the same cold path will
+// both fetch it, which costs a duplicate request and never a wrong answer. Now
+// is read without the lock, so it is set before the library is shared and not
+// after.
 type EncryptedLibrary struct {
 	ID string
 
@@ -49,7 +51,8 @@ type EncryptedLibrary struct {
 	//
 	// A field rather than a call to time.Now because "the mutation's timestamp
 	// is not the file's mtime" is a rule worth being able to pin, and because a
-	// caller building a reproducible tree wants to decide it.
+	// caller building a reproducible tree wants to decide it. Set it before
+	// handing the library to anything else; it is read without the lock.
 	Now func() int64
 
 	c  *APIClient
@@ -60,6 +63,11 @@ type EncryptedLibrary struct {
 	root     store.ID
 	haveHead bool
 	dirs     map[store.ID]*directory
+	// manifests is cached on the same argument as dirs: an object id names one
+	// set of bytes forever. Without it a sequential read through ReadAt refetches
+	// and reopens the whole chunk list for every call, which on a large file is
+	// more traffic than the file.
+	manifests map[store.ID]*store.Manifest
 }
 
 // directory is one decoded directory object and the cipher its children's
@@ -88,8 +96,9 @@ func (a *Account) OpenEncryptedLibrary(libraryID string) (*EncryptedLibrary, err
 func NewEncryptedLibrary(c *APIClient, libraryID string, kr *store.Keyring) *EncryptedLibrary {
 	return &EncryptedLibrary{
 		ID: libraryID, c: c, kr: kr,
-		Now:  func() int64 { return time.Now().Unix() },
-		dirs: map[store.ID]*directory{},
+		Now:       func() int64 { return time.Now().Unix() },
+		dirs:      map[store.ID]*directory{},
+		manifests: map[store.ID]*store.Manifest{},
 	}
 }
 
@@ -157,20 +166,14 @@ func (l *EncryptedLibrary) at() (head, root store.ID, err error) {
 
 // serverHead asks the server where the library is now, ignoring the cache.
 func (l *EncryptedLibrary) serverHead() (store.ID, error) {
-	libraries, err := l.c.ListLibraries()
+	lib, err := l.c.Library(l.ID)
 	if err != nil {
 		return store.ID{}, err
 	}
-	for _, lib := range libraries {
-		if lib.ID != l.ID {
-			continue
-		}
-		if lib.HeadCommitID == "" {
-			return store.ID{}, fmt.Errorf("client: library %s reports no head commit", l.ID)
-		}
-		return store.ParseID(lib.HeadCommitID)
+	if lib.HeadCommitID == "" {
+		return store.ID{}, fmt.Errorf("client: library %s reports no head commit", l.ID)
 	}
-	return store.ID{}, fmt.Errorf("%w: library %s", ErrNotFound, l.ID)
+	return store.ParseID(lib.HeadCommitID)
 }
 
 // directory fetches and decodes one directory object, or returns the cached
@@ -227,33 +230,24 @@ func (l *EncryptedLibrary) Stat(p string) (Node, error) {
 	}
 	at := Node{ID: root, Name: "/", Type: store.NodeDir}
 
-	for i, seg := range segments(p) {
+	segs := segments(p)
+	for i, seg := range segs {
 		if at.Type != store.NodeDir {
 			return Node{}, fmt.Errorf("%w: %s is not a directory",
-				ErrNotFound, strings.Join(segments(p)[:i], "/"))
+				ErrNotFound, strings.Join(segs[:i], "/"))
 		}
 		d, err := l.directory(at.ID)
 		if err != nil {
 			return Node{}, err
 		}
-		// SIV is deterministic, so the wanted name encrypts to exactly the
-		// bytes the object holds and the match is a comparison rather than a
-		// decrypt of every entry.
-		want, err := d.names.Encrypt(seg)
+		e, found, err := lookup(d.dir, d.names, seg)
 		if err != nil {
 			return Node{}, err
-		}
-		found := false
-		for _, e := range d.dir.Entries {
-			if bytes.Equal(e.Name, want) {
-				at = Node{ID: e.ChildID, Name: seg, Type: e.Type, Mtime: e.Mtime, Mode: e.Mode}
-				found = true
-				break
-			}
 		}
 		if !found {
 			return Node{}, fmt.Errorf("%w: %s", ErrNotFound, p)
 		}
+		at = Node{ID: e.ChildID, Name: seg, Type: e.Type, Mtime: e.Mtime, Mode: e.Mode}
 	}
 	return at, nil
 }
@@ -323,16 +317,17 @@ func (l *EncryptedLibrary) DecryptPath(p string) (string, error) {
 		if i == len(segs)-1 {
 			break
 		}
-		child, kind, found, err := lookup(d.dir, d.names, name)
-		switch {
-		case err != nil:
-			return "", err
-		case !found:
+		// By the ciphertext rather than by re-encrypting the name just
+		// decrypted: SIV is deterministic, so those are the same bytes, and
+		// Decrypt has already applied the name rules on the way back.
+		j := entryIndex(d.dir, ct)
+		if j < 0 {
 			return "", fmt.Errorf("%w: %s is no longer in the tree", ErrNotFound, strings.Join(out, "/"))
-		case kind != store.NodeDir:
+		}
+		if d.dir.Entries[j].Type != store.NodeDir {
 			return "", fmt.Errorf("client: %s is not a directory", strings.Join(out, "/"))
 		}
-		at = child
+		at = d.dir.Entries[j].ChildID
 	}
 	return "/" + strings.Join(out, "/"), nil
 }
@@ -366,14 +361,26 @@ func (l *EncryptedLibrary) Manifest(p string) (*store.Manifest, error) {
 	if at.Type == store.NodeDir {
 		return nil, fmt.Errorf("client: %s is a directory", p)
 	}
+
+	l.mu.Lock()
+	m, ok := l.manifests[at.ID]
+	l.mu.Unlock()
+	if ok {
+		return m, nil
+	}
+
 	b, err := l.c.Object(l.ID, at.ID)
 	if err != nil {
 		return nil, fmt.Errorf("client: reading the manifest for %s: %w", p, err)
 	}
-	m, err := l.kr.OpenManifest(b)
+	m, err = l.kr.OpenManifest(b)
 	if err != nil {
 		return nil, fmt.Errorf("client: opening the manifest for %s: %w", p, err)
 	}
+
+	l.mu.Lock()
+	l.manifests[at.ID] = m
+	l.mu.Unlock()
 	return m, nil
 }
 
@@ -409,7 +416,7 @@ func (l *EncryptedLibrary) read(m *store.Manifest, off, n int64) ([]byte, error)
 	if off >= end {
 		return []byte{}, nil
 	}
-	if len(m.Chunks) == 0 {
+	if store.Inlined(m.FileSize) {
 		return bytes.Clone(m.Inline[off:end]), nil
 	}
 
@@ -431,13 +438,16 @@ func (l *EncryptedLibrary) read(m *store.Manifest, off, n int64) ([]byte, error)
 		pos += ref.Size
 	}
 
+	// Asked for once each, and counted: a file with a run of zeroes names one
+	// chunk many times, and the count is what says whether keeping its
+	// plaintext until the next mention is worth the memory.
 	ids := make([]store.ID, 0, len(want))
-	seen := make(map[store.ID]bool, len(want))
+	mentions := make(map[store.ID]int, len(want))
 	for _, s := range want {
-		if !seen[s.ref.ID] {
-			seen[s.ref.ID] = true
+		if mentions[s.ref.ID] == 0 {
 			ids = append(ids, s.ref.ID)
 		}
+		mentions[s.ref.ID]++
 	}
 	frames, err := l.c.FetchChunks(l.ID, ids)
 	if err != nil {
@@ -445,7 +455,7 @@ func (l *EncryptedLibrary) read(m *store.Manifest, off, n int64) ([]byte, error)
 	}
 
 	out := make([]byte, 0, end-off)
-	opened := make(map[store.ID][]byte, len(ids))
+	opened := make(map[store.ID][]byte)
 	for _, s := range want {
 		plain, ok := opened[s.ref.ID]
 		if !ok {
@@ -464,11 +474,23 @@ func (l *EncryptedLibrary) read(m *store.Manifest, off, n int64) ([]byte, error)
 				return nil, fmt.Errorf("client: chunk %s is %d bytes, and its manifest says %d",
 					s.ref.ID, len(plain), s.ref.Size)
 			}
-			opened[s.ref.ID] = plain
+			// Dropped as it is consumed. DecodeChunkFrames aliases the response
+			// body, so one retained frame pins a whole batch -- up to the
+			// server's 256-chunk answer -- and holding every frame of a large
+			// read would cost the range in ciphertext on top of the range in
+			// plaintext.
+			delete(frames, s.ref.ID)
+			if mentions[s.ref.ID] > 1 {
+				opened[s.ref.ID] = plain
+			}
 		}
 		lo := max(off-s.start, 0)
 		hi := min(end-s.start, s.ref.Size)
 		out = append(out, plain[lo:hi]...)
+		mentions[s.ref.ID]--
+		if mentions[s.ref.ID] == 0 {
+			delete(opened, s.ref.ID)
+		}
 	}
 	if int64(len(out)) != end-off {
 		return nil, fmt.Errorf("client: assembled %d bytes for a %d-byte range", len(out), end-off)

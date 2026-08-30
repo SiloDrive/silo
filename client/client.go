@@ -157,18 +157,18 @@ type StatusError struct {
 
 func (e *StatusError) Error() string { return fmt.Sprintf("%s: %s", e.Status, e.Body) }
 
-// isNotFound reports whether err is the server saying 404.
-func isNotFound(err error) bool {
+// hasStatus reports whether err is the server answering with this status.
+//
+// errors.As rather than a comparison, because the transport wraps some statuses
+// in a package sentinel on the way out -- a 404 is both ErrNotFound and a 404,
+// and a caller asking either question has to get the same answer.
+func hasStatus(err error, code int) bool {
 	var se *StatusError
-	return errors.As(err, &se) && se.Code == http.StatusNotFound
+	return errors.As(err, &se) && se.Code == code
 }
 
-// asStatus unwraps err to the status the server answered with, if it answered
-// at all: a connection that never got a reply is not a status and must not be
-// mistaken for one.
-func asStatus(err error, out **StatusError) bool {
-	return err != nil && errors.As(err, out)
-}
+// isNotFound reports whether err is the server saying 404.
+func isNotFound(err error) bool { return hasStatus(err, http.StatusNotFound) }
 
 // doStream performs an authenticated request whose body is streamed rather than
 // buffered, and — like doRequest — re-logs in and retries once on a 401.
@@ -410,6 +410,26 @@ func (c *APIClient) ListLibraries() ([]Library, error) {
 	var libraries []Library
 	err := c.doRequest("GET", "/api/silo/v1/libraries", nil, &libraries)
 	return libraries, err
+}
+
+// Library returns one library's record from the listing.
+//
+// A scan of GET libraries rather than a request for the one, because there is
+// no route for the one: a library's head, its chunker and whether it is
+// encrypted are all only served by the collection. Everything that needs any
+// of those goes through here, so when a single-library route lands there is
+// one call site to change.
+func (c *APIClient) Library(libraryID string) (Library, error) {
+	libraries, err := c.ListLibraries()
+	if err != nil {
+		return Library{}, err
+	}
+	for _, lib := range libraries {
+		if lib.ID == libraryID {
+			return lib, nil
+		}
+	}
+	return Library{}, fmt.Errorf("%w: library %s", ErrNotFound, libraryID)
 }
 
 func (c *APIClient) CreateLibrary(name string) (*Library, error) {

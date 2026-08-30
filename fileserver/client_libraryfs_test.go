@@ -19,12 +19,7 @@ import (
 // disagree only in what they had to do to answer -- one resolves a path on the
 // server, the other walks an object graph it decrypts itself.
 func TestOneInterfaceOverBothLibraryTypes(t *testing.T) {
-	base, token, _ := enrolled(t)
-	c := client.NewClient(base)
-	acct, err := c.OpenAccount("wire@example.com", wirePassword)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
+	base, token, _, acct := enrolledAccount(t)
 	plainID := makeLibrary(t, base, token)
 	sealed, _, err := acct.CreateEncryptedLibrary("Sealed")
 	if err != nil {
@@ -134,12 +129,7 @@ func TestOneInterfaceOverBothLibraryTypes(t *testing.T) {
 // plain one: PUT entries/{path} stamps the server's clock and takes no mtime
 // from the client. Pinned so the difference is a known one — silo#31.
 func TestOnlyTheEncryptedWriteKeepsTheFilesOwnMtime(t *testing.T) {
-	base, token, _ := enrolled(t)
-	c := client.NewClient(base)
-	acct, err := c.OpenAccount("wire@example.com", wirePassword)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
+	base, token, _, acct := enrolledAccount(t)
 	sealed, _, err := acct.CreateEncryptedLibrary("Sealed")
 	if err != nil {
 		t.Fatal(err)
@@ -176,12 +166,7 @@ func TestOnlyTheEncryptedWriteKeepsTheFilesOwnMtime(t *testing.T) {
 
 // A library the account cannot see is not a library it gets a broken handle on.
 func TestOpeningALibraryThatIsNotThere(t *testing.T) {
-	base, _, _ := enrolled(t)
-	c := client.NewClient(base)
-	acct, err := c.OpenAccount("wire@example.com", wirePassword)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
+	_, _, _, acct := enrolledAccount(t)
 	if _, err := acct.Open("11111111-2222-3333-4444-555555555555"); !errors.Is(err, client.ErrNotFound) {
 		t.Errorf("Open on a library that is not there = %v, want ErrNotFound", err)
 	}

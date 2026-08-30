@@ -27,16 +27,11 @@ import (
 // only checked the round trip would pass just as well if the names were in the
 // clear.
 func TestTheFullE2EERoundTrip(t *testing.T) {
-	base, token, _ := enrolled(t)
+	base, token, writer, acct := enrolledAccount(t)
 
 	// Create. Nothing here exists before the client makes it: the id, the
 	// content key, the sealed root, the initial commit, and the one wrap that
 	// is the only recoverable copy of the key.
-	writer := client.NewClient(base)
-	acct, err := writer.OpenAccount("wire@example.com", wirePassword)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
 	lib, kr, err := acct.CreateEncryptedLibrary("Round trip")
 	if err != nil {
 		t.Fatalf("CreateEncryptedLibrary: %v", err)
@@ -226,12 +221,7 @@ func TestTheFullE2EERoundTrip(t *testing.T) {
 // A member of a library holds a wrap; anybody else holds nothing, and asking
 // is not an error but an answer.
 func TestALibraryWithNoWrapIsNotAKeyring(t *testing.T) {
-	base, token, _ := enrolled(t)
-	c := client.NewClient(base)
-	acct, err := c.OpenAccount("wire@example.com", wirePassword)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
+	base, token, _, acct := enrolledAccount(t)
 	if _, err := acct.OpenEncryptedLibrary(makeLibrary(t, base, token)); !errors.Is(err, store.ErrNoKeyring) {
 		t.Errorf("OpenEncryptedLibrary on a plain library = %v, want ErrNoKeyring", err)
 	}

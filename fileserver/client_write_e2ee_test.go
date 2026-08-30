@@ -22,12 +22,7 @@ import (
 // test can assert rather than a second it has to race.
 func writable(t *testing.T) (*client.EncryptedLibrary, *client.Account) {
 	t.Helper()
-	base, _, _ := enrolled(t)
-	c := client.NewClient(base)
-	acct, err := c.OpenAccount("wire@example.com", wirePassword)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
+	_, _, c, acct := enrolledAccount(t)
 	lib, kr, err := acct.CreateEncryptedLibrary("Written by the client")
 	if err != nil {
 		t.Fatalf("CreateEncryptedLibrary: %v", err)

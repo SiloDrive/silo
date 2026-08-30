@@ -24,13 +24,7 @@ import (
 // holds. A create that returned only an id would be a create that threw the
 // key away.
 func TestAClientCreatesAnEncryptedLibraryAndReadsItBack(t *testing.T) {
-	base, token, _ := enrolled(t)
-
-	c := client.NewClient(base)
-	acct, err := c.OpenAccount("wire@example.com", wirePassword)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
+	base, token, c, acct := enrolledAccount(t)
 
 	lib, kr, err := acct.CreateEncryptedLibrary("Sealed by the client")
 	if err != nil {

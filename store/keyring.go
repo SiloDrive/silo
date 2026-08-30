@@ -58,6 +58,27 @@ func GenerateKeyring() (*Keyring, error) {
 	return NewKeyring(ck)
 }
 
+// OpenKeyring unwraps a library's content key with an identity and returns the
+// keyring for it.
+//
+// The pair to WrapTo, and the reason this exists rather than leaving callers to
+// compose UnwrapCK with NewKeyring: that composition puts a bare content key in
+// a variable in whichever package writes it, which is the one thing the top of
+// this file says must not happen. NewKeyring stays exported for the vectors and
+// for a caller that already has a key by some other route.
+func OpenKeyring(id *Identity, library string, wrapped []byte) (*Keyring, error) {
+	ck, err := UnwrapCK(id, library, wrapped)
+	if err != nil {
+		return nil, err
+	}
+	k, err := NewKeyring(ck)
+	// NewKeyring copies, so the intermediate is ours to clear either way.
+	for i := range ck {
+		ck[i] = 0
+	}
+	return k, err
+}
+
 // Params is the chunker configuration for this library.
 func (k *Keyring) Params() Params { return k.params }
 

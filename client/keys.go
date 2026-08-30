@@ -152,9 +152,9 @@ func (a *Account) OpenLibrary(libraryID string) (*store.Keyring, error) {
 		}
 		return nil, err
 	}
-	ck, err := store.UnwrapCK(a.Identity, libraryID, out.WrappedKey)
+	kr, err := store.OpenKeyring(a.Identity, libraryID, out.WrappedKey)
 	if err != nil {
 		return nil, fmt.Errorf("client: unwrapping the content key: %w", err)
 	}
-	return store.NewKeyring(ck)
+	return kr, nil
 }

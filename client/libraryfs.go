@@ -12,6 +12,7 @@ package client
 // grows a plain-only path that quietly does not work on half its libraries.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -70,20 +71,14 @@ var (
 // server says whether a library is encrypted, and it is also where the head
 // comes from, so this is a request either implementation would have made.
 func (a *Account) Open(libraryID string) (LibraryFS, error) {
-	libraries, err := a.c.ListLibraries()
+	lib, err := a.c.Library(libraryID)
 	if err != nil {
 		return nil, err
 	}
-	for _, lib := range libraries {
-		if lib.ID != libraryID {
-			continue
-		}
-		if !lib.Encrypted {
-			return &plainLibrary{c: a.c, ID: libraryID}, nil
-		}
-		return a.OpenEncryptedLibrary(libraryID)
+	if !lib.Encrypted {
+		return &plainLibrary{c: a.c, ID: libraryID}, nil
 	}
-	return nil, fmt.Errorf("%w: library %s", ErrNotFound, libraryID)
+	return a.OpenEncryptedLibrary(libraryID)
 }
 
 // plainLibrary answers through entries/{path}, where the server resolves the
@@ -101,9 +96,12 @@ func (p *plainLibrary) Refresh() {}
 
 // notFound maps the server's 404 onto the package's own, so a caller can ask
 // the same question of either implementation.
+//
+// Only the JSON helpers need it: doBytesHeaders already maps 404 on the way
+// out, so wrapping a second time would only lengthen the message.
 func notFound(err error) error {
-	if err != nil && isNotFound(err) {
-		return fmt.Errorf("%w: %s", ErrNotFound, err)
+	if isNotFound(err) && !errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	}
 	return err
 }
@@ -115,18 +113,23 @@ func (p *plainLibrary) List(dir string) ([]Node, error) {
 	}
 	out := make([]Node, 0, len(entries))
 	for _, e := range entries {
-		n := Node{Name: e.Name, Mtime: e.Mtime, Type: store.NodeFile}
-		if e.Type == "dir" {
-			n.Type = store.NodeDir
-		}
-		// A listing carries an id for everything it names; a malformed one is
-		// the server's problem and not worth failing a listing over.
-		if id, err := store.ParseID(e.ID); err == nil {
-			n.ID = id
-		}
-		out = append(out, n)
+		out = append(out, node(e))
 	}
 	return out, nil
+}
+
+// node decodes one listing row. A listing carries an id for everything it
+// names; a malformed one is the server's problem and not worth failing a
+// listing over.
+func node(e DirEntry) Node {
+	n := Node{Name: e.Name, Mtime: e.Mtime, Type: store.NodeFile}
+	if e.Type == "dir" {
+		n.Type = store.NodeDir
+	}
+	if id, err := store.ParseID(e.ID); err == nil {
+		n.ID = id
+	}
+	return n
 }
 
 // Stat asks the parent, because the path surface has no stat: a GET on an
@@ -138,14 +141,16 @@ func (p *plainLibrary) Stat(entry string) (Node, error) {
 		return Node{Name: "/", Type: store.NodeDir}, nil
 	}
 	parent := "/" + strings.Join(segs[:len(segs)-1], "/")
-	siblings, err := p.List(parent)
+	siblings, err := p.c.ListDir(p.ID, parent)
 	if err != nil {
-		return Node{}, err
+		return Node{}, notFound(err)
 	}
+	// The raw listing rather than p.List, so that statting one entry in a large
+	// directory does not convert every sibling into a Node to throw away.
 	name := segs[len(segs)-1]
 	for _, s := range siblings {
 		if s.Name == name {
-			return s, nil
+			return node(s), nil
 		}
 	}
 	return Node{}, fmt.Errorf("%w: %s", ErrNotFound, entry)
@@ -154,7 +159,7 @@ func (p *plainLibrary) Stat(entry string) (Node, error) {
 func (p *plainLibrary) ReadFile(file string) ([]byte, error) {
 	body, header, err := p.c.doBytesHeaders("GET", entriesURL(p.ID, file), "", nil, nil)
 	if err != nil {
-		return nil, notFound(err)
+		return nil, err
 	}
 	// A GET on a directory is its listing, and handing that back as file
 	// content would be JSON masquerading as bytes.
@@ -176,11 +181,10 @@ func (p *plainLibrary) ReadAt(file string, off, n int64) ([]byte, error) {
 	if err != nil {
 		// A range that starts past the end of the file is 416, which is the
 		// same answer the encrypted implementation gives as no bytes.
-		var se *StatusError
-		if ok := asStatus(err, &se); ok && se.Code == http.StatusRequestedRangeNotSatisfiable {
+		if hasStatus(err, http.StatusRequestedRangeNotSatisfiable) {
 			return []byte{}, nil
 		}
-		return nil, notFound(err)
+		return nil, err
 	}
 	return body, nil
 }
@@ -188,7 +192,7 @@ func (p *plainLibrary) ReadAt(file string, off, n int64) ([]byte, error) {
 func (p *plainLibrary) WriteFile(file string, data []byte, mtime int64) error {
 	// mtime is not sent: the path surface takes none. See LibraryFS.WriteFile.
 	_, err := p.c.doBytes("PUT", entriesURL(p.ID, file), "application/octet-stream", nil, data)
-	return notFound(err)
+	return err
 }
 
 // WriteFrom buffers, because doStream's body factory has to be able to produce
@@ -207,12 +211,11 @@ func (p *plainLibrary) MkdirAll(dir string) error {
 	for i := range segs {
 		err := p.c.Mkdir(p.ID, "/"+strings.Join(segs[:i+1], "/"))
 		// Already there is the answer MkdirAll wants, not one it reports.
-		var se *StatusError
-		if ok := asStatus(err, &se); ok && se.Code == http.StatusConflict {
+		if hasStatus(err, http.StatusConflict) {
 			continue
 		}
 		if err != nil {
-			return err
+			return notFound(err)
 		}
 	}
 	return nil
