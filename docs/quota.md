@@ -3,8 +3,9 @@
 **Plan, partly landed.** Enforcement, the CLI and the self-lookup endpoint are
 built and described here as built. The charge those three agree on — logical
 size at head — is the part this document proposes to change, and the change
-pulls history retention in behind it. Read the *What is built* table first, and
-treat everything under *The charge* and below as argued and not yet written.
+pulls history retention in behind it. Read the *What is built* table first;
+*The charge* and the server-level ceiling are argued and not yet written, and
+the reclaimers under *History has a price* are built.
 
 Quota is the one number a user sees that the server can refuse them over, so
 what it counts is a product decision before it is an implementation one. Three
@@ -17,12 +18,12 @@ because answering any of them alone produces a number nobody can act on.
 | | where | state |
 |---|---|---|
 | Per-account ceiling (`UserQuota` row) | `libmgr.AccountQuota` | built |
-| Config fallback for accounts with no row | `[quota] default`, `option.go:302` | built |
+| Config fallback for accounts with no row | `[quota] default`, `option.DefaultQuota` / `option.parseQuota` | built |
 | Admission on the write path, serialized per owner | `checkQuota` / `refuseOverQuota`, `quota.go` | built |
-| Refusal status **507 Insufficient Storage** | `quota.go:20` | built |
+| Refusal status **507 Insufficient Storage** | `checkQuotaLocked` in `fileserver/quota.go` | built |
 | Setting a cap from the shell | `silo user quota <email> [size\|none]` | built (`5f5ed23`) |
-| Self lookup `GET /account/usage` → `{usage, quota, kind}` | `api/api.go:439` | built |
-| Per-library size on the libraries listing | `api/api.go:369` | built |
+| Self lookup `GET /account/usage` → `{usage, quota, kind}` | `AccountUsageHandler` in `fileserver/api/api.go` | built |
+| Per-library size on the libraries listing | `libraryInfo.Size`, `withUsage` in `fileserver/api/api.go` | built |
 | Quota answering `df` on a porter-fuse mount | `internal/vfs/statfs.go` (porter-fuse) | built |
 | History enumerable and readable at a point in time | `GET …/commits`, `entries/{path}?at=` | built (`6943a16`) |
 | The three numbers: head, history, unreferenced | `objmgr.Census`, `silo df` | built (`fc6e846`) |
@@ -97,11 +98,12 @@ reaches (`objmgr.Usage`, `libmgr.Usage`). The wire says so in as many words:
 `kind: "logical-at-head"` on `/account/usage`, so a client can name which
 number it is displaying instead of arguing about it.
 
-The reasoning, recorded in `quota.go:26` and worth stating before it is
+The reasoning, recorded in the header of `checkQuota` in `fileserver/quota.go` and worth stating before it is
 overturned: dedup and compaction move stored bytes under the user's feet, and a
 number that changes because the server ran a background job is not one anybody
 can act on. Under logical-at-head, deleting a file frees exactly its size,
-immediately, and that property is what `quota_test.go:102` exists to pin.
+immediately, and that property is what `TestDeletingAFileMakesRoomImmediately` in
+`fileserver/quota_test.go` exists to pin.
 
 ### What it should count
 
@@ -120,7 +122,7 @@ quota.
 
 **Cross-library sharing is not a problem here, and that is what makes this
 clean.** Objects live at `storage/{type}/{storeID}/`, one store per library
-(`objstore.go:78`, `091e22f`), and E2EE libraries have per-library keys anyway,
+(`objstore.LibraryDir`), and E2EE libraries have per-library keys anyway,
 so identical bytes in two libraries are two chunks. A chunk therefore belongs
 to exactly one library, which is owned by exactly one account. There is no
 question of who pays for a shared chunk, no split that changes when somebody
@@ -162,7 +164,7 @@ A client that shows both can explain itself. A client that shows one can pick.
 ## How a client gets this
 
 The endpoint is `GET /api/silo/v1/account/usage`, and `server-info`'s features
-list carries `usage` (`api/api.go:73`) to advertise it alongside `size` and
+list carries `usage` (`features` in `fileserver/api/api.go`) to advertise it alongside `size` and
 `file_count` on the libraries listing.
 
 **Do not gate the read on the feature flag.** The flag says what a server
@@ -210,61 +212,17 @@ The columns:
 
 **`df` will not match `account/usage` to the byte, and that is not a bug.**
 `statfs(2)` reports block *counts*, not bytes, so every column is divided by a
-block size on the way out. Used comes back as
-`floor(quota/B) - floor((quota-usage)/B)` — two independent truncations — which
-lands within one block of the real figure, on whichever side depends on where
-the quota falls relative to a block boundary. A measured example: an account
-holding exactly 33,740,933 bytes under a 100 MB cap reports 8238 blocks,
-33,742,848 bytes; the same account under a cap of 100,001,925 reports 8237.
-
-**That block size is the client's choice, not something `statfs` imposes.**
-Porter picks 4096 because it is what every local filesystem on the machine
-reports, so its `df` row lines up with the others. The rounding is therefore
-porter's arithmetic expressed in a unit `statfs` mandates, and its size is set
-by that constant: a client reporting `Bsize = 512` would have an eighth of the
-worst case, and one reporting `1` would have none of it and an unrecognisable
-`df` row. Attributing the rounding to the kernel reads as immovable and sends
-the next reader looking in the wrong place.
-
-Only the *magnitude* scales with the divisor, though. How **often** the used
-column differs from `ceil(usage/B)` is `(B - usage mod B)/B`, which depends on
-the usage and not systematically on `B` at all — it averages about half
-whatever the block size. For this usage a 512-byte block would be off by less
-and more frequently: 379/512 = 74.0% of caps against 1915/4096 = 46.8%. That is
-a fact about 33,740,933, not a rule about small blocks; other usages invert it.
-Do not read "an eighth as large" as "an eighth as often".
-
-None of which changes the choice. A discrepancy bounded by 512 bytes beats one
-bounded by 4096 however often it shows — and lining up with every other `df`
-row on the machine is still worth more than the last 4 KiB, which is why the
-constant is what it is.
-
-Two things follow, both easy to get wrong in a document that reports a
-measurement:
-
-- It is **not** "the partial last block counted as occupied". That is what a
-  local filesystem does, and it does it *per file* — those same five files
-  rounded individually come to 8240 blocks, not 8238. Porter rounds the
-  aggregate once. With one small file the two nearly agree; with a few thousand
-  they do not.
-- It is **not** reliably a round *up*, and the rule is exact rather than
-  statistical. Write `quota = q*4096 + r` and `usage = u*4096 + s`. Then the
-  used column is `u` when `r >= s` and `u + 1` when `r < s` — so it equals
-  `ceil(usage/4096)` exactly when **the quota's remainder is smaller than the
-  usage's**, and `floor` otherwise. The two measured cases above are that rule
-  and nothing else: at a 100 MB cap `r = 256 < s = 2181`, so 8238; at
-  100,001,925 the remainders are equal, so 8237.
-
-  Sample it instead of deriving it and you will get a different answer every
-  time — the fraction of caps that round down is `(4096 - s)/4096`, which is
-  46.75% for this usage, but a window that is not a whole number of 4096-byte
-  periods is biased and will report anything. Ten thousand consecutive caps
-  gives 38%. This is a place to do the algebra rather than count.
+block size on the way out, and used is `floor(quota/B) - floor((quota-usage)/B)`
+— two independent truncations, within one block of the real figure on either
+side. The block size is the client's choice, not the kernel's; porter reports
+4096 so its row lines up with every local filesystem's. porter-fuse's `statfs`
+implements this, and the arithmetic is its concern rather than the server's.
 
 The half worth noticing is that **the used column is real either way**. That is
 what makes an uncapped account's `df` useful rather than decorative: a backup
-tool deciding whether a copy will fit is reading used, and before this it was
-told half a terabyte was in use on an account holding thirty megabytes.
+tool deciding whether a copy will fit is reading used, and an invented used
+column would tell it half a terabyte was in use on an account holding thirty
+megabytes.
 
 Two mismatches survive, and both are the better of the available errors:
 
@@ -302,7 +260,7 @@ if it holds, the quota surfaces in two other places instead:
 
 A TTL is sufficient and is what is built. The better trigger is already
 available: porter subscribes to `/notification`, and a `LibraryUpdateEvent`
-(`notif/event.go:24`) is exactly the moment the account total may have moved. A
+(`fileserver/notif/event.go`) is exactly the moment the account total may have moved. A
 client that re-reads usage on that event, with the TTL as a floor rather than
 the only clock, gets a number that changes when the user's own writes land
 instead of up to thirty seconds later.
@@ -323,45 +281,38 @@ wire. Three things do:
 
 ## History has a price, and a date
 
-Once quota charges blocks, history stops being free, and "how long do I keep
+Once quota charges chunks, history stops being free, and "how long do I keep
 it" stops being a preference and becomes the lever that controls somebody's
 bill. It needs an answer before the charge changes, not after.
 
 **Date-based expiry.** A library keeps history for N days; commits older than
-that are collectable, and the blocks reachable only from them come back. Days
+that are collectable, and the chunks reachable only from them come back. Days
 rather than a commit count, because days are what a user can reason about — "I
 can go back a fortnight" is a promise; "I can go back 200 commits" is a number
 whose meaning depends on how busy the library was, and a single noisy client
 can burn a hundred commits in an afternoon.
 
-Three numbers fall out of this, they want three different actions, and today
-only the first exists:
+Three numbers fall out of this, and they want three different actions:
 
-- **live at head** — reachable from the head commit. What quota charges today.
+- **live at head** — reachable from the head commit. What quota charges.
 - **history** — reachable from some older commit but not from head. What
-  expiry reclaims.
+  `silo gc -expire-history` reclaims.
 - **unreferenced** — reachable from nothing at all. Interrupted uploads,
-  abandoned commits. Reclaimable now, with no policy decision attached.
+  abandoned commits. What `silo gc -orphans` reclaims, with no policy decision
+  attached.
 
-Computing them is one mark phase, and it is the same mark phase the collector
-needs, which is the argument for building the accounting first: it produces the
-numbers before anything deletes on the strength of them.
+`objmgr.Census` computes all three in one mark phase and `silo df` prints them
+per library. It is a set union over object ids rather than a sum of per-commit
+`Measure` calls, because successive commits share nearly all of their objects
+and summing them would report a history cost many times the disk.
 
-One trap worth naming, because it makes the naive implementation wrong by a
-large factor: **this cannot be a sum of per-commit `Measure` calls.** Successive
-commits share nearly all of their objects, so summing them counts the same
-blocks once per commit and reports a history cost many times the disk. It has to
-be a set union over object ids — a genuinely new primitive beside `Measure` and
-`MeasureDelta` in `objmgr/measure.go`.
+`libmgr.advance` in `fileserver/libmgr/usage.go` falls back to measuring the
+tree outright when a delta walk meets an object that expiry has collected out
+from under it.
 
-`libmgr.advance` (`usage.go:65`) already anticipates the collector: it falls
-back to measuring the tree outright when a delta walk meets an object that has
-been collected out from under it, and names history retention as the reason
-that happens. The fallback is written; the thing it is a fallback for is not.
-
-`gc.go` today reclaims the object directories of *deleted libraries* only, and
-says in its own header that reclaiming unreferenced history inside a live
-library is a separate and harder job. It is the job above.
+The reclaimers, their guards and the retention policy behind them are
+[`storage.md`](storage.md) § Reclaiming's to describe, and this document does
+not restate them.
 
 ## The `.snapshot` directory
 
@@ -378,7 +329,7 @@ GET /libraries/{id}/entries/{path}?at={commit}  → that path under that commit'
 ```
 
 Together those are the whole of the server's contribution, and that is a
-decision rather than an omission (`api/history.go:44`).
+decision rather than an omission (the header of `fileserver/api/history.go`).
 
 **No virtual nodes.** A directory the server invented has no id, appears in no
 manifest, and would need excluding from GC's mark, from `changes?since=`, from
@@ -426,17 +377,17 @@ on describing the world it replaced.
 
 | site | what it says |
 |---|---|
-| `fileserver/quota.go:26` | the charge, and why it is not stored bytes |
-| `fileserver/api/api.go:428` | `usageKind = "logical-at-head"` |
-| `fileserver/api/api.go:234` | listing-row `Size`, same claim |
-| `fileserver/user_quota_cmd.go:113` | what the CLI prints to an operator |
-| `fileserver/blocks.go:127` | "must never reach quota, which is logical size at head" |
-| `fileserver/dbutil/schema.go:180` | the column comment |
-| `fileserver/objmgr/measure.go:5` | what `Usage` is |
-| `docs/porter-brief.md:166,186,1122` | the wire contract clients are written against |
+| `checkQuota` header, `fileserver/quota.go` | the charge, and why it is not stored bytes |
+| `usageKind`, `fileserver/api/api.go` | `usageKind = "logical-at-head"` |
+| `libraryInfo.Size`, `fileserver/api/api.go` | listing-row `Size`, same claim |
+| `reportUserQuota`, `fileserver/user_quota_cmd.go` | what the CLI prints to an operator |
+| `fileserver/chunks.go`, the delta comment | "must never reach quota, which is logical size at head" |
+| `LibraryUsage` in `fileserver/dbutil/schema.go` | the table comment |
+| `objmgr.Usage`, `fileserver/objmgr/measure.go` | what `Usage` is |
+| `docs/porter-brief.md` § `account/usage` | the wire contract clients are written against |
 | [`docs/roadmap.md`](roadmap.md) | the roadmap entry |
 | [`docs/storage.md`](storage.md) § What the numbers mean | "cutting history reclaims disk, never quota" |
-| `fileserver/quota_test.go:102` | the test pinning "freeing space makes room" |
+| `TestDeletingAFileMakesRoomImmediately`, `fileserver/quota_test.go` | the test pinning "freeing space makes room" |
 
 That last row is the honest one. There is a passing test asserting the property
 this change gives up. It should fail first, then be rewritten to assert what
@@ -445,76 +396,16 @@ deleted.
 
 ## Order of work
 
-1. ~~**The mark phase and the three numbers.**~~ **Done** — `fc6e846`.
-   `objmgr.Census` is the set union; `silo df` prints it per library and never
-   deletes. It measures an E2EE library without its key, since every edge it
-   follows is published in both library types.
-
-   What it found on a five-write test library: `account/usage` answering
-   300,000 bytes over a store holding 1,500,980, with history at 80% of the
-   disk. That is the case this was built to make visible, and it is worse than
-   expected — which settles whether the retention work below is worth doing.
-2. ~~**Collect the unreferenced.**~~ **Done** — `e56a270`. `silo gc -orphans`,
-   reporting by default and `-delete` to act.
-
-   Two guards, because the hard part is not finding the garbage but not
-   deleting an upload that is still in progress — the two are
-   indistinguishable from the store, since an object is unreferenced right up
-   until the commit that names it lands.
-
-   - **Age** (`-min-age`, default 24h) is the primary guard and needs no
-     coordination: nothing recent enough to be in flight is a candidate.
-   - **The `GCID` generation** is the backstop, for a client that uploaded and
-     then stalled past the threshold. The bump happens *before* the mark, so
-     `updateBranch` refuses that head move with `ErrGCConflict` and the client
-     re-uploads. Bumping after would leave open precisely the window it exists
-     to close.
-
-   Nothing had ever written `gc_id`. The read side has been in place since
-   the store cutover and inert; this activates it.
-3. ~~**Date-based expiry.**~~ **Done** — `c99b745`.
-   `silo gc -expire-history 30d`, reporting by default.
-
-   It deletes **commit objects only**. The bulk of a library is chunks, and
-   those are the sweep's job, so expiry moves bytes from the history column to
-   the unreferenced column and stops. Two checkable steps instead of one large
-   irreversible one. On a live library: 1.5 MB with 1.2 MB of history became
-   300.2 KB.
-
-   Two rules decide the set:
-
-   - **The cut is a prefix from the head**, not a per-commit age test. History
-     is a linked list, so deleting a commit cuts everything behind it anyway —
-     and commit timestamps come from clients, so clock skew alone can put an
-     old commit between two new ones.
-   - **The head is never expired**, at any age. A library untouched for a year
-     is ordinary; dropping its head leaves `Branch` naming a commit the store
-     does not hold, which is corruption with no client-side recovery.
-
-   The boundary needed no new plumbing: `walkHistory` already ends a listing at
-   an unreadable commit and `changes?since=` already answers 410. Verified
-   against a running server — the commits listing went 6 → 1 with a 200, and an
-   expired id answered 410.
-
-   **The policy landed after it** (`silo retention`): a `LibraryRetention` row
-   per library, `[history] keep_days` in `silo.conf` as the fallback, and the
-   row winning where it exists — the same precedence `UserQuota` uses, for the
-   same reason. `silo gc -expire-history` follows each library's policy;
-   `-expire-window` overrides every policy at once and is a separate flag
-   because it is the dangerous reading.
-
-   Two defaults chosen to make an upgrade safe: `DefaultKeepDays` is 0 and 0
-   means *keep everything*, so installing a new binary never starts deleting.
-   And `silo retention <id> 0` is refused rather than treated as keep-all,
-   because an operator typing 0 could as easily mean "keep nothing" and the two
-   are opposites — `keep-all` says which one out loud.
-
-   Still open: **nothing runs it unattended.** `expireHistoryByPolicy` takes no
-   window precisely so a scheduler can call it, but today an operator runs the
-   command or schedules it with cron. An in-process timer is wanted eventually
-   and is deliberately not here yet — it would be the first thing in Silo that
-   deletes user data with nobody watching, and it wants a kill switch and an
-   interval before it wants code.
+1. **The mark phase and the three numbers** — built, `fc6e846`
+   (`objmgr.Census`, `silo df`).
+2. **Collect the unreferenced** — built, `e56a270` (`silo gc -orphans`).
+3. **Date-based expiry and the retention policy** — built, `c99b745` and
+   `7668d3f` (`silo gc -expire-history`, `silo retention`). Still open:
+   nothing runs it unattended. `expireHistoryByPolicy` takes no window so a
+   scheduler can call it, but an operator runs the command or schedules it
+   with cron. An in-process timer is deliberately not built: it would be the
+   first thing in Silo that deletes user data with nobody watching, and it
+   wants a kill switch and an interval before it wants code.
 4. **Switch the charge to `chunks-occupied`**, reporting both kinds, with every
    site in the table above moving together. This is fourth on purpose: it is the
    step users feel, and it should not land until the space it makes chargeable
@@ -552,7 +443,7 @@ choosing how to change it.
 
 ## Open questions
 
-- **Is `[quota] default` still the right shape** once the charge is blocks? A
+- **Is `[quota] default` still the right shape** once the charge is chunks? A
   default expressed in logical bytes and enforced in stored ones is a number
   whose meaning changed under the operator who wrote it. Probably it just needs
   the units restating in the config comment, but it should be decided rather

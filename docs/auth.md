@@ -105,13 +105,14 @@ own format — `PBKDF2SHA256$iterations$salt$hash` today — because
 `authmgr.validatePasswd` dispatches on the prefix. Anything writing this column
 has to keep that true.
 
-Nine tables carry an `account_id`; none keys on an address. The API layer joins
+Every table that names an account carries an `account_id`; none keys on an
+address. The API layer joins
 to produce one where a response wants it, and `credential.load` joins
 `AccountEmail` for the primary address on every request, because that is what a
 commit records as its author.
 
 **One place an address is permanent, and it must stay that way.**
-`Commit.CreatorName` and the directory entry's `Modifier` are fed into the object ids that
+`Commit.Author` and the directory entry's `Modifier` are fed into the object ids that
 name them, so rewriting either means rewriting every object in every library.
 That is correct rather than a defect — it is the git model, where an author
 string is display data recording the address in use at the time. Silo must simply
@@ -175,7 +176,8 @@ CREATE TABLE Credential (
 
 A row carries a secret hash or a public key, never both. An `s3` row would carry
 neither and derive its secret from a master key, which is why the `CHECK` permits
-both being NULL. `client_id` is a column nothing writes yet.
+both being NULL. `credential.Issue` writes `client_id` when the caller supplies
+one and NULL otherwise.
 
 **`label` and `last_used` turn revocation from a guess into a decision.**
 `credential.Issue` refuses a row with no label, so the column cannot quietly go
@@ -409,14 +411,12 @@ external identity, where the address *is* the proof — see
 ### Claiming a server that has no accounts
 
 A server with an empty account table is a server nobody can use: there is no
-signup endpoint and no user-management API. It used to answer that by inventing
-an account — `admin@silo.local`, a generated password, one log line — or by
-reading `SILO_ADMIN_EMAIL` and `SILO_ADMIN_PASSWORD`. Both are gone. The first
-handed the operator an identity they did not choose; the second put a password
-in a compose file and an environment for the life of a deployment, to be read
-once.
+signup endpoint and no user-management API. The server does not invent an
+account or read one from the environment — the first would hand the operator
+an identity they did not choose, the second would leave a password in a
+compose file for the life of a deployment, to be read once.
 
-What replaces them is a **setup token**: sixteen Crockford base32 symbols,
+What it does instead is a **setup token**: sixteen Crockford base32 symbols,
 eighty bits from `crypto/rand`, printed at warning level on every boot until it
 is claimed and reprinted on demand by `silo setup-token`. `POST auth/setup`
 takes it with an address and a password of the operator's choosing and creates
@@ -452,8 +452,8 @@ bounds the cost of the endpoint and forgives a mistyped code. Eighty bits is
 what makes guessing hopeless. Do not read the limiter as load-bearing and
 shorten the token.
 
-The account predicate is deliberately unfiltered — `SELECT 1 FROM Account`, not
-the active-only count the old bootstrap used. Under an active-only test,
+The account predicate is deliberately unfiltered — `SELECT 1 FROM Account`, with
+no `is_active` test. Under an active-only test,
 disabling your last account would put the server back into setup mode and mint a
 fresh token, handing a way in to anyone who could read its logs. A disabled
 account is still an account; the way back from locking yourself out is
@@ -461,9 +461,8 @@ account is still an account; the way back from locking yourself out is
 
 ## Discarding a credential
 
-A client that can mint one can discard it. Before these routes existed only an
-operator with shell access could, through `silo token revoke`, which made
-signing out of a laptop a support request.
+A client that can mint one can discard it; signing out of a laptop is not a
+support request for an operator holding `silo token revoke`.
 
 ```
 POST /api/silo/v1/auth/logout             this credential
@@ -492,8 +491,8 @@ scoped credential gets `403` from the ordinary rule.
 
 That is also why "everywhere" is a second route rather than a field in the body:
 a flag inside the body would put the answer somewhere the middleware cannot see,
-and the scope check would have to move into the handler — which is how four
-handlers came to bypass it before.
+and the scope check would have to move into the handler, where the failure it
+prevents is a handler that forgets it.
 
 ## Changing a password, and what it revokes
 
@@ -637,14 +636,11 @@ bucket would break the contract: an address that can be throttled is an address
 that has an account. What makes a sweep useless is the indistinguishable
 answer; the bucket bounds what the sweep costs this server.
 
-**The endpoint ships ahead of its consumer, deliberately.** Nothing sends
-`authKey` yet — [`storage.md`](storage.md)'s split-derivation login is the item
-that changes what `POST auth/login` receives. Until then a client logs in with
-the password, fetches `account/keys`, and derives `wrapKey` under the
-parameters the blob itself carries. What this endpoint is needed for on day one
-is the same bootstrap when the login lane changes, and building it with the
-account model rather than after it is what keeps the two from being designed
-twice.
+**The endpoint has no consumer yet.** Nothing sends `authKey`; a client logs
+in with the password, fetches `account/keys`, and derives `wrapKey` under the
+parameters the blob itself carries. Split-derivation login
+([`plans/e2ee-completion.md`](plans/e2ee-completion.md) step 2) is what changes
+what `POST auth/login` receives.
 
 ## Operating it
 
@@ -822,80 +818,6 @@ milliseconds in total, comfortably under the storage reads it is making anyway.
 The only things that cannot play are an S3 frontend, whose SigV4 needs a shared
 secret the server can recompute with, and a capability URL, because a URL cannot
 sign anything.
-
-## The client's KDF is not this one
-
-> **The schema and the endpoint are built.** The four items below and the
-> pre-login endpoint landed with [the account's key material](#the-accounts-key-material)
-> in Part 1, which is the normative description; what is left here is the
-> reasoning, and the one half still outstanding — nothing sends `authKey` yet.
-
-Once [`storage.md`](storage.md)'s split-derivation login lands
-there are **two** argon2id derivations per password, and they are constantly
-mistaken for one. The client stretches the password into `authKey` under
-parameters it fetches before logging in; the server stretches the `authKey` it
-receives into `AccountPassword.hash` under its own. Two KDFs, two parameter sets,
-one in each schema — neither vestigial, and raising one does not raise the other.
-The server's half gets *cheaper* when this lands: by this document's own rule a
-256-bit `authKey` needs no memory-hard KDF at all.
-
-Silo had designed the client half twice — [`spec/store-format.md`](spec/store-format.md)
-pins the wire format, this document pins the account model — and connected them
-nowhere. This is what connected them:
-
-```sql
-ALTER TABLE AccountPassword
-  ADD COLUMN client_kdf_params TEXT;      -- $argon2id$v=19$m=...,t=..,p=..$<salt>
-
-CREATE TABLE AccountIdentityKey (         -- exactly one per account
-  account_id  BLOB PRIMARY KEY REFERENCES Account(id),
-  public_key  BLOB NOT NULL,              -- X25519, 32 bytes, published
-  wrapped_key BLOB NOT NULL,              -- store wrap kind 1, sealed under wrapKey
-  updated_at  INTEGER NOT NULL
-);
-
-CREATE TABLE AccountRecoveryWrap (        -- ten per account
-  account_id  BLOB    NOT NULL REFERENCES Account(id),
-  ordinal     INTEGER NOT NULL,           -- which of the set; never the code
-  wrapped_key BLOB    NOT NULL,           -- store wrap kind 2
-  ctime       INTEGER NOT NULL,
-  PRIMARY KEY (account_id, ordinal)
-);
-```
-
-- **`client_kdf_params` sits on `AccountPassword`** because it governs how a
-  password becomes `authKey`, and an account with no password has none. It is the
-  PHC string `store.KDFParams.String()` writes, carrying the per-user salt, so
-  there is no separate salt column. Keep it adjacent to `hash`, with a comment:
-  two argon2 parameter sets far apart and unexplained is how the next reader
-  concludes one of them is dead.
-- **`public_key` is a column, not a derivation.** Another member's client wraps a
-  content key to it, so it is read by people who are not its owner and must be
-  servable without unwrapping anything.
-- **Recovery wraps are rows, and the granularity is forced.** Redeeming a code
-  deletes its blob and leaves the rest standing. Regenerating the set on
-  redemption is the tidier-looking rule and the worse one, because it invalidates
-  the codes a person is still holding at the moment they have proved they lost
-  their device. The server never learns a code, so redemption is the client
-  fetching the set and trying each blob.
-- **`holder` is `Account.id` as canonical lower-case hyphenated UUID text**,
-  bound into every wrap as associated data. The account id was already immutable;
-  now changing it would make every blob unopenable rather than merely breaking
-  joins.
-
-**The pre-login parameters endpoint** is the sharp one, because `authKey` is a
-function of parameters only the server knows. Given an address it returns that
-account's `client_kdf_params`, under two constraints that do not fall out of
-writing the obvious handler:
-
-- **It is an enumeration oracle by default.** An unknown address must receive
-  plausible parameters rather than a 404, and the same ones every time, or the
-  difference between two requests answers the question. Derive them from
-  `HMAC(server_secret, normalized_address)`, exactly as the dummy hash works.
-- **The answer is attacker-influenced input to the client's KDF.** A server
-  answering `m=4 GiB` does not weaken anything; it takes the device down. The
-  client validates against `store.KDFParams.Validate` before deriving — it
-  already does — and this is the request that makes that guard load-bearing.
 
 ## Argon2id, and the memory it costs the server
 
@@ -1183,32 +1105,21 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
 
 1. **Proof of possession** — public keys registered at enrolment, RFC 9421
    signatures on the Silo lane. Independent of OIDC; whichever is wanted first.
-2. **Argon2id behind a concurrency semaphore.** The four schema items and the
-   pre-login parameters endpoint that used to sit alongside this are built —
-   see [the account's key material](#the-accounts-key-material). What is left
-   is the server's own hashing, and it is now cheap to defer: by this
-   document's own rule the argon2id that matters most is the client's, and
-   that one already runs. Sequenced with [`storage.md`](storage.md)'s
-   split-derivation login, which is what makes `AccountPassword.hash` a hash of
-   a 256-bit `authKey` rather than of a password — at which point this becomes
+2. **Split-derivation login**, then **argon2id behind a concurrency
+   semaphore** if it is still wanted. Nothing sends `authKey` yet; the item is
+   [`plans/e2ee-completion.md`](plans/e2ee-completion.md) step 2. The server's
+   own hashing is cheap to defer: the argon2id that matters most is the
+   client's, and that one already runs. Once `AccountPassword.hash` is a hash
+   of a 256-bit `authKey` rather than of a password, the server's side becomes
    a *fast* hash rather than a memory-hard one, and the semaphore is moot.
 3. **A persistent JWT signing key**, so a restart does not disconnect every
-   watching client. Nothing but notification tokens depends on it. It now has
-   somewhere to live that did not exist when this was written: the
-   `ServerSecret` table, added for the pre-login endpoint's dummy salt, holds
-   exactly this shape of value — a secret that is the server's own and must
-   outlive the process. A 0600 keyfile is still the answer if the key has to be
-   readable by an operator or shared across processes; if it does not, a row is
-   one fewer file to get the permissions wrong on.
-4. ~~**A single-use setup credential** in place of `SILO_ADMIN_PASSWORD`.~~
-   **Built** — see [claiming a server](#claiming-a-server-that-has-no-accounts)
-   in Part 1. Two things landed differently from this line. There is no
-   fifteen-minute expiry: a clock the operator cannot see is a lockout, and
-   "until an account exists" is both a better death condition and one the server
-   can check rather than race. And `SILO_ADMIN_PASSWORD_FILE` did not stay,
-   because nothing was left for it to do — the token is read back from the host
-   with `silo setup-token`, which is the same access a file would have needed
-   and leaves no secret at rest in a config file.
+   watching client. Nothing but notification tokens depends on it. The
+   `ServerSecret` table holds exactly this shape of value — a secret that is
+   the server's own and must outlive the process. A 0600 keyfile is the answer
+   if the key has to be readable by an operator or shared across processes; if
+   it does not, a row is one fewer file to get the permissions wrong on.
+4. **Setup credential** — built; see
+   [claiming a server](#claiming-a-server-that-has-no-accounts) in Part 1.
 5. **OIDC** — `/device/code`, the device grant against the IdP, ID-token
    verification, `AccountIdentity` binding with verified-address recovery, and
    backchannel logout. Adds no browser surface, and produces exactly the
