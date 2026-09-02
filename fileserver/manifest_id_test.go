@@ -146,7 +146,7 @@ func TestAClientCanComputeTheIDAPUTWillReturn(t *testing.T) {
 	}{
 		// The brief's own example file, and the case that shows why hashing
 		// the bytes cannot work: an inline manifest wraps them in a header.
-		{"inline", "greeting.txt", []byte("hello, porter\n")},
+		{"inline", "greeting.txt", []byte("hello, silo-drive\n")},
 		// Over the inline threshold, so the manifest is a chunk list and holds
 		// none of the file's bytes at all.
 		{"chunked", "big.bin", pseudoRandomBytes(3<<20, "silo/porter-brief/check-the-id")},

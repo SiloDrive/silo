@@ -35,7 +35,7 @@ import (
 // The surface is deliberately the same for both library types. A plain library
 // could be written either way, and a client that implements this one does not
 // need a second implementation for the encrypted case — which is the whole
-// point of porter building one interface with two backends rather than
+// point of silo-drive building one interface with two backends rather than
 // branching on e2ee at every call site.
 //
 // What the server verifies, and it is a short list because it is everything it

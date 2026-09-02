@@ -7,7 +7,7 @@ minutes. See [What was done](#what-was-done) at the end for the parts that were
 left alone and why.
 
 **Found:** 18 Aug 2026, against 0.4.2, by accident — a `git filter-branch` in the
-porter-fuse working tree deleted a tracked copy of the server's data directory
+silo-drive working tree deleted a tracked copy of the server's data directory
 out from under a running `silo serve`. Unintentional fault injection, and a more
 honest one than a test would have been: the database survived intact and the
 object store did not, which is exactly the shape a half-restored backup, an
@@ -25,7 +25,7 @@ there.
 
 ```
 GET /api/silo/v1/libraries
-  200  [{"id":"328be500-…","name":"Porter Test",
+  200  [{"id":"328be500-…","name":"Silo Drive Test",
          "head_commit_id":"ac9b78b5c6f7b1905277627bafef0fe99beb15ff", …}]
 
 GET /api/silo/v1/libraries/328be500-…/entries/
@@ -83,7 +83,7 @@ that could have restored the object.
 
 The clients in flight both walk into it:
 
-- **porter-fuse** maps 404 to `ENOENT`. The library would disappear from the
+- **silo-drive** maps 404 to `ENOENT`. The library would disappear from the
   mount while `/libraries` kept listing it — a directory the mount says is not there
   and the API says is. Under 5xx it maps to `EIO`, which is the truth: something
   is broken, nothing has been deleted, do not act on it.
@@ -142,7 +142,7 @@ body that says the library exists and its storage is damaged. It sits next to
 the sentinels rather than in either HTTP package, because both `silod` and
 `fileserver/api` serve libraries and two copies of this decision would drift.
 
-Converted: `entryLibrary` (`entries.go` — the Silo v1 surface porter-fuse and the
+Converted: `entryLibrary` (`entries.go` — the Silo v1 surface silo-drive and the
 File Provider extension read), `loadLibraryAndCommit` and the download handler
 (`api_handlers.go`), `ListDirHandler` (`api/api.go`), `ChangesHandler`
 (`api/changes.go`), and the compatibility lane's download-info handler, which

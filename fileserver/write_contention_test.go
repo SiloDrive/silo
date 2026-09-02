@@ -20,7 +20,7 @@ import (
 // handler answered 500. 500 is the one class a client must not retry blind —
 // it means the server may have applied part of the request — and here nothing
 // was applied and the same request would have succeeded a moment later.
-// porter-fuse maps 5xx to EIO, and an EIO from close(2) is data loss from the
+// silo-drive maps 5xx to EIO, and an EIO from close(2) is data loss from the
 // application's point of view.
 //
 // Eight writers start from the same head. One wins; the rest either win a

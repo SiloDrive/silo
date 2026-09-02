@@ -27,10 +27,10 @@ func TestIssueThenResolve(t *testing.T) {
 	cred, secret, err := Issue(ctx(t), IssueOpts{
 		Kind:      KindDevice,
 		AccountID: dan,
-		Label:     "dan's macbook, porter-fuse",
+		Label:     "dan's macbook, silo-drive",
 		Scope:     Scope{LibraryID: "library-1", Path: "/photos"},
 		Perm:      "r",
-		ClientID:  "porter-fuse",
+		ClientID:  "silo-drive",
 		Lifetime:  90 * 24 * time.Hour,
 	})
 	if err != nil {
@@ -50,7 +50,7 @@ func TestIssueThenResolve(t *testing.T) {
 	if got.AccountID != dan {
 		t.Errorf("account = %s, want %s", got.AccountID, dan)
 	}
-	if got.Label != "dan's macbook, porter-fuse" {
+	if got.Label != "dan's macbook, silo-drive" {
 		t.Errorf("label = %q", got.Label)
 	}
 	if s := got.Scope.String(); s != "library-1:/photos" {
@@ -59,8 +59,8 @@ func TestIssueThenResolve(t *testing.T) {
 	if got.Perm != "r" {
 		t.Errorf("perm = %q, want r", got.Perm)
 	}
-	if got.ClientID != "porter-fuse" {
-		t.Errorf("client_id = %q, want porter-fuse", got.ClientID)
+	if got.ClientID != "silo-drive" {
+		t.Errorf("client_id = %q, want silo-drive", got.ClientID)
 	}
 	if got.ExpiresAt != cred.ExpiresAt || got.ExpiresAt == 0 {
 		t.Errorf("expires_at = %d, want %d", got.ExpiresAt, cred.ExpiresAt)

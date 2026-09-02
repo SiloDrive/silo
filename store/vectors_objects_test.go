@@ -234,7 +234,7 @@ func encodeCommit(c *Commit) func(bool) ([]byte, error) {
 
 func TestObjectVectors(t *testing.T) {
 	checkVectorFile(t, objectVectorFile, buildObjectVectors(t),
-		"every manifest id in every library moves, and porter-mac stops interoperating")
+		"every manifest id in every library moves, and silo-drive stops interoperating")
 }
 
 // The check a port has to pass: rebuild every object from its description and

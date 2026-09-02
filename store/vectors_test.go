@@ -13,7 +13,7 @@ import (
 )
 
 // The test vectors are part of the spec, not part of this package's tests.
-// porter-mac's Swift implementation is checked against the same file, and a
+// silo-drive's Swift implementation is checked against the same file, and a
 // release ships only when both are green against it — so these are
 // regenerated deliberately with -update and the diff is reviewed, never
 // refreshed to make a failing test pass.
@@ -263,7 +263,7 @@ func buildVectors(t *testing.T) vectorDoc {
 
 func TestVectors(t *testing.T) {
 	checkVectorFile(t, vectorFile, buildVectors(t),
-		"every existing library's ids move, and porter-mac stops interoperating")
+		"every existing library's ids move, and silo-drive stops interoperating")
 }
 
 // What a port has to pass on top of reproducing every cut above: refuse every

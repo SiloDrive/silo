@@ -15,7 +15,7 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
 ## Architecture
 
 ```
-  Client (TUI / porter-fuse / File Provider / …)
+  Client (TUI / silo-drive / …)
               │
               │ HTTP :8082
               ▼
@@ -363,7 +363,7 @@ clients were deleted in 0.5.0, and every route they used now answers 404 — see
 Tested clients:
 
 - **Silo TUI** (`cmd/silo`) — full CRUD and browse
-- **porter-fuse** and the macOS File Provider client (Porter) — `entries`,
+- **silo-drive**, as a FUSE mount and as the macOS File Provider client — `entries`,
   `changes`, `notify-token` and the notification socket; see
   [`docs/protocol.md`](docs/protocol.md#writing-a-client) § Writing a client
 

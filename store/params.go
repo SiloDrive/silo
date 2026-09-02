@@ -16,7 +16,7 @@ const ChunkerAlgorithm = "fastcdc-gear64/v1"
 // The default chunker sizes, confirmed by measurement against a real 6 TB
 // workload: 93% of bytes sit in files over 256 MiB, so the target is chosen
 // for read amplification rather than dedup granularity, and 1 MiB is where
-// porter's 2 MiB read window converges.
+// silo-drive's 2 MiB read window converges.
 const (
 	DefaultMinSize    = 256 << 10
 	DefaultTargetSize = 1 << 20

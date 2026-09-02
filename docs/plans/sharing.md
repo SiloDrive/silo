@@ -18,7 +18,7 @@ out (deferred, not rejected; see the end).
 | 1 | Three principals — account, anonymous-via-public-grant, anonymous-via-link — resolve through **one permission path**. No ad-hoc checks in read handlers. |
 | 2 | Public-read-only is a **permanent, listed grant to the anonymous principal** — the same grant machinery as a share link scoped to the library root, differing only in discovery. |
 | 3 | `public_read` ⇒ server-readable library. Exclusive with E2EE at creation; converting an E2EE library to public is `silo convert`, the client-side re-encryption operation [`storage.md`](../storage.md) defines — and conversion to public always starts a new history root. |
-| 4 | Anonymous read on public libraries covers the **chunk surface** (manifests + chunks), not just `entries/` — porter can mount a public library with no account. |
+| 4 | Anonymous read on public libraries covers the **chunk surface** (manifests + chunks), not just `entries/` — silo-drive can mount a public library with no account. |
 | 5 | A share link is a **Credential row**: `kind=link`, path-extended scope, `perm` ceiling `r`. Revocation, listing, labels, `last_used`, expiry, and the `is_active` account join all come from the existing model. |
 | 6 | Content is encrypted **once**; link flavors differ only in where the share key SK comes from. Three flavors on E2EE libraries: **e2e** (SK in URL fragment — default), **password** (SK wrapped under a password-derived key, `curl -u`), **compatible** (SK wrapped to the server — plain `curl`). |
 | 7 | **No password is ever stored.** The password flavor stores a salt and a sealed blob — the SK wrap; the compatible flavor stores SK wrapped under a server key; the e2e flavor stores no key material at all. |
@@ -125,7 +125,7 @@ the admin docs.
 
 ### Anonymous mount
 
-Confirmed goal: porter mounts a public library from a bare URL, no account.
+Confirmed goal: silo-drive mounts a public library from a bare URL, no account.
 The read path is identical to the authenticated one — library params, `head_commit_id`,
 `changes?since=`, manifests, chunks — gated by the anonymous grant. Server
 enforces read-only; the client mounts `ro`. This makes a public library a
@@ -351,7 +351,7 @@ preview, because preview is what drags in signed URLs, and those wait.
 
 The known caveat gets written down rather than hidden: a browser recipient of
 an e2e link is running crypto JS served by the same server the flavor
-distrusts. Native clients (`silo get`, porter) don't have this hole; the page
+distrusts. Native clients (`silo get`, silo-drive) don't have this hole; the page
 is a convenience tier, and the compatible flavor exists precisely because the
 purity here was already imperfect.
 
@@ -386,7 +386,7 @@ purity here was already imperfect.
    auth.md's credential table; sequence with the account side of E2EE in [`storage.md`](../storage.md).
 2. **Public libraries.** Anonymous grants, `public-libraries` listing, anonymous
    read across entries + manifests + chunks, per-IP rate limiting, read-only
-   enforcement on the write surface. porter learns credential-less `ro`
+   enforcement on the write surface. silo-drive learns credential-less `ro`
    mounts.
 3. **Links, plain libraries.** `kind=link`, mint/list/revoke endpoints,
    `/s/{code}` byte serving, password-as-verifier option. Mint and revoke

@@ -7,7 +7,7 @@ logged and nothing for the caller to notice.
 **Status: fixed in v0.4.3, 2026-08-18** — `fileserver/api_handlers.go` and
 `fileserver/api_handlers_test.go`.
 
-Found while capturing the `/changes` wire contract for Porter's M3, by moving
+Found while capturing the `/changes` wire contract for Silo Drive's M3, by moving
 things around a scratch library to see what the delta endpoint would say about
 them. It is not a `/changes` bug — that endpoint reported the damage accurately.
 
@@ -70,7 +70,7 @@ same shape and placement as `movesIntoOwnSubtree`:
 | directory | directory | **409** `Destination exists and is a directory` |
 | directory | file | **409** `Destination exists and is a file` |
 
-`409` because Porter's error table already maps it to
+`409` because Silo Drive's error table already maps it to
 `NSFileProviderError.filenameCollision` — "return the existing item so the system
 renames" — so the File Provider client behaves sensibly without further work.
 
@@ -123,5 +123,5 @@ silo put   $LIBRARY ./z.txt / ; silo rename $LIBRARY /z.txt Z
 
 Any client consuming `/changes` has to treat
 `(path, is_dir)` as the key, or carry stable identifiers of its own — which is
-the argument for Porter's `IdMap` landing with M3 rather than being deferred to
+the argument for Silo Drive's `IdMap` landing with M3 rather than being deferred to
 M4.

@@ -6,8 +6,8 @@ document wins, by [`../roadmap.md`](../roadmap.md)'s rule.
 
 Tracked on git.booko.info: milestones `e2ee-client`, `split-login`,
 `grants-and-invites`, `sharing-e2ee` in `Silo/silo`, and one issue per
-bullet — numbers are given beside each step. Porter's share lives in
-`Silo/porter-fuse` and `Silo/porter-macos`. The issues carry state; this
+bullet — numbers are given beside each step. Silo Drive's share lives in
+`Silo/silo-drive-linux` and `Silo/silo-drive-macos`. The issues carry state; this
 document carries the reasoning, and is not updated as they close.
 
 ## Where it stands
@@ -22,7 +22,7 @@ GC and census all read public sections only.
 Three things stand between that and a person keeping files in an encrypted
 library:
 
-1. **No client seals anything.** Neither `client/` nor porter calls
+1. **No client seals anything.** Neither `client/` nor silo-drive calls
    `store.Seal*`, `UnwrapIdentity` or `UnwrapCK`. Every E2EE test builds its
    objects by hand. Nobody has done a write-spine-then-read round trip over
    HTTP from anything that is not the test.
@@ -43,7 +43,7 @@ grant model in [`sharing.md`](sharing.md) step 1.
 
 ### 1. A reference client that seals — `client/` in this repository
 
-Issues silo#6–#11. The shared Go client is where the sealing lives, so porter
+Issues silo#6–#11. The shared Go client is where the sealing lives, so silo-drive
 and `cmd/silo` share one implementation rather than two that drift. It is
 also the only way to get the round-trip test that does not exist yet.
 
@@ -156,11 +156,11 @@ this".
 member gets `404` on the key and `403` on the surface; a share to an account
 with no key is `409`; a member cannot re-share beyond their own ceiling.
 
-### 4. Porter
+### 4. Silo Drive
 
-Issues porter-fuse#1, #2 and porter-macos#1, in those repositories. Owned by
-porter's own docs; listed here because it is where a person meets the result.
-porter-macos cannot share `client/` — it is Swift, so E2EE there is a port of
+Issues silo-drive-linux#1, #2 and silo-drive-macos#1, in those repositories. Owned by
+silo-drive's own docs; listed here because it is where a person meets the result.
+The macOS build cannot share `client/` — it is Swift, so E2EE there is a port of
 `spec/store-format.md` validated against `store/testdata`, and is out of its
 v1 scope.
 

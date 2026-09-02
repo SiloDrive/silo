@@ -191,7 +191,7 @@ and what seal-on-age already accepts.
 ## Decision 6: the pack format is not in the spec
 
 [`../spec/store-format.md`](../spec/store-format.md) is the contract a second
-implementation reproduces, and a pack never crosses the wire. porter-macos
+implementation reproduces, and a pack never crosses the wire. silo-drive
 never sees one. The frame inside a pack is the storage frame, which is
 server-side and already deliberately absent from the spec for the same reason.
 So the pack format is documented in [`../storage.md`](../storage.md) and given

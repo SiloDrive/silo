@@ -5,7 +5,7 @@
 // It is the whole of the format, in one package, on purpose. Every id and
 // every sealed byte in a library is produced here, so a client that imports
 // this package cannot disagree with the server about what a tree hashes to.
-// The TUI/CLI and porter-fuse import it; porter-mac reimplements it in Swift
+// The TUI/CLI and silo-drive-linux import it; silo-drive-macos reimplements it in Swift
 // against the test vectors in testdata/vectors, which are part of the spec
 // rather than part of this package's tests. Two implementations that disagree
 // by a byte mint different ids for identical trees and fail to read each

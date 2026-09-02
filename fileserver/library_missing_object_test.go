@@ -48,7 +48,7 @@ func authed(t *testing.T, email string) *http.Request {
 	}, acct)
 }
 
-// The bug, at the surface porter-fuse and the File Provider extension both
+// The bug, at the surface silo-drive's FUSE and File Provider frontends both
 // read: a library whose head commit object is missing was reported as 404
 // "Library not found". To a sync client a 404 is not "something went wrong", it
 // is "this library was deleted, remove your copy" — and the copy it removes is

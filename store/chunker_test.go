@@ -13,7 +13,7 @@ import (
 // the shipped vectors run against: block i is SHA-256(label ‖ uint64le(i)),
 // concatenated and truncated.
 //
-// The rule is in the spec rather than the data, so porter-mac can regenerate
+// The rule is in the spec rather than the data, so silo-drive can regenerate
 // gigabytes of test input from one line of prose instead of us committing it.
 func pseudoRandom(label string, n int) []byte {
 	out := make([]byte, 0, n+sha256.Size)

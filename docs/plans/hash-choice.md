@@ -108,7 +108,7 @@ system is hash-bound, so the pick is the hash that is uniformly
 hardware-fast, dependency-free, and native in both Go (stdlib) and Swift
 (CryptoKit) on every target. SHA-256 is within 8% of itself across both
 machines; BLAKE3 in Go spans an 8× spread and would make the Mac-resident Go
-clients (TUI, porter-fuse under Rosetta-less arm64) the slow outlier, fixable
+clients (TUI, silo-drive under Rosetta-less arm64) the slow outlier, fixable
 only with cgo or per-platform C bindings. BLAKE3's 2.4× x86 win optimises
 paths that are network- and disk-bound.
 

@@ -1,7 +1,7 @@
 # Silo store format v1 — normative specification
 
 Status: **complete.** This document is the interop contract between the Go
-implementation in [`store/`](../../store) and porter-mac's Swift port. Every
+implementation in [`store/`](../../store) and silo-drive's Swift port. Every
 byte [`../storage.md`](../storage.md) describes is restated here exactly.
 
 | Section | State |
@@ -759,7 +759,7 @@ assertion is the per-directory keying, tested.
 
 ## Client rules that ride on the format
 
-- **porter-fuse mounts `nosuid,nodev` by default.** The format keeps all twelve
+- **silo-drive mounts `nosuid,nodev` by default.** The format keeps all twelve
   mode bits, and this is why that is safe: in a plain library mode is public
   and server-writable, so a hostile server can set `04755` on any file and a
   faithful client would restore it — a local privilege-escalation path handed

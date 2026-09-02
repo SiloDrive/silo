@@ -30,9 +30,9 @@ decide whether to shim it.
 ## Tested clients
 
 - **silo** — our own Go TUI (`cmd/silo`)
-- **Porter** — our macOS File Provider client. Speaks `/api/silo/v1` only:
-  `entries`, `changes`, `notify-token` and the notification socket.
-- **porter-fuse** — our FUSE client, same lane.
+- **silo-drive** — our file-access client, as a macOS File Provider extension
+  and as a FUSE mount. Speaks `/api/silo/v1` only: `entries`, `changes`,
+  `notify-token` and the notification socket.
 
 ## Authentication
 
@@ -40,7 +40,7 @@ One scheme, one table, one verification path.
 
 | Scheme | Header | Used by | Validated against |
 |---|---|---|---|
-| Bearer credential | `Authorization: Bearer silo_<kind>_<id>_<secret><check>` | silo (TUI), Porter, porter-fuse, `/api/silo/v1/*` | `credential.Resolve` against the `Credential` table |
+| Bearer credential | `Authorization: Bearer silo_<kind>_<id>_<secret><check>` | silo (TUI), silo-drive, `/api/silo/v1/*` | `credential.Resolve` against the `Credential` table |
 
 The middleware is `RequireCredential`, in `fileserver/middleware/credential.go`.
 
@@ -52,7 +52,7 @@ which response comes back**:
   → 200 {"token": "silo_session_…"}          a 24h session; unchanged, byte for byte
 
 {"email":…, "password":…, "kind":"device",   enrolment: any of kind, client_name,
- "client_name":"Porter 1.2 (macOS)",         public_key, perm or scope makes it one
+ "client_name":"Silo Drive 1.2 (macOS)",         public_key, perm or scope makes it one
  "perm":"r", "scope":"<library-id>"}
   → 201 {"credential": "silo_device_…", "expires_at": …, "email": …}
 ```
@@ -1100,7 +1100,7 @@ once for the total, once for what is free — so the used column lands within
 one block of the real number, on whichever side depends on where the quota
 falls relative to a block boundary; it is not reliably a round up, and it is
 not per-file occupancy. Report it as "the aggregate divided by the block size".
-Porter uses 4096 because that is what every local filesystem on the machine
+Silo Drive uses 4096 because that is what every local filesystem on the machine
 reports, which is a tradeoff rather than a property of the interface.
 
 ### Chunks: what the reference does not say

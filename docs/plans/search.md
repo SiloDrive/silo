@@ -3,7 +3,7 @@
 **Status: not built, and parked** until a client actually needs it.
 
 Motivated by the macOS File Provider's search pushdown
-(`NSFileProviderSearching`, macOS 26+ — the porter-macos repository has the
+(`NSFileProviderSearching`, macOS 26+ — the silo-drive-macos repository has the
 plan), but useful on its own independent of any one client.
 
 ## What exists today: nothing

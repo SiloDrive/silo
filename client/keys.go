@@ -4,7 +4,7 @@ package client
 // library's keyring.
 //
 // These are the two calls every E2EE operation starts from, and they are here
-// rather than in porter or cmd/silo so that one implementation of the
+// rather than in silo-drive or cmd/silo so that one implementation of the
 // bootstrap serves both. docs/plans/e2ee-completion.md step 1 owns the
 // sequence; store/ owns every derivation this file performs.
 //

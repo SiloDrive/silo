@@ -117,7 +117,7 @@ func TestRequireCredentialPassesAccountAndCredential(t *testing.T) {
 	}
 }
 
-// A device credential is Porter's, and the management API is the lane it uses.
+// A device credential is Silo Drive's, and the management API is the lane it uses.
 func TestRequireCredentialAcceptsADeviceCredential(t *testing.T) {
 	pair := testDB(t)
 	dan := addUser(t, pair, "dan@example.com")

@@ -27,7 +27,7 @@ and a design that is good at one and bad at the other has not hit the target.
 ## The shape
 
 ```
-  porter-fuse (Linux)   porter-mac (macOS)   porter-ios   web UI
+  silo-drive (Linux)   silo-drive (macOS)   silo-drive (iOS)   web UI
             │                    │                │          │
             └────────────────────┴────────────────┴──────────┘
                                  │  HTTP, /api/silo/v1
@@ -48,11 +48,11 @@ One server binary, one database, one object store, and a family of first-party
 clients that all speak the same lane. There is no second protocol and no
 third-party client to stay compatible with.
 
-**porter-mac exists. porter-fuse exists. porter-ios is a File Provider
-extension that shares most of its implementation with porter-mac**, which is
-what makes a third client affordable rather than a third project. The web UI is
+**silo-drive exists on Linux and on macOS. The iOS build is a File Provider
+extension that shares most of its implementation with the macOS one**, which is
+what makes a third frontend affordable rather than a third project. The web UI is
 for casual access from a device that has no mount — chiefly a phone before
-porter-ios lands, and a borrowed machine after.
+silo-drive reaches iOS, and a borrowed machine after.
 
 ## The store
 
@@ -158,5 +158,5 @@ should make it harder later.
 - **Whether the commit DAG survives.** Demoting it off the read path is
   decided. Whether history is best served by a DAG at all, once nothing reads
   through it, is not.
-- **When porter-ios happens**, and whether the web UI is a stopgap for it or a
+- **When silo-drive on iOS happens**, and whether the web UI is a stopgap for it or a
   permanent surface in its own right.

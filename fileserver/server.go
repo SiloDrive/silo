@@ -575,7 +575,7 @@ func newHTTPRouter() *mux.Router {
 	//
 	// OptionalCredential rather than RequireCredential: the endpoint predates
 	// the header
-	// and porter, porter-fuse and every older TUI dial it with no credential,
+	// and silo-drive and every older TUI dial it with no credential,
 	// so requiring one here would break them all on the day it shipped. What
 	// authenticating buys a client is the right to hold an idle socket; one
 	// that offers nothing has to subscribe -- with a token the server verifies

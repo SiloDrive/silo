@@ -50,7 +50,7 @@ individually meant "rename everything" were taken together, once:
   store substitutes content.
 - **Parameters live on the library**, where the listing reports them per
   library, frozen at creation. Changing them is still a new store — but with
-  porter as the only client, and shipped by us, getting them wrong costs a
+  silo-drive as the only client, and shipped by us, getting them wrong costs a
   migration rather than a break with software we do not control.
 - **The file object is a binary manifest** with `(chunk_id, size)` records —
   casync's `.caibx` shape — rather than JSON.

@@ -94,7 +94,7 @@ func TestGetWithReasonMissingRowIsNotFound(t *testing.T) {
 func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 	dataDir := getTestStore(t)
 
-	libraryID, err := CreateLibrary("Porter Test", testAccount(t), DefaultFormat(false))
+	libraryID, err := CreateLibrary("Silo Drive Test", testAccount(t), DefaultFormat(false))
 	if err != nil {
 		t.Fatalf("CreateLibrary: %v", err)
 	}

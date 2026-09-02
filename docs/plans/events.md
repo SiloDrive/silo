@@ -193,11 +193,11 @@ waits for evidence anyone needs it.
   account's events; an admin sees everything). Cursor is `seq`; the response
   is rows, newest last, bounded page size.
 - `GET /events/head` — the audit chain head, for pinning.
-- **Later, explicitly not phase 1**: a long-poll/SSE tail as porter's
+- **Later, explicitly not phase 1**: a long-poll/SSE tail as silo-drive's
   wake-up channel — "head moved on a library you can see" instead of
   per-library polling. The tail is a *notification*, not truth: the client
   wakes and syncs from the DAG exactly as it would have. Deferred until
-  porter's polling cost is measured and hurts.
+  silo-drive's polling cost is measured and hurts.
 
 ## Build order
 
@@ -213,7 +213,7 @@ waits for evidence anyone needs it.
    sharing's phase 1 — the share surface should not ship without its
    trail. `sync.error` starts writing — there is nothing to retire, since
    `LibrarySyncError` has already been dropped.
-3. **The chain + `/events/head` + client pinning.** Porter pins
+3. **The chain + `/events/head` + client pinning.** Silo Drive pins
    `(seq, head)` in its local index and verifies on reconnect. The
    threat-model paragraph in [`storage.md`](../storage.md) gains its clause.
 4. **The tail as wake-up channel** — if and when measurement says

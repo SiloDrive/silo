@@ -19,7 +19,8 @@ from the summary. So this one does not summarise designs.
 
 Work is tracked on git.booko.info, in `Silo/silo`'s
 [milestones](https://git.booko.info/Silo/silo/milestones) and issues, with
-porter's share in `Silo/porter-fuse` and `Silo/porter-macos`. **The issues
+silo-drive's share in `Silo/silo-drive-linux` and
+`Silo/silo-drive-macos`. **The issues
 carry state; this document carries order and the reasoning for it.** Each
 entry below names the milestone and issues that track it, and the document is
 not updated as they close — an issue that reads closed here is the tracker's
@@ -64,9 +65,9 @@ library can be created** — `POST /libraries` with `"e2ee": true`, behind the
 `account-keys` and `e2ee-libraries` feature names — which is what every E2EE
 entry on the critical path stands on.
 
-The clients are separate projects. The macOS File Provider client keeps its
-plan and field notes in the porter-macos repository; the FUSE client keeps its
-own in porter-fuse. Both consume [`protocol.md`](protocol.md).
+The client is a separate project. silo-drive keeps its plan and field notes
+in its own repository, for the macOS File Provider frontend and the FUSE one
+alike. It consumes [`protocol.md`](protocol.md).
 
 ## The critical path
 
@@ -216,7 +217,7 @@ Tracked: milestone `split-login`, #12 (server switch-over, done), #13 (client
 Key bootstrap, `CreateEncryptedLibrary`, the read path, the write path that
 rewrites the spine, one interface with a plain and an E2EE implementation, and
 the round-trip test over HTTP that does not exist yet. Owned by
-[`plans/e2ee-completion.md`](plans/e2ee-completion.md) step 1, with porter's
+[`plans/e2ee-completion.md`](plans/e2ee-completion.md) step 1, with silo-drive's
 adoption of it as that plan's step 4.
 
 **Built.** `client.LibraryFS` is the interface and `Account.Open` makes the
@@ -246,7 +247,7 @@ cannot restore login.
 Tracked: milestone `e2ee-client`, #6 (key bootstrap), #7
 (`CreateEncryptedLibrary`), #8 (read path), #9 (write path), #10 (one
 interface, two implementations), #11 (round-trip test), #32 (recovery codes).
-Porter's side: porter-fuse #1, #2; porter-macos #1 — each an independent
+Silo Drive's side: silo-drive-linux #1, #2; silo-drive-macos #1 — each an independent
 implementation against [`spec/store-format.md`](spec/store-format.md), so each
 reproduces the kind-2 wrap rather than inheriting it.
 
@@ -369,7 +370,7 @@ because they get proposed often: peer-to-peer federation (a mesh of untrusting
 instances agreeing on shared state is consensus, and consensus is a different
 project), a plugin system, LDAP and SAML (OIDC covers the ground with far less
 surface to get wrong, and a reverse proxy doing header auth stays acceptable),
-and mobile apps from this repository — a mobile client would be a Porter-family
+and mobile apps from this repository — a mobile client would be a Silo Drive
 project against `/api/silo/v1`, not a server feature.
 
 Upstream wire compatibility is gone deliberately and `compat-end` is the

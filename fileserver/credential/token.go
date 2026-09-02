@@ -13,7 +13,7 @@ import (
 type Kind string
 
 const (
-	KindDevice  Kind = "device"  // Porter, the File Provider extension
+	KindDevice  Kind = "device"  // silo-drive, the File Provider extension
 	KindSession Kind = "session" // the TUI, the CLI
 	KindAccess  Kind = "access"  // capability URLs
 	KindS3      Kind = "s3"      // an S3 frontend, if it is ever built

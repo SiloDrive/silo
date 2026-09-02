@@ -7,7 +7,7 @@ import (
 )
 
 // The API lane accepts a session credential from the CLI and a device
-// credential from Porter on the same routes, so Resolve has to be askable
+// credential from Silo Drive on the same routes, so Resolve has to be askable
 // about a set rather than a single kind.
 func TestResolveAcceptsAnyOfSeveralKinds(t *testing.T) {
 	pair := testDB(t)

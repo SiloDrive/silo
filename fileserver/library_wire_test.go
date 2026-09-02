@@ -24,7 +24,7 @@ import (
 
 // The wire says library.
 //
-// This is the tier with consumers. porter-fuse funnels every URL it builds
+// This is the tier with consumers. silo-drive funnels every URL it builds
 // through one package and reimplements this routing table as a strict fake, so
 // what is written here is a contract with another codebase rather than an
 // internal name. The lexicon guard in internal/lexicon would catch a route
@@ -157,7 +157,7 @@ func TestTheLibraryRoutesAnswer(t *testing.T) {
 
 // TestTheIDAddressedRoutesAnswer covers /chunks/{id} and /objects/{id}, which
 // every other test in this package reaches by calling the handler with a vars
-// map — so nothing asserted they were on the router at all. porter does not
+// map — so nothing asserted they were on the router at all. silo-drive does not
 // exercise either, so its strict fake cannot catch it either.
 //
 // They cannot be measured the way the routes above are. Those answer 404 only
@@ -262,8 +262,8 @@ func TestTheRetiredRoutesAreGone(t *testing.T) {
 	}
 }
 
-// TestServerInfoNamesTheVocabulary is the ask porter made when told this was
-// coming, and it is worth more than it looks. A porter built for /libraries
+// TestServerInfoNamesTheVocabulary is the ask silo-drive made when told this was
+// coming, and it is worth more than it looks. A silo-drive built for /libraries
 // pointed at a server that still says /libraries gets 404 on the listing, and a
 // 404 on the listing reaches a person as an account with nothing in it —
 // working software that happens to be empty, which is the worst way for a
@@ -302,7 +302,7 @@ func TestServerInfoNamesTheVocabulary(t *testing.T) {
 
 // TestTheNotifyEventTypeSaysLibrary is here rather than in notif because of
 // how it fails. Every other name in this sweep fails with a 404 the moment a
-// client gets it wrong. This one is a string in a frame, and porter's frame
+// client gets it wrong. This one is a string in a frame, and silo-drive's frame
 // switch ignores types it does not recognise by design — an unknown type is
 // treated as latency, since polling still covers correctness. So a client that
 // missed this rename does not break; it silently stops receiving push and

@@ -16,7 +16,7 @@ the index; `docs/bugs/fixed/` is the reasoning.
 
 | lane | prefix | who speaks it | codes |
 |---|---|---|---|
-| **Silo** | `/api/silo/v1/…` | porter-fuse, the File Provider extension, `client/`, anything new | standard HTTP, documented below |
+| **Silo** | `/api/silo/v1/…` | silo-drive, `client/`, anything new | standard HTTP, documented below |
 
 The legacy sync (`/repo/…`) and web-compat (`/api2/…`) lanes this section
 used to describe were deleted in `5d4baa0` (0.5.0); everything under them is

@@ -24,7 +24,7 @@ because answering any of them alone produces a number nobody can act on.
 | Setting a cap from the shell | `silo user quota <email> [size\|none]` | built (`5f5ed23`) |
 | Self lookup `GET /account/usage` → `{usage, quota, kind}` | `AccountUsageHandler` in `fileserver/api/api.go` | built |
 | Per-library size on the libraries listing | `libraryInfo.Size`, `withUsage` in `fileserver/api/api.go` | built |
-| Quota answering `df` on a porter-fuse mount | `internal/vfs/statfs.go` (porter-fuse) | built |
+| Quota answering `df` on a silo-drive mount | `internal/vfs/statfs.go` (silo-drive-linux) | built |
 | History enumerable and readable at a point in time | `GET …/commits`, `entries/{path}?at=` | built (`6943a16`) |
 | The three numbers: head, history, unreferenced | `objmgr.Census`, `silo df` | built (`fc6e846`) |
 | Collecting objects no commit reaches | `silo gc -orphans`, `objmgr.Unreferenced` | built (`e56a270`) |
@@ -208,7 +208,7 @@ list carries `usage` (`features` in `fileserver/api/api.go`) to advertise it alo
 claims; a server too old to have the list claims nothing while being perfectly
 able to answer, so a client that consults the list first reports invented
 numbers to a server that would have told it the truth. Ask, and treat "no such
-route" the same as "the server is down" — porter-fuse's `AccountUsage` records
+route" the same as "the server is down" — silo-drive's `AccountUsage` records
 this reasoning in full.
 
 That said, the two cases are not equally live. **There are no old installs, so
@@ -218,7 +218,7 @@ world that does not exist. What it does need — permanently — is a path for *
 server did not answer*: unreachable, slow, mid-restart. That is not
 back-compatibility, it is the network, and it never goes away.
 
-### porter-fuse: `df`
+### silo-drive: `df`
 
 Built. `internal/vfs/statfs.go` is the reference implementation and the shape it
 settled on is the shape any client wants:
@@ -251,8 +251,8 @@ The columns:
 `statfs(2)` reports block *counts*, not bytes, so every column is divided by a
 block size on the way out, and used is `floor(quota/B) - floor((quota-usage)/B)`
 — two independent truncations, within one block of the real figure on either
-side. The block size is the client's choice, not the kernel's; porter reports
-4096 so its row lines up with every local filesystem's. porter-fuse's `statfs`
+side. The block size is the client's choice, not the kernel's; silo-drive reports
+4096 so its row lines up with every local filesystem's. silo-drive's `statfs`
 implements this, and the arithmetic is its concern rather than the server's.
 
 The half worth noticing is that **the used column is real either way**. That is
@@ -276,7 +276,7 @@ Two mismatches survive, and both are the better of the available errors:
 
 ### macOS File Provider: not `df`
 
-Porter-mac has no `Statfs` to answer. A File Provider extension does not get to
+The macOS build has no `Statfs` to answer. A File Provider extension does not get to
 declare a volume size — Finder reports the disk backing the domain — so the
 quota cannot be surfaced the way it is on a FUSE mount. **This is worth
 confirming against the current API before anything is designed around it**, but
@@ -296,7 +296,7 @@ if it holds, the quota surfaces in two other places instead:
 ### Refreshing
 
 A TTL is sufficient and is what is built. The better trigger is already
-available: porter subscribes to `/notification`, and a `LibraryUpdateEvent`
+available: silo-drive subscribes to `/notification`, and a `LibraryUpdateEvent`
 (`fileserver/notif/event.go`) is exactly the moment the account total may have moved. A
 client that re-reads usage on that event, with the TTL as a floor rather than
 the only clock, gets a number that changes when the user's own writes land

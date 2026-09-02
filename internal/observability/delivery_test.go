@@ -351,7 +351,7 @@ func TestCredentialsAreScrubbedFromReports(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer jwtsecret")
 	req.Header.Set("X-Library-Token", "synctokensecret")
 	req.Header.Set("Cookie", "sessionid=cookiesecret")
-	req.Header.Set("User-Agent", "porter/1.0")
+	req.Header.Set("User-Agent", "silo-drive/1.0")
 
 	func() {
 		defer func() { _ = recover() }()
@@ -391,7 +391,7 @@ func TestCredentialsAreScrubbedFromReports(t *testing.T) {
 		t.Errorf("request url = %v, want the path", request["url"])
 	}
 	headers, _ := request["headers"].(map[string]any)
-	if headers["User-Agent"] != "porter/1.0" {
+	if headers["User-Agent"] != "silo-drive/1.0" {
 		t.Errorf("User-Agent = %v, want it kept", headers["User-Agent"])
 	}
 }

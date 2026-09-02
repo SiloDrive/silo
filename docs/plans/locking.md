@@ -2,7 +2,7 @@
 
 **Status: not built, and parked.** Per-file advisory locks, so two clients
 editing the same document do not clobber each other — a feature upstream had,
-and one Porter would want for the same reason.
+and one Silo Drive would want for the same reason.
 
 ## Endpoints, on the Silo lane
 

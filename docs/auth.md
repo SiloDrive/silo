@@ -157,7 +157,7 @@ primary key.
 | Kind | Held by | Lifetime | Status |
 |---|---|---|---|
 | `session` | the TUI, the CLI, any client that just logs in | 24h | built |
-| `device` | Porter, the File Provider extension | 90d default | built |
+| `device` | silo-drive (FUSE mount, File Provider extension) | 90d default | built |
 | `access` | a capability URL, if one is ever built | — | reserved; nothing mints it |
 | `s3` | an S3 frontend, if one is ever built | — | reserved; see [S3](#s3-needs-a-master-key-not-a-column) |
 
@@ -173,7 +173,7 @@ CREATE TABLE Credential (
   secret_hash BLOB,                  -- SHA-256 of the secret, for bearer kinds
   public_key  BLOB,                  -- SPKI, for proof-of-possession kinds
   account_id  BLOB    NOT NULL REFERENCES Account(id),
-  label       TEXT    NOT NULL,      -- "dan's macbook, porter-fuse"
+  label       TEXT    NOT NULL,      -- "dan's macbook, silo-drive"
   scope       TEXT    NOT NULL DEFAULT '',  -- '' = every library
   perm        TEXT    NOT NULL,      -- 'r' | 'rw' — a ceiling, never a grant
   client_id   TEXT,                  -- device identity, when a lane has one
@@ -346,7 +346,7 @@ an HTML page Silo has no other use for.
 POST /api/silo/v1/auth/login          (no auth)
 { "email": "…", "password": "…",
   "kind": "device",                    // optional; default "session"
-  "client_name": "Porter 1.2 (macOS)", // required when asking for a credential
+  "client_name": "Silo Drive 1.2 (macOS)", // required when asking for a credential
   "perm": "r",                         // optional, narrowing only
   "scope": "<library-id>" }            // optional, narrowing only
 ```
@@ -1038,7 +1038,7 @@ sessions would introduce a class of vulnerability it currently cannot have.
 
 ```
 1. Client → Silo   POST /api/silo/v1/device/code
-                   { client_name: "Porter 1.2 (macOS)", perm: "r" }
+                   { client_name: "Silo Drive 1.2 (macOS)", perm: "r" }
 
 2. Silo   → IdP    POST /oauth/device_authorization  (client_secret_post + PKCE)
    IdP    → Silo   user_code, verification_uri, device_code, interval, expires_in

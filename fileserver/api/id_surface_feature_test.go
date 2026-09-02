@@ -8,7 +8,7 @@ import (
 // The id-addressed surface shipped without a name, and a capability a client
 // cannot discover is a capability that does not exist to it.
 //
-// This is not a hypothetical. porter-fuse asked for `GET chunks/{id}` and for
+// This is not a hypothetical. silo-drive asked for `GET chunks/{id}` and for
 // a way to read a manifest, and both had already been built — it could not see
 // them, because `features` listed only the three write calls of the block
 // surface and said nothing about the read half or about objects at all. The

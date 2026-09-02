@@ -113,7 +113,7 @@ func TestABatchAppliesInOrderAndCommitsOnce(t *testing.T) {
 // commits nothing; retrying after a timeout is not.
 //
 // Making Mkdir satisfied-by-existing would fix that, but it is a change to
-// what the mutation layer means, and porter is a second implementation of the
+// what the mutation layer means, and silo-drive is a second implementation of the
 // same rules. So it is recorded here rather than changed in passing.
 func TestBatchMkdirOfAnExistingDirectoryIsRefused(t *testing.T) {
 	libraryID, acct := testLibrary(t)

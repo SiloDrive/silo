@@ -80,7 +80,7 @@ So every client does the wrong thing:
 - Obeying the 500 and giving up **loses a write that would have succeeded**.
 - Retrying anyway is guessing, and the guess is wrong the moment a real 500
   appears.
-- **porter-fuse** maps 5xx to `EIO`. A `close(2)` returning `EIO` is data loss
+- **silo-drive** maps 5xx to `EIO`. A `close(2)` returning `EIO` is data loss
   from the application's point of view — it has already written the bytes and
   has nowhere to put them. It would be reporting that on a write the server
   would have accepted a second later.
@@ -149,10 +149,10 @@ server working as designed.
 
 **503, not the 409 the GC-conflict case uses.** 409 stopped being free three
 commits ago: `move-onto-directory-destroys-it.md` gave it to destination
-collisions, and Porter maps that to `NSFileProviderError.filenameCollision` —
+collisions, and Silo Drive maps that to `NSFileProviderError.filenameCollision` —
 "return the existing item so the system renames". Answering a contended write
 with 409 would tell a File Provider client to rename the user's file. 503 says
-transient, `Retry-After` says when, and Porter's error table already routes
+transient, `Retry-After` says when, and Silo Drive's error table already routes
 5xx to `.serverUnreachable` with backoff.
 
 **The same bug, one level worse, also fixed.** Five Silo-lane handlers —

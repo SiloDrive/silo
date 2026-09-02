@@ -31,7 +31,7 @@ const CredentialKey contextKey = "credential"
 
 // apiKinds is the set of lanes the management API accepts.
 //
-// session is the CLI and the TUI; device is Porter and the File Provider
+// session is the CLI and the TUI; device is silo-drive and the File Provider
 // extension. access is deliberately absent: a capability URL's credential
 // authorizes one object and one operation, and the handlers that consume those
 // live on their own routes and check the token itself.

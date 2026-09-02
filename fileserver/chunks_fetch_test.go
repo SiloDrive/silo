@@ -12,7 +12,7 @@ import (
 // The download half of the chunk surface: many chunks in one response, framed
 // so each is named and verifiable on arrival.
 //
-// This is the round trip porter needs and could not have. Its upload has asked
+// This is the round trip silo-drive needs and could not have. Its upload has asked
 // "which of these do you hold?" and sent only the answer since 0.4.5; its
 // download had no equivalent, so an edit to one byte of a 1 GiB file uploaded
 // one chunk and downloaded the whole file to build it.

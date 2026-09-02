@@ -75,8 +75,8 @@ as many words:
 > encryption, tiering. Those are the server's business — a pack never crosses
 > the wire, so no client has any use for the code that writes one.
 
-`store/` is the format package a client reimplements: porter-fuse imports it,
-porter-mac rewrites it in Swift against `store/testdata/vectors`. No client
+`store/` is the format package a client reimplements: silo-drive-linux imports
+it, silo-drive-macos rewrites it in Swift against `store/testdata/vectors`. No client
 will ever write a storage frame, because no client will ever hold
 `storage.key`. Putting the codec there would add a file to the spec surface
 that every port must decide to ignore.
