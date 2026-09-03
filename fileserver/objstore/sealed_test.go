@@ -11,10 +11,51 @@ import (
 	"testing"
 )
 
-// objPath is where an object's file lands, reaching past the seam on purpose:
-// these are the tests that care what is actually on the disk.
-func objPath(objType, id string) string {
-	return filepath.Join(LibraryDir(dataDir, objType, libraryID), id[:2], id[2:])
+// frameSite is the pack holding an object's frame and where in it.
+//
+// Since the cutover the write path puts every frame in a pack, so the tests
+// below ask for the frame rather than for a file -- what they are about is the
+// frame, and which container holds it is not their subject. An id that is in no
+// pack was never written through the store, which is a broken test rather than
+// a loose object: the tests that plant bytes by hand know where they put them.
+func frameSite(t *testing.T, s *ObjectStore, id string) (path string, at indexEntry) {
+	t.Helper()
+	set, err := s.packs.set(libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, sealed := set.packs()
+	if open != nil {
+		if e, ok := open.lookup(id); ok {
+			return open.path, e
+		}
+	}
+	for _, p := range sealed {
+		if e, ok := p.lookup(id); ok {
+			return p.path, e
+		}
+	}
+	t.Fatalf("%s is in no pack of the %s store", id, s.ObjType)
+	return "", indexEntry{}
+}
+
+// storedFrame is an object's frame as it sits on the disk.
+func storedFrame(t *testing.T, s *ObjectStore, id string) []byte {
+	t.Helper()
+	path, at := frameSite(t, s, id)
+	return readAt(t, path, at.Offset, int(at.Length))
+}
+
+// flipAByteOfTheFrame corrupts an object's frame where it lies, without
+// disturbing anything around it. In a pack that is one byte in the middle of a
+// file, which is what makes it a truer test of the AEAD than rewriting a file.
+func flipAByteOfTheFrame(t *testing.T, s *ObjectStore, id string) {
+	t.Helper()
+	path, at := frameSite(t, s, id)
+	last := at.Offset + at.Length - 1
+	b := readAt(t, path, last, 1)
+	b[0] ^= 0x01
+	writeAt(t, path, last, b)
 }
 
 // The assertion the whole issue exists for. Everything else here checks that
@@ -28,18 +69,26 @@ func TestStoredObjectIsCiphertextOnDisk(t *testing.T) {
 		t.Fatalf("WriteVerified: %v", err)
 	}
 
-	raw, err := os.ReadFile(objPath("sealed-disk", id))
+	raw := storedFrame(t, s, id)
+	if bytes.Contains(raw, []byte("CONFIDENTIAL-MARKER")) {
+		t.Error("the object's plaintext is on disk")
+	}
+	// And not anywhere else in the file that holds it, which is the assertion
+	// that survived the move into packs: a pack is one file with many frames,
+	// and a leak in the header or the index would not show up in the frame.
+	path, _ := frameSite(t, s, id)
+	whole, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(raw, []byte("CONFIDENTIAL-MARKER")) {
-		t.Error("the object's plaintext is on disk")
+	if bytes.Contains(whole, []byte("CONFIDENTIAL-MARKER")) {
+		t.Errorf("the object's plaintext is somewhere in %s", filepath.Base(path))
 	}
 	if !isFrame(raw) {
 		t.Error("the object on disk is not a sealed frame")
 	}
 	if len(raw) != len(plain)+frameOverhead {
-		t.Errorf("file is %d bytes for %d of plaintext, want %d more", len(raw), len(plain), frameOverhead)
+		t.Errorf("the frame is %d bytes for %d of plaintext, want %d more", len(raw), len(plain), frameOverhead)
 	}
 
 	var got bytes.Buffer
@@ -70,12 +119,8 @@ func TestStatAndListReportPlaintextLength(t *testing.T) {
 		t.Errorf("Stat = %d, want the plaintext length %d", size, len(plain))
 	}
 
-	info, err := os.Stat(objPath("sealed-size", id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Size() != int64(len(plain)+frameOverhead) {
-		t.Errorf("the file is %d bytes, want %d", info.Size(), len(plain)+frameOverhead)
+	if _, at := frameSite(t, s, id); at.Length != int64(len(plain)+frameOverhead) {
+		t.Errorf("the frame is %d bytes, want %d", at.Length, len(plain)+frameOverhead)
 	}
 
 	var listed int64 = -1
@@ -128,7 +173,7 @@ func TestWriteVerifiedHashesThePlaintext(t *testing.T) {
 	if !strings.Contains(err.Error(), "does not match") && !strings.Contains(err.Error(), "hashes to") {
 		t.Errorf("unexpected error: %v", err)
 	}
-	if _, statErr := os.Stat(objPath("sealed-verify", wrong)); statErr == nil {
+	if exists, _ := s.Exists(libraryID, wrong); exists {
 		t.Error("the rejected object was published anyway")
 	}
 }
@@ -144,15 +189,7 @@ func TestCorruptedFrameIsAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := objPath("sealed-corrupt", id)
-	raw, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw[len(raw)-1] ^= 0x01
-	if err := os.WriteFile(p, raw, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	flipAByteOfTheFrame(t, s, id)
 
 	if err := s.Read(libraryID, id, io.Discard); err == nil {
 		t.Error("Read returned a corrupted object without complaint")
@@ -171,10 +208,7 @@ func TestAFrameCannotBeMovedToAnotherPath(t *testing.T) {
 	if err := s.WriteVerified(libraryID, id, bytes.NewReader(plain), false); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(objPath("sealed-move", id))
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := storedFrame(t, s, id)
 
 	// A different id, whatever this one happens to start with.
 	other := "d" + id[1:]
@@ -215,17 +249,11 @@ func TestRewritingAnObjectIsFine(t *testing.T) {
 	if err := s.WriteVerified(libraryID, id, bytes.NewReader(plain), false); err != nil {
 		t.Fatal(err)
 	}
-	first, err := os.ReadFile(objPath("sealed-rewrite", id))
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := storedFrame(t, s, id)
 	if err := s.WriteVerified(libraryID, id, bytes.NewReader(plain), false); err != nil {
 		t.Fatal(err)
 	}
-	second, err := os.ReadFile(objPath("sealed-rewrite", id))
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := storedFrame(t, s, id)
 	if bytes.Equal(first, second) {
 		t.Error("two writes of one object produced identical frames: the nonce is not fresh")
 	}

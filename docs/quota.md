@@ -29,6 +29,7 @@ because answering any of them alone produces a number nobody can act on.
 | The three numbers: head, history, unreferenced | `objmgr.Census`, `silo df` | built (`fc6e846`) |
 | Collecting objects no commit reaches | `silo gc -orphans`, `objmgr.Unreferenced` | built (`e56a270`) |
 | Date-based history expiry | `silo gc -expire-history`, `expireHistory` | built (`c99b745`) |
+| Reclaiming dead frames inside sealed packs | `silo gc -compact`, `objmgr.PlanCompaction` | built |
 | Server-wide ceiling | — | not built |
 | Charging chunks rather than logical size | — | not built |
 | Admin API to read or set another account's cap | — | not built, and gated on there being an admin role at all (`plans/sharing.md` § Accounts) |
@@ -337,6 +338,10 @@ Three numbers fall out of this, and they want three different actions:
 - **unreferenced** — reachable from nothing at all. Interrupted uploads,
   abandoned commits. What `silo gc -orphans` reclaims, with no policy decision
   attached.
+
+In a packed store neither of the last two frees a byte on its own: a sealed
+pack is immutable, so both report what they had to leave in place and
+`silo gc -compact` is what rewrites the pack without it.
 
 `objmgr.Census` computes all three in one mark phase and `silo df` prints them
 per library. It is a set union over object ids rather than a sum of per-commit

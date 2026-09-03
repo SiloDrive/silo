@@ -306,7 +306,7 @@ func TestUnreferencedNeverYieldsSomethingACommitReaches(t *testing.T) {
 	root = put(t, s, root, "/a.bin", bytes.Repeat([]byte("b"), size))
 	head := commitOn(t, s, root, first)
 
-	reachable, err := s.reachable([]store.ID{head}, true)
+	reachable, err := s.reachable([]store.ID{head}, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,10 +358,9 @@ func TestCensusTreatsAMissingCommitAsTheEndOfHistory(t *testing.T) {
 		t.Fatalf("history = %d, want the superseded %d; the fixture is wrong", before.History.Bytes, size)
 	}
 
-	// Expire the first commit, which is what retention does.
-	if err := s.RemoveOrphan(Orphan{ID: first.String()}); err != nil {
-		t.Fatal(err)
-	}
+	// Expire the first commit, which is what retention plus a compaction run
+	// does. Remove alone cannot: the commit is inside a pack.
+	expunge(t, s, first)
 
 	after, err := s.Census(head)
 	if err != nil {
@@ -389,9 +388,7 @@ func TestCensusFailsOnAMissingDirectory(t *testing.T) {
 	root := put(t, s, mustEmpty(t, s), "/a.bin", bytes.Repeat([]byte("a"), 200000))
 	head := commitOn(t, s, root)
 
-	if err := s.RemoveOrphan(Orphan{ID: root.String()}); err != nil {
-		t.Fatal(err)
-	}
+	expunge(t, s, root)
 
 	if _, err := s.Census(head); err == nil {
 		t.Error("Census succeeded with the root directory missing; damage must not read as a smaller store")
@@ -455,7 +452,7 @@ func TestReachableFollowsEveryParentOfAMerge(t *testing.T) {
 	merged := put(t, s, left, "/right.bin", bytes.Repeat([]byte("r"), size))
 	head := commitOn(t, s, merged, leftCommit, rightCommit)
 
-	m, err := s.reachable([]store.ID{head}, true)
+	m, err := s.reachable([]store.ID{head}, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

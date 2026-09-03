@@ -109,24 +109,6 @@ var (
 	// that reaches the object store first.
 	SyncObjectWrites = true
 
-	// PackWrites appends new objects into packs instead of writing one file
-	// per object.
-	//
-	// **Off by default, and it is not ready to be on.** Reads already come out
-	// of packs, and the writer, the sealing rules and recovery are built and
-	// tested — what is missing is the other end. A sealed pack is immutable,
-	// so an unreferenced object inside one cannot be deleted; the bytes come
-	// back only when compaction rewrites the pack without them, and compaction
-	// is not built (silo#19). With this on, "silo gc -delete" finds orphans,
-	// reports them honestly as left in place, and frees nothing — so a store
-	// that churns grows without bound.
-	//
-	// The flag exists so that the pack write path can land, be exercised and
-	// be reviewed against a server that still reclaims space. It goes away
-	// once compaction makes packing safe to have on for everyone; it is not a
-	// tuning knob and there is no configuration a deployment should set it in.
-	PackWrites = false
-
 	// VerifyFSObjectHashes checks that an uploaded fs object hashes to the id
 	// it was sent under, before it is stored.
 	//
@@ -182,7 +164,6 @@ func initDefaultOptions() {
 	DiskReserve = DefaultDiskReserve
 	DBOpTimeout = 60 * time.Second
 	SyncObjectWrites = true
-	PackWrites = false
 	VerifyFSObjectHashes = true
 	LoginRateLimit = true
 	TrustProxyHeaders = false
@@ -276,18 +257,6 @@ func LoadFileServerOptions(configFile string) {
 	if !SyncObjectWrites {
 		log.Warn("SILO_SYNC_OBJECT_WRITES is off: objects are not fsynced, " +
 			"so a crash or power loss can leave repositories permanently corrupt.")
-	}
-
-	// Packs as the write path. Opt-in only, and env-only: there is no config
-	// file key for it, because a deployment should not carry this in a file it
-	// keeps. It exists so the pack write path can be exercised on a real server
-	// before compaction makes it safe to have on.
-	PackWrites = envBool(PackWrites, "SILO_PACK_WRITES")
-	if PackWrites {
-		log.Warn("SILO_PACK_WRITES is on: new objects go into packs. A sealed pack " +
-			"is immutable and compaction is not built, so `silo gc -delete` will " +
-			"find unreferenced objects, report them as left in place, and free " +
-			"nothing. Do not use this on a store you care about.")
 	}
 
 	if section, err := config.GetSection("httpserver"); err == nil {

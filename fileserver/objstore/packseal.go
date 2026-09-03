@@ -69,17 +69,29 @@ const (
 // and "a sidecar exists" is then an exact answer to "was this pack open",
 // with no second piece of state anywhere that could disagree with it.
 func (p *openPack) seal() error {
+	// The decision is taken under the lock and the I/O is done outside it.
+	// Once sealed is set no append can land, so the entries are final and a
+	// reader that finds this pack in the set meanwhile is served from an
+	// index that will not change and a file that is still open.
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.sealed = true
+	entries := append([]indexEntry(nil), p.entries...)
+	size := p.size
+	p.mu.Unlock()
 
-	footer, err := buildFooter(p.entries)
+	footer, err := buildFooter(entries)
 	if err != nil {
 		return fmt.Errorf("sealing pack %s: %v", p.id, err)
+	}
+	if packSealHook != nil {
+		if err := packSealHook(); err != nil {
+			return fmt.Errorf("sealing pack %s: %w", p.id, err)
+		}
 	}
 	// WriteAt rather than Write: the offset is the one the index agrees with,
 	// rather than wherever the file position happens to have been left by a
 	// recovery seek or a read.
-	if _, err := p.f.WriteAt(footer, p.size); err != nil {
+	if _, err := p.f.WriteAt(footer, size); err != nil {
 		return fmt.Errorf("writing the footer of pack %s: %v", p.id, err)
 	}
 	if err := p.f.Sync(); err != nil {
@@ -90,14 +102,24 @@ func (p *openPack) seal() error {
 	if err := p.side.close(); err != nil {
 		return fmt.Errorf("closing the index of pack %s: %v", p.id, err)
 	}
-	if err := os.Remove(sidePath); err != nil {
+	// A sidecar that is already gone is already the mark of a sealed pack, so
+	// its absence is success rather than a failure. That makes sealing
+	// idempotent, which recovery needs: a crash between the footer's fsync and
+	// this removal leaves a pack that is complete and still looks open, and the
+	// next seal of it must be able to finish rather than refuse.
+	if err := os.Remove(sidePath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing the index of pack %s: %v", p.id, err)
 	}
-	if err := syncDir(filepath.Dir(p.path)); err != nil {
-		return fmt.Errorf("publishing pack %s: %v", p.id, err)
-	}
-	return p.f.Close()
+	// The file stays open. The caller closes it once the set has stopped
+	// handing this pack out, so a reader that already holds it can finish.
+	return syncDir(filepath.Dir(p.path))
 }
+
+// packSealHook is a test seam, called by seal once it has decided what the
+// footer holds and before it writes a byte of it. Nil in production. It is
+// where a test lands a lookup mid-seal, or makes the seal fail the way a full
+// disk would.
+var packSealHook func() error
 
 // buildFooter lays out everything after the last frame.
 func buildFooter(entries []indexEntry) ([]byte, error) {

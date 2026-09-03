@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/dkam/silo/fileserver/objstore"
 	"github.com/dkam/silo/store"
 )
 
@@ -26,10 +27,16 @@ func testData(label string, n int) []byte {
 	return out[:n]
 }
 
+// Every store here seals its packs on the way out, before the temp directory
+// under it goes. objstore.Close is process-wide -- the pack registry is -- so a
+// test that left an open pack behind would have the next test's Close trip over
+// a directory that is no longer there.
 func plainStore(t *testing.T) *Store {
 	t.Helper()
+	dir := t.TempDir()
+	t.Cleanup(func() { _ = objstore.Close() })
 	s, err := New(Config{
-		DataDir: t.TempDir(),
+		DataDir: dir,
 		StoreID: testStoreID,
 		Params:  store.DefaultParams(store.PlainSeed()),
 	})
@@ -41,8 +48,10 @@ func plainStore(t *testing.T) *Store {
 
 func sealedStore(t *testing.T) *Store {
 	t.Helper()
+	dir := t.TempDir()
+	t.Cleanup(func() { _ = objstore.Close() })
 	s, err := New(Config{
-		DataDir: t.TempDir(),
+		DataDir: dir,
 		StoreID: testStoreID,
 		E2EE:    true,
 		CK:      testCK,

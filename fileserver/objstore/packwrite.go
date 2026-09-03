@@ -14,6 +14,7 @@ package objstore
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -99,10 +100,25 @@ func forgetPackStore(objDir string) {
 func Close() error {
 	packStoresMu.Lock()
 	stores := make([]*packStore, 0, len(packStores))
-	for _, ps := range packStores {
+	var gone []*packStore
+	for dir, ps := range packStores {
+		// A store directory that has been removed is dropped rather than
+		// sealed. There is nothing to flush to a directory that is not there,
+		// and a stale entry would keep an open pack's descriptor alive against
+		// a file nothing can reach — so this is the registry noticing that a
+		// store it was told about has gone, not an error to report at shutdown.
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			delete(packStores, dir)
+			gone = append(gone, ps)
+			continue
+		}
 		stores = append(stores, ps)
 	}
 	packStoresMu.Unlock()
+
+	for _, ps := range gone {
+		ps.discard()
+	}
 
 	var firstErr error
 	for _, ps := range stores {
@@ -176,6 +192,27 @@ func (ps *packStore) close() error {
 		}
 	}
 	return firstErr
+}
+
+// discard stops the sealer and releases the open packs' descriptors without
+// sealing anything.
+//
+// For a store directory that is no longer there. Nothing can be flushed to a
+// directory that has been removed, and the descriptors an open pack holds are
+// against files nothing can reach — on Linux an unlinked file stays live for
+// whoever holds it, so a writer that was never told would go on appending to
+// one for as long as the process ran.
+func (ps *packStore) discard() {
+	ps.stopOnce.Do(func() { close(ps.stop) })
+	ps.wg.Wait()
+	for _, set := range ps.sets() {
+		// forget rather than a release of its own: dropping a library's cached
+		// packs and closing the open one is exactly what this needs, and a
+		// second copy of that sequence would be a second copy of its lock
+		// order. That it also drops the registry entry is right here -- the
+		// directory is gone, so there is nothing left to rediscover.
+		ps.forget(set.libraryID)
+	}
 }
 
 // append writes one frame into a library's open pack.
@@ -285,6 +322,16 @@ func (s *packSet) appendFrame(objID string, frame []byte, sync bool) error {
 func (s *packSet) writablePack() (*openPack, error) {
 	p := s.current()
 
+	// A pack whose seal began and did not finish -- the footer failed, or the
+	// sealed pack could not be read back -- is still the open pack, and it
+	// takes no more frames. Finish the seal, then open a fresh one.
+	if p != nil && p.isSealed() {
+		if err := s.rotate(p); err != nil {
+			return nil, err
+		}
+		p = nil
+	}
+
 	// A pack recovered from a previous run is not appended to. Its frames have
 	// been sitting outside any sealed pack for at least as long as this process
 	// was down, which is exactly the window the age rule exists to bound — so
@@ -316,8 +363,15 @@ func (s *packSet) writablePack() (*openPack, error) {
 
 // rotate seals p and leaves the library with no open pack, so the next append
 // opens a fresh one. The caller holds writeMu and has p in hand.
+//
+// The pack stays in the set, open and readable, until the sealed pack is
+// ready to take its place, and the two are swapped under one lock hold: no
+// lookup sees a moment with neither. A failure anywhere leaves p where it
+// was -- findable, readable, and marked sealed so the next writer retries the
+// seal rather than appending past a footer. The old order, take it out then
+// seal it, made every object in the pack absent for the length of an fsync,
+// and permanently if the fsync failed.
 func (s *packSet) rotate(p *openPack) error {
-	s.clearOpen()
 	if err := p.seal(); err != nil {
 		return err
 	}
@@ -327,8 +381,14 @@ func (s *packSet) rotate(p *openPack) error {
 	}
 	s.mu.Lock()
 	s.sealed = append(s.sealed, sealed)
+	if s.open == p {
+		s.open = nil
+	}
 	s.mu.Unlock()
-	return nil
+	// A reader that took p out of the set before the swap and reads after
+	// this close gets os.ErrClosed, and the store's read path asks the set
+	// again on exactly that error.
+	return p.closeFile()
 }
 
 // clearOpen forgets the open pack. The caller holds writeMu, so nothing can

@@ -76,11 +76,11 @@ type Census struct {
 // and one that silently reported the readable fraction as the total would
 // answer the question it was asked with a number that means something else.
 func (s *Store) Census(head store.ID) (Census, error) {
-	live, err := s.reachable([]store.ID{head}, false)
+	live, err := s.reachable([]store.ID{head}, false, nil)
 	if err != nil {
 		return Census{}, fmt.Errorf("walking the head commit: %w", err)
 	}
-	all, err := s.reachable([]store.ID{head}, true)
+	all, err := s.reachable([]store.ID{head}, true, nil)
 	if err != nil {
 		return Census{}, fmt.Errorf("walking the history: %w", err)
 	}
@@ -128,36 +128,16 @@ func (s *Store) Census(head store.ID) (Census, error) {
 // licence to delete: an object nothing reaches is indistinguishable from one
 // about to be committed. Whatever acts on these re-verifies first.
 func (s *Store) PackCensus(head store.ID) ([]objstore.PackStat, error) {
-	live, err := s.reachable([]store.ID{head}, false)
+	live, err := s.reachable([]store.ID{head}, false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("walking the head commit: %w", err)
 	}
-	all, err := s.reachable([]store.ID{head}, true)
+	all, err := s.reachable([]store.ID{head}, true, nil)
 	if err != nil {
 		return nil, fmt.Errorf("walking the history: %w", err)
 	}
 
-	var out []objstore.PackStat
-	for _, st := range []struct {
-		store   *objstore.ObjectStore
-		isChunk bool
-	}{{s.chunks, true}, {s.objects, false}} {
-		stats, err := st.store.PackStats(s.storeID, func(objID string) objstore.Reach {
-			switch {
-			case live.has(objID, st.isChunk):
-				return objstore.ReachedHead
-			case all.has(objID, st.isChunk):
-				return objstore.ReachedHistory
-			default:
-				return objstore.Unreached
-			}
-		})
-		if err != nil {
-			return nil, fmt.Errorf("measuring packs: %w", err)
-		}
-		out = append(out, stats...)
-	}
-	return out, nil
+	return s.packStats(live, all)
 }
 
 // Orphan is one stored object that no commit reaches.
@@ -193,7 +173,7 @@ type Orphan struct {
 // unreferenced and is about to be referenced. Deciding that is the caller's,
 // and the guards are age and the GCID generation -- see RunGC.
 func (s *Store) Unreferenced(head store.ID, fn func(Orphan) error) error {
-	all, err := s.reachable([]store.ID{head}, true)
+	all, err := s.reachable([]store.ID{head}, true, nil)
 	if err != nil {
 		return fmt.Errorf("walking the history: %w", err)
 	}
@@ -244,6 +224,13 @@ func newMarks() *marks {
 // reached. An id the walk never produced cannot be parsed into the set, so an
 // unparseable name on disk is unreferenced, which is what it is.
 func (m *marks) has(id string, isChunk bool) bool {
+	// A nil set has reached nothing, which is how a caller that wanted only one
+	// of the two walks says so. PlanCompaction is the one: it needs history and
+	// has no use for the head column, and a walk taken to fill a number nobody
+	// reads is a walk of the whole tree for nothing.
+	if m == nil {
+		return false
+	}
 	parsed, err := store.ParseID(id)
 	if err != nil {
 		return false
@@ -270,6 +257,19 @@ func (m *marks) seen(set map[store.ID]struct{}, id store.ID) bool {
 // commit history; without it the walk stops at the commits it was handed,
 // which is what makes "reachable from head alone" askable.
 //
+// expired is the retention boundary as a decision rather than as a deletion. A
+// commit in it is treated exactly as one the store no longer holds: that branch
+// of history ends there and the commit itself is not marked. It exists because
+// a commit inside a sealed pack cannot be deleted where it is -- Remove says so
+// with ErrReclaimDeferred -- so in a packed store the expiry pass leaves the
+// commit on disk and still reachable, and a mark that believed the disk would
+// keep every expired history alive for ever. Compaction is the only thing that
+// can drop it, so compaction is what has to be told.
+//
+// nil for every other caller, deliberately. A census reports what the disk
+// holds now, and a collector deletes what nothing reaches now; only a rewrite
+// gets to act on a decision that has not yet been carried out.
+//
 // A parent commit the store no longer holds ends that branch instead of
 // failing the walk. That is the retention boundary, not damage: expiring
 // history is exactly "delete the oldest commit objects", and walkHistory and
@@ -284,7 +284,7 @@ func (m *marks) seen(set map[store.ID]struct{}, id store.ID) bool {
 // Missing directories and manifests are always errors, wherever they are
 // found. Nothing collects those without first collecting the commit that
 // reaches them, so one that has gone missing is damage.
-func (s *Store) reachable(commits []store.ID, withParents bool) (*marks, error) {
+func (s *Store) reachable(commits []store.ID, withParents bool, expired map[store.ID]bool) (*marks, error) {
 	m := newMarks()
 	isHead := make(map[store.ID]bool, len(commits))
 	for _, id := range commits {
@@ -294,6 +294,13 @@ func (s *Store) reachable(commits []store.ID, withParents bool) (*marks, error) 
 	for len(pending) > 0 {
 		id := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
+		// Checked before the mark, not after: marking an expired commit would
+		// keep alive the very object the cut exists to release. The head is
+		// never expired -- expiry keeps it whatever its timestamp -- but a
+		// caller that named it anyway gets a library, not an empty store.
+		if expired[id] && !isHead[id] {
+			continue
+		}
 		if m.seen(m.objects, id) {
 			continue
 		}

@@ -309,14 +309,22 @@ explicitly to plain libraries, so the boundary lives in code.
 <data-dir>/storage/objects/<library-id>/<aa>/<the rest of the id>
 ```
 
-One object per file, fanned out on the first two hex characters of its id.
-Writing is temp-file-then-rename inside the destination directory, so a reader
-never sees a partial object and the publish never crosses a filesystem. With
-`sync` the data is fsynced before the rename and the directory entry after —
-not optional for correctness, because the branch head lives in SQLite, which
-fsyncs its own WAL, so a head can survive a power cut that the objects it
-references do not. Nothing repairs that afterwards: the client believes it
-already uploaded those chunks, so a resync does not send them again.
+That is the **loose** layout: one object per file, fanned out on the first two
+hex characters of its id. Writing is temp-file-then-rename inside the
+destination directory, so a reader never sees a partial object and the publish
+never crosses a filesystem. With `sync` the data is fsynced before the rename
+and the directory entry after — not optional for correctness, because the
+branch head lives in SQLite, which fsyncs its own WAL, so a head can survive a
+power cut that the objects it references do not. Nothing repairs that
+afterwards: the client believes it already uploaded those chunks, so a resync
+does not send them again.
+
+**It is no longer the write path.** New objects go into packs — see § Packs —
+under `<data-dir>/storage/<type>/<library-id>/packs/`, beside the fan-out
+rather than in it. The loose layout stays a **permanent read path**: there is no
+ingest, so a store written before the cutover carries its old objects forward
+where they are and writes its new ones packed, and the lookup asks the open
+pack, then the sealed packs, then the loose file.
 
 **Every id is sixty-four lowercase hex characters.** One width, one parser
 (`store.ParseID`), one digest. A store that accepted a second width would be a
@@ -630,7 +638,7 @@ else.
 
 ## Reclaiming
 
-Three reclaimers, all under `silo gc`, all reporting by default and removing
+Four reclaimers, all under `silo gc`, all reporting by default and removing
 only with `-delete`.
 
 **Deleted libraries.** `DeleteLibrary` removes a library's rows and records its
@@ -650,6 +658,20 @@ of magnitude longer than any client takes to go from its first chunk to its
 head move, and short enough that a server does not carry a week of dead
 uploads), and the `GCID` generation stamp guards writes in flight.
 
+The stamp is a marker for the duration of a collection and a fresh value on
+either side of it, because one bump before the mark was not enough. Age
+covers a fresh object; it does not cover an object a commit found by dedup,
+which may have sat unreferenced for a month — a resumed upload is the common
+case — and a client that read the generation *after* the bump, while the mark
+was walking a head that did not include it, passed the check and published a
+commit whose chunks the sweep then took. So `updateBranch` refuses every head
+move while the marker is set (`503`, retry), and the collection bumps again on
+its way out, so a check-blocks answered mid-collection is stale by the time it
+can be committed against. A collection that dies leaves the marker, and head
+moves stay refused until the next `silo gc` clears it; that is the safe
+direction. The head-move handler reads the stamp before it checks anything
+exists, for the same reason.
+
 **`-expire-history`** drops the commit objects outside a library's retention
 window. It is the only operation in Silo that deletes something a commit
 reaches, and it is irreversible once the sweep behind it runs, so everything
@@ -658,6 +680,47 @@ and nothing else, leaving the chunks to the orphan sweep, which already knows
 how to decide whether anything still reaches them. Expiry runs before the sweep
 in the same invocation, because an operator asking for both meant "reclaim what
 retention allows", not "reclaim it next time".
+
+**`-compact`** rewrites a sealed pack without the frames nothing reaches, and
+it is the only way space comes back from a pack at all. A sealed pack is
+immutable — that is what lets a tier replicate one as a file copy, and what
+makes "reclaim by rewrite, never by hole reuse" a rule rather than a preference
+— so `Remove` refuses an object inside one with `ErrReclaimDeferred`, and both
+the sweep and expiry report honestly what they had to leave behind. Compaction
+runs last in an invocation for exactly that reason: a run that asked for all
+four frees what retention allows in one pass instead of the next.
+
+A pack is a candidate when its dead fraction is past `-compact-threshold`
+(`0.5` by default: at a half, the bytes copied and the bytes reclaimed are the
+same number). Wholly dead packs go first — they are deleted rather than
+rewritten, so they cost no I/O — and the rest are ordered by dead fraction,
+which is reclaimed per byte copied. `-compact-budget` caps the live bytes one
+run copies; unset, a run catches up rather than falling behind. The guards are
+the orphan sweep's, for the same reasons: the `GCID` generation is marked
+before the head is read and bumped after the last rewrite, and a pack sealed
+inside `-min-age` is left alone. The guard
+is on the pack rather than on the frame because an index record carries no
+time — but every frame was appended before the footer was written, so a pack's
+seal time is a lower bound on every frame's age, which is the direction the
+guard needs.
+
+**Retention that could not be carried out is carried by the mark.** On a packed
+store `-expire-history` cannot delete a single commit — they are inside sealed
+packs — so it defers, and a compaction that only believed the disk would copy
+those commits forward for ever. `-compact` run alongside `-expire-history`
+therefore takes the same cut as a set of commits to treat as absent, and drops
+them and everything only they reached. `-compact` on its own reclaims garbage
+and never history: expiring history is irreversible, and an operator who typed
+one flag should not get the other one's consequences.
+
+**`-compact -delete` is offline, and that is a rule rather than advice.** The
+server holds its pack set in memory and opens a sealed pack by path, so a
+rewrite from a second process renames a new pack into place the server does not
+know about and deletes the one it does; the next read of a frame that moved is
+a `404` to a client that stored it. Nothing locks the data directory, so this
+cannot be detected. Compaction inside the server's own process is the
+in-process scheduler, which is unwritten and wants a kill switch before it
+wants code.
 
 **Retention is the definition of a live commit, not a second collector.**
 Without a limit every commit ever written is live and nothing short of deleting
@@ -690,6 +753,7 @@ but a server midway through `DeleteLibrary` is a genuine race.
 silo df [-q] [library-id]                  where the disk went, per library
 silo retention [library-id [days|keep-all|default]]
 silo gc [-delete] [-q] [-orphans] [-min-age D] [-expire-history] [-expire-window D]
+       [-compact] [-compact-threshold F] [-compact-budget SIZE]
 ```
 
 `retention` and `df` are CLI rather than API for the reason the user commands
@@ -1214,6 +1278,11 @@ packs it becomes one mark phase feeding a scheduler.
   re-verified before any sweep. `live_bytes` drives compaction and `head_bytes`
   drives eviction order, and the two are one walk: the difference between them
   is what history is keeping alive in that pack.
+  **The catalog row arrives with the in-process scheduler, not with the CLI.**
+  `silo gc -compact` draws the plan and acts on it in one process, seconds
+  apart, with the marks in memory: a row is for a *later* process to schedule
+  from, and `gc_id` on it is what would make its staleness detectable. A table
+  nothing reads is speculative code, so it lands when there is a reader.
 - Compact a pack when its dead fraction crosses a threshold (default 0.5),
   rate-limited autovacuum-style: a threshold and an I/O budget, not "quiet
   hours". Rewrite live frames into a new pack, fsync, swap index entries

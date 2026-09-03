@@ -212,6 +212,13 @@ func (ps *packStore) set(libraryID string) (*packSet, error) {
 		return nil, err
 	}
 	ps.libs[libraryID] = s
+	// A pack inherited open from a previous run holds frames that have sat
+	// outside a sealed pack for at least as long as that run was down. The
+	// sealer otherwise starts with the first write, and a library nobody
+	// writes to again would keep them that way for ever.
+	if s.open != nil && !s.open.empty() {
+		ps.startSealer()
+	}
 	return s, nil
 }
 

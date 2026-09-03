@@ -16,15 +16,13 @@
 package objstore
 
 import (
-	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/dkam/silo/fileserver/option"
 )
 
 // ErrContentMismatch is returned by a verified write whose bytes do not hash
@@ -110,12 +108,6 @@ type ObjectStore struct {
 	// the backend rather than inside one, because the seam takes whole sealed
 	// packs and knows nothing about what is in them. See packstore.go.
 	packs *packStore
-	// packWrites is whether new objects go into a pack, resolved once here
-	// rather than read per write. Which container a store writes into is a
-	// property of the store: reading the global on each object would let two
-	// writes to one open pack disagree, and would have a test that toggles the
-	// flag mutating shared state under a live sealer.
-	packWrites bool
 	// backendErr is why there is no backend, if there is not. Everything fails
 	// on it: with no backend there is nothing to ask.
 	backendErr error
@@ -215,7 +207,6 @@ func New(confPath string, dataDir string, objType string) *ObjectStore {
 	}
 	obj.backend = backend
 	obj.packs = packStoreFor(TypeDir(dataDir, objType))
-	obj.packWrites = option.PackWrites
 
 	key, err := storageKeyFor(dataDir)
 	if err != nil {
@@ -312,7 +303,16 @@ func (s *ObjectStore) frame(libraryID string, objID string) ([]byte, error) {
 		return nil, err
 	}
 	if ok {
-		return pack.readFrameAt(e)
+		buf, err := pack.readFrameAt(e)
+		if errors.Is(err, os.ErrClosed) {
+			// The pack was open when the lookup found it and rotate closed
+			// its file since. The frame did not move: it is in the sealed
+			// pack that replaced it, which the set now hands out instead.
+			if pack, e, ok, err = s.packs.find(libraryID, objID); err == nil && ok {
+				return pack.readFrameAt(e)
+			}
+		}
+		return buf, err
 	}
 
 	size, err := s.backend.stat(libraryID, objID)
@@ -417,13 +417,13 @@ func (s *ObjectStore) write(libraryID string, objID string, r io.Reader, sync bo
 	if err != nil {
 		return err
 	}
-	if s.packWrites {
-		// The frame is the same bytes either way. That is the property that
-		// makes ingest a copy rather than a re-seal, and it is why this is a
-		// choice of container at the last moment rather than two write paths.
-		return s.packs.append(libraryID, objID, frame, sync)
-	}
-	return s.backend.write(libraryID, objID, bytes.NewReader(frame), sync)
+	// Into a pack, always. The frame is the same bytes either way — that is the
+	// property that made ingest a copy rather than a re-seal — so the container
+	// is a choice at the last moment rather than a second write path. A store
+	// written before the cutover keeps reading: the lookup asks the open pack,
+	// the sealed packs, then the loose file, so an existing install carries its
+	// old objects forward unpacked and writes new ones packed.
+	return s.packs.append(libraryID, objID, frame, sync)
 }
 
 // Object is one object in a batch write: the id it will be stored under, and
@@ -480,14 +480,6 @@ func (s *ObjectStore) WriteBatch(libraryID string, objs []Object, sync bool) err
 		ids[i], frames[i] = o.ID, frame
 	}
 
-	if !s.packWrites {
-		for i := range objs {
-			if err := s.backend.write(libraryID, ids[i], bytes.NewReader(frames[i]), sync); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
 	return s.packs.appendBatch(libraryID, ids, frames, sync)
 }
 

@@ -118,10 +118,8 @@ func TestAPackIsAskedBeforeTheLooseStore(t *testing.T) {
 	first := New(confPath, dataDir, TypeChunks)
 	body := "this object exists in both places at once"
 
-	if err := first.Write(libraryID, idOf([]byte(body)), strings.NewReader(body), true); err != nil {
-		t.Fatalf("writing loose: %v", err)
-	}
 	id := idOf([]byte(body))
+	writeLooseObject(t, first, id, body)
 	loose := filepath.Join(LibraryDir(dataDir, TypeChunks, libraryID), id[:2], id[2:])
 	if _, err := os.Stat(loose); err != nil {
 		t.Fatalf("the loose copy is not where this test thinks: %v", err)
@@ -442,9 +440,7 @@ func TestRemovingALooseObjectIsUnchanged(t *testing.T) {
 	body := "loose, and removable"
 	id := idOf([]byte(body))
 
-	if err := s.WriteVerified(libraryID, id, strings.NewReader(body), true); err != nil {
-		t.Fatal(err)
-	}
+	writeLooseObject(t, s, id, body)
 	if err := s.Remove(libraryID, id); err != nil {
 		t.Fatalf("removing a loose object: %v", err)
 	}
@@ -524,14 +520,17 @@ func TestAStoreWithNoKeyCanStillBeMeasuredAndReclaimed(t *testing.T) {
 // LibraryUsage answers about storage and List answers about objects, and the
 // two differ by exactly the framing. Reporting the listing's number in gc would
 // quote a figure smaller than the space that actually came back.
+//
+// Loose, because that is where the difference is exactly one frame's overhead
+// per object and can be asserted as an equation. In a pack it is that plus the
+// pack's own header and footer, which is a different claim -- asserted below
+// as an inequality, since the footer's size is the store's business.
 func TestLibraryUsageCountsTheFramingThatListDoesNot(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 	s := New(confPath, dataDir, TypeChunks)
 	bodies := []string{"one", "two", "three"}
 	for _, b := range bodies {
-		if err := s.WriteVerified(libraryID, idOf([]byte(b)), strings.NewReader(b), true); err != nil {
-			t.Fatal(err)
-		}
+		writeLooseObject(t, s, idOf([]byte(b)), b)
 	}
 
 	var listed int64
@@ -548,5 +547,29 @@ func TestLibraryUsageCountsTheFramingThatListDoesNot(t *testing.T) {
 	if want := listed + int64(len(bodies)*frameOverhead); stored != want {
 		t.Errorf("usage is %d and the listing totals %d; want usage to exceed it by the framing (%d)",
 			stored, listed, want)
+	}
+}
+
+// The same question of a packed store: usage still exceeds the listing, by the
+// framing and by the pack's own header and index.
+func TestLibraryUsageOfAPackedStoreExceedsTheListing(t *testing.T) {
+	s, _ := writeStore(t)
+	bodies := []string{"one", "two", "three"}
+	for _, b := range bodies {
+		if err := s.WriteVerified(libraryID, idOf([]byte(b)), strings.NewReader(b), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var listed int64
+	if err := s.List(libraryID, func(o ObjectInfo) error { listed += o.Size; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	_, stored, err := s.LibraryUsage(libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if least := listed + int64(len(bodies)*frameOverhead); stored < least {
+		t.Errorf("usage is %d, and the framing alone puts the floor at %d", stored, least)
 	}
 }

@@ -2,24 +2,14 @@ package objmgr
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/store"
 )
-
-// packedStore is plainStore with the pack write path on, sealed by the test's
-// cleanup so that what it wrote is measurable.
-//
-// The flag is off everywhere else, because compaction does not exist yet; these
-// are the tests that need it on.
-func packedStore(t *testing.T) *Store {
-	t.Helper()
-	was := option.PackWrites
-	option.PackWrites = true
-	t.Cleanup(func() { option.PackWrites = was })
-	return plainStore(t)
-}
 
 // seal closes every open pack in the process, which is what a clean shutdown
 // does. Nothing measures an open pack, so a test that wants numbers has to get
@@ -31,12 +21,65 @@ func seal(t *testing.T) {
 	}
 }
 
+// expunge removes objects from the store the only way a packed store can:
+// seal, then rewrite every pack without them.
+//
+// Since the cutover there is no other way. Remove refuses an object inside a
+// pack with ErrReclaimDeferred, so a test that needs one genuinely gone -- an
+// expired commit, a directory that damage has taken -- has to do what retention
+// plus a compaction run does, which is this.
+func expunge(t *testing.T, s *Store, ids ...store.ID) {
+	t.Helper()
+	seal(t)
+	drop := map[string]bool{}
+	for _, id := range ids {
+		drop[id.String()] = true
+	}
+	for _, st := range s.stores() {
+		stats, err := st.PackStats(s.storeID, func(string) objstore.Reach { return objstore.ReachedHead })
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range stats {
+			if _, err := st.CompactPack(s.storeID, p.PackID, func(id string) bool { return !drop[id] }); err != nil {
+				t.Fatalf("rewriting %s without %v: %v", p.PackID, ids, err)
+			}
+		}
+	}
+}
+
+// packBytes is every sealed pack of one store, end to end. The tests that care
+// what is on the disk read this rather than a file per object.
+func packBytes(t *testing.T, dataDir, objType, storeID string) []byte {
+	t.Helper()
+	dir := filepath.Join(objstore.LibraryDir(dataDir, objType, storeID), "packs")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all []byte
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".pack" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, raw...)
+	}
+	if len(all) == 0 {
+		t.Fatalf("no packs under %s", dir)
+	}
+	return all
+}
+
 // The assertion this pair exists for: the packs and the census are two
 // attributions of one walk, so they have to agree about what is reachable. If
 // they can drift, the scheduler will eventually rewrite a pack the census
 // still considers live.
 func TestPackCensusAgreesWithTheCensus(t *testing.T) {
-	s := packedStore(t)
+	s := plainStore(t)
 
 	root := put(t, s, mustEmpty(t, s), "/a.bin", bytes.Repeat([]byte("a"), 200000))
 	first := commitOn(t, s, root)
@@ -118,7 +161,7 @@ func TestPackCensusAgreesWithTheCensus(t *testing.T) {
 // A library with nothing unreferenced has nothing to compact, and says so with
 // a zero rather than with an absent answer.
 func TestAFreshLibraryHasNoDeadBytes(t *testing.T) {
-	s := packedStore(t)
+	s := plainStore(t)
 	root := put(t, s, mustEmpty(t, s), "/a.bin", bytes.Repeat([]byte("a"), 200000))
 	head := commitOn(t, s, root)
 	seal(t)
@@ -148,18 +191,82 @@ func TestAFreshLibraryHasNoDeadBytes(t *testing.T) {
 	}
 }
 
-// A store that never packed anything measures as no packs rather than as an
-// error — which is every install until the cutover.
-func TestPackCensusOnALooseStoreIsEmpty(t *testing.T) {
+// An open pack is deliberately not measured: its dead fraction describes a file
+// that is a different size by the time anything acts on it. So a store that has
+// written but not sealed reports no packs rather than an error — which is also
+// what a store written before the cutover reports, for ever.
+func TestAnUnsealedStoreMeasuresNoPacks(t *testing.T) {
 	s := plainStore(t)
 	root := put(t, s, mustEmpty(t, s), "/a.bin", bytes.Repeat([]byte("a"), 200000))
 	head := commitOn(t, s, root)
 
 	packs, err := s.PackCensus(head)
 	if err != nil {
-		t.Fatalf("PackCensus on a loose store: %v", err)
+		t.Fatalf("PackCensus before anything sealed: %v", err)
 	}
 	if len(packs) != 0 {
-		t.Errorf("measured %d packs on a store that writes loose objects", len(packs))
+		t.Errorf("measured %d packs, and not one of them is sealed", len(packs))
+	}
+}
+
+// A PackStat is handed back to whichever ObjectStore holds it, so it has to
+// say which one that is. Chunks and objects are separate stores and an id is
+// only unique within one of them — a stat that did not carry the distinction
+// would send a chunk's pack id to the object store, which would report it as
+// not a sealed pack of the library and leave the space where it was.
+func TestPackCensusSaysWhichStoreEachPackIsIn(t *testing.T) {
+	s := plainStore(t)
+	// Large enough to be chunked rather than inlined, so both stores are
+	// written: the chunks in one, the manifest, directory and commit in the
+	// other.
+	root := put(t, s, mustEmpty(t, s), "/a.bin", bytes.Repeat([]byte("a"), 200000))
+	head := commitOn(t, s, root)
+	seal(t)
+
+	packs, err := s.PackCensus(head)
+	if err != nil {
+		t.Fatalf("PackCensus: %v", err)
+	}
+
+	var chunkPacks, objectPacks int
+	for _, p := range packs {
+		if p.ObjType == objstore.TypeChunks {
+			chunkPacks++
+			continue
+		}
+		objectPacks++
+	}
+	if chunkPacks == 0 {
+		t.Error("no pack reported as holding chunks, but a 200KB file was written")
+	}
+	if objectPacks == 0 {
+		t.Error("no pack reported as holding objects, but a commit was written")
+	}
+}
+
+// The age guard is on the pack rather than on the frame, because an index
+// record carries no time. Every frame in a sealed pack was appended before its
+// footer was written, so the file's mtime is a lower bound on every frame's
+// age — which is the direction a "do not touch anything recent" guard needs.
+func TestPackCensusReportsWhenAPackWasSealed(t *testing.T) {
+	s := plainStore(t)
+	before := time.Now().Add(-time.Second)
+	root := put(t, s, mustEmpty(t, s), "/a.bin", bytes.Repeat([]byte("a"), 200000))
+	head := commitOn(t, s, root)
+	seal(t)
+	after := time.Now().Add(time.Second)
+
+	packs, err := s.PackCensus(head)
+	if err != nil {
+		t.Fatalf("PackCensus: %v", err)
+	}
+	if len(packs) == 0 {
+		t.Fatal("nothing was packed")
+	}
+	for _, p := range packs {
+		if p.SealedAt.Before(before) || p.SealedAt.After(after) {
+			t.Errorf("pack %s reports it was sealed at %v, outside the run's window %v..%v",
+				p.PackID, p.SealedAt, before, after)
+		}
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,7 +106,14 @@ func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 
 	// Exactly the damage the accident caused: the row stays, the object goes.
 	// A commit lives in the objects store, beside the tree it names.
-	if err := os.RemoveAll(objstore.LibraryDir(dataDir, objstore.TypeObjects, libraryID)); err != nil {
+	//
+	// Through RemoveLibrary rather than RemoveAll, because since the cutover the
+	// commit is inside a pack this process holds open. On Linux an unlinked file
+	// stays live for whoever holds its descriptor, so removing the directory
+	// behind the store's back leaves it answering out of a file nothing can
+	// reach -- which is the store not having noticed, not the store having its
+	// objects back.
+	if err := objstore.New("", dataDir, objstore.TypeObjects).RemoveLibrary(libraryID); err != nil {
 		t.Fatalf("remove object store: %v", err)
 	}
 	t.Cleanup(func() { clearFaults(libraryID) })

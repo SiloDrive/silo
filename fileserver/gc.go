@@ -43,13 +43,23 @@ func RunGC(args []string) error {
 	orphans := flags.Bool("orphans", false, "sweep unreferenced objects inside live libraries too")
 	expire := flags.Bool("expire-history", false, "expire history per each library's retention policy, keeping the head")
 	expireWindow := flags.Duration("expire-window", 0, "with -expire-history, override every library's policy with this window")
-	minAge := flags.Duration("min-age", DefaultOrphanAge, "with -orphans, how long an object must have sat unreferenced before it is a candidate")
+	minAge := flags.Duration("min-age", DefaultOrphanAge, "with -orphans or -compact, how long an object or pack must have sat there before it is a candidate")
+	compact := flags.Bool("compact", false, "rewrite sealed packs without the frames nothing reaches (offline: stop the server)")
+	threshold := flags.Float64("compact-threshold", DefaultCompactThreshold, "with -compact, the dead fraction at which a pack is worth rewriting")
+	budgetFlag := flags.String("compact-budget", "0", "with -compact, the live bytes one run may copy, as a size like 10gb (0: no cap)")
 	rest, done, err := parseCommandArgs("gc", flags, args)
 	if err != nil || done {
 		return err
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("usage: silo gc [-d datadir] [-C config] [-delete] [-q]")
+	}
+	if err := checkCompactThreshold(*threshold); err != nil {
+		return err
+	}
+	budget, err := parseCompactBudget(*budgetFlag)
+	if err != nil {
+		return err
 	}
 
 	// The server keeps no lock on the data directory, so GC cannot detect a
@@ -58,6 +68,14 @@ func RunGC(args []string) error {
 	// through DeleteLibrary is a genuine race.
 	if *del {
 		log.Warn("Stop the server before running gc -delete.")
+	}
+	if *compact && *del {
+		// Stronger than the warning above, and it is a rule rather than
+		// advice: a rewrite renames a new pack into place and deletes the one
+		// the running server holds in memory, so the next read of a frame that
+		// moved is a 404 to a client that stored it. Nothing locks the data
+		// directory, so it cannot be detected -- it is said.
+		log.Warn(compactionIsOffline)
 	}
 
 	if err := openStores(); err != nil {
@@ -76,6 +94,24 @@ func RunGC(args []string) error {
 
 	if *orphans {
 		if err := runOrphanSweep(*minAge, *del, *quiet); err != nil {
+			return err
+		}
+		fmt.Println()
+	}
+
+	// Last of the three, because it is what finishes the other two. Expiry and
+	// the sweep both leave frames they could not delete inside sealed packs;
+	// this is the pass that reclaims them, so a run that asked for all three
+	// frees what retention allows without waiting for the next one.
+	if *compact {
+		if err := runCompaction(compactOpts{
+			threshold:    *threshold,
+			minAge:       *minAge,
+			budget:       budget,
+			expire:       *expire,
+			expireWindow: *expireWindow,
+			del:          *del,
+		}, *quiet); err != nil {
 			return err
 		}
 		fmt.Println()

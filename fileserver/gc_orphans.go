@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/dkam/silo/fileserver/libmgr"
@@ -54,6 +55,16 @@ type orphanSweep struct {
 	deferredBytes int64
 }
 
+// chosen is how many objects the sweep decided to reclaim, whether or not the
+// store was able to delete them here.
+//
+// Since packs became the write path that is almost always deferred rather than
+// removed: an object inside a pack cannot be deleted where it is, and
+// compaction is what takes the bytes away. The two counts stay separate --
+// reporting deferred bytes as freed would quote space that is still on the
+// disk -- but the decision itself is the sum.
+func (s orphanSweep) chosen() int { return s.removed + s.deferred }
+
 // sweepOrphans reclaims one library's unreferenced objects.
 //
 // Unreferenced means no commit reaches it — not the head, not any ancestor.
@@ -67,28 +78,37 @@ type orphanSweep struct {
 // flight out of the candidate set at all, and it works without coordinating
 // with anything.
 //
-// The **GC generation** is the backstop for the pathological case the age
-// threshold cannot cover — a client that uploaded its objects and then stalled
-// for longer than the threshold before moving the head. Bumping gc_id makes
-// updateBranch refuse that head move (ErrGCConflict, answered as a 503 with a
-// retry), so the client re-uploads rather than publishing a commit whose
-// objects were collected underneath it. The bump happens **before** the mark,
-// because a bump afterwards leaves precisely the window it exists to close.
+// The **GC generation** is the backstop for the case the age threshold cannot
+// cover — a client whose commit names, by dedup, an object that has sat
+// unreferenced for longer than the threshold: an upload that stalled and
+// resumed, most often. Marking the generation makes updateBranch refuse every
+// head move while the sweep runs (ErrGCConflict, answered as a 503 with a
+// retry), and bumping it on the way out makes a generation read mid-sweep
+// stale, so the client re-checks its blocks against the store as the sweep
+// left it rather than publishing a commit whose objects were collected
+// underneath it. See beginCollection for why one bump is not enough.
 //
-// A reporting run bumps the generation too. It has read the store, a client
-// cannot tell a report from a collection, and the cost of an unnecessary bump
-// is one client retry.
+// A reporting run marks the generation too. It has read the store, a client
+// cannot tell a report from a collection, and the cost is one client retry.
 func sweepOrphans(libraryID string, minAge time.Duration, del bool) (orphanSweep, error) {
 	sweep := orphanSweep{libraryID: libraryID}
+
+	// Before the head is read, never after. See beginCollection.
+	library, err := libmgr.GetWithReason(libraryID)
+	if err != nil {
+		return sweep, err
+	}
+	if err := beginCollection(library.StoreID); err != nil {
+		return sweep, err
+	}
+	defer endCollection(library.StoreID)
 
 	library, st, head, err := openLibraryAtHead(libraryID)
 	if err != nil {
 		return sweep, err
 	}
-
-	// Before the mark, never after. See above.
-	if err := bumpGCID(library.StoreID); err != nil {
-		return sweep, err
+	if gcAfterHeadRead != nil {
+		gcAfterHeadRead(libraryID)
 	}
 
 	cutoff := time.Now().Add(-minAge)
@@ -133,19 +153,59 @@ func sweepOrphans(libraryID string, minAge time.Duration, del bool) (orphanSweep
 	return sweep, nil
 }
 
-// bumpGCID gives a store a new generation stamp.
+// A collection is two bumps of the generation and a marker in between.
+//
+// The generation is what updateBranch compares against the one a write read
+// on its way in, and a bump refuses every write that read the old one. One
+// bump before the mark is not enough. A write that reads the generation after
+// that bump, while the mark is walking a head that does not include it, passes
+// the comparison and publishes a commit whose objects the mark has already
+// decided are dead -- and the age guard does not help, because the objects
+// the commit found by dedup may be as old as it likes. So while a collection
+// runs the generation carries a marker, and updateBranch refuses any head
+// move at all rather than one with a stale stamp. And the collection bumps
+// again on its way out, so a write that read the marked generation, or
+// answered a check-blocks against the store as it was mid-collection, is stale
+// by the time it can commit; one that reads the fresh generation sees the
+// store as the collection left it.
+//
+// The marker outlives a collection that dies: head moves stay refused until
+// the next `silo gc` clears it. That is the safe direction, and the message
+// the client gets names the command.
+const collectingPrefix = "!"
+
+// beginCollection stamps the store as being collected. Before the head is
+// read, never after: the head is the mark's root, and a commit that lands
+// between the two is one the mark has not seen.
+func beginCollection(storeID string) error {
+	return stampGCID(storeID, collectingPrefix)
+}
+
+// endCollection gives the store a fresh generation with no marker. It is
+// deferred by every reclaimer, and a failure leaves the marker in place, which
+// refuses writes rather than admitting one against a store that changed.
+func endCollection(storeID string) {
+	if err := stampGCID(storeID, ""); err != nil {
+		log.Errorf("Failed to end the collection of %s; head moves stay refused until the next gc: %v", storeID, err)
+	}
+}
+
+// isCollecting says whether a generation stamp is the marked kind.
+func isCollecting(gcID string) bool { return strings.HasPrefix(gcID, collectingPrefix) }
+
+// stampGCID gives a store a new generation stamp.
 //
 // The value is opaque and only ever compared for equality — updateBranch asks
 // whether it is the same one the write read on its way in. Random rather than
 // a counter because a counter has to be read before it is written, and two
 // sweeps racing on that read would mint the same "next" value and each think
 // the other's generation was its own.
-func bumpGCID(storeID string) error {
+func stampGCID(storeID, prefix string) error {
 	var b [5]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Errorf("failed to mint a gc id: %w", err)
 	}
-	id := hex.EncodeToString(b[:])
+	id := prefix + hex.EncodeToString(b[:])
 
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
@@ -157,6 +217,13 @@ func bumpGCID(storeID string) error {
 	}
 	return nil
 }
+
+// gcAfterHeadRead is a test seam: called by every reclaimer once it has read
+// the head it will mark from and before it does anything else. Nil in
+// production. It exists so a test can land a commit in the window between a
+// reclaimer reading the head and acting on it, which is the window the
+// generation guard is supposed to close.
+var gcAfterHeadRead func(libraryID string)
 
 // runOrphanSweep sweeps every live library and prints what it found.
 //
@@ -215,7 +282,8 @@ func runOrphanSweep(minAge time.Duration, del bool, quiet bool) error {
 		// still on the disk. An operator who ran this to free space has to be
 		// told that this much of it will not come back yet.
 		fmt.Printf("%d unreferenced objects, %s, could not be deleted in place and were left; "+
-			"their space is reclaimed by a later rewrite.\n", deferred, format.Bytes(deferredBytes))
+			"they are inside sealed packs -- run with -compact to reclaim them.\n",
+			deferred, format.Bytes(deferredBytes))
 	}
 	if tooYoung > 0 {
 		// Said out loud rather than left to be inferred from a total that does

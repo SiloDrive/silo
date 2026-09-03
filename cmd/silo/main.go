@@ -146,6 +146,7 @@ Usage:
   silo df [-q] [library-id]       Where the disk went: head, history, unreferenced
   silo retention [lib [days]]     Show or set how long a library keeps history
   silo gc [-orphans] [-delete]    Reclaim disk: dead libraries, orphans, old history
+  silo gc -compact [-delete]      Rewrite packs without the frames nothing reaches
   silo backup-db <dir>            Snapshot the databases (server may be running)
   silo sentry-test                Send a test event to $SILO_SENTRY_DSN and report
   silo setup-token                Print the token that creates the first account
@@ -192,6 +193,18 @@ Run "silo serve -h" for server-side flags.
 "silo gc" reports what deleting a library left behind and reclaims it with
 -delete. It only ever touches libraries that are already deleted, but stop
 the server first: nothing locks the data directory.
+
+"silo gc -compact" rewrites sealed packs without the frames no commit reaches,
+which is the only way space comes back from a pack: a sealed pack is immutable,
+so expiry and the orphan sweep report what they could not delete and leave it.
+A full reclaim is "silo gc -expire-history -orphans -compact -delete", in that
+order, in one run. -compact-threshold sets the dead fraction worth rewriting
+(default 0.5) and -compact-budget caps the live bytes one run copies.
+
+-compact -delete is offline, and here that is a rule rather than advice: the
+server holds its pack set in memory and opens a sealed pack by path, so a
+rewrite from a second process moves frames the server still believes it can
+find, and the next read of one is a 404 to a client that stored it.
 
 "silo sentry-test" sends one error and one transaction to the configured DSN
 and reports what the receiver said, so a silent tracker can be told apart from

@@ -169,6 +169,9 @@ func openSidecar(path string) (*sidecar, error) {
 // pack is fsynced before this is written, and this is fsynced before anything
 // is acknowledged.
 func (s *sidecar) append(e indexEntry) error {
+	if s.f == nil {
+		return errPackSealed
+	}
 	if err := encodeIndexRecord(s.buf[:], e); err != nil {
 		return err
 	}
@@ -176,8 +179,23 @@ func (s *sidecar) append(e indexEntry) error {
 	return err
 }
 
-func (s *sidecar) sync() error  { return s.f.Sync() }
-func (s *sidecar) close() error { return s.f.Close() }
+func (s *sidecar) sync() error {
+	if s.f == nil {
+		return errPackSealed
+	}
+	return s.f.Sync()
+}
+
+// close is idempotent: a seal that failed after closing the sidecar is
+// retried from the top, and the retry must not fail on the step that worked.
+func (s *sidecar) close() error {
+	if s.f == nil {
+		return nil
+	}
+	err := s.f.Close()
+	s.f = nil
+	return err
+}
 
 // readSidecar returns every complete record in a sidecar, in the order they
 // were appended.

@@ -104,7 +104,16 @@ type openPack struct {
 	// recovered marks a pack this process found open rather than opened, set
 	// by loadPackSet. The writer seals such a pack rather than appending to it.
 	recovered bool
+	// sealed is set the moment seal decides what the footer holds, before a
+	// byte of it is written, and never cleared. From then on append refuses,
+	// so nothing can land past the footer, and a seal that failed partway is
+	// retried by the next writer rather than left behind: seal is idempotent.
+	sealed bool
 }
+
+// errPackSealed is what append returns once seal has begun on a pack. The
+// writer treats it as "rotate and try again", never as a failed write.
+var errPackSealed = errors.New("pack is sealed")
 
 func packPaths(objDir, libraryID, packID string) (pack string, side string) {
 	dir := packDir(objDir, libraryID)
@@ -210,8 +219,16 @@ func (p *openPack) append(frame []byte, objID string, sync bool) (indexEntry, er
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.sealed {
+		return indexEntry{}, errPackSealed
+	}
 	offset := p.size
-	if _, err := p.f.Write(frame); err != nil {
+	// WriteAt rather than Write: the frame goes exactly where the index will
+	// say it is. The file position is not that place after a short write, a
+	// recovery seek, or a footer that was written and then abandoned, and a
+	// frame landed by position would be acknowledged and indexed somewhere it
+	// is not.
+	if _, err := p.f.WriteAt(frame, offset); err != nil {
 		// The pack may now hold a partial frame. Nothing indexes it, so the
 		// next recovery truncates it away; what must not happen is indexing
 		// it, so this returns before the sidecar is touched.
@@ -287,9 +304,33 @@ func (p *openPack) lookup(objID string) (indexEntry, bool) {
 func (p *openPack) readFrameAt(e indexEntry) ([]byte, error) {
 	buf := make([]byte, e.Length)
 	if _, err := p.f.ReadAt(buf, e.Offset); err != nil {
-		return nil, fmt.Errorf("reading %s from pack %s: %v", e.ID, p.id, err)
+		// Wrapped, because a reader that found this pack open and reads it
+		// after rotate closed the file needs to recognise os.ErrClosed and ask
+		// the set again, where the same frame is now in a sealed pack.
+		return nil, fmt.Errorf("reading %s from pack %s: %w", e.ID, p.id, err)
 	}
 	return buf, nil
+}
+
+// isSealed reports whether seal has begun on this pack.
+func (p *openPack) isSealed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sealed
+}
+
+// closeFile closes the pack file. Idempotent, because rotate closes it after
+// the set has stopped handing the pack out and close may run again at
+// shutdown.
+func (p *openPack) closeFile() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.f == nil {
+		return nil
+	}
+	err := p.f.Close()
+	p.f = nil
+	return err
 }
 
 // full reports whether this pack has reached the size it should be sealed at.
@@ -335,9 +376,7 @@ func (p *openPack) discard() error {
 }
 
 func (p *openPack) close() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	err := p.f.Close()
+	err := p.closeFile()
 	if sErr := p.side.close(); err == nil {
 		err = sErr
 	}
@@ -428,6 +467,14 @@ func recoverPack(objDir, libraryID, packID string) (*openPack, error) {
 		size:    indexed,
 		entries: entries,
 		byID:    make(map[string]indexEntry, len(entries)),
+	}
+	// The oldest frame here is at least as old as this process, and the age
+	// rule bounds how long a frame sits outside a sealed pack. Now is the
+	// latest it can honestly be, and a zero would mean "never old" -- a
+	// library nobody writes to again would keep its recovered frames open for
+	// ever.
+	if len(entries) > 0 {
+		p.first = time.Now()
 	}
 	for _, e := range entries {
 		p.byID[e.ID] = e

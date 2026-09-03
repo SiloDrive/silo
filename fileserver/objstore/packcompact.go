@@ -123,7 +123,11 @@ func (s *packSet) compact(packID string, live func(objID string) bool) (Compacti
 	// the sidecar removed, so what is on disk is a complete pack that nothing
 	// loads yet.
 	if err := fresh.seal(); err != nil {
+		_ = fresh.closeFile()
 		return result, fmt.Errorf("sealing the rewrite of %s: %v", packID, err)
+	}
+	if err := fresh.closeFile(); err != nil {
+		return result, fmt.Errorf("closing the rewrite of %s: %v", packID, err)
 	}
 
 	// Publication. Until this rename the old pack is the authority and a crash

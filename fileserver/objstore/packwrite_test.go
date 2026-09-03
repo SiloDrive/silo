@@ -1,6 +1,7 @@
 package objstore
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,25 +10,12 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/dkam/silo/fileserver/option"
 )
 
-// packWriting turns the cutover on for one test and puts it back afterwards.
-// The flag is off by default because compaction does not exist yet, so nothing
-// but these tests should ever see it on.
-func packWriting(t *testing.T) {
-	t.Helper()
-	was := option.PackWrites
-	option.PackWrites = true
-	t.Cleanup(func() { option.PackWrites = was })
-}
-
-// writeStore is a store with the pack write path on, in its own data
-// directory, sealed and shut down by the test's cleanup.
+// writeStore is a store in its own data directory, sealed and shut down by the
+// test's cleanup. Packs are the write path, so there is nothing to turn on.
 func writeStore(t *testing.T) (*ObjectStore, string) {
 	t.Helper()
-	packWriting(t)
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 	s := New(confPath, dataDir, TypeChunks)
 	if err := s.ready(); err != nil {
@@ -229,7 +217,6 @@ func TestAPackSealsOnAgeWithNoFurtherWrites(t *testing.T) {
 
 // Seal at shutdown, so a clean stop leaves nothing half-open.
 func TestShutdownSealsTheOpenPack(t *testing.T) {
-	packWriting(t)
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 	s := New(confPath, dataDir, TypeChunks)
 
@@ -252,7 +239,6 @@ func TestShutdownSealsTheOpenPack(t *testing.T) {
 // it would leave a footer and a filter that every later lookup asks and every
 // listing walks, permanently, for a pack that held nothing.
 func TestShutdownDiscardsAnEmptyPack(t *testing.T) {
-	packWriting(t)
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 	s := New(confPath, dataDir, TypeChunks)
 
@@ -281,7 +267,6 @@ func TestShutdownDiscardsAnEmptyPack(t *testing.T) {
 // is the window the age rule exists to bound — so it is sealed rather than
 // kept open until it happens to fill.
 func TestAPackInheritedFromAPreviousRunIsSealedRatherThanReused(t *testing.T) {
-	packWriting(t)
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 	objDir := TypeDir(dataDir, TypeChunks)
 
@@ -329,22 +314,49 @@ func TestAPackInheritedFromAPreviousRunIsSealedRatherThanReused(t *testing.T) {
 	}
 }
 
-// With the flag off — which is every install — nothing changes at all.
-func TestWithTheFlagOffNothingIsPacked(t *testing.T) {
+// A store written before the cutover keeps reading, which is what makes the flip
+// a change to the write path alone. The lookup asks the open pack, then the
+// sealed packs, then the loose file — so an existing install carries its old
+// objects forward unpacked and writes its new ones packed, which is what
+// packs.md § 5 settled on instead of an ingest.
+func TestALooseObjectStillReadsAndNewOnesArePacked(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 	s := New(confPath, dataDir, TypeChunks)
-	body := "written the way every install writes"
-	id := idOf([]byte(body))
+	if err := s.ready(); err != nil {
+		t.Fatalf("opening a store: %v", err)
+	}
+	t.Cleanup(func() { _ = s.packs.close() })
 
-	if err := s.WriteVerified(libraryID, id, strings.NewReader(body), true); err != nil {
+	// Put one object where the pre-cutover write path put it: a frame, in a
+	// file of its own, under the two-character fan-out.
+	oldBody := "written before packs were the write path"
+	oldID := idOf([]byte(oldBody))
+	writeLooseObject(t, s, oldID, oldBody)
+	loose := filepath.Join(LibraryDir(dataDir, TypeChunks, libraryID), oldID[:2], oldID[2:])
+	if _, err := os.Stat(loose); err != nil {
+		t.Fatalf("the loose object is not where this test put it: %v", err)
+	}
+
+	newBody := "written after"
+	newID := idOf([]byte(newBody))
+	if err := s.WriteVerified(libraryID, newID, strings.NewReader(newBody), true); err != nil {
 		t.Fatal(err)
 	}
-	if sealed, open := packFiles(t, dataDir, TypeChunks); sealed != 0 || open != 0 {
-		t.Errorf("%d sealed and %d open packs with PackWrites off, want none", sealed, open)
+	if sealed, open := packFiles(t, dataDir, TypeChunks); sealed != 0 || open != 1 {
+		t.Errorf("%d sealed and %d open packs, want a single open one for the new object", sealed, open)
 	}
-	loose := filepath.Join(LibraryDir(dataDir, TypeChunks, libraryID), id[:2], id[2:])
 	if _, err := os.Stat(loose); err != nil {
-		t.Errorf("the object is not where the loose store puts it: %v", err)
+		t.Errorf("the loose object was disturbed by a packed write: %v", err)
+	}
+
+	for id, want := range map[string]string{oldID: oldBody, newID: newBody} {
+		got, err := s.ReadInto(libraryID, id, nil)
+		if err != nil {
+			t.Fatalf("reading %s: %v", id, err)
+		}
+		if string(got) != want {
+			t.Errorf("read %q, want %q", got, want)
+		}
 	}
 }
 
@@ -451,4 +463,163 @@ func onlyPackID(t *testing.T, dataDir string) string {
 		t.Fatalf("%d sealed packs, want exactly 1", len(names))
 	}
 	return strings.TrimSuffix(names[0], ".pack")
+}
+
+// A seal must never make an object unfindable, even for the length of an
+// fsync. rotate used to take the open pack out of the set before sealing it
+// and put the sealed pack in afterwards, and a lookup in between missed every
+// object in it: Read said ErrNotFound and Exists said no, for bytes that were
+// on the disk and acknowledged. The seam fires inside the seal, between the
+// two, which is the only way to land a lookup there on purpose.
+func TestNoLookupMissesDuringASeal(t *testing.T) {
+	s, _ := writeStore(t)
+
+	var ids []string
+	for i := 0; i < 3; i++ {
+		body := fmt.Sprintf("sealing around %d", i)
+		id := idOf([]byte(body))
+		ids = append(ids, id)
+		if err := s.WriteVerified(libraryID, id, strings.NewReader(body), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var misses []string
+	packSealHook = func() error {
+		for _, id := range ids {
+			if _, err := s.ReadInto(libraryID, id, nil); err != nil {
+				misses = append(misses, fmt.Sprintf("read %s: %v", id[:12], err))
+			}
+			if ok, err := s.Exists(libraryID, id); err != nil || !ok {
+				misses = append(misses, fmt.Sprintf("exists %s: ok=%v err=%v", id[:12], ok, err))
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { packSealHook = nil })
+
+	set, err := s.packs.set(libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := set.sealOpen(); err != nil {
+		t.Fatal(err)
+	}
+	if len(misses) > 0 {
+		t.Fatalf("%d lookups missed acknowledged objects during the seal; first: %s", len(misses), misses[0])
+	}
+	for _, id := range ids {
+		if _, err := s.ReadInto(libraryID, id, nil); err != nil {
+			t.Fatalf("reading %s after the seal: %v", id[:12], err)
+		}
+	}
+}
+
+// A seal that fails -- a full disk at the footer, typically -- must leave the
+// pack where it was: open, findable, and appendable or re-sealable. It used to
+// leave it in neither list, so every acknowledged frame in it read as absent,
+// the next write opened a second pack, and the next start refused the library
+// for having two.
+func TestASealFailureKeepsAcknowledgedObjectsReadable(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "storage-data")
+	objDir := TypeDir(dataDir, TypeChunks)
+	s := New(confPath, dataDir, TypeChunks)
+
+	var ids []string
+	for i := 0; i < 3; i++ {
+		body := fmt.Sprintf("before the failed seal %d", i)
+		id := idOf([]byte(body))
+		ids = append(ids, id)
+		if err := s.WriteVerified(libraryID, id, strings.NewReader(body), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	injected := errors.New("no space left on device")
+	packSealHook = func() error { return injected }
+	t.Cleanup(func() { packSealHook = nil })
+
+	set, err := s.packs.set(libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := set.sealOpen(); !errors.Is(err, injected) {
+		t.Fatalf("sealOpen returned %v, want the injected failure", err)
+	}
+	for _, id := range ids {
+		if _, err := s.ReadInto(libraryID, id, nil); err != nil {
+			t.Fatalf("reading %s after a failed seal: %v", id[:12], err)
+		}
+	}
+
+	// The disk comes back. The next write must not open a second pack beside
+	// the one that could not seal; it seals it and carries on.
+	packSealHook = nil
+	late := "after the disk came back"
+	lateID := idOf([]byte(late))
+	if err := s.WriteVerified(libraryID, lateID, strings.NewReader(late), true); err != nil {
+		t.Fatalf("writing after the failed seal: %v", err)
+	}
+	if _, open := packFiles(t, dataDir, TypeChunks); open > 1 {
+		t.Fatalf("%d open packs after a failed seal and a write, want at most 1", open)
+	}
+	if err := s.packs.close(); err != nil {
+		t.Fatal(err)
+	}
+	forgetPackStore(objDir)
+
+	again := New(confPath, dataDir, TypeChunks)
+	t.Cleanup(func() { _ = again.packs.close() })
+	for _, id := range append(ids, lateID) {
+		if _, err := again.ReadInto(libraryID, id, nil); err != nil {
+			t.Fatalf("reading %s after a restart: %v", id[:12], err)
+		}
+	}
+}
+
+// A pack found open at startup has frames that have sat outside a sealed pack
+// for at least as long as the process was down. The age sweeper must seal it
+// like any other, rather than waiting for a write that a read-only library
+// never makes.
+func TestARecoveredPackIsSealedByTheSweeper(t *testing.T) {
+	wasAge, wasSweep := packMaxAge, packSweep
+	packMaxAge = 20 * time.Millisecond
+	packSweep = 5 * time.Millisecond
+	t.Cleanup(func() { packMaxAge, packSweep = wasAge, wasSweep })
+
+	dataDir := filepath.Join(t.TempDir(), "storage-data")
+
+	first := New(confPath, dataDir, TypeChunks)
+	body := "left open by a kill"
+	id := idOf([]byte(body))
+	if err := first.WriteVerified(libraryID, id, strings.NewReader(body), true); err != nil {
+		t.Fatal(err)
+	}
+	// Stop without sealing, the way a kill does: the sealer goes and the
+	// descriptors are released, and nothing writes a footer. Then drop the
+	// registry entry so the next store rediscovers the directory from disk.
+	first.packs.discard()
+	forgetPackStore(TypeDir(dataDir, TypeChunks))
+
+	second := New(confPath, dataDir, TypeChunks)
+	t.Cleanup(func() { _ = second.packs.close() })
+	// A read, and only a read: it loads the library's packs and never writes.
+	if _, err := second.ReadInto(libraryID, id, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		sealed, open := packFiles(t, dataDir, TypeChunks)
+		if sealed == 1 && open == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d sealed and %d open after waiting well past the age; the recovered pack was never sealed", sealed, open)
+		}
+		time.Sleep(packSweep)
+	}
+	if _, err := second.ReadInto(libraryID, id, nil); err != nil {
+		t.Fatalf("reading after the sweeper sealed the recovered pack: %v", err)
+	}
 }

@@ -373,7 +373,9 @@ func TestRecoveryTruncatesToTheLastIndexedFrame(t *testing.T) {
 
 			secondID, secondFrame := framed(t, key, "the interrupted one")
 			if c.writeFrame {
-				if _, err := p.f.Write(secondFrame); err != nil {
+				// At the indexed offset, as append writes: the file position
+				// is not where frames go.
+				if _, err := p.f.WriteAt(secondFrame, p.size); err != nil {
 					t.Fatal(err)
 				}
 				if err := p.f.Sync(); err != nil {

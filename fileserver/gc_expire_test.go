@@ -85,9 +85,12 @@ func TestExpireKeepsTheWindowAndDropsWhatIsBehindIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expireHistory: %v", err)
 	}
-	if got.expired != 2 {
-		t.Errorf("expired %d commits, want the 2 outside the window", got.expired)
+	if got.chosen() != 2 {
+		t.Errorf("the cut took %d commits, want the 2 outside the window", got.chosen())
 	}
+	// Every one of them is inside a pack, so expiry could only defer; the
+	// rewrite is what carries the decision out.
+	reclaimPacked(t, libraryID, true, 14*24*time.Hour)
 	for i, id := range ids {
 		want := i >= 2
 		if commitExists(t, libraryID, id) != want {
@@ -115,8 +118,8 @@ func TestExpireNeverDropsTheHeadHoweverOldItIs(t *testing.T) {
 	if !commitExists(t, libraryID, head) {
 		t.Fatal("the head commit was expired; the library is now unreadable")
 	}
-	if got.expired != 1 {
-		t.Errorf("expired %d, want only the one commit that is not the head", got.expired)
+	if got.chosen() != 1 {
+		t.Errorf("the cut took %d, want only the one commit that is not the head", got.chosen())
 	}
 
 	// And the library still loads, which is the property that actually matters.
@@ -175,6 +178,7 @@ func TestExpireCutsAPrefixEvenWhenTimestampsAreNotMonotonic(t *testing.T) {
 	if _, err := expireHistory(libraryID, 14*24*time.Hour, true); err != nil {
 		t.Fatalf("expireHistory: %v", err)
 	}
+	reclaimPacked(t, libraryID, true, 14*24*time.Hour)
 
 	// ids[0..2] are behind the cut and must all be gone, including the two
 	// that are individually young enough to keep.
@@ -222,6 +226,10 @@ func TestExpireMakesItsBytesCollectableBySweep(t *testing.T) {
 	if _, err := expireHistory(libraryID, 14*24*time.Hour, true); err != nil {
 		t.Fatal(err)
 	}
+	// The commits are in packs, so expiry deferred every one of them and the
+	// rewrite is what moves the bytes. What this test is about is unchanged:
+	// the space leaves history and lands where a collector can have it.
+	reclaimPacked(t, libraryID, true, 14*24*time.Hour)
 
 	after, err := st.Census(head)
 	if err != nil {
@@ -230,9 +238,11 @@ func TestExpireMakesItsBytesCollectableBySweep(t *testing.T) {
 	if after.History.Bytes != 0 {
 		t.Errorf("history = %d after expiry, want 0", after.History.Bytes)
 	}
-	if after.Unreferenced.Bytes < before.History.Bytes-1000 {
-		t.Errorf("unreferenced = %d, want roughly the %d that history held",
-			after.Unreferenced.Bytes, before.History.Bytes)
+	// Reclaimed outright by the rewrite rather than left for a later sweep,
+	// which is what compaction does: it drops the frame instead of unlinking a
+	// file for somebody else to find.
+	if after.Unreferenced.Bytes != 0 {
+		t.Errorf("unreferenced = %d after the rewrite, want nothing left", after.Unreferenced.Bytes)
 	}
 	if after.Head != before.Head {
 		t.Errorf("head = %+v, want it untouched at %+v", after.Head, before.Head)
@@ -324,9 +334,10 @@ func TestExpireByPolicyUsesTheServerDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expireHistoryByPolicy: %v", err)
 	}
-	if got.expired != 1 {
-		t.Errorf("expired %d commits, want the 1 outside the 14-day default", got.expired)
+	if got.chosen() != 1 {
+		t.Errorf("the cut took %d commits, want the 1 outside the 14-day default", got.chosen())
 	}
+	reclaimPacked(t, libraryID, true, 0)
 	if commitExists(t, libraryID, ids[0]) {
 		t.Error("the 400-day-old commit survived a 14-day default")
 	}
@@ -364,12 +375,7 @@ func TestExpireByPolicyDoesNothingWhenNothingIsConfigured(t *testing.T) {
 // still on the disk they ran this to free.
 func TestExpireDoesNotReportCommitsItCouldNotRemove(t *testing.T) {
 	sqliteTestDB(t)
-	was := option.PackWrites
-	option.PackWrites = true
-	t.Cleanup(func() {
-		option.PackWrites = was
-		_ = objstore.Close()
-	})
+	t.Cleanup(func() { _ = objstore.Close() })
 
 	libraryID, ids := historyFixture(t, 40*24*time.Hour, 30*24*time.Hour, 1*24*time.Hour)
 	// Seal, so the commits are inside immutable packs rather than in an open

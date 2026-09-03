@@ -2,8 +2,6 @@ package objmgr
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/dkam/silo/fileserver/objstore"
@@ -44,15 +42,11 @@ func TestAnE2EEChunkGetsASecondWrapOnDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id := sealed.ID.String()
-	onDisk, err := os.ReadFile(filepath.Join(
-		objstore.LibraryDir(dir, objstore.TypeChunks, testStoreID), id[:2], id[2:]))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Equal(onDisk, sealed.Frame) {
-		t.Error("the client's frame is on disk unwrapped")
-	}
+	// The whole pack rather than a file of the object's own, since the cutover:
+	// which is the stronger reading anyway, because a leak into a pack's header
+	// or index would not show up in the frame.
+	seal(t)
+	onDisk := packBytes(t, dir, objstore.TypeChunks, testStoreID)
 	if bytes.Contains(onDisk, sealed.Frame) {
 		t.Error("the client's frame appears verbatim inside what is on disk")
 	}

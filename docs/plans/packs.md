@@ -1,12 +1,13 @@
 # Packs
 
-Status: **all five steps built, and the cutover is behind a flag that is off.**
-The index, the sidecar, recovery, sealing, reading a sealed pack, the lookup,
-the writer, the three sealing rules and `gc` through the seam are all in.
-`option.PackWrites` is `false`, so every install still writes loose objects; see
-§ The cutover for why, which is compaction (silo#19, planned in
-[`compaction.md`](compaction.md)) rather than anything in this plan. Tracked as
-silo#17, closed, with the cutover as silo#50.
+Status: **all five steps built, and the cutover is done.** The index, the
+sidecar, recovery, sealing, reading a sealed pack, the lookup, the writer, the
+three sealing rules and `gc` through the seam are all in, and packs are the
+write path with no flag in front of them: `option.PackWrites` and
+`SILO_PACK_WRITES` are gone. The condition the cutover was waiting on was
+compaction, which is built — silo#19, [`compaction.md`](compaction.md) — so
+`silo gc -compact -delete` is what gives the space back. Tracked as silo#17,
+closed, with the cutover as silo#50, closed.
 
 Owned by [`../storage.md`](../storage.md) § Packs, which is normative for the
 format and the sealing rules. This document owns the *build*: what order, what
@@ -271,9 +272,9 @@ Three things this step settled that the plan had not:
 
 ### 4. Seal on age and at shutdown, and packs become the write path
 
-**Built, behind `option.PackWrites`, which is off.** The writer, the three
-sealing rules and the process-wide registry are in and tested; what the flag
-gates is only which container a write lands in.
+**Built, and on.** The writer, the three sealing rules and the process-wide
+registry are in and tested, and there is no longer a flag in front of them: a
+write goes into a pack.
 
 Three rules close a pack: **target size**; **age**, so the single-copy window
 is a number rather than "until enough data arrives" — an open pack cannot be
@@ -308,20 +309,33 @@ moving would otherwise break:
 
 ### The cutover
 
-`PackWrites` defaults to **off**, and this is the one decision in this plan
-made against the plan's own ordering.
+**Done, silo#50.** `PackWrites` defaulted to off for one reason and it is now
+answered: a sealed pack is immutable, so an unreferenced object inside one
+cannot be deleted, and until compaction existed `silo gc -delete` would find
+orphans, report them honestly as left in place, and free nothing — a store that
+churns growing without bound. Compaction is built (silo#19), so the flag flipped
+and then stopped existing, which is what the plan said would happen to it: it
+was never a tuning knob and no deployment should ever have set it.
 
-A sealed pack is immutable, so an unreferenced object inside one cannot be
-deleted; the bytes come back only when compaction rewrites the pack without
-them, and compaction is silo#19 and is not built. Turning packs on as the write
-path therefore means `silo gc -delete` finds orphans, reports them honestly as
-left in place, and frees nothing — a store that churns grows without bound.
-Neither step 4 nor step 5 restores that; only silo#19 does.
+**The check was that space comes back, not that the code runs.** The test is
+`TestSpaceComesBackOnADefaultStore`: write a tree, overwrite it twice, expire
+history, sweep, compact, and what the store holds afterwards is within a footer
+of what the head's census says it needs — on a store nobody told to pack.
+Written before the flip, it failed at its first assertion, because the write
+path produced no packs and there was nothing to compact.
 
-So the write path lands, is exercised and can be reviewed against a server that
-still reclaims space, and the default flips when compaction makes it safe. The
-flag is not a tuning knob and no deployment should set it; it is deleted rather
-than documented.
+**An existing install carries its old objects forward unpacked.** There is no
+ingest: the lookup asks the open pack, then the sealed packs, then the loose
+file, so a store written before the cutover keeps reading and writes its new
+objects packed. That is § 5's decision, unchanged, and the loose lane is a
+permanent read path rather than a transitional one.
+
+**The three reclaimers changed their reports, not their decisions.** Inside a
+pack neither expiry nor the orphan sweep can delete anything, so both now
+defer — and `-compact` is what carries the decision out. Expiry's cut is
+handed to the rewrite as a set of commits to treat as absent, because a commit
+it could not delete is still on the disk and still reachable, and a mark that
+believed the disk would keep every expired history alive for ever.
 
 ### 5. `gc` stops walking the layout
 

@@ -115,8 +115,9 @@ the loose store, and that only holds if packs are still off when it arrives —
 the answer is to turn them on first, not to write a migration for a population
 of zero. See [`plans/packs.md`](plans/packs.md) § 5.
 
-Tracked: milestone `packs`, #17 — **built and closed.** What is left is the
-cutover, #50, which is one flag and is blocked by compaction below.
+Tracked: milestone `packs`, #17 — **built and closed**, and so is the cutover,
+#50: packs are the write path, with no flag in front of them. Compaction below
+is what unblocked it.
 
 #### 3. The tracing mark, and compaction
 
@@ -134,8 +135,14 @@ defers the parts that are really about tiers — the egress budget, remote
 ordering, eviction, and undersize merging — on the grounds that there is no
 backend to test them against yet.
 
-Tracked: milestone `compaction`, #19 — unblocked; #17 is closed. It in turn
-blocks #50, the cutover.
+**Built**: `PackStats` attributed to packs, the rewrite and its crash rules, and
+`silo gc -compact` with a dead-fraction threshold, a copy budget and the orphan
+sweep's two guards. It is an offline command, because the server holds its pack
+set in memory and opens a sealed pack by path; an in-process scheduler is
+Independent work below, and it wants a kill switch before it wants code.
+
+Tracked: milestone `compaction`, #19 — **built and closed**, and with it #50,
+the cutover.
 
 #### 4. Durable tiers
 

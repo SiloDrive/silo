@@ -332,7 +332,11 @@ func updateBranch(libraryID, storeID string, move headMove, oldCommitID, lastGCI
 		_ = trans.Rollback()
 		return err
 	}
-	if lastGCID != gcID.String {
+	// Two refusals. A marked generation means a collection is running now, and
+	// no head move at all is safe while its mark walks a head this one is not
+	// part of. A changed one means a collection began or ended since the write
+	// read it, and what the write believes about the store is stale.
+	if isCollecting(gcID.String) || lastGCID != gcID.String {
 		_ = trans.Rollback()
 		return fmt.Errorf("head branch update for library %s conflicts with GC: %w", libraryID, ErrGCConflict)
 	}

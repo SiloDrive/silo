@@ -64,13 +64,26 @@ func orphanFixture(t *testing.T) (libraryID string, orphanID string) {
 	return libraryID, orphan.Chunks[0].ID.String()
 }
 
-// age backdates an object's mtime so the age guard will consider it.
-func age(t *testing.T, objType, libraryID, objID string, d time.Duration) {
+// age backdates a library's packs so the sweep's guard will consider what is in
+// them.
+//
+// Since the cutover an object has no file of its own and no time of its own:
+// its age is the age of the pack holding it, which is a lower bound on every
+// frame in that pack. So the unit here is the library and not the object --
+// every pack in it is at most as old as any object a caller could name.
+func age(t *testing.T, libraryID string, d time.Duration) {
 	t.Helper()
-	p := filepath.Join(objstore.LibraryDir(absDataDir, objType, libraryID), objID[:2], objID[2:])
 	when := time.Now().Add(-d)
-	if err := os.Chtimes(p, when, when); err != nil {
-		t.Fatalf("backdating %s: %v", p, err)
+	for _, objType := range objstore.Types {
+		dir := filepath.Join(objstore.LibraryDir(absDataDir, objType, libraryID), "packs")
+		for _, e := range packFiles(t, objType, libraryID) {
+			if filepath.Ext(e.Name()) != ".pack" {
+				continue
+			}
+			if err := os.Chtimes(filepath.Join(dir, e.Name()), when, when); err != nil {
+				t.Fatalf("backdating %s: %v", e.Name(), err)
+			}
+		}
 	}
 }
 
@@ -109,7 +122,7 @@ func TestSweepLeavesAFreshOrphanAlone(t *testing.T) {
 func TestSweepReportsWithoutDeletingUnlessAsked(t *testing.T) {
 	sqliteTestDB(t)
 	libraryID, orphanID := orphanFixture(t)
-	age(t, objstore.TypeChunks, libraryID, orphanID, 48*time.Hour)
+	age(t, libraryID, 48*time.Hour)
 
 	sweep, err := sweepOrphans(libraryID, 24*time.Hour, false)
 	if err != nil {
@@ -127,9 +140,12 @@ func TestSweepReportsWithoutDeletingUnlessAsked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sweepOrphans -delete: %v", err)
 	}
-	if sweep.removed == 0 {
+	if sweep.chosen() == 0 {
 		t.Error("removed nothing with -delete, want the orphan")
 	}
+	// Inside a pack, so the sweep could only defer; the rewrite is what takes
+	// the bytes away.
+	reclaimPacked(t, libraryID, false, 0)
 	assertObjectExists(t, objstore.TypeChunks, libraryID, orphanID, false)
 }
 
@@ -174,6 +190,7 @@ func TestSweepNeverRemovesWhatTheHeadReaches(t *testing.T) {
 	if _, err := sweepOrphans(libraryID, time.Hour, true); err != nil {
 		t.Fatalf("sweepOrphans: %v", err)
 	}
+	reclaimPacked(t, libraryID, false, 0)
 
 	after, err := st.Census(head)
 	if err != nil {
@@ -235,11 +252,36 @@ func TestSweepBumpsTheGCGenerationBeforeMarking(t *testing.T) {
 	}
 }
 
+// objectOnDisk asks the store rather than looking for a file, because since the
+// cutover an object is inside a pack and there is no file of its own to look
+// for. What every caller means is "does the store still hold this", which is
+// the question Exists answers either way.
 func objectOnDisk(t *testing.T, objType, libraryID, objID string) bool {
 	t.Helper()
-	p := filepath.Join(objstore.LibraryDir(absDataDir, objType, libraryID), objID[:2], objID[2:])
-	_, err := os.Stat(p)
-	return err == nil
+	exists, err := objstore.New("", absDataDir, objType).Exists(libraryID, objID)
+	if err != nil {
+		t.Fatalf("asking the %s store about %s: %v", objType, objID, err)
+	}
+	return exists
+}
+
+// reclaimPacked carries out what expiry and the sweep could only defer: it
+// seals the library's packs and rewrites them without the frames nothing
+// reaches. `silo gc -delete` does exactly this when it is also given -compact,
+// and since the cutover it is the only thing that frees a byte.
+//
+// expire says whether to apply a retention cut at all -- `-compact` alone never
+// expires history -- and window overrides the library's own policy, as
+// -expire-window does.
+func reclaimPacked(t *testing.T, libraryID string, expire bool, window time.Duration) {
+	t.Helper()
+	if err := objstore.Close(); err != nil {
+		t.Fatalf("sealing: %v", err)
+	}
+	opt := compactOpts{threshold: 0, minAge: 0, del: true, expire: expire, expireWindow: window}
+	if _, err := compactLibrary(libraryID, opt); err != nil {
+		t.Fatalf("compacting %s: %v", libraryID, err)
+	}
 }
 
 func assertObjectExists(t *testing.T, objType, libraryID, objID string, want bool) {

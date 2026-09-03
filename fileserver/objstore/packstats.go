@@ -18,7 +18,10 @@
 // every id it holds and how long each frame is, so this is an index walk.
 package objstore
 
-import "os"
+import (
+	"os"
+	"time"
+)
 
 // Reach is how far a caller's mark got to an object: not at all, through some
 // commit in history, or from the head itself.
@@ -49,13 +52,30 @@ const (
 // number and reconcile it against the disk.
 type PackStat struct {
 	// PackID is opaque above this package. See the file comment.
-	PackID  string
+	PackID string
+	// ObjType is the store the pack belongs to, as New was given it. A stat's
+	// whole purpose is to be handed back for a rewrite, and a chunk's pack id
+	// offered to the object store names no pack it holds — so the stat carries
+	// the store it came from rather than leaving a caller measuring both to
+	// remember which was which.
+	ObjType string
 	Objects int64
 
 	FrameBytes int64
 	LiveBytes  int64
 	HeadBytes  int64
 	FileBytes  int64
+
+	// SealedAt is when the pack's footer was written, taken from the file's
+	// mtime — the footer is the last thing written to a pack, and the rename
+	// that publishes a rewrite preserves it.
+	//
+	// It is the compaction age guard's input, and it is a pack-level time
+	// because an index record carries none. Every frame in a sealed pack was
+	// appended before the footer, so this is a lower bound on every frame's
+	// age: a guard built on it errs towards leaving a pack alone, which is the
+	// direction it has to err in.
+	SealedAt time.Time
 }
 
 // DeadBytes is what a rewrite of this pack would drop.
@@ -97,7 +117,7 @@ func (s *ObjectStore) PackStats(libraryID string, reach func(objID string) Reach
 	_, sealed := set.packs()
 	out := make([]PackStat, 0, len(sealed))
 	for _, p := range sealed {
-		stat := PackStat{PackID: p.id}
+		stat := PackStat{PackID: p.id, ObjType: s.ObjType}
 		for _, e := range p.entries() {
 			stat.Objects++
 			stat.FrameBytes += e.Length
@@ -119,6 +139,7 @@ func (s *ObjectStore) PackStats(libraryID string, reach func(objID string) Reach
 			return nil, err
 		}
 		stat.FileBytes = info.Size()
+		stat.SealedAt = info.ModTime()
 		out = append(out, stat)
 	}
 	return out, nil

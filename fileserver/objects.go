@@ -289,7 +289,13 @@ func readObjectBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 			http.Error(w, "Object is too large", http.StatusRequestEntityTooLarge)
 			return nil, false
 		}
-		// A client that hung up mid-body has not asked for an answer.
+		// A body that ended early. It looks the same whether the client hung
+		// up or something between here and there cut it short, and only in
+		// the first case is nobody listening: a half-close, a proxy, or an
+		// HTTP/2 stream ending early all leave a client waiting for an
+		// answer, and the one net/http gives a handler that wrote nothing is
+		// 200 -- for an object that was never stored.
+		http.Error(w, "Body ended before its declared length", http.StatusBadRequest)
 		return nil, false
 	}
 	if len(data) == 0 {
@@ -389,6 +395,18 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The generation is read before anything below looks at the store, so
+	// every "is it there" answer this handler acts on is at least as new as
+	// the stamp updateBranch will compare. Read afterwards, a collection could
+	// begin and end between an existence check and the head move, and the
+	// stamp would still match while the answer had changed.
+	gcID, err := libmgr.GetCurrentGCID(library.StoreID)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to read gc id for library %s", library.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	// Read the commit rather than merely checking it exists. It has to decode,
 	// it has to name a root that is here, and it has to descend from the head
 	// it claims to replace — a commit whose parent is not the current head is
@@ -417,13 +435,6 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gcID, err := libmgr.GetCurrentGCID(library.StoreID)
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to read gc id for library %s", library.ID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
 	// This is the load-bearing quota check, not the per-chunk estimate every
 	// upload already passed: those admit content that names nothing yet, and a
 	// head move is what makes it reachable. The lock is held through the
@@ -441,6 +452,20 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 	oldRoot, err := store.ParseID(library.RootID)
 	if err != nil {
 		log.WithContext(r.Context()).WithError(err).Errorf("failed to parse current root of library %s", library.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	// Everything the commit reaches that the current head does not has to be
+	// here before the head moves. Each upload was verified on its own; this
+	// is the only check that the set is complete, and after the head moves
+	// the one who finds a hole is a reader on another device.
+	if err := st.VerifyDelta(oldRoot, commit.Root); err != nil {
+		var missing *objmgr.MissingObject
+		if errors.As(err, &missing) {
+			http.Error(w, "That commit reaches a "+missing.Kind+" that is not in this library; upload it first: "+missing.ID.String(), http.StatusBadRequest)
+			return
+		}
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to verify the tree of library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

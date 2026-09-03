@@ -1,6 +1,7 @@
 package objstore
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -106,18 +107,29 @@ func testExists(t *testing.T) {
 		t.Errorf("File is not exist\n")
 	}
 
-	// The object is 130 bytes; the file holding it is a sealed frame around
-	// them. Both halves are asserted, because the pair is the invariant: the
-	// store answers about the object, and the disk holds the frame.
+	// The object is 130 bytes; what holds it is a sealed frame around them.
+	// Both halves are asserted, because the pair is the invariant: the store
+	// answers about the object, and the disk holds the frame.
 	const objectSize = 130
 	if size, err := bend.Stat(libraryID, objID); err != nil || size != objectSize {
 		t.Errorf("Stat = (%d, %v), want (%d, nil)", size, err, objectSize)
 	}
 
-	filePath := path.Join(dataDir, "storage", "commit", libraryID, objID[:2], objID[2:])
-	fileInfo, _ := os.Stat(filePath)
-	if fileInfo.Size() != int64(objectSize+frameOverhead) {
-		t.Errorf("File is exist, but the size of file is incorrect.\n")
+	// Since the cutover the frame is inside a pack rather than in a file of its
+	// own, so the disk is read through the pack. The loose path is asserted
+	// absent: a store that wrote both would be storing everything twice.
+	loose := path.Join(dataDir, "storage", "commit", libraryID, objID[:2], objID[2:])
+	if _, err := os.Stat(loose); !os.IsNotExist(err) {
+		t.Errorf("the object is also in a file of its own at %s", loose)
+	}
+	packs, open := packFiles(t, dataDir, "commit")
+	if packs+open == 0 {
+		t.Fatal("the object is neither loose nor in a pack")
+	}
+	if _, e, ok, err := bend.packs.find(libraryID, objID); err != nil || !ok {
+		t.Fatalf("the pack lookup does not hold the object: ok=%v err=%v", ok, err)
+	} else if e.Length != int64(objectSize+frameOverhead) {
+		t.Errorf("the frame in the pack is %d bytes, want %d", e.Length, objectSize+frameOverhead)
 	}
 }
 
@@ -173,9 +185,10 @@ func TestObjStoreSyncWriteIntoNewLibraryDir(t *testing.T) {
 
 	for _, objType := range []string{"chunks", "commit", "fs"} {
 		bend := New(confPath, dataDir, objType)
-		if err := bend.Write(libraryID, objID, strings.NewReader("payload"), true); err != nil {
-			t.Fatalf("Write(%s) into a new library dir returned %v", objType, err)
-		}
+		// Loose, because what this asserts is the loose lane's publish-by-rename:
+		// a pack is appended to rather than renamed into place, and has no temp
+		// file to leave behind.
+		writeLooseObject(t, bend, objID, "payload")
 
 		exists, err := bend.Exists(libraryID, objID)
 		if err != nil || !exists {
@@ -249,6 +262,27 @@ func writeTestObject(t *testing.T, s *ObjectStore, id, content string) {
 	t.Helper()
 	if err := s.Write(libraryID, id, strings.NewReader(content), false); err != nil {
 		t.Fatalf("Write(%s): %v", id, err)
+	}
+}
+
+// writeLooseObject stores an object the way the write path did before packs
+// became it: one frame, in a file of its own, under the two-character fan-out.
+//
+// The loose lane is read-only now and will be for the life of every store
+// written before the cutover, so the tests about it have to be able to produce
+// one. It goes through the backend rather than through Write, which is the
+// whole point: Write packs.
+func writeLooseObject(t *testing.T, s *ObjectStore, id, content string) {
+	t.Helper()
+	if err := s.ready(); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := sealFrame(s.key, id, []byte(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.backend.write(libraryID, id, bytes.NewReader(frame), true); err != nil {
+		t.Fatalf("writing %s loose: %v", id, err)
 	}
 }
 
@@ -385,7 +419,7 @@ func TestListOfAnEmptyLibraryIsEmptyNotAnError(t *testing.T) {
 // would have the caller asking a pack index about an id it never held.
 func TestListSkipsTheDebrisOfAnInterruptedWrite(t *testing.T) {
 	s := New(confPath, dataDir, "list-debris")
-	writeTestObject(t, s, objID, "good")
+	writeLooseObject(t, s, objID, "good")
 
 	fanout := filepath.Join(TypeDir(dataDir, "list-debris"), libraryID, objID[:2])
 	if err := os.WriteFile(filepath.Join(fanout, objID[2:]+".123456"), []byte("partial"), 0o644); err != nil {
@@ -425,9 +459,13 @@ func TestListStopsOnTheCallbacksError(t *testing.T) {
 
 // Deletion is idempotent because compaction has to be interruptible at every
 // step: a retry that finds the pack already gone must carry on, not stop.
+//
+// Loose, because a packed object is not deletable in place at all -- Remove
+// says so with ErrReclaimDeferred, and that is a different property with a test
+// of its own.
 func TestRemoveIsIdempotent(t *testing.T) {
 	s := New(confPath, dataDir, "remove")
-	writeTestObject(t, s, objID, "doomed")
+	writeLooseObject(t, s, objID, "doomed")
 
 	for i := range 2 {
 		if err := s.Remove(libraryID, objID); err != nil {

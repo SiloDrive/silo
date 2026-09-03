@@ -1,9 +1,19 @@
 # Compaction
 
-Status: **steps 1 and 2 built.** The mark attributed to packs, `silo df -packs`,
-the rewrite, and the crash rules. Step 3 (threshold, budget, `gc` wiring) and
-step 4 (the cutover, silo#50) are ahead. Tracked as silo#19, milestone
-`compaction`.
+Status: **all four steps built.** The mark attributed to packs, `silo df
+-packs`, the rewrite and its crash rules; `silo gc -compact` with a threshold, a
+copy budget and the orphan sweep's two guards; and the cutover, so packs are the
+write path with no flag in front of them. Tracked as silo#19 with silo#50,
+milestone `compaction`, both closed.
+
+**One thing this plan did not foresee.** Step 3's guards are the sweep's, and
+that is right, but a packed store cannot expire history at all: a commit inside
+a sealed pack is refused by `Remove`, so the expiry pass leaves it there — and
+because it is still on the disk, the mark still reaches it. Every rewrite would
+have copied it forward for ever, and step 4's acceptance test would have failed
+with no obvious cause. So the cut is handed to `PlanCompaction` as a set of
+commits to treat as absent: retention as a decision the disk has not carried
+out. See 3b.
 
 Owned by [`../storage.md`](../storage.md) § The tracing mark, and compaction,
 which is normative for the mark's rules and the scheduler's economics. This
@@ -225,16 +235,212 @@ missing.
 
 ### 3. Threshold, budget, and wiring into `gc`
 
-Compact a pack when its dead fraction crosses 0.5, rate-limited by an I/O budget
-per interval. `silo gc -compact` to run it by hand, dry-run by default like every
-other reclaimer here.
+**Built.** `silo gc -compact`: for every live library, mark once, measure every sealed
+pack against the mark, rewrite the ones past the threshold in the order that
+reclaims most per byte copied, and stop when the budget is spent. Dry-run by
+default like every other reclaimer here.
+
+**What it stands on is all built.** `PackCensus` is the mark attributed to
+packs; `CompactPack` is the rewrite and takes a fresh liveness answer;
+`PruneRedundantPacks` is the crash cleanup. Step 3 is the loop that connects
+them, and the guards around it. Nothing below opens a frame.
+
+**The two guards are the orphan sweep's, and for the same reasons.** A rewrite
+drops every frame the mark did not reach, and a frame nothing reaches is
+indistinguishable from one a client is about to commit. So, in the sweep's
+order: bump the GC generation *before* the mark, so a head move that read the
+old generation is refused (`ErrGCConflict`, a `503` with a retry) and the
+client re-uploads rather than publishing a commit whose chunks were rewritten
+out from under it; and skip any pack sealed more recently than `-min-age`. The
+age guard is on the pack rather than on the frame because a pack's index carries
+no times — but every frame in a sealed pack was appended before the footer was
+written, so the pack's seal time is a lower bound on every frame's age, which is
+the direction the guard needs. The seal time is the file's mtime: the footer is
+the last write, and the rename that publishes a rewrite preserves it.
+
+**The liveness answer is history, never head.** `CompactPack` gets `all.has`,
+the same set the orphan sweep deletes against. A rewrite that kept only what the
+head reaches would expire history without a retention policy having said so.
+
+**`expired` is the parameter this plan was missing.** A commit inside a sealed
+pack cannot be deleted where it is, so on a packed store the expiry pass defers
+every one of them — and they stay on the disk, and the mark keeps reaching them.
+Without naming the cut here, every rewrite copies the expired history forward
+and no run ever frees it, which is the whole outcome step 3 is for. So the cut
+is a set of commits `reachable` treats as absent: retention as a decision the
+disk has not yet carried out. It is computed by the caller from the library's
+policy (`retentionCut`), so objmgr is told the answer rather than deciding it,
+and `-compact` on its own passes nothing — expiring history is irreversible, and
+an operator who typed one flag should not get the other one's consequences.
+
+#### 3a. `PackStat` says which store it came from
+
+`PackCensus` measures both stores and returns one slice, and a `PackStat` does
+not say whether its pack is in the chunk store or the object store — which was
+fine for a report and is not fine for a caller who has to hand the id back to
+the right `ObjectStore`. Add `ObjType` to `PackStat`, set by `PackStats` from
+the `ObjectStore`'s own type.
+
+*Built as `ObjType` rather than the `IsChunk` this plan first called for.* A
+boolean invented one layer up would have been a field the owning package could
+not fill in — every other caller of `PackStats` would get a stat that says
+`false` and means nothing — while `objstore` already holds the answer, as
+`ObjectStore.ObjType`. `objmgr.storeFor` is the one place that turns it back
+into a choice between the two stores.
+
+Test first: a library with a packed chunk and a packed object reports two stats
+that disagree on the store they came from. It fails to compile until the field
+exists, which is the failing run.
+
+#### 3b. `objmgr.Store.Compact`: one library, one mark, many rewrites
+
+```go
+type CompactionPlan struct {
+    Candidates []objstore.PackStat // past the threshold, old enough, in run order
+    TooYoung   int                 // past the threshold, sealed too recently
+    Held       []objstore.PackStat // past the threshold, over budget this run
+    marks      *marks               // the walk it was drawn from
+}
+
+func (s *Store) PlanCompaction(head store.ID, expired []store.ID, threshold float64, sealedBefore time.Time, budget int64) (CompactionPlan, error)
+func (s *Store) CompactPack(p objstore.PackStat, plan CompactionPlan) (objstore.Compaction, error)
+```
+
+Two calls rather than one so the CLI can print the plan without acting on it,
+and so the marks from the plan are the marks the rewrite re-verifies against —
+one walk per library, which is Decision 1. The plan carries those marks rather
+than returning them alongside, so the rule is structural: there is no second
+walk a caller could hand to `CompactPack` by mistake. `CompactPack` routes on
+`p.ObjType` and passes `plan.marks.has(id, …)` as `live`; that closure is the
+whole re-verification, and it is the same set the plan was drawn from.
+
+**One walk, not the census's two.** `PackCensus` takes a second walk to split
+head out of history because `df` prints that column; nothing in the plan reads
+it, so `PlanCompaction` walks history alone and leaves `HeadBytes` unfilled.
+
+**Order: wholly dead packs first, then by dead fraction descending.** A pack
+with no live frames is deleted rather than rewritten, costs no I/O, and does not
+count against the budget — and a library whose history has just been expired is
+mostly this case. Among the rest, dead fraction is reclaimed-per-byte-copied,
+which is what a budget measured in bytes copied should be spent by.
+`storage.md`'s locality ordering is about remote packs, which Decision 6 defers.
+
+**The budget is live bytes copied per run**, because that is what a rewrite
+reads and writes and the dead frames are seeked past. `0` means no budget. A
+pack that would exceed what is left is held rather than started, and held packs
+are reported so an operator sees a run that stopped short as "stopped short"
+rather than as "done".
+
+`PruneRedundantPacks` runs once per store at the start of the library's pass.
+It clears the debris of an interrupted rewrite and applies Decision 3, and it
+runs *before* the mark so a redundant pack is not measured, scheduled and
+rewritten into a third copy.
+
+Tests, each written before the code it exercises and each on a store with
+`objstore.Close()` called to seal, the way
+`TestExpireDoesNotReportCommitsItCouldNotRemove` does:
+
+- A pack at 0.4 dead is not a candidate at threshold 0.5; at 0.6 it is.
+- A wholly dead pack precedes a half-dead one and costs the budget nothing.
+- Two candidates and a budget that fits one: one is a candidate, one is held.
+- A pack sealed after `sealedBefore` is counted in `TooYoung`, not compacted,
+  and its frames are all still readable.
+- The plan's marks and the rewrite's liveness agree: expire history, plan,
+  compact, and the census after shows `History` down by what the plan said and
+  `Head` unchanged. This is the test that would catch a head-only walk.
+
+#### 3c. `silo gc -compact`
+
+Flags: `-compact`, `-compact-threshold` (default `0.5`), `-compact-budget`
+(size, default `0` — no cap, because a cron with no budget set should catch up
+rather than fall behind; an operator who wants throttling sets one),
+`-min-age` shared with `-orphans` since it guards the same race. `-delete` is
+what turns the plan into rewrites.
+
+Order inside one invocation: expiry, then the orphan sweep, then compaction,
+then dead libraries. Expiry and the sweep leave `ErrReclaimDeferred` frames in
+packs; compaction in the same run is what reclaims them, so a run that asked for
+all three frees what retention allows in one pass. The "left in place" line
+those two print should now end with "run with -compact".
+
+Output per library in a dry run, one line per candidate: pack, dead fraction,
+bytes a rewrite would drop, and whether it is held or too young. With `-delete`:
+what each rewrite kept, dropped and reclaimed, and a total that is file bytes
+freed — the number `df` will change by — not frame bytes.
+
+**Stop the server first, and this time it is a rule and not a warning.** A
+sealed pack is opened by path on every read, and the server holds its pack set
+in memory: a rewrite from a second process renames a new pack into place the
+server does not know about and deletes the one it does, and the next read of a
+frame that moved is a `404` to a client that stored it. The lock design in
+step 2 — compaction takes its own lock, off the write path — is for compaction
+*in the server's process*, which is the scheduler the roadmap lists as unwritten
+and which wants a kill switch before it wants code. Until it exists, `-compact
+-delete` is an offline operation, said so in the usage text and refused if it
+can be detected. It cannot be, today — nothing locks the data directory — so
+the warning that `gc -delete` already prints carries it.
+
+Tests: `-compact` without `-delete` reports and leaves every pack file where it
+was; with `-delete`, `LibraryUsage` afterwards is smaller by what was reported.
+Extend `TestSweepAndExpiryAreIdempotent` to a third mechanism: two consecutive
+`-compact -delete` runs, the second does nothing.
+
+#### 3d. The catalog row, and why it waits
+
+`storage.md` puts the mark's output in a `PackStats` catalog row with a `gc_id`.
+Step 1 deferred it because nothing read it, and step 3 as planned here still has
+no reader: the plan is drawn and acted on in one process, seconds apart, with
+the marks in memory. A row is for a *later* process to schedule from, and the
+later process is the in-process scheduler. It lands with that scheduler, where
+`gc_id` on the row is what makes its staleness detectable. `storage.md` gets a
+sentence saying the row arrives with the scheduler rather than with the CLI.
+
+#### Docs step 3 changes
+
+`storage.md` § Reclaiming: the `silo gc` usage line and a paragraph for
+`-compact`. `quota.md`'s table of reclaimers gains a row. `df -packs`'s footer
+stops saying nothing reclaims dead bytes and names the flag. `cmd/silo` usage.
 
 ### 4. Flip the cutover
 
-silo#50: `PackWrites` defaults true, `SILO_PACK_WRITES` and the flag are
-deleted. The check is not that the code runs — it is that `silo gc -delete` on a
-pack-backed store frees space, verified against a real server the way the pack
-work was.
+**Built, silo#50.** `PackWrites` became true by default and then stopped
+existing:
+`SILO_PACK_WRITES`, the `option.go` warning and the field go, and the tests
+that set the option to reach the pack path set nothing. A loose store keeps
+reading — the three-place lookup asks the open pack, the sealed packs, then the
+loose file — so an existing install carries its old objects forward unpacked and
+writes new ones packed, which is what `packs.md` § 5 settled on instead of an
+ingest.
+
+**The check is that space comes back**, not that the code runs. The test is the
+one `storage.md` has been promising since packs landed: write a tree, overwrite
+it, expire history, run `gc -orphans -expire-history -compact -delete`, and the
+store's `LibraryUsage` afterwards is within a footer of the head's census — on
+a store built by a server that was never told to pack. Written before the flag
+flips, it fails because `gc` finds one file per object and no pack to compact;
+that failing run is what the flip is answering.
+
+Then the same against a real server, the way the pack work was verified: a
+library written through the HTTP surface, `silo df -packs` showing dead bytes,
+the server stopped, `silo gc -compact -delete`, `df` showing them gone, the
+server started, and every file readable through a client.
+
+**Docs step 4 changes.** `packs.md`'s status line and § The cutover; the
+roadmap's storage chain items 2 and 3; `storage.md` § Where the bytes are, if it
+still describes loose objects as the write path; this document's status line.
+Close silo#19 and silo#50 together — the second is one flag, and it is the
+first's acceptance test.
+
+### Out of step 3 and 4, and where each waits
+
+- **The in-process scheduler.** Roadmap § Independent work names it and the
+  kill switch it wants first. It is also where the lock design in step 2 starts
+  to matter, and where the catalog row (3d) arrives.
+- **Everything in Decision 6**: egress budget, remote ordering, eviction,
+  undersize merging. Tiers first.
+- **Per-frame age.** The pack-level guard is coarser than the sweep's
+  per-object one, in the safe direction. A finer guard needs a time in the
+  index record, which is a format change for no case anyone has hit.
 
 ## What this plan does not do
 

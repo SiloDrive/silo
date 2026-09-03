@@ -243,7 +243,7 @@ func reportPacks(ids []string, quiet bool) error {
 		// Said out loud because the number is otherwise misleading: these
 		// bytes are reclaimable in principle and nothing reclaims them yet.
 		fmt.Printf("\ndead bytes are frames no commit reaches, still inside sealed packs.\n" +
-			"Compaction is what rewrites a pack without them -- see docs/plans/compaction.md.\n")
+			"Stop the server and run `silo gc -compact -delete` to rewrite those packs without them.\n")
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d libraries could not be measured", failed, len(ids))

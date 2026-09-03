@@ -37,6 +37,17 @@ type historyExpiry struct {
 	freed int64
 }
 
+// chosen is how many commits the cut takes, whether or not the store was able
+// to remove them here.
+//
+// Since packs became the write path that is almost always deferred rather than
+// expired: a commit inside a sealed pack cannot be deleted where it is, and
+// compaction is what carries the decision out. The two counts stay separate --
+// telling an operator their history was truncated when the bytes are still on
+// the disk is exactly the lie this struct exists to avoid -- but the decision
+// itself is the sum, and that is what a test of the cut asserts against.
+func (e historyExpiry) chosen() int { return e.expired + e.deferred }
+
 // expireHistory drops the commit objects older than a retention window.
 //
 // This is the first operation in Silo that deletes something a commit reaches,
@@ -71,9 +82,25 @@ type historyExpiry struct {
 func expireHistory(libraryID string, keep time.Duration, del bool) (historyExpiry, error) {
 	out := historyExpiry{libraryID: libraryID}
 
-	library, st, head, err := openLibraryAtHead(libraryID)
+	// A dry run deletes nothing and marks nothing. A real one is a collection
+	// from before its head is read until its last removal: see beginCollection.
+	if del {
+		library, err := libmgr.GetWithReason(libraryID)
+		if err != nil {
+			return out, err
+		}
+		if err := beginCollection(library.StoreID); err != nil {
+			return out, err
+		}
+		defer endCollection(library.StoreID)
+	}
+
+	_, st, head, err := openLibraryAtHead(libraryID)
 	if err != nil {
 		return out, err
+	}
+	if gcAfterHeadRead != nil {
+		gcAfterHeadRead(libraryID)
 	}
 
 	// Measured before, because after the commits are gone there is nothing
@@ -100,12 +127,6 @@ func expireHistory(libraryID string, keep time.Duration, del bool) (historyExpir
 		return out, nil
 	}
 
-	// Bump before deleting, for the same reason the sweep does: a write that
-	// read the old generation must lose its head move rather than land on a
-	// history that changed under it.
-	if err := bumpGCID(library.StoreID); err != nil {
-		return out, err
-	}
 	for _, id := range doomed {
 		if err := st.RemoveOrphan(objmgr.Orphan{ID: id.String()}); err != nil {
 			if errors.Is(err, objstore.ErrReclaimDeferred) {
@@ -180,6 +201,49 @@ func commitsBehindTheWindow(st *objmgr.Store, head storefmt.ID, cutoff time.Time
 	return doomed, kept, nil
 }
 
+// retentionCut is the commits a library's retention policy no longer keeps.
+//
+// The same set expireHistory deletes, produced without deleting anything, so
+// that compaction can apply a retention decision the expiry pass was unable to
+// carry out. That is not a corner case: a commit inside a sealed pack cannot be
+// deleted where it is, so on a packed store *every* expiry defers, and a
+// compaction that did not know the cut would copy the expired commits forward
+// for ever.
+//
+// A zero window means the library's own policy, and a library with no policy
+// anywhere keeps everything -- the same reading expireHistoryByPolicy takes,
+// because it is the same function that takes it.
+func retentionCut(st *objmgr.Store, libraryID string, head storefmt.ID, window time.Duration) ([]storefmt.ID, error) {
+	keep, err := retentionWindow(libraryID, window)
+	if err != nil || keep <= 0 {
+		return nil, err
+	}
+	doomed, _, err := commitsBehindTheWindow(st, head, time.Now().Add(-keep))
+	return doomed, err
+}
+
+// retentionWindow is how far back a library keeps history: the override if one
+// was given, otherwise its stored policy, and zero for "keep everything".
+//
+// One function rather than the rule written out at each site that needs it.
+// Two passes now ask it -- expiry, which deletes, and compaction, which drops
+// what expiry could not -- and a cut those two disagreed about would show up as
+// history that comes back from the dead on the next run.
+//
+// A library with no policy anywhere keeps everything, which is what makes
+// upgrading a server safe: nothing starts deleting because somebody installed a
+// new binary.
+func retentionWindow(libraryID string, override time.Duration) (time.Duration, error) {
+	if override > 0 {
+		return override, nil
+	}
+	days, err := libmgr.RetentionDays(libraryID)
+	if err != nil || days <= 0 {
+		return 0, err
+	}
+	return time.Duration(days) * 24 * time.Hour, nil
+}
+
 // runHistoryExpiry expires every live library and prints what it found.
 //
 // A zero window means follow each library's own retention policy, which is the
@@ -233,7 +297,7 @@ func runHistoryExpiry(keep time.Duration, del bool, quiet bool) error {
 			// their history was truncated when it was not would go looking for
 			// the space in the wrong place.
 			fmt.Printf("%d commits past retention are inside sealed packs and were left there; "+
-				"compaction is what reclaims them.\n", deferred)
+				"run with -compact to reclaim them.\n", deferred)
 		}
 	} else {
 		fmt.Printf("%d commits past retention, holding %s. Re-run with -delete to expire them.\n",
@@ -247,17 +311,12 @@ func runHistoryExpiry(keep time.Duration, del bool, quiet bool) error {
 //
 // This is the entry point a scheduler would call. It takes no window, so
 // whatever runs it — an operator, a cron, or one day a timer inside the
-// server — cannot accidentally impose one the library never agreed to. A
-// library with no policy anywhere keeps everything, which is what makes
-// upgrading a server safe: nothing starts deleting because somebody installed
-// a new binary.
+// server — cannot accidentally impose one the library never agreed to.
+// retentionWindow says what "no policy" means, and says it to compaction too.
 func expireHistoryByPolicy(libraryID string, del bool) (historyExpiry, error) {
-	days, err := libmgr.RetentionDays(libraryID)
-	if err != nil {
+	keep, err := retentionWindow(libraryID, 0)
+	if err != nil || keep <= 0 {
 		return historyExpiry{libraryID: libraryID}, err
 	}
-	if days <= 0 {
-		return historyExpiry{libraryID: libraryID}, nil
-	}
-	return expireHistory(libraryID, time.Duration(days)*24*time.Hour, del)
+	return expireHistory(libraryID, keep, del)
 }

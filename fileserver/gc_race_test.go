@@ -108,34 +108,40 @@ func TestSweepAndExpiryAreIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.expired != 2 {
-		t.Fatalf("first expiry took %d commits, want 2", first.expired)
+	if first.chosen() != 2 {
+		t.Fatalf("first expiry took %d commits, want 2", first.chosen())
 	}
 	second, err := expireHistory(libraryID, 14*24*time.Hour, true)
 	if err != nil {
 		t.Fatalf("second expiry: %v", err)
 	}
-	if second.expired != 0 {
-		t.Errorf("second expiry took %d more commits, want 0", second.expired)
+	if second.chosen() != first.chosen() {
+		t.Errorf("second expiry took %d commits and the first took %d — the cut is not the same set twice",
+			second.chosen(), first.chosen())
 	}
 	if !commitExists(t, libraryID, ids[2]) {
 		t.Error("the head went on the second pass")
 	}
 
+	// The rewrite is what carries out both decisions: inside a pack neither
+	// expiry nor the sweep can delete anything, so they defer and this is the
+	// pass that frees the bytes.
+	reclaimPacked(t, libraryID, true, 14*24*time.Hour)
+
 	firstSweep, err := sweepOrphans(libraryID, 0, true)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if firstSweep.removed == 0 {
-		t.Fatal("the first sweep removed nothing; expiry should have left work")
 	}
 	secondSweep, err := sweepOrphans(libraryID, 0, true)
 	if err != nil {
 		t.Fatalf("second sweep: %v", err)
 	}
-	if secondSweep.removed != 0 {
-		t.Errorf("second sweep removed %d more objects, want 0", secondSweep.removed)
+	if secondSweep.chosen() != firstSweep.chosen() {
+		t.Errorf("the second sweep chose %d objects and the first chose %d, want the same set",
+			secondSweep.chosen(), firstSweep.chosen())
 	}
+	// And a second rewrite finds nothing left to do.
+	reclaimPacked(t, libraryID, true, 14*24*time.Hour)
 
 	// And the library still reads.
 	library := libmgr.Get(libraryID)
