@@ -593,6 +593,12 @@ func newHTTPRouter() *mux.Router {
 	// -- inside provisionalGrace or be dropped. A credential that is offered
 	// and bad is still refused, in either mode.
 	if option.EnableNotification {
+		// One answer to "may this caller watch this library?", shared with
+		// every other route rather than reimplemented for the socket. See
+		// notif/authorize.go for why it is a hook and not a direct call.
+		notif.Authorize = func(cred *credential.Credential, libraryID string) bool {
+			return middleware.PermFor(cred, libraryID, "") != ""
+		}
 		r.Handle("/notification", middleware.OptionalCredential(http.HandlerFunc(notif.Handler)))
 	}
 

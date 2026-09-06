@@ -271,6 +271,126 @@ func TestOptionalCredentialStillRefusesABadOne(t *testing.T) {
 // unconditionally left one token in thirty-two unchanged -- and an unchanged
 // token is a valid one, so the case passed a request the test believed it had
 // broken and failed at a rate that read as an unrelated flake.
+// issueScoped is issue for a credential cut to one library, or to a path
+// inside one.
+func issueScoped(t *testing.T, id account.ID, scope string) (string, string) {
+	t.Helper()
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+
+	sc, err := credential.ParseScope(scope)
+	if err != nil {
+		t.Fatalf("parsing scope %q: %v", scope, err)
+	}
+	c, secret, err := credential.Issue(ctx, credential.IssueOpts{
+		Kind: credential.KindDevice, AccountID: id, Label: "scoped", Perm: "rw",
+		Lifetime: 24 * time.Hour, Scope: sc,
+	})
+	if err != nil {
+		t.Fatalf("issuing a scoped credential: %v", err)
+	}
+	return c.ID, secret
+}
+
+// runAt is run against a route of the caller's choosing.
+func runAt(t *testing.T, mw func(http.Handler) http.Handler, path, header string) (*httptest.ResponseRecorder, *seen) {
+	t.Helper()
+
+	got := &seen{}
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.reached = true
+		got.acct = GetAccount(r)
+		got.cred = GetCredential(r)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if header != "" {
+		req.Header.Set("Authorization", header)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec, got
+}
+
+// A scoped credential may open the notification socket.
+//
+// The route-level narrowing refuses a scoped credential every route that names
+// no library, because such a route answers about the account. The socket is
+// not such a route: it answers nothing at all until a subscribe frame names a
+// library, and each of those is checked on its own. Refusing at the upgrade
+// leaves a mount cut to one library with no push at all -- and 403 before the
+// upgrade is a failure a client cannot fall back from the way it falls back
+// from a missing feature name.
+func TestOptionalCredentialAdmitsAScopedCredential(t *testing.T) {
+	pair := testDB(t)
+	dan := addUser(t, pair, "dan@example.com")
+	_, secret := issueScoped(t, dan, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+	rec, got := runAt(t, OptionalCredential, "/notification", "Bearer "+secret)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: a library-scoped credential could not open the socket", rec.Code)
+	}
+	if got.cred == nil {
+		t.Fatal("the socket was opened without the credential that authorizes its subscribes")
+	}
+	if got.cred.Scope.LibraryID != "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" {
+		t.Errorf("the handler got scope %q; the narrowing must survive to the subscribe check", got.cred.Scope)
+	}
+}
+
+// The exemption is for this one wrapper, and must not widen the others.
+//
+// RequireCredential refusing a scoped credential a route that names no library
+// is the finding docs/auth.md's ceiling rule exists for: listing libraries,
+// account usage, create and delete all read the account's own authority.
+func TestRequireCredentialStillRefusesAScopedCredentialARoutelessOfLibrary(t *testing.T) {
+	pair := testDB(t)
+	dan := addUser(t, pair, "dan@example.com")
+	_, secret := issueScoped(t, dan, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+	rec, got := runAt(t, RequireCredential, "/api/silo/v1/libraries", "Bearer "+secret)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("got %d, want 403", rec.Code)
+	}
+	if got.reached {
+		t.Error("a scoped credential enumerated every library its account can see")
+	}
+}
+
+// PermFor answers the ceiling for a caller holding a credential rather than a
+// request, and answers it the same way.
+func TestPermForAppliesTheNarrowing(t *testing.T) {
+	const mine = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	const other = "11111111-2222-3333-4444-555555555555"
+
+	scoped := func(s string) *credential.Credential {
+		sc, err := credential.ParseScope(s)
+		if err != nil {
+			t.Fatalf("parsing scope %q: %v", s, err)
+		}
+		return &credential.Credential{Perm: "rw", Scope: sc}
+	}
+
+	// Another library is refused without reaching the database, which is the
+	// point of asking Covers before CheckPerm.
+	if got := PermFor(scoped(mine), other, ""); got != "" {
+		t.Errorf("a credential scoped to one library reached another: %q", got)
+	}
+	// A folder scope cannot answer about the library as a whole. This is
+	// Perm's documented rule, and it is what a path-scoped mount is told when
+	// it tries to watch its library.
+	if got := PermFor(scoped(mine+":/photos"), mine, ""); got != "" {
+		t.Errorf("a path-scoped credential was granted the whole library: %q", got)
+	}
+	// No credential is no access, as on the request path.
+	if got := PermFor(nil, mine, ""); got != "" {
+		t.Errorf("a nil credential was granted %q", got)
+	}
+}
+
 func mistype(s string) string {
 	last := s[len(s)-1]
 	replacement := byte('z')

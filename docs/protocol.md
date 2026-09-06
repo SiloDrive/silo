@@ -738,6 +738,45 @@ default). Clients subscribe per library and receive `library-update` when a comm
 lands, which is what lets a sync client react in about a second instead of
 polling.
 
+#### Subscribing with the credential you already have
+
+Since 0.5.0 a subscribe frame that carries no `jwt_token` is authorized by the
+`Authorization` header the handshake presented — the same credential, the same
+permission check (`middleware.PermFor`) and the same ceiling as every other
+route. Advertised as `notifications-credential`. There is no token to fetch, so
+there is nothing to re-mint and nothing to expire.
+
+```json
+{"type": "subscribe", "content": {"libraries": [{"id": "<library>"}]}}
+```
+
+A subscribe this lane will not grant is answered
+`{"type": "subscribe-denied", "content": {"library_id": …}}` — a distinct frame
+from `jwt-expired`, because there is no token to renew and a client told
+otherwise would re-mint in a loop. It names the library and not the reason;
+"you may not reach it", "no such library" and "you sent no credential" are one
+answer on the wire, as they are on the HTTP lane.
+
+Access is re-checked about once an hour for the life of the socket. A share
+withdrawn under a live subscription ends it with the same `subscribe-denied`.
+That check is what replaces the token's expiry: a credential need never expire,
+so nothing else would bound how long a subscription outlives the access that
+authorized it.
+
+The socket must have authenticated. An anonymous connection is refused this
+lane outright — the token was the only thing it could ever prove anything with.
+
+A **scoped credential may open the socket**, unlike every other route that
+names no library: the upgrade answers nothing, and each subscribe is checked
+against the credential on its own. A credential cut to one library is granted
+that library and denied the rest. A credential cut to a *path* inside a library
+is denied even its own, because "what changed in this library" cannot be
+answered partially — the same rule that refuses it `changes`.
+
+#### Subscribing with a minted token
+
+The older lane, and still the only one an anonymous socket has.
+
 Since 0.4.4 getting a subscribe token is one call on this lane:
 
 ```
@@ -775,11 +814,19 @@ Send one frame per batch of libraries:
 {"type": "subscribe", "content": {"libraries": [{"id": "<library>", "jwt_token": "<jwt>"}]}}
 ```
 
-Inbound frames are `{"type": "library-update", "content": {"library_id": …, "commit_id": …}}`
-and `{"type": "jwt-expired", "content": …}`; unknown types are ignored rather
-than closing the socket. `unsubscribe` takes the same frame shape as
-`subscribe`. The server pings every 30s and drops a client that has not ponged
-within 90s; most WebSocket libraries answer pings for you.
+#### Frames
+
+Inbound frames are `{"type": "library-update", "content": {"library_id": …, "commit_id": …}}`,
+`{"type": "jwt-expired", "content": {"library_id": …}}` and
+`{"type": "subscribe-denied", "content": {"library_id": …}}`; unknown types are
+ignored rather than closing the socket. `unsubscribe` takes the same frame
+shape as `subscribe`, and needs no token on either lane. The server pings every
+30s and drops a client that has not ponged within 90s; most WebSocket libraries
+answer pings for you.
+
+The two lanes may be mixed on one socket, per library: a frame either presents
+a token or asks the server to use the credential it already has. What it must
+not do is present a token it expects to be ignored.
 
 An update that cannot be delivered because a client is behind is **deferred,
 not dropped**: the server remembers the latest commit id per library and sends
@@ -824,7 +871,15 @@ reused, so `has("entries-copy")` stays a safe question forever, and an older
 server that sends no list reads as "no features", which is the correct answer
 — absent means do not call it. `notifications` is the one name that depends on
 how the server was started rather than on which build it is; seeing it is how
-a client knows to mint a `notify-token` instead of learning from a `404`.
+a client knows the socket exists at all.
+
+Check `notifications-credential` before omitting `jwt_token` from a subscribe.
+This is the one place where guessing wrong is expensive rather than merely
+wrong: an older server reads a missing token as a bad one and answers
+`jwt-expired`, which a client cannot tell from the token it did send having
+lapsed — so it mints a fresh one, sends it, and is told the same thing again.
+Seeing the name is what lets a client delete its notify-token code; not seeing
+it is what tells it to keep it.
 
 `version` is semver with no leading `v`. A build from an untagged or dirty tree
 keeps its suffix — `0.5.0-3-gabc1234`, `0.5.0-dirty` — so parse the leading

@@ -159,6 +159,16 @@ func features() []string {
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification, POST libraries/{id}/notify-token
+		// The socket authorizes a subscribe from the Authorization header the
+		// handshake carried, instead of from a token minted for one library.
+		//
+		// It needs a name because the fallback is a whole code path. A client
+		// that omits jwt_token to an older server is told jwt-expired, which
+		// is indistinguishable from the token it did send having lapsed, so it
+		// re-mints and retries forever. Seeing this name is what lets a client
+		// stop fetching notify-tokens at all; not seeing it is what tells it
+		// to keep the code that does.
+		f = append(f, "notifications-credential") // subscribe with no jwt_token
 	}
 	return f
 }

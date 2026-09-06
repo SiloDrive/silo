@@ -23,13 +23,21 @@ var upgrader = websocket.Upgrader{
 // The account is whatever authenticated the request, and may be nil: the
 // endpoint predates the header, so a client that sends none is still served.
 // What it does not get is the right to sit there -- see provisionalGrace.
+//
+// The credential travels with it, and separately. The account is who the
+// socket belongs to, which is what the grace deadline asks about; the
+// credential is what that holder may reach, which is what a subscribe on the
+// credential lane asks about. They are not the same question -- a credential
+// narrowed to one library names a whole account -- and a socket authenticated
+// by some other means could carry one without the other.
 func Handler(w http.ResponseWriter, r *http.Request) {
 	acct := middleware.GetAccount(r)
+	cred := middleware.GetCredential(r)
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade already wrote an HTTP error response to the client.
 		log.Debugf("notif: websocket upgrade failed: %v", err)
 		return
 	}
-	NewClient(conn, acct)
+	NewClient(conn, acct, cred)
 }

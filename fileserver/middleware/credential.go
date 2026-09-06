@@ -67,8 +67,11 @@ func RequireOwnCredential(next http.Handler) http.Handler {
 // must never be quietly downgraded to anonymous, because the caller believes
 // it is authenticated and would learn otherwise only from the permissions it
 // silently stopped having.
+//
+// It also skips the route-level narrowing, because the socket is not a route
+// in the sense that rule is about. See resolveOpts.scopePerOperation.
 func OptionalCredential(next http.Handler) http.Handler {
-	return resolveCredential(next, resolveOpts{optional: true})
+	return resolveCredential(next, resolveOpts{optional: true, scopePerOperation: true})
 }
 
 // resolveOpts is how the three wrappers above differ. They are fields rather
@@ -82,6 +85,25 @@ type resolveOpts struct {
 	// aboutSelf says the route's subject is the credential presenting it, so
 	// a narrowing does not exclude it. See RequireOwnCredential.
 	aboutSelf bool
+
+	// scopePerOperation says this route answers about a library only once the
+	// caller names one, so the ceiling is applied per operation rather than
+	// at the door.
+	//
+	// The notification socket is the case, and so far the only one. The rule
+	// scopeReachesRoute enforces reads "a route that names no library answers
+	// about the account, which is wider than the scope" -- and that is true of
+	// every request-shaped route, because the response is already decided by
+	// the time the middleware runs. It is false here: the upgrade answers
+	// nothing, and each subscribe frame afterwards names its own library and
+	// is checked against this same credential through PermFor.
+	//
+	// Refusing at the door instead was a real loss and a badly-shaped one. A
+	// mount cut to one library got no push at all, and it found out as a 403
+	// on the upgrade -- which a client cannot fall back from the way it falls
+	// back from an absent feature name, because 403 on a WebSocket handshake
+	// is indistinguishable from a dozen other reasons a proxy might refuse it.
+	scopePerOperation bool
 }
 
 func resolveCredential(next http.Handler, opts resolveOpts) http.Handler {
@@ -108,7 +130,7 @@ func resolveCredential(next http.Handler, opts resolveOpts) http.Handler {
 		// question this layer can answer: the route carries a library id or it
 		// does not. Path granularity and read-versus-write stay with the
 		// handler, which is what knows the path and what the operation does.
-		if !opts.aboutSelf && !scopeReachesRoute(cred, r) {
+		if !opts.aboutSelf && !opts.scopePerOperation && !scopeReachesRoute(cred, r) {
 			log.Debugf("Credential %s is scoped to %q and may not reach %s", cred.ID, cred.Scope, r.URL.Path)
 			http.Error(w, "Permission denied", http.StatusForbidden)
 			return
@@ -227,6 +249,23 @@ func Perm(r *http.Request, libraryID, path string) string {
 	cred := GetCredential(r)
 	if cred == nil {
 		log.Errorf("Permission asked on %s with no credential in context; denying", r.URL.Path)
+		return ""
+	}
+	return PermFor(cred, libraryID, path)
+}
+
+// PermFor is Perm for a caller that holds a credential rather than a request.
+//
+// The notification socket is the one: it resolves a credential at the
+// handshake and then answers subscribes for the life of the connection, long
+// after the request that carried it is gone. It exists as a function rather
+// than as a copy of the three lines below at that call site, because the
+// failure the ceiling rule guards against is exactly a second place that
+// remembers CheckPerm and forgets the narrowing.
+//
+// A nil credential is no access, for the reason Perm gives.
+func PermFor(cred *credential.Credential, libraryID, path string) string {
+	if cred == nil {
 		return ""
 	}
 	// Asked before share.CheckPerm, not inside the call. Go evaluates the

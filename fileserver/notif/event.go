@@ -10,6 +10,20 @@ import (
 const (
 	EventTypeLibraryUpdate = "library-update"
 	EventTypeJWTExpired    = "jwt-expired"
+
+	// EventTypeSubscribeDenied answers a subscribe the server will not grant
+	// on the credential lane.
+	//
+	// jwt-expired cannot carry this. It means "re-mint and try again", which
+	// is true of a stale token and false of a library the caller may not
+	// reach -- a client told that about a permission answer re-mints in a
+	// loop forever. And silence is worse than either: the client believes it
+	// is subscribed, stops polling, and the library appears to stop changing.
+	//
+	// It names the library and nothing else. Why the answer was no is in the
+	// log, where the operator is the audience, for the reason
+	// middleware.credentialRefused gives.
+	EventTypeSubscribeDenied = "subscribe-denied"
 )
 
 // Message is the wire format exchanged with clients. Both inbound
