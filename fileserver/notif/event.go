@@ -27,8 +27,7 @@ const (
 )
 
 // Message is the wire format exchanged with clients. Both inbound
-// (subscribe/unsubscribe) and outbound (library-update, jwt-expired) frames use
-// it.
+// (subscribe/unsubscribe) and outbound (the event types above) frames use it.
 type Message struct {
 	Type    string          `json:"type"`
 	Content json.RawMessage `json:"content"`

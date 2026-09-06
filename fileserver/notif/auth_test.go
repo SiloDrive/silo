@@ -1,7 +1,6 @@
 package notif
 
 import (
-	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -54,15 +53,7 @@ func subscribeTo(t *testing.T, conn *websocket.Conn, libraryID string) {
 	if err != nil {
 		t.Fatalf("mint token: %v", err)
 	}
-	content, err := json.Marshal(subscribeFrame{
-		Libraries: []subscribeLibrary{{LibraryID: libraryID, Token: tok}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.WriteJSON(&Message{Type: "subscribe", Content: content}); err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
+	sendSubscribe(t, conn, subscribeLibrary{LibraryID: libraryID, Token: tok})
 }
 
 // closedWithin reports whether the server hung up before the deadline. A read

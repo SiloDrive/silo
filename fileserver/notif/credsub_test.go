@@ -13,25 +13,22 @@ import (
 	"github.com/dkam/silo/fileserver/middleware"
 )
 
-// authorizeReturning installs a stub for the Authorize hook and restores it.
+// authorizeReturning replaces the authorizer for one test.
 //
-// The hook exists so this package can ask the permission question without
-// importing the answer: share.CheckPerm needs a database, and every test here
+// It is a variable so this package can ask the permission question without
+// owning the answer: share.CheckPerm needs a database, and every test here
 // would otherwise need one to assert something that is not about storage.
 func authorizeReturning(t *testing.T, fn func(*credential.Credential, string) bool) {
 	t.Helper()
-	orig := Authorize
-	Authorize = fn
-	t.Cleanup(func() { Authorize = orig })
+	orig := authorize
+	authorize = fn
+	t.Cleanup(func() { authorize = orig })
 }
 
 // dialWithCredential opens a socket authenticated the way the API routes are.
 func dialWithCredential(t *testing.T, cred *credential.Credential) *websocket.Conn {
 	t.Helper()
-	acct := cred.Account()
-	if acct == nil {
-		acct = &account.Account{Email: "watcher@example.com", IsActive: true}
-	}
+	acct := &account.Account{Email: "watcher@example.com", IsActive: true}
 	return dialSocket(t, func(r *http.Request) *http.Request {
 		return middleware.WithCredential(r, cred, acct)
 	})
@@ -47,37 +44,9 @@ func testCredential() *credential.Credential {
 }
 
 // subscribeByCredentialTo sends a subscribe frame carrying no token.
-//
-// The absence of jwt_token is the whole signal: it says "authorize this from
-// whatever opened the socket", which is what every other route already does.
 func subscribeByCredentialTo(t *testing.T, conn *websocket.Conn, libraryID string) {
 	t.Helper()
-	content, err := json.Marshal(subscribeFrame{
-		Libraries: []subscribeLibrary{{LibraryID: libraryID}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.WriteJSON(&Message{Type: "subscribe", Content: content}); err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-}
-
-// awaitFrame reads until a frame of the given type arrives, or the deadline.
-func awaitFrame(t *testing.T, conn *websocket.Conn, typ string, d time.Duration) *Message {
-	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(d)); err != nil {
-		t.Fatal(err)
-	}
-	for {
-		var msg Message
-		if err := conn.ReadJSON(&msg); err != nil {
-			t.Fatalf("waiting for %s: %v", typ, err)
-		}
-		if msg.Type == typ {
-			return &msg
-		}
-	}
+	sendSubscribe(t, conn, subscribeLibrary{LibraryID: libraryID})
 }
 
 // A subscribe frame with no token is authorized by the socket's credential.
@@ -88,7 +57,7 @@ func awaitFrame(t *testing.T, conn *websocket.Conn, typ string, d time.Duration)
 // separate process with no database, so the answer had to arrive pre-signed;
 // it runs in-process now and can simply ask.
 func TestASubscribeWithNoTokenIsAuthorizedByTheCredential(t *testing.T) {
-	const libraryID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	const libraryID = testLibrary
 	const commitID = "0123456789abcdef0123456789abcdef01234567"
 
 	authorizeReturning(t, func(*credential.Credential, string) bool { return true })
@@ -113,7 +82,7 @@ func TestASubscribeWithNoTokenIsAuthorizedByTheCredential(t *testing.T) {
 // and stops polling, so a permission answer it never hears becomes a library
 // that appears to have stopped changing.
 func TestASubscribeWithNoTokenIsRefusedWhenTheCredentialCannotReachTheLibrary(t *testing.T) {
-	const libraryID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	const libraryID = testLibrary
 
 	authorizeReturning(t, func(*credential.Credential, string) bool { return false })
 
@@ -141,7 +110,7 @@ func TestASubscribeWithNoTokenIsRefusedWhenTheCredentialCannotReachTheLibrary(t 
 // lane into an unauthenticated subscribe to any library id a stranger can
 // guess.
 func TestASubscribeWithNoTokenIsRefusedOnAnAnonymousSocket(t *testing.T) {
-	const libraryID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	const libraryID = testLibrary
 
 	// Would say yes if it were ever asked. It must not be asked.
 	authorizeReturning(t, func(*credential.Credential, string) bool {
@@ -164,14 +133,14 @@ func TestASubscribeWithNoTokenIsRefusedOnAnAnonymousSocket(t *testing.T) {
 // in 1970" unless it is told otherwise -- which would drop every subscription
 // on the new lane an hour after it was made.
 func TestACredentialAuthorizedSubscriptionSurvivesTheSweep(t *testing.T) {
-	const libraryID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	const libraryID = testLibrary
 	Init()
 
 	authorizeReturning(t, func(*credential.Credential, string) bool { return true })
 
 	c := fakeClient()
 	c.cred = testCredential()
-	c.subscribe(libraryID, "", 0, true)
+	c.subscribe(libraryID, "", subscription{byCredential: true})
 
 	c.sweepSubscriptions()
 
@@ -187,7 +156,7 @@ func TestACredentialAuthorizedSubscriptionSurvivesTheSweep(t *testing.T) {
 // was un-shared from for the life of the process, and the frames it receives
 // carry a commit id.
 func TestASweepDropsASubscriptionTheCredentialNoLongerReaches(t *testing.T) {
-	const libraryID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	const libraryID = testLibrary
 	Init()
 
 	allowed := true
@@ -195,7 +164,7 @@ func TestASweepDropsASubscriptionTheCredentialNoLongerReaches(t *testing.T) {
 
 	c := fakeClient()
 	c.cred = testCredential()
-	c.subscribe(libraryID, "", 0, true)
+	c.subscribe(libraryID, "", subscription{byCredential: true})
 
 	allowed = false
 	c.sweepSubscriptions()
@@ -203,14 +172,7 @@ func TestASweepDropsASubscriptionTheCredentialNoLongerReaches(t *testing.T) {
 	if n := subscriberCount(libraryID); n != 0 {
 		t.Errorf("a subscription outlived the access that authorized it: %d subscriber(s) left", n)
 	}
-	select {
-	case msg := <-c.wch:
-		if msg.Type != EventTypeSubscribeDenied {
-			t.Errorf("got %q, want %q", msg.Type, EventTypeSubscribeDenied)
-		}
-	default:
-		t.Error("the client was dropped without being told")
-	}
+	expectQueued(t, c, EventTypeSubscribeDenied)
 }
 
 // A token-authorized subscription is still swept on its expiry.
@@ -218,23 +180,16 @@ func TestASweepDropsASubscriptionTheCredentialNoLongerReaches(t *testing.T) {
 // The two lanes share one sweep, and the older one must keep working
 // unchanged: this is the behaviour every client in the field depends on.
 func TestTheSweepStillExpiresATokenAuthorizedSubscription(t *testing.T) {
-	const libraryID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	const libraryID = testLibrary
 	Init()
 
 	c := fakeClient()
-	c.subscribe(libraryID, "alice@example.com", time.Now().Add(-time.Minute).Unix(), false)
+	c.subscribe(libraryID, "alice@example.com", subscription{exp: time.Now().Add(-time.Minute).Unix()})
 
 	c.sweepSubscriptions()
 
 	if n := subscriberCount(libraryID); n != 0 {
 		t.Errorf("an expired token kept its subscription: %d subscriber(s) left", n)
 	}
-	select {
-	case msg := <-c.wch:
-		if msg.Type != EventTypeJWTExpired {
-			t.Errorf("got %q, want %q", msg.Type, EventTypeJWTExpired)
-		}
-	default:
-		t.Error("an expired token was dropped without a jwt-expired frame")
-	}
+	expectQueued(t, c, EventTypeJWTExpired)
 }

@@ -47,15 +47,15 @@ func RequireCredential(next http.Handler) http.Handler {
 // credential itself: logging out, and asking for a successor.
 //
 // It differs from RequireCredential in one thing: it does not apply the
-// narrowing. A scoped credential is refused every route that names no library
-// because such a route answers about the account, which is strictly wider
-// than the scope. These are strictly narrower -- they are about the row that
-// carries the scope -- and refusing them would leave a mount cut to one
-// library unable to sign itself out, or to renew before its credential lapses,
-// needing an operator with shell access to do what it is entitled to do to
-// itself.
+// narrowing at the door. A scoped credential is refused every route that
+// names no library because such a route answers about the account, which is
+// strictly wider than the scope. These are strictly narrower -- they are about
+// the row that carries the scope -- and refusing them would leave a mount cut
+// to one library unable to sign itself out, or to renew before its credential
+// lapses, needing an operator with shell access to do what it is entitled to
+// do to itself.
 func RequireOwnCredential(next http.Handler) http.Handler {
-	return resolveCredential(next, resolveOpts{aboutSelf: true})
+	return resolveCredential(next, resolveOpts{skipDoorCheck: true})
 }
 
 // OptionalCredential resolves a credential when one is offered and lets the
@@ -68,10 +68,22 @@ func RequireOwnCredential(next http.Handler) http.Handler {
 // it is authenticated and would learn otherwise only from the permissions it
 // silently stopped having.
 //
-// It also skips the route-level narrowing, because the socket is not a route
-// in the sense that rule is about. See resolveOpts.scopePerOperation.
+// It also skips the narrowing at the door, because the socket answers about a
+// library only once a subscribe frame names one. The rule scopeReachesRoute
+// enforces reads "a route that names no library answers about the account,
+// which is wider than the scope" -- and that is true of every request-shaped
+// route, because the response is already decided by the time the middleware
+// runs. It is false here: the upgrade answers nothing, and each subscribe
+// frame afterwards names its own library and is checked against this same
+// credential through PermFor.
+//
+// Refusing at the door instead was a real loss and a badly-shaped one. A mount
+// cut to one library got no push at all, and it found out as a 403 on the
+// upgrade -- which a client cannot fall back from the way it falls back from
+// an absent feature name, because 403 on a WebSocket handshake is
+// indistinguishable from a dozen other reasons a proxy might refuse it.
 func OptionalCredential(next http.Handler) http.Handler {
-	return resolveCredential(next, resolveOpts{optional: true, scopePerOperation: true})
+	return resolveCredential(next, resolveOpts{optional: true, skipDoorCheck: true})
 }
 
 // resolveOpts is how the three wrappers above differ. They are fields rather
@@ -82,28 +94,12 @@ type resolveOpts struct {
 	// offered and bad is still refused.
 	optional bool
 
-	// aboutSelf says the route's subject is the credential presenting it, so
-	// a narrowing does not exclude it. See RequireOwnCredential.
-	aboutSelf bool
-
-	// scopePerOperation says this route answers about a library only once the
-	// caller names one, so the ceiling is applied per operation rather than
-	// at the door.
-	//
-	// The notification socket is the case, and so far the only one. The rule
-	// scopeReachesRoute enforces reads "a route that names no library answers
-	// about the account, which is wider than the scope" -- and that is true of
-	// every request-shaped route, because the response is already decided by
-	// the time the middleware runs. It is false here: the upgrade answers
-	// nothing, and each subscribe frame afterwards names its own library and
-	// is checked against this same credential through PermFor.
-	//
-	// Refusing at the door instead was a real loss and a badly-shaped one. A
-	// mount cut to one library got no push at all, and it found out as a 403
-	// on the upgrade -- which a client cannot fall back from the way it falls
-	// back from an absent feature name, because 403 on a WebSocket handshake
-	// is indistinguishable from a dozen other reasons a proxy might refuse it.
-	scopePerOperation bool
+	// skipDoorCheck admits a scoped credential to a route that names no
+	// library. The zero value refuses it, which is the safety net the door
+	// check exists to be; each wrapper that opts out says why at its own
+	// declaration, and the two reasons so far are different ones for the
+	// same switch.
+	skipDoorCheck bool
 }
 
 func resolveCredential(next http.Handler, opts resolveOpts) http.Handler {
@@ -130,7 +126,7 @@ func resolveCredential(next http.Handler, opts resolveOpts) http.Handler {
 		// question this layer can answer: the route carries a library id or it
 		// does not. Path granularity and read-versus-write stay with the
 		// handler, which is what knows the path and what the operation does.
-		if !opts.aboutSelf && !opts.scopePerOperation && !scopeReachesRoute(cred, r) {
+		if !opts.skipDoorCheck && !scopeReachesRoute(cred, r) {
 			log.Debugf("Credential %s is scoped to %q and may not reach %s", cred.ID, cred.Scope, r.URL.Path)
 			http.Error(w, "Permission denied", http.StatusForbidden)
 			return
@@ -222,24 +218,7 @@ func WithCredential(r *http.Request, cred *credential.Credential, acct *account.
 	return r.WithContext(ctx)
 }
 
-// Perm is what the caller may do to path inside libraryID: "" for nothing,
-// "r" for read, "rw" for read and write.
-//
-// It is the only place docs/auth.md's ceiling rule is applied --
-//
-//	effective = min(CheckPerm(library, account), cred.perm within cred.scope)
-//
-// -- and it is one function rather than two calls at each site because the
-// failure it prevents is precisely a handler that remembers CheckPerm and
-// forgets the narrowing. A credential can only ever narrow: it cannot exceed
-// the account behind it, and if the account's own permission is withdrawn the
-// credential follows immediately.
-//
-// path is the entry being reached, or "" for an operation that is about the
-// library as a whole -- listing its commits, reading its delta feed, minting a
-// notification token for it. A credential scoped to a folder is refused those,
-// deliberately: there is no way to answer "what changed in this library"
-// partially without telling the holder about paths it may not reach.
+// Perm is PermFor for the credential that authenticated r.
 //
 // **No credential means no access.** Every route that reaches a handler is
 // mounted under RequireCredential, so a nil credential is a route registered
@@ -254,18 +233,34 @@ func Perm(r *http.Request, libraryID, path string) string {
 	return PermFor(cred, libraryID, path)
 }
 
-// PermFor is Perm for a caller that holds a credential rather than a request.
+// PermFor is what cred may do to path inside libraryID: "" for nothing, "r"
+// for read, "rw" for read and write.
 //
-// The notification socket is the one: it resolves a credential at the
-// handshake and then answers subscribes for the life of the connection, long
-// after the request that carried it is gone. It exists as a function rather
-// than as a copy of the three lines below at that call site, because the
-// failure the ceiling rule guards against is exactly a second place that
-// remembers CheckPerm and forgets the narrowing.
+// It is the only place docs/auth.md's ceiling rule is applied --
 //
-// A nil credential is no access, for the reason Perm gives.
+//	effective = min(CheckPerm(library, account), cred.perm within cred.scope)
+//
+// -- and it is one function rather than two calls at each site because the
+// failure it prevents is precisely a caller that remembers CheckPerm and
+// forgets the narrowing. A credential can only ever narrow: it cannot exceed
+// the account behind it, and if the account's own permission is withdrawn the
+// credential follows immediately.
+//
+// path is the entry being reached, or "" for an operation that is about the
+// library as a whole -- listing its commits, reading its delta feed, minting a
+// notification token for it. A credential scoped to a folder is refused those,
+// deliberately: there is no way to answer "what changed in this library"
+// partially without telling the holder about paths it may not reach.
+//
+// Handlers reach it through Perm. The notification socket calls it directly:
+// it resolves a credential at the handshake and then answers subscribes for
+// the life of the connection, long after the request that carried it is gone.
+//
+// A nil credential is no access, for the reason Perm gives, and so is an
+// empty library id: nothing is about no library, and an empty id offered to
+// CheckPerm is a query about a row that does not exist.
 func PermFor(cred *credential.Credential, libraryID, path string) string {
-	if cred == nil {
+	if cred == nil || libraryID == "" {
 		return ""
 	}
 	// Asked before share.CheckPerm, not inside the call. Go evaluates the

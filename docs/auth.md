@@ -285,9 +285,10 @@ effective = min(CheckPerm(library, cred.account_id),
 
 `share.CheckPerm` answers what the *user* may do and knows nothing about
 credentials, which is why the intersection lives beside the request rather than
-inside it. It is applied in **one** function, `middleware.Perm(r, libraryID,
-path)`, not as two calls at each site, because the failure it prevents is
-precisely a handler that remembers `CheckPerm` and forgets the narrowing.
+inside it. It is applied in **one** function, `middleware.PermFor(cred,
+libraryID, path)` -- `middleware.Perm` is that for the credential on a request
+-- not as two calls at each site, because the failure it prevents is precisely
+a handler that remembers `CheckPerm` and forgets the narrowing.
 
 A credential cannot outlive or exceed the account behind it, and if the account's
 own permission is withdrawn the credential follows immediately. That is what

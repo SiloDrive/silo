@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
-	"github.com/dkam/silo/fileserver/utils"
 )
 
 // liveClient dials a real notification socket and returns both ends of it: the
@@ -31,30 +29,9 @@ func liveClient(t *testing.T, libraryID string) (*websocket.Conn, *Client) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	tok, err := utils.GenNotifJWTToken(libraryID, "watcher@example.com", time.Now().Add(time.Hour).Unix())
-	if err != nil {
-		t.Fatalf("mint token: %v", err)
-	}
-	content, err := json.Marshal(subscribeFrame{
-		Libraries: []subscribeLibrary{{LibraryID: libraryID, Token: tok}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.WriteJSON(&Message{Type: "subscribe", Content: content}); err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-
-	// Subscribing is asynchronous: the frame is read and acted on by the
-	// client's own goroutine, so the server may not have recorded it yet.
-	for i := 0; i < 200; i++ {
-		if subs := snapshotSubscribers(libraryID); len(subs) == 1 {
-			return conn, subs[0]
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("the server never recorded the subscription")
-	return nil, nil
+	subscribeTo(t, conn, libraryID)
+	waitForSubscribers(t, libraryID, 1)
+	return conn, snapshotSubscribers(libraryID)[0]
 }
 
 // stall blocks a client's writer and fills its outbound buffer, returning the
@@ -83,30 +60,6 @@ fillLoop:
 		}
 	}
 	return c.connMu.Unlock
-}
-
-// awaitUpdate reads until an update for libraryID arrives, and returns it.
-func awaitUpdate(t *testing.T, conn *websocket.Conn, libraryID string) LibraryUpdateEvent {
-	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	for {
-		var msg Message
-		if err := conn.ReadJSON(&msg); err != nil {
-			t.Fatalf("no update for %s ever arrived: %v", libraryID, err)
-		}
-		if msg.Type != EventTypeLibraryUpdate {
-			continue
-		}
-		var ev LibraryUpdateEvent
-		if err := json.Unmarshal(msg.Content, &ev); err != nil {
-			t.Fatalf("bad event content: %v", err)
-		}
-		if ev.LibraryID == libraryID {
-			return ev
-		}
-	}
 }
 
 // An event dropped because a client was behind is delivered once it catches up.

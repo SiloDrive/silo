@@ -431,28 +431,32 @@ func (c *Client) sweepLoop() {
 func (c *Client) sweepSubscriptions() {
 	now := time.Now().Unix()
 
-	var expired, revoked []string
+	// Decided under the lock, acted on after it. The credential half asks the
+	// database, and the lock is the one the read loop takes for every
+	// subscribe -- so the ids are collected here and the question is asked
+	// once the lock is gone.
+	var byCredential []string
+	dropped := map[string]string{} // library id -> the frame that says why
 	c.librariesMu.Lock()
 	for id, sub := range c.libraries {
 		switch {
 		case sub.byCredential:
-			if !authorized(c.cred, id) {
-				revoked = append(revoked, id)
-			}
+			byCredential = append(byCredential, id)
 		case sub.exp < now:
-			expired = append(expired, id)
+			dropped[id] = EventTypeJWTExpired
 		}
 	}
 	c.librariesMu.Unlock()
 
-	for _, id := range expired {
-		c.unsubscribe(id)
-		c.sendJWTExpired(id)
+	for _, id := range byCredential {
+		if !authorized(c.cred, id) {
+			log.Infof("notif: client %d loses library %s: the credential that authorized it no longer reaches it", c.ID, id)
+			dropped[id] = EventTypeSubscribeDenied
+		}
 	}
-	for _, id := range revoked {
-		log.Infof("notif: client %d loses library %s: the credential that authorized it no longer reaches it", c.ID, id)
+	for id, frame := range dropped {
 		c.unsubscribe(id)
-		c.sendSubscribeDenied(id)
+		c.sendLibraryFrame(frame, id)
 	}
 }
 
@@ -470,18 +474,18 @@ func (c *Client) handleMessage(msg *Message) error {
 			if r.Token == "" {
 				if !authorized(c.cred, r.LibraryID) {
 					log.Debugf("notif: client %d refused a credential subscribe to %q", c.ID, r.LibraryID)
-					c.sendSubscribeDenied(r.LibraryID)
+					c.sendLibraryFrame(EventTypeSubscribeDenied, r.LibraryID)
 					continue
 				}
-				c.subscribe(r.LibraryID, "", 0, true)
+				c.subscribe(r.LibraryID, "", subscription{byCredential: true})
 				continue
 			}
 			user, exp, ok := parseNotifToken(r.Token, r.LibraryID)
 			if !ok {
-				c.sendJWTExpired(r.LibraryID)
+				c.sendLibraryFrame(EventTypeJWTExpired, r.LibraryID)
 				continue
 			}
-			c.subscribe(r.LibraryID, user, exp, false)
+			c.subscribe(r.LibraryID, user, subscription{exp: exp})
 		}
 		return nil
 	case "unsubscribe":
@@ -499,13 +503,13 @@ func (c *Client) handleMessage(msg *Message) error {
 	}
 }
 
-func (c *Client) subscribe(libraryID, user string, exp int64, byCredential bool) {
+func (c *Client) subscribe(libraryID, user string, sub subscription) {
 	c.librariesMu.Lock()
 	if c.libraries == nil {
 		c.librariesMu.Unlock()
 		return
 	}
-	c.libraries[libraryID] = subscription{exp: exp, byCredential: byCredential}
+	c.libraries[libraryID] = sub
 	if c.User == "" {
 		c.User = user
 	}
@@ -534,20 +538,10 @@ func (c *Client) unsubscribe(libraryID string) {
 	c.missedMu.Unlock()
 }
 
-// sendSubscribeDenied tells the client the credential lane will not grant a
-// library, without saying why. See EventTypeSubscribeDenied.
-func (c *Client) sendSubscribeDenied(libraryID string) {
-	c.sendLibraryFrame(EventTypeSubscribeDenied, libraryID)
-}
-
-func (c *Client) sendJWTExpired(libraryID string) {
-	c.sendLibraryFrame(EventTypeJWTExpired, libraryID)
-}
-
 // sendLibraryFrame queues one of the frames whose whole payload is a library
-// id. Dropped rather than deferred when the queue is full: unlike an update,
-// there is nothing here that becomes wrong by arriving late, and the sweep
-// that produced it runs again.
+// id: jwt-expired, or subscribe-denied. Dropped rather than deferred when the
+// queue is full: unlike an update, there is nothing here that becomes wrong by
+// arriving late, and the sweep that produced it runs again.
 func (c *Client) sendLibraryFrame(typ, libraryID string) {
 	content, err := json.Marshal(map[string]string{"library_id": libraryID})
 	if err != nil {

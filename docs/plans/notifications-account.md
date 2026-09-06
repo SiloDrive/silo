@@ -13,7 +13,7 @@ unshared. None of them rings.
 
 The rename is the one worth pausing on, because it is unpushed even for a
 library the client is already watching. `renameLibrary`
-(`fileserver/api_handlers.go:129`) is one UPDATE and mints no commit — the name
+(`fileserver/api_handlers.go`) is one UPDATE and mints no commit — the name
 is catalog data, and under E2EE the server could not write that commit at all.
 So the head does not move, `changes` carries nothing, and the socket says
 nothing. silo-drive-macos verified it against 0.5.0 and now carries each
@@ -26,23 +26,23 @@ anything the account can see.
 ## What is already true, and worth not re-deciding
 
 - **The visible set is one function call.** `share.PrincipalsFor`
-  (`fileserver/share/grant.go:268`) expands an account into its user and group
-  principals, and `share.LibrariesFor` (`:158`) answers which libraries those
+  (`fileserver/share/grant.go`) expands an account into its user and group
+  principals, and `share.LibrariesFor` answers which libraries those
   principals hold a whole-library grant on. `ListLibrariesHandler`
-  (`fileserver/api/api.go:585`) is owned ∪ granted, and that union is exactly
+  (`fileserver/api/api.go`) is owned ∪ granted, and that union is exactly
   what a subscription needs. No new index, no new query shape.
 - **There is one producer of events.** `notif.NotifyLibraryUpdate` is called
-  from `fileserver/commit.go:370` and nowhere else.
+  from `onBranchUpdated` in `fileserver/commit.go` and nowhere else.
 - **Catalog mutations are all in-process on the server.** Create
-  (`fileserver/api/api.go:756`), delete (`:882`) and rename
-  (`fileserver/api_handlers.go:129`) are HTTP handlers; the CLI and the TUI
+  (`CreateLibraryHandler`), delete (`DeleteLibraryHandler`) and rename
+  (`renameLibrary`) are HTTP handlers; the CLI and the TUI
   reach them through `client.APIClient`, not by writing the database beside a
   running server.
 - **Grants have no writer yet.** `share.Add` and `share.Remove` have no
   production caller. "Shared with the account" is [#14](https://git.booko.info/Silo/silo/issues/14)'s
   to produce, and this plan builds the receiver for it rather than waiting.
 - **A hook pattern exists for the packages that sit below the fileserver.**
-  `libmgr.OnLibraryDeleted` (`fileserver/libmgr/libmgr.go:733`) is a package
+  `libmgr.OnLibraryDeleted` (`fileserver/libmgr/libmgr.go`) is a package
   variable the server registers, because `libmgr` cannot import upwards.
 - **A ring costs one request, not one per library.** `GET /libraries` answers
   with `head_commit_id` on every row (`protocol.md:237`), so a client that is
@@ -97,9 +97,10 @@ second server against one database — is a library that never appears.
 
 Today the 72h notification JWT is the only re-authorization a live socket ever
 gets. The credential is resolved once, at the upgrade
-(`middleware.OptionalCredential`, `fileserver/server.go:596`), and never again;
-`tokenExpiryLoop` checks per-library JWT expiry and nothing else; revoking a
-credential closes no sockets. When the token expires the subscription is
+(`middleware.OptionalCredential` in `newHTTPRouter`), and never again;
+`sweepSubscriptions` checks per-library JWT expiry, and re-asks the permission
+question hourly on the credential lane; revoking a credential closes no
+sockets. When the token expires the subscription is
 dropped, and the way back on is `POST notify-token`, which runs
 `share.CheckPerm` against a live credential. So a revocation reaches a socket
 within 72 hours, and it reaches it that way and no other.
@@ -175,7 +176,7 @@ that frame exists to carry.
 
 First, what a narrowed credential is, because the word suggests something wider
 than the encoding allows. `credential.Scope`
-(`fileserver/credential/scope.go:31`) has three shapes and no others:
+(`fileserver/credential/scope.go`) has three shapes and no others:
 
 ```
 ""                      every library the account reaches
@@ -187,12 +188,12 @@ There is no "these three libraries" — the encoding cannot express a subset. A
 narrowed credential reaches one library, or one folder in one library, and it
 is a ceiling rather than a grant: it only ever subtracts from what the account
 already has. `POST /auth/login` passes a scope the client asks for straight
-through `ParseScope` (`fileserver/api/api.go:298`), so these exist in the
+through `ParseScope` (`fileserver/api/api.go`), so these exist in the
 field, not only in tests.
 
 **The account ring is refused to one because it is unusable by one, not
 because it is dangerous.** `scopeReachesRoute`
-(`fileserver/middleware/credential.go:110`) refuses a scoped credential every
+(`resolveCredential`) refuses a scoped credential every
 route that names no library — the comment there records the bug that put the
 check at that layer, which was a credential cut to one library enumerating
 every library its account could see. `GET /libraries` is therefore `403` for
@@ -247,7 +248,7 @@ exists because `/notification` predates the `Authorization` header and could
 not ask a credential what it was allowed to watch, so a per-library JWT was
 minted to answer instead. Once the handshake carries the credential, the
 credential answers directly — and the notification JWT is the only one Silo
-still issues (`fileserver/utils/utils.go:17`; `option.JWTPrivateKey` has
+still issues (`utils.AudNotif`; `option.JWTPrivateKey` has
 exactly two consumers, and `golang-jwt` two non-test importers). Retiring the
 lane is its own issue, sequenced after both silo-drive clients migrate, but it
 is this decision that unblocks it.
@@ -262,8 +263,7 @@ of them builds that.
 
 `Handler` now reads `middleware.GetCredential` alongside the account and hands
 both to `NewClient`. A subscribe entry with no `jwt_token` is authorized by
-that credential through a `notif.Authorize` hook, wired in `server.go` to
-`middleware.PermFor` — which is `Perm` split so that a caller holding a
+that credential through `middleware.PermFor` — which is `Perm` split so that a caller holding a
 credential rather than a request asks the same question, rather than a second
 place remembering `CheckPerm` and forgetting the narrowing. Refusals are a new
 `subscribe-denied` frame, because `jwt-expired` means "re-mint", which is false
@@ -282,7 +282,7 @@ needed one, in its tests least of all.
 scope was 403'd *before the upgrade* — a mount cut to one library had no push at
 all, and found out in the one way a client cannot fall back from. The narrowing
 now applies per subscribe rather than at the door
-(`resolveOpts.scopePerOperation`), which is where it belongs: the upgrade
+(`resolveOpts.skipDoorCheck`), which is where it belongs: the upgrade
 answers nothing, and `PermFor` checks each library the credential asks for.
 
 That is decision 6's first half, arriving early and on the per-library lane. It
@@ -335,8 +335,8 @@ A ticker per account socket. Re-resolve the credential; drop on revoked,
 disabled, or newly narrowed. Re-resolve the set; `addSubscription` /
 `removeSubscription` the difference; ring once if the difference is non-empty.
 
-`tokenExpiryLoop` stays exactly as it is — a socket can hold both kinds of
-subscription, and the per-library lane is unchanged.
+The token half of `sweepSubscriptions` stays exactly as it is — a socket can
+hold both kinds of subscription, and the per-library lane is unchanged.
 
 ### 4. `account-update`, and the three hooks
 
@@ -346,7 +346,7 @@ has `libmgr.OnLibraryDeleted`; the other two are direct calls, since
 `fileserver/api` may import `notif` without a cycle.
 
 Rename rings the owner and every principal holding a grant — `share.ForLibrary`
-(`:141`) is the inverse lookup, and it is off the commit path so it may query.
+is the inverse lookup, and it is off the commit path so it may query.
 
 ### 5. The scoped ring
 
@@ -362,7 +362,7 @@ same code with the interesting half missing.
 
 ### 6. The feature name and the docs
 
-`notifications-account` in `features()` (`fileserver/api/api.go:85`),
+`notifications-account` in `features()` (`fileserver/api/api.go`),
 conditional on `EnableNotification` beside `notifications`. Without it a client
 cannot tell "this server has no account mode" from "this account is quiet",
 and those two look identical from the outside.
@@ -393,7 +393,7 @@ advertise a distinction no caller can act on.
 ## What this does not do
 
 - **It does not replace the per-library lane.** `notify-token`, the
-  library-scoped JWT, `tokenExpiryLoop` and `jwt-expired` all keep working
+  library-scoped JWT, its hourly sweep and `jwt-expired` all keep working
   exactly as they do, for the clients already using them. Decision 6 means a
   scoped credential no longer *needs* them, which is what makes retiring the
   lane a later cleanup rather than a break — but nothing here retires it.
@@ -423,8 +423,8 @@ pointing here.
 - **Retiring the token lane.** Its own issue, and decisions 5 and 6 are what
   make it reachable: once the credential decides what may be subscribed,
   `notify-token` answers a question nobody asks. What goes with it is larger
-  than the endpoint — `parseNotifToken`, `tokenExpiryLoop`, `jwt-expired`, the
-  per-subscription expiry map, `provisionalGrace` and `dropIfUnproven` (which
+  than the endpoint — `parseNotifToken`, the token half of `sweepSubscriptions`,
+  `jwt-expired`, the per-subscription expiry map, `provisionalGrace` and `dropIfUnproven` (which
   exist only because a socket can arrive anonymous and prove itself with a
   token later), and then JWT itself: `AudNotif` is the audience on the one JWT
   Silo still issues, `option.JWTPrivateKey` has two consumers, `golang-jwt` has

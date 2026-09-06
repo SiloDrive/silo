@@ -51,16 +51,40 @@ func addUser(t *testing.T, pair *dbutil.DBPair, email string) account.ID {
 
 func issue(t *testing.T, id account.ID, kind credential.Kind, lifetime time.Duration) (string, string) {
 	t.Helper()
+	return issueWith(t, credential.IssueOpts{Kind: kind, AccountID: id, Lifetime: lifetime})
+}
+
+// issueScoped is issue for a device credential cut to one library, or to a
+// path inside one.
+func issueScoped(t *testing.T, id account.ID, scope string) (string, string) {
+	t.Helper()
+	return issueWith(t, credential.IssueOpts{
+		Kind: credential.KindDevice, AccountID: id, Lifetime: 24 * time.Hour, Scope: parseScope(t, scope),
+	})
+}
+
+// issueWith issues a read-write credential with a test label, returning its id
+// and secret.
+func issueWith(t *testing.T, opts credential.IssueOpts) (string, string) {
+	t.Helper()
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
-	c, secret, err := credential.Issue(ctx, credential.IssueOpts{
-		Kind: kind, AccountID: id, Label: "test", Perm: "rw", Lifetime: lifetime,
-	})
+	opts.Label, opts.Perm = "test", "rw"
+	c, secret, err := credential.Issue(ctx, opts)
 	if err != nil {
-		t.Fatalf("issuing a %s credential: %v", kind, err)
+		t.Fatalf("issuing a %s credential: %v", opts.Kind, err)
 	}
 	return c.ID, secret
+}
+
+func parseScope(t *testing.T, s string) credential.Scope {
+	t.Helper()
+	sc, err := credential.ParseScope(s)
+	if err != nil {
+		t.Fatalf("parsing scope %q: %v", s, err)
+	}
+	return sc
 }
 
 // seen records what the handler behind the middleware was given, so a test can
@@ -73,6 +97,12 @@ type seen struct {
 
 func run(t *testing.T, mw func(http.Handler) http.Handler, header string) (*httptest.ResponseRecorder, *seen) {
 	t.Helper()
+	return runAt(t, mw, "/api/silo/v1/libraries", header)
+}
+
+// runAt is run against a route of the caller's choosing.
+func runAt(t *testing.T, mw func(http.Handler) http.Handler, path, header string) (*httptest.ResponseRecorder, *seen) {
+	t.Helper()
 
 	got := &seen{}
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +112,7 @@ func run(t *testing.T, mw func(http.Handler) http.Handler, header string) (*http
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/api/silo/v1/libraries", nil)
+	req := httptest.NewRequest(http.MethodGet, path, nil)
 	if header != "" {
 		req.Header.Set("Authorization", header)
 	}
@@ -261,58 +291,6 @@ func TestOptionalCredentialStillRefusesABadOne(t *testing.T) {
 	}
 }
 
-// mutateID rewrites the id half of a token and re-checksums it, producing a
-// well-formed credential that no row matches. Editing a character in place
-// would fail the checksum instead, which is a different refusal.
-// mistype changes the last character of a credential, which is the last
-// character of its checksum, so the string is malformed rather than invalid.
-//
-// The replacement is chosen against the character it replaces. Writing "z"
-// unconditionally left one token in thirty-two unchanged -- and an unchanged
-// token is a valid one, so the case passed a request the test believed it had
-// broken and failed at a rate that read as an unrelated flake.
-// issueScoped is issue for a credential cut to one library, or to a path
-// inside one.
-func issueScoped(t *testing.T, id account.ID, scope string) (string, string) {
-	t.Helper()
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-
-	sc, err := credential.ParseScope(scope)
-	if err != nil {
-		t.Fatalf("parsing scope %q: %v", scope, err)
-	}
-	c, secret, err := credential.Issue(ctx, credential.IssueOpts{
-		Kind: credential.KindDevice, AccountID: id, Label: "scoped", Perm: "rw",
-		Lifetime: 24 * time.Hour, Scope: sc,
-	})
-	if err != nil {
-		t.Fatalf("issuing a scoped credential: %v", err)
-	}
-	return c.ID, secret
-}
-
-// runAt is run against a route of the caller's choosing.
-func runAt(t *testing.T, mw func(http.Handler) http.Handler, path, header string) (*httptest.ResponseRecorder, *seen) {
-	t.Helper()
-
-	got := &seen{}
-	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got.reached = true
-		got.acct = GetAccount(r)
-		got.cred = GetCredential(r)
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, path, nil)
-	if header != "" {
-		req.Header.Set("Authorization", header)
-	}
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	return rec, got
-}
-
 // A scoped credential may open the notification socket.
 //
 // The route-level narrowing refuses a scoped credential every route that names
@@ -367,11 +345,7 @@ func TestPermForAppliesTheNarrowing(t *testing.T) {
 	const other = "11111111-2222-3333-4444-555555555555"
 
 	scoped := func(s string) *credential.Credential {
-		sc, err := credential.ParseScope(s)
-		if err != nil {
-			t.Fatalf("parsing scope %q: %v", s, err)
-		}
-		return &credential.Credential{Perm: "rw", Scope: sc}
+		return &credential.Credential{Perm: "rw", Scope: parseScope(t, s)}
 	}
 
 	// Another library is refused without reaching the database, which is the
@@ -391,6 +365,13 @@ func TestPermForAppliesTheNarrowing(t *testing.T) {
 	}
 }
 
+// mistype changes the last character of a credential, which is the last
+// character of its checksum, so the string is malformed rather than invalid.
+//
+// The replacement is chosen against the character it replaces. Writing "z"
+// unconditionally left one token in thirty-two unchanged -- and an unchanged
+// token is a valid one, so the case passed a request the test believed it had
+// broken and failed at a rate that read as an unrelated flake.
 func mistype(s string) string {
 	last := s[len(s)-1]
 	replacement := byte('z')
@@ -400,6 +381,9 @@ func mistype(s string) string {
 	return s[:len(s)-1] + string(replacement)
 }
 
+// mutateID rewrites the id half of a token and re-checksums it, producing a
+// well-formed credential that no row matches. Editing a character in place
+// would fail the checksum instead, which is a different refusal.
 func mutateID(s string) string {
 	tok, err := credential.ParseToken(s)
 	if err != nil {
