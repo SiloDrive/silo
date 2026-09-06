@@ -126,6 +126,11 @@ type Client struct {
 	// this client's.
 	accountScoped atomic.Bool
 
+	// scopedTo is the one library a narrowed credential's account subscribe
+	// rings for, or "" when the socket rings for the whole set. Written once,
+	// before accountScoped is set, and read only after it is seen true.
+	scopedTo string
+
 	// ringOwed is the account socket's whole debt: a ring could not be
 	// handed to wch, and one is due when the queue moves. One bit rather
 	// than the per-library map above, because there is nothing in a ring to
@@ -261,7 +266,7 @@ func NewClient(conn *websocket.Conn, acct *account.Account, cred *credential.Cre
 	for _, id := range ids {
 		removeSubscription(id, c)
 	}
-	if c.accountScoped.Load() {
+	if c.accountScoped.Load() && c.scopedTo == "" {
 		removeAccountSocket(c.account.ID, c)
 	}
 	_ = conn.Close()
@@ -611,7 +616,8 @@ func (c *Client) subscribe(libraryID, user string, sub subscription) {
 	}
 }
 
-// subscribeAccount registers the client for every library its account can see.
+// subscribeAccount registers the client for every library its account can see
+// -- or, for a narrowed credential, for the one library its scope names.
 //
 // The set is resolved here, once, and registered in the same per-library index
 // every other subscription uses. NotifyLibraryUpdate does not learn about
@@ -620,23 +626,28 @@ func (c *Client) subscribe(libraryID, user string, sub subscription) {
 // cost is that the registration is a snapshot of a set that moves, which is
 // the resync loop's problem to solve and not this function's.
 //
-// Two refusals, both answered with subscribe-denied naming no library. No
-// credential means nothing to resolve the set from; the token lane cannot
-// stand in, because a token names one library and this frame names none. A
-// narrowed credential cannot answer for the set either: its scope is a ceiling
-// below the account, and this lane's frames are about libraries the scope
-// excludes. That second refusal is what the scoped ring will turn into a
-// subscription to the one library the scope names; until it lands, a narrowed
-// credential keeps the token lane, which works for it exactly as before.
+// A narrowed credential cannot answer for the set: its scope is a ceiling
+// below the account. It does not have to, because the scope already names the
+// one library it may watch, so the same frame subscribes it to that library
+// and the set is never resolved. A path scope is rung for its whole library,
+// deliberately: the ring says nothing but "look", and the look is authorized
+// on its own -- which is the opposite of the per-library lane's answer, where
+// the frame carries a commit id and a folder scope is refused the library.
+//
+// One refusal, answered with subscribe-denied naming no library: no
+// credential means nothing to resolve anything from, and the token lane
+// cannot stand in, because a token names one library and this frame names
+// none.
 func (c *Client) subscribeAccount() {
 	if c.cred == nil || c.account == nil {
 		log.Debugf("notif: client %d refused an account subscribe: no credential on the socket", c.ID)
 		c.sendAccountDenied()
 		return
 	}
-	if c.cred.Scope.LibraryID != "" {
-		log.Debugf("notif: client %d refused an account subscribe: credential %s is scoped to %q", c.ID, c.cred.ID, c.cred.Scope)
-		c.sendAccountDenied()
+	if lib := c.cred.Scope.LibraryID; lib != "" {
+		c.scopedTo = lib
+		c.accountScoped.Store(true)
+		c.subscribe(lib, "", subscription{lane: laneAccount})
 		return
 	}
 	ids, err := visibleLibraries(c.account.ID)
@@ -665,12 +676,16 @@ func (c *Client) subscribeAccount() {
 // The credential half is hygiene rather than the security boundary. The ring
 // carries nothing, and every fetch it provokes re-resolves the credential on
 // its own; what this stops is a revoked device being told the account is
-// active, and holding a socket for free. Gone, expired, disabled and narrowed
-// all close the socket, because in each case the credential that was granted
-// the account's set can no longer answer for it. A store that cannot be read
-// is none of those: dropping every account socket on a slow query would turn
-// it into a reconnect storm asking the same database, so that tick is logged
-// and the next one asks again.
+// active, and holding a socket for free. Gone, expired, disabled and a scope
+// that moved all close the socket, because in each case the credential that
+// subscribed is not the one on the row, and the client reconnects to be
+// answered by the one it now holds. A store that cannot be read is none of
+// those: dropping every account socket on a slow query would turn it into a
+// reconnect storm asking the same database, so that tick is logged and the
+// next one asks again.
+//
+// A scoped socket's set is its scope, and the credential re-read is the whole
+// of its tick: the library going away revokes the credential with it.
 //
 // It reports whether the client has been told anything -- rung, or closed --
 // so a caller acting on a hook can ring for the change the resync could not
@@ -685,10 +700,12 @@ func (c *Client) resyncAccount() bool {
 	case err != nil:
 		log.Warnf("notif: client %d: re-reading credential %s: %v", c.ID, c.cred.ID, err)
 		return false
-	case cred.Scope.LibraryID != "":
-		log.Infof("notif: closing client %d: credential %s was narrowed to %q since it subscribed to the account", c.ID, c.cred.ID, cred.Scope)
+	case cred.Scope.LibraryID != c.scopedTo:
+		log.Infof("notif: closing client %d: credential %s is scoped to %q, and subscribed with scope %q", c.ID, c.cred.ID, cred.Scope, c.cred.Scope)
 		c.signalClose()
 		return true
+	case c.scopedTo != "":
+		return false
 	}
 
 	ids, err := visibleLibraries(c.account.ID)

@@ -376,17 +376,23 @@ All three are direct calls from the handlers — `fileserver/api` imports
 unregistered. A per-library socket is not told about a rename: that lane's
 frame carries a commit id, and a rename mints none.
 
-### 5. The scoped ring
+### 5. The scoped ring — **done**
 
 A narrowed credential's subscribe takes no library id and no token: the scope
 names the library, so the frame is the same `{"account": true}` and the server
 answers it with a subscription to `Scope.LibraryID` rather than to the set.
 Same `account-update` frame, same one-bit debt, same resync tick re-resolving
-the credential.
+the credential. The set is never resolved for it, and it is not in the
+account-keyed index: a created library is one it cannot see.
 
-It lands after the account ring rather than beside it because it shares every
-part of that machinery and adds one branch to it. Built first, it would be the
-same code with the interesting half missing.
+Its tick is the credential re-read alone. The scope is compared against the
+one the socket subscribed with — moved, widened or narrowed, the credential is
+not the one that subscribed and the socket closes — and the library going away
+revokes the credential with it (`credential.RevokeByLibrary`), so delete needs
+no second path.
+
+It landed after the account ring rather than beside it because it shares every
+part of that machinery and adds one branch to it.
 
 ### 6. The feature name and the docs
 
@@ -405,9 +411,8 @@ advertise a distinction no caller can act on.
    asking for the account's set gets its own library's ring and not the
    account's. Both before anything is built: the first is the rule, the second
    is the whole of decisions 5 and 6 in one assertion.
-   **Done, in its step 1 form:** an anonymous account subscribe is refused,
-   and a narrowed one is refused rather than rung. The scoped ring's half is
-   step 5's to write.
+   **Done.** The refusal in step 1, the scoped ring in step 5; the ring test
+   also asserts the set was never resolved.
 2. A commit to a library the account owns reaches an account-scoped socket that
    never named that library. **Done.**
 3. A commit to a library the account cannot see reaches it not at all.
@@ -426,7 +431,8 @@ advertise a distinction no caller can act on.
 7. A narrowed-after-connect credential closes it likewise. **Done.**
 8. A path-scoped credential is rung for a commit elsewhere in its library —
    pinning decision 6's trade as deliberate, so that narrowing it later is a
-   change to a test rather than a silent one.
+   change to a test rather than a silent one. **Done**, and it names
+   `TestPermForAppliesTheNarrowing` as its contrast.
 
 ## What this does not do
 

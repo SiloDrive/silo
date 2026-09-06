@@ -69,25 +69,102 @@ func TestAnAccountSubscribeWithNoCredentialIsRefused(t *testing.T) {
 	}
 }
 
-// A narrowed credential is refused the account's set.
+// A scoped credential asking for the account's set gets its own library's
+// ring, and not the account's.
 //
-// It cannot answer for the set: a scope is a ceiling below the account, and
-// the frames this lane sends are about libraries the scope excludes. The
-// scoped ring, when it lands, is what turns this refusal into a subscription
-// to the one library the scope names -- until then the refusal is the whole
-// answer, and the token lane still works for such a credential.
-func TestAnAccountSubscribeFromANarrowedCredentialIsRefused(t *testing.T) {
-	visibleLibrariesReturning(t, testLibrary)
+// This is decisions 5 and 6 in one assertion. The scope is a ceiling below the
+// account, so the credential cannot answer for the set -- and it does not have
+// to, because the scope already names the one library it may watch. The frame
+// is the same, and the credential decides what it gets. The set is never
+// resolved: a query for libraries this credential may not be told about is a
+// query for nothing.
+func TestAScopedCredentialAskingForTheAccountGetsItsLibrarysRing(t *testing.T) {
+	const other = "11111111-2222-3333-4444-555555555555"
+	visibleLibrariesFrom(t, func() []string {
+		t.Error("the account's set was resolved for a credential that cannot see it")
+		return []string{testLibrary, other}
+	})
+	cred := testCredential()
+	cred.Scope = credential.Scope{LibraryID: testLibrary}
+	stillGood(t, cred)
+	conn := dialWithCredential(t, cred)
+	subscribeToAccount(t, conn)
+	waitForSubscribers(t, testLibrary, 1)
+
+	if n := subscriberCount(other); n != 0 {
+		t.Fatalf("a scoped credential was subscribed to a library outside its scope")
+	}
+
+	NotifyLibraryUpdate(testLibrary, "0123456789abcdef0123456789abcdef01234567")
+	msg := nextFrame(t, conn, 2*time.Second)
+	if msg.Type != EventTypeAccountUpdate {
+		t.Fatalf("a scoped socket was sent %s, want %s", msg.Type, EventTypeAccountUpdate)
+	}
+
+	NotifyLibraryUpdate(other, "0123456789abcdef0123456789abcdef01234567")
+	expectNoFrame(t, conn, 200*time.Millisecond)
+}
+
+// A path-scoped credential is rung for a commit elsewhere in its library.
+//
+// This pins decision 6's trade as deliberate. On the per-library lane the same
+// credential is refused its library outright -- TestPermForAppliesTheNarrowing
+// in middleware is the contrast -- because that lane's frame carries a commit
+// id, and a folder scope cannot be answered about the library as a whole
+// without telling the holder about paths it may not reach. A ring tells it
+// nothing but "look", and the look is authorized on its own. Narrowing this
+// later is a change to this test, not a silent one.
+func TestAPathScopedCredentialIsRungForACommitElsewhereInItsLibrary(t *testing.T) {
+	cred := testCredential()
+	cred.Scope = credential.Scope{LibraryID: testLibrary, Path: "/photos"}
+	stillGood(t, cred)
+	conn := dialWithCredential(t, cred)
+	subscribeToAccount(t, conn)
+	waitForSubscribers(t, testLibrary, 1)
+
+	NotifyLibraryUpdate(testLibrary, "0123456789abcdef0123456789abcdef01234567")
+	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
+}
+
+// A scoped socket closes when its credential's scope moves.
+//
+// The socket was granted one library's ring on the strength of a scope that
+// named it. Re-read with a different scope -- or none -- the credential is
+// not the one that subscribed, and the client reconnects to be answered by
+// the one it now holds.
+func TestAScopedSocketClosesWhenItsCredentialsScopeMoves(t *testing.T) {
+	const other = "11111111-2222-3333-4444-555555555555"
+	recheckReturning(t, func(string) (*credential.Credential, error) {
+		cred := testCredential()
+		cred.Scope = credential.Scope{LibraryID: other}
+		return cred, nil
+	})
 
 	cred := testCredential()
 	cred.Scope = credential.Scope{LibraryID: testLibrary}
 	conn := dialWithCredential(t, cred)
 	subscribeToAccount(t, conn)
+	waitForSubscribers(t, testLibrary, 1)
 
-	awaitFrame(t, conn, EventTypeSubscribeDenied, 2*time.Second)
-	if n := subscriberCount(testLibrary); n != 0 {
-		t.Errorf("a narrowed account subscribe registered %d subscriber(s)", n)
+	snapshotSubscribers(testLibrary)[0].resyncAccount()
+
+	if !closedWithin(t, conn, 2*time.Second) {
+		t.Fatal("the socket stayed open on a credential whose scope had moved")
 	}
+}
+
+// A rename rings a scoped socket too. Its set is the scope and cannot move,
+// but the name is not in the set.
+func TestARenameRingsAScopedSocket(t *testing.T) {
+	cred := testCredential()
+	cred.Scope = credential.Scope{LibraryID: testLibrary}
+	stillGood(t, cred)
+	conn := dialWithCredential(t, cred)
+	subscribeToAccount(t, conn)
+	waitForSubscribers(t, testLibrary, 1)
+
+	NotifyLibraryChanged(testLibrary)
+	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
 }
 
 // A commit to a library the account can see reaches an account-scoped socket
@@ -214,9 +291,9 @@ func recheckReturning(t *testing.T, fn func(id string) (*credential.Credential, 
 }
 
 // stillGood is a recheck that finds the credential as it was.
-func stillGood(t *testing.T) {
+func stillGood(t *testing.T, cred *credential.Credential) {
 	t.Helper()
-	recheckReturning(t, func(string) (*credential.Credential, error) { return testCredential(), nil })
+	recheckReturning(t, func(string) (*credential.Credential, error) { return cred, nil })
 }
 
 // A library that appears in the set after the socket was up rings, and its
@@ -229,7 +306,7 @@ func TestALibraryThatAppearsInTheSetRingsAndIsThenWatched(t *testing.T) {
 	const created = "11111111-2222-3333-4444-555555555555"
 	set := []string{testLibrary}
 	visibleLibrariesFrom(t, func() []string { return set })
-	stillGood(t)
+	stillGood(t, testCredential())
 
 	conn, c := liveAccountClient(t)
 
@@ -252,7 +329,7 @@ func TestALibraryThatAppearsInTheSetRingsAndIsThenWatched(t *testing.T) {
 func TestALibraryThatLeavesTheSetRingsAndIsNoLongerWatched(t *testing.T) {
 	set := []string{testLibrary}
 	visibleLibrariesFrom(t, func() []string { return set })
-	stillGood(t)
+	stillGood(t, testCredential())
 
 	conn, c := liveAccountClient(t)
 
@@ -269,7 +346,7 @@ func TestALibraryThatLeavesTheSetRingsAndIsNoLongerWatched(t *testing.T) {
 // rung every five minutes for no reason would learn to ignore the ring.
 func TestAnUnchangedSetDoesNotRing(t *testing.T) {
 	visibleLibrariesReturning(t, testLibrary)
-	stillGood(t)
+	stillGood(t, testCredential())
 
 	conn, c := liveAccountClient(t)
 	c.resyncAccount()
@@ -351,7 +428,7 @@ func TestAResyncThatCannotReadTheStoreKeepsTheSocket(t *testing.T) {
 // notice on its own.
 func TestARenameRingsAnAccountSocketWithoutACommit(t *testing.T) {
 	visibleLibrariesReturning(t, testLibrary)
-	stillGood(t)
+	stillGood(t, testCredential())
 
 	conn, _ := liveAccountClient(t)
 
@@ -373,7 +450,7 @@ func TestACreatedLibraryRingsItsOwnerAndIsThenWatched(t *testing.T) {
 	const created = "11111111-2222-3333-4444-555555555555"
 	set := []string{testLibrary}
 	visibleLibrariesFrom(t, func() []string { return set })
-	stillGood(t)
+	stillGood(t, testCredential())
 
 	conn, _ := liveAccountClient(t)
 
@@ -391,7 +468,7 @@ func TestACreatedLibraryRingsItsOwnerAndIsThenWatched(t *testing.T) {
 func TestADeletedLibraryRingsAndIsNoLongerWatched(t *testing.T) {
 	set := []string{testLibrary}
 	visibleLibrariesFrom(t, func() []string { return set })
-	stillGood(t)
+	stillGood(t, testCredential())
 
 	conn, _ := liveAccountClient(t)
 
