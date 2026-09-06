@@ -770,8 +770,63 @@ A **scoped credential may open the socket**, unlike every other route that
 names no library: the upgrade answers nothing, and each subscribe is checked
 against the credential on its own. A credential cut to one library is granted
 that library and denied the rest. A credential cut to a *path* inside a library
-is denied even its own, because "what changed in this library" cannot be
-answered partially — the same rule that refuses it `changes`.
+is denied even its own on this lane, because a `library-update` names a commit
+and "what changed in this library" cannot be answered partially — the same rule
+that refuses it `changes`. What such a credential gets instead is the account
+ring below.
+
+#### Subscribing to the account
+
+Since 0.5.0 one frame subscribes a socket to every library its account can
+see — owned, or shared whole with it or with a group it is in, which is exactly
+the set `GET /libraries` answers with. Advertised as `notifications-account`.
+
+```json
+{"type": "subscribe", "content": {"account": true}}
+```
+
+It is authorized by the credential the handshake presented and by nothing
+else: an anonymous socket is refused it with
+`{"type": "subscribe-denied", "content": {"account": true}}`, and there is no
+token that could stand in, because a token names one library and this frame
+names none.
+
+What arrives is a **bare ring**:
+
+```json
+{"type": "account-update", "content": {}}
+```
+
+It rings for a commit to any library in the set, and for the four things the
+per-library lane never pushed: a library created, one shared with the account,
+one renamed, one deleted or unshared. The rename matters most — it is one
+catalog UPDATE and mints no commit, so no head moves and `library-update` has
+nothing to say — and a client that carried each library's name in its anchor
+to notice renames on its own can stop.
+
+The frame carries nothing on purpose. The ring says the set moved;
+`GET /libraries` says what, and its `head_commit_id` per row is what a client
+compares against its anchors to learn which libraries moved — one request,
+not one `changes` call per library. Because the frame carries nothing, it
+needs no lease: nothing in it was authorized, and the fetch it provokes is
+authorized on its own. Under a burst the ring is the better frame too: thirty
+commits across an account collapse into one ring and one listing.
+
+**The credential decides which ring answers the frame.** An unscoped
+credential gets the account's set. A credential cut to one library — or to a
+path inside one — gets that library's ring and nothing else, for the same
+frame: the scope already names the one library it may watch, and a ring tells
+it nothing but "look". A client does not choose between the two rings, which
+is why one feature name covers both.
+
+The socket re-checks itself every five minutes: the credential is re-read and
+the set re-resolved, so a library that appears or leaves by a path this server
+did not see — an operator's command, a second server on the same database —
+rings within that interval rather than never. A credential revoked, expired,
+disabled, or whose scope has changed closes the socket at the same tick; the
+client reconnects and is answered by the credential it now holds. That is
+hygiene rather than the authorization boundary, which is the pull the ring
+provokes.
 
 #### Subscribing with a minted token
 
@@ -817,12 +872,14 @@ Send one frame per batch of libraries:
 #### Frames
 
 Inbound frames are `{"type": "library-update", "content": {"library_id": …, "commit_id": …}}`,
+`{"type": "account-update", "content": {}}`,
 `{"type": "jwt-expired", "content": {"library_id": …}}` and
-`{"type": "subscribe-denied", "content": {"library_id": …}}`; unknown types are
-ignored rather than closing the socket. `unsubscribe` takes the same frame
-shape as `subscribe`, and needs no token on either lane. The server pings every
-30s and drops a client that has not ponged within 90s; most WebSocket libraries
-answer pings for you.
+`{"type": "subscribe-denied", "content": {"library_id": …}}` or
+`{… "content": {"account": true}}`; unknown types are ignored rather than
+closing the socket. `unsubscribe` takes the same frame shape as `subscribe`,
+and needs no token on either lane. The server pings every 30s and drops a
+client that has not ponged within 90s; most WebSocket libraries answer pings
+for you.
 
 The two lanes may be mixed on one socket, per library: a frame either presents
 a token or asks the server to use the credential it already has. What it must
@@ -879,7 +936,10 @@ wrong: an older server reads a missing token as a bad one and answers
 `jwt-expired`, which a client cannot tell from the token it did send having
 lapsed — so it mints a fresh one, sends it, and is told the same thing again.
 Seeing the name is what lets a client delete its notify-token code; not seeing
-it is what tells it to keep it.
+it is what tells it to keep it. `notifications-account` is the same shape one
+step further: seeing it is what lets a client send `{"account": true}` and
+stop subscribing per library at all, and not seeing it is the difference
+between a server with no account mode and an account with nothing happening.
 
 `version` is semver with no leading `v`. A build from an untagged or dirty tree
 keeps its suffix — `0.5.0-3-gabc1234`, `0.5.0-dirty` — so parse the leading
@@ -1507,13 +1567,21 @@ whole path: `DeriveCredentials`, `OpenIdentityWithPassword`, `UnwrapCK`.
 
 ### Push
 
-`commit_id` in a `library-update` is exactly the anchor `changes` wants, so
-the frame translates directly into `GET changes?since=<your last anchor>`. Do
-not treat the pushed `commit_id` as your new anchor without fetching — you may
-have missed events; push is a hint and the pull is the truth. Re-mint the
-notification token on `expires_at` rather than on `jwt-expired`, so a
-long-running mount never sees the disconnect. `expires_at` is a number where
-every other token response on this lane is strings; decode into a typed struct
+If the server advertises `notifications-account`, open the socket with your
+credential, send `{"account": true}`, and treat every `account-update` as
+"list the libraries": one `GET /libraries`, compare `head_commit_id` per row
+against your anchors, and fetch `changes` for the ones that moved. That is the
+whole push loop, it covers renames and new libraries, and there is no token to
+mint or renew.
+
+On the per-library lane, `commit_id` in a `library-update` is exactly the
+anchor `changes` wants, so the frame translates directly into
+`GET changes?since=<your last anchor>`. Do not treat the pushed `commit_id` as
+your new anchor without fetching — you may have missed events; push is a hint
+and the pull is the truth. A client still minting tokens should re-mint on
+`expires_at` rather than on `jwt-expired`, so a long-running mount never sees
+the disconnect. `expires_at` is a number where every other token response on
+this lane is strings; decode into a typed struct
 (`docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md`). A
 `404` from `notify-token` means fall back to polling, not an error.
 

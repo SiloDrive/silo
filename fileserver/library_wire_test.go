@@ -17,6 +17,7 @@ import (
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
 	"github.com/dkam/silo/fileserver/notif"
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/setup"
 	"github.com/dkam/silo/fileserver/share"
 	"github.com/dkam/silo/internal/lexicon"
@@ -378,5 +379,31 @@ func TestTheAccessTokenLaneIsGone(t *testing.T) {
 	body := `{"library_id":"` + id + `","op":"download"}`
 	if code, _ := call(t, "POST", base+"/api/silo/v1/access-tokens", token, body); code != http.StatusNotFound {
 		t.Errorf("POST /access-tokens: status %d, want 404", code)
+	}
+}
+
+// The account ring has a feature name, because the fallback is a whole code
+// path: without it a client cannot tell "this server has no account mode"
+// from "this account is quiet", and those two look identical from the
+// outside. One name covers both rings -- a client sends the same frame and
+// the credential decides what it gets.
+func TestServerInfoAdvertisesTheAccountRing(t *testing.T) {
+	orig := option.EnableNotification
+	t.Cleanup(func() { option.EnableNotification = orig })
+	option.EnableNotification = true
+
+	base, _ := wire(t)
+	code, body := call(t, "GET", base+"/api/silo/v1/server-info", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("server-info: status %d", code)
+	}
+	var out struct {
+		Features []string `json:"features"`
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	if !slices.Contains(out.Features, "notifications-account") {
+		t.Errorf("features = %v, want \"notifications-account\"", out.Features)
 	}
 }

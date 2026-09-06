@@ -47,7 +47,7 @@ is the destination and this one is the route.
 | Credentials: one token format, one `Resolve`, scopes, permission ceilings, revocation, password enrolment | [`auth.md`](auth.md) Part 1 |
 | Quota: enforcement at admission, per-owner serialization, `507`, and `silo user quota` | [`quota.md`](quota.md) |
 | Reclaiming: deleted-library GC, orphan collection, history expiry, and the retention policy behind them | [`storage.md`](storage.md) § Reclaiming, [`quota.md`](quota.md) § Order of work |
-| Push notifications over `/notification`, with the gap-after-reconnect contract | [`protocol.md`](protocol.md) |
+| Push notifications over `/notification`, with the gap-after-reconnect contract, and the account ring that covers renames and new libraries | [`protocol.md`](protocol.md) § Change notifications, [`plans/notifications-account.md`](plans/notifications-account.md) |
 | Backup and restore, and why `cp silo.db` is not one | [`backup.md`](backup.md) |
 | Error reporting and issue grouping | [`error-reporting.md`](error-reporting.md) |
 | The E2EE content format — codecs, name encryption, key wrapping, key-free readers, test vectors | [`spec/store-format.md`](spec/store-format.md), oriented by [`encryption.md`](encryption.md) |
@@ -350,6 +350,15 @@ user data with nobody watching.
 
 **One piece of debris.** Nothing creates a `VirtualLibrary` row while several
 queries still join the table.
+
+**Retiring the notification token lane.** The account ring
+([`plans/notifications-account.md`](plans/notifications-account.md)) means a
+credential decides what a socket may watch, and `notify-token` answers a
+question nobody asks. What goes with it is larger than the endpoint — the
+JWT parser, the token half of the sweep, the anonymous grace window, and the
+last use of `SILO_JWT_SECRET` — and it is sequenced after both silo-drive
+clients migrate. The plan's Open section has the argument it must make.
+Tracked: #54 for the ring; no issue yet for the retirement.
 
 ## Parked
 

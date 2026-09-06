@@ -1,8 +1,8 @@
 # Plan: an account-scoped notification socket
 
-Owns the build of [#54](https://git.booko.info/Silo/silo/issues/54). The wire
-it lands is normative in [`protocol.md`](../protocol.md) § Change notifications
-once built; until then this file is where the shape is argued.
+Owns the build of [#54](https://git.booko.info/Silo/silo/issues/54). Built;
+the wire is normative in [`protocol.md`](../protocol.md) § Change notifications,
+and this file is where the shape was argued and what each step left behind.
 
 ## The premise
 
@@ -394,12 +394,13 @@ no second path.
 It landed after the account ring rather than beside it because it shares every
 part of that machinery and adds one branch to it.
 
-### 6. The feature name and the docs
+### 6. The feature name and the docs — **done**
 
 `notifications-account` in `features()` (`fileserver/api/api.go`),
 conditional on `EnableNotification` beside `notifications`. Without it a client
 cannot tell "this server has no account mode" from "this account is quiet",
-and those two look identical from the outside.
+and those two look identical from the outside. The wire is now normative in
+[`protocol.md`](../protocol.md) § Subscribing to the account.
 
 One name covers both rings. A client does not choose between them — it sends
 the same frame and the credential decides what it gets — so a second name would

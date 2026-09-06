@@ -167,6 +167,13 @@ func features() []string {
 		// forever -- see notif.EventTypeSubscribeDenied. Seeing this name is
 		// what lets a client stop fetching notify-tokens at all.
 		f = append(f, "notifications-credential") // subscribe with no jwt_token
+		// One subscribe frame for everything the account can see, answered
+		// with a bare ring; a narrowed credential gets its one library's
+		// ring for the same frame. It needs a name because without it a
+		// client cannot tell "this server has no account mode" from "this
+		// account is quiet", and those two look identical from the outside.
+		// One name for both rings: a client does not choose between them.
+		f = append(f, "notifications-account") // subscribe with {"account": true}, account-update
 	}
 	return f
 }
