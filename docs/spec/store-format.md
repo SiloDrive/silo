@@ -792,6 +792,69 @@ name at the branch-boundary lengths with its ciphertext and URL form. The two
 directories share every name, so no ciphertext may appear in both — that
 assertion is the per-directory keying, tested.
 
+## The spine rewrite
+
+A write changes one directory, but a tree is content-addressed: the changed
+directory gets a new id, so its parent's entry changes, so the parent gets a new
+id, up to the root. That chain — root down to the directory that changed — is
+the **spine**, and rewriting it is the only tree-level operation in the format.
+
+Given the chain as it was read, the index of the shallowest directory whose
+entry list actually changed, and the mutation's timestamp, the rewritten bytes
+are fully determined. Three rules decide them.
+
+1. **The salt is carried forward.** See [`dir_salt`](#dir_salt). A rewritten
+   directory keeps the salt of the object it replaces; a directory being
+   created arrives with a fresh one.
+2. **Only the changed directory's mtime moves.** The entry naming a child is
+   stamped with the mutation's timestamp when that child is at or below the
+   shallowest changed directory. Above that, the entry keeps the mtime it had
+   and takes only its child's new id. A writer that stamps every level reports
+   the whole path modified on every write, and `changes?since=` then names
+   directories nothing happened in.
+3. **The mutation's timestamp is not the file's.** The write's timestamp says
+   when the tree changed. A file's own mtime lives in the file's own entry and
+   is whatever the caller put there — for an upload, the mtime the file had on
+   disk. A writer that uses one number for both cannot preserve either.
+
+A fourth thing falls out of the encoding being deterministic rather than being
+a rule of its own: a level whose rewritten bytes come out at the id it was read
+at has not changed, and is not stored again. That is what makes a no-op
+`MkdirAll` cost no writes and stops a lost head race re-uploading the whole
+spine on every attempt. Store the levels **deepest first**, so no stored parent
+ever names a child that is not there yet.
+
+Rules 2 and 3 are the two a port gets wrong silently: the ids are all still
+valid, the tree still reads, and only the modification times are wrong — which
+surfaces later as a sync client deciding every file on the far side is newer
+than the one on disk.
+
+### Test vectors
+
+[`spine.json`](../../store/testdata/vectors/spine.json). One case is one
+rewrite: `chain` is the directories from the root down as they were read, with
+each entry's name in the clear beside the ciphertext it encrypts to under that
+level's salt; `changed` and `now` are the other two inputs; `sealed` is what
+each level became.
+
+Two fields exist so a port can check the rules without decoding anything.
+`child_entry_mtime` states rule 2's outcome per level — the mtime the entry
+naming the next level down ended up with. `rewritten` is false where the level
+sealed to the bytes it was read at, which is the caller's signal not to store
+it.
+
+The chains are **settled**: every entry's `child_id` is the real id of the
+level below it, so each case is a tree that could exist. Without that, every
+parent names an id nothing hashes to, every level comes back rewritten, and
+`nothing-changed` — the case that pins a no-op costing no writes — could not be
+stated at all.
+
+The case that earns the file is `three-levels-only-the-changed-mtime-moves`. No
+single-object vector can catch a writer that stamps every level, because every
+object it produces is individually well-formed; only a chain shows it. Before
+this file, the only assertion of that rule needed a running fileserver, an
+account, a login and a library.
+
 ## Client rules that ride on the format
 
 - **silo-drive mounts `nosuid,nodev` by default.** The format keeps all twelve

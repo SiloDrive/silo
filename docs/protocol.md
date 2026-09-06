@@ -1322,6 +1322,16 @@ and a new commit. Three rules the server cannot enforce for you:
 - **The mutation's timestamp is not the file's mtime.** You preserve a file's
   mtime, which may be years old; the directory it lands in changed just now.
 
+All three have vectors: [`spine.json`](../store/testdata/vectors/spine.json)
+commits six rewrites as chains in and sealed bytes out, with each level's
+resulting mtime stated beside it so the second rule can be checked without
+decoding anything. It is the one file here that pins a *rewrite* rather than an
+object — no single-object vector can catch a writer that stamps every level,
+because each object it produces is individually well-formed. In Go the rewrite
+itself is `Keyring.RewriteSpine` (`store/spine.go`), which takes the chain and
+returns the sealed bytes; fetching the chain and storing what changed stay in
+the client, and that split is why the rules are now executable off the network.
+
 **There is no server-side merge on `PUT head`.** Merging trees means reading
 names. `PUT head` is a compare-and-swap, and a writer that loses gets `412`,
 not a merge: re-read the head, rebuild your change on the new root, retry.

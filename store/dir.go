@@ -78,6 +78,41 @@ func (d *Directory) Validate() error {
 	return nil
 }
 
+// EntryIndex finds an entry by its stored name bytes, or -1.
+//
+// The one scan every caller needs: a directory's entries are a list, and what
+// identifies one is the name exactly as the object holds it — ciphertext in an
+// encrypted library, and opaque to this code either way.
+func (d *Directory) EntryIndex(name []byte) int {
+	for i := range d.Entries {
+		if bytes.Equal(d.Entries[i].Name, name) {
+			return i
+		}
+	}
+	return -1
+}
+
+// SetEntry inserts e, or replaces the entry sharing its name.
+func (d *Directory) SetEntry(e DirEntry) {
+	if i := d.EntryIndex(e.Name); i >= 0 {
+		d.Entries[i] = e
+		return
+	}
+	d.Entries = append(d.Entries, e)
+}
+
+// Clone copies a directory deeply enough to be rewritten.
+//
+// A reader that caches decoded directories hands out shared pointers, so an
+// entry slice appended to in place would be appended to under every reader
+// that had already resolved through it. RewriteSpine mutates the directories
+// it is given; a caller holding cached ones passes clones.
+func (d *Directory) Clone() *Directory {
+	out := &Directory{Salt: d.Salt, Entries: make([]DirEntry, len(d.Entries))}
+	copy(out.Entries, d.Entries)
+	return out
+}
+
 // canonical returns the entries in the order the object stores them, with the
 // two writer-side normalisations applied: timestamps clamped into range and
 // symlink modes forced to the pinned value.

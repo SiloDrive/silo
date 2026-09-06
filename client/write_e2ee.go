@@ -186,7 +186,7 @@ func (sp *spine) set(e store.DirEntry, name string) error {
 	}
 	sp.markChanged(len(sp.dirs) - 1)
 	e.Name = enc
-	setEntry(sp.leaf(), e)
+	sp.leaf().SetEntry(e)
 	return nil
 }
 
@@ -197,7 +197,7 @@ func (sp *spine) remove(name string) error {
 		return err
 	}
 	d := sp.leaf()
-	i := entryIndex(d, enc)
+	i := d.EntryIndex(enc)
 	if i < 0 {
 		return fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
@@ -302,7 +302,7 @@ func (l *EncryptedLibrary) openSpine(root store.ID, segs []string, create bool, 
 			if err != nil {
 				return nil, err
 			}
-			dir, names = cloneDir(d.dir), d.names
+			dir, names = d.dir.Clone(), d.names
 		}
 		sp.dirs = append(sp.dirs, dir)
 		sp.ciphers = append(sp.ciphers, names)
@@ -328,50 +328,39 @@ func (l *EncryptedLibrary) openSpine(root store.ID, segs []string, create bool, 
 	return sp, nil
 }
 
-// publish seals the spine from the deepest directory up, writing each new id
-// into its parent's entry, and returns the new root id.
+// publish rewrites the spine and stores what changed, returning the new root.
 //
-// A directory whose sealed bytes come out at the id it was read at is not
-// stored again: the encoding is deterministic, which is the same fact the
-// nothing-changed check in mutate rests on. That is what makes a no-op
+// The rewrite itself is store.RewriteSpine: the three format rules a port has
+// to get right live there, with the network on this side of the call. What
+// stays here is the one question the store cannot answer — which levels are
+// worth storing. A directory whose sealed bytes come out at the id it was read
+// at is not stored again: the encoding is deterministic, which is the same fact
+// the nothing-changed check in mutate rests on. That is what makes a no-op
 // MkdirAll cost no writes, and what stops a lost head race re-uploading the
 // whole spine on every attempt.
 func (l *EncryptedLibrary) publish(sp *spine, now int64) (store.ID, error) {
-	var childID store.ID
-	for i := len(sp.dirs) - 1; i >= 0; i-- {
-		if i < len(sp.dirs)-1 {
-			// Update the entry for the child just sealed. Its mtime moves only
-			// if the child is at or below the shallowest directory whose entry
-			// list changed; above that, nothing about this directory's
-			// contents changed but one id.
-			name, err := sp.ciphers[i].Encrypt(sp.names[i])
-			if err != nil {
-				return store.ID{}, err
-			}
-			d := sp.dirs[i]
-			e := store.DirEntry{ChildID: childID, Type: store.NodeDir, Name: name, Mode: 0o755}
-			if at := entryIndex(d, name); at >= 0 {
-				e.Mtime = d.Entries[at].Mtime
-			}
-			if i+1 >= sp.changed {
-				e.Mtime = now
-			}
-			setEntry(d, e)
+	chain := make([]store.SpineDir, len(sp.dirs))
+	for i, d := range sp.dirs {
+		chain[i] = store.SpineDir{Dir: d}
+		if i < len(sp.names) {
+			chain[i].Name = sp.names[i]
 		}
-
-		encoded, err := l.kr.SealDirectory(sp.dirs[i])
-		if err != nil {
-			return store.ID{}, err
-		}
-		childID = store.ObjectID(encoded)
-		if childID == sp.origID[i] {
+	}
+	sealed, root, err := l.kr.RewriteSpine(chain, sp.changed, now)
+	if err != nil {
+		return store.ID{}, err
+	}
+	// Deepest first, so no stored parent ever names an absent child.
+	for i := len(sealed) - 1; i >= 0; i-- {
+		id := store.ObjectID(sealed[i])
+		if id == sp.origID[i] {
 			continue
 		}
-		if err := l.c.PutObject(l.ID, childID, encoded); err != nil {
+		if err := l.c.PutObject(l.ID, id, sealed[i]); err != nil {
 			return store.ID{}, fmt.Errorf("client: storing a directory: %w", err)
 		}
 	}
-	return childID, nil
+	return root, nil
 }
 
 // writeContent turns a stream into a stored manifest and returns its id.
@@ -482,29 +471,6 @@ func (l *EncryptedLibrary) uploadChunksOf(r io.Reader) ([]store.ChunkRef, int64,
 	return refs, size, nil
 }
 
-// entryIndex finds an entry by its stored name bytes, or -1.
-//
-// The one scan every caller here needs: a directory's entries are a list, and
-// what identifies one is the name exactly as the object holds it -- ciphertext
-// in an encrypted library, and opaque to this code either way.
-func entryIndex(d *store.Directory, name []byte) int {
-	for i := range d.Entries {
-		if bytes.Equal(d.Entries[i].Name, name) {
-			return i
-		}
-	}
-	return -1
-}
-
-// setEntry inserts e, or replaces the entry sharing its name.
-func setEntry(d *store.Directory, e store.DirEntry) {
-	if i := entryIndex(d, e.Name); i >= 0 {
-		d.Entries[i] = e
-		return
-	}
-	d.Entries = append(d.Entries, e)
-}
-
 // lookup finds one child by plaintext name. SIV is deterministic, so the
 // wanted name encrypts to exactly the bytes the object holds, and the match is
 // a comparison rather than a decrypt of every entry.
@@ -513,17 +479,8 @@ func lookup(d *store.Directory, names *store.NameCipher, seg string) (store.DirE
 	if err != nil {
 		return store.DirEntry{}, false, err
 	}
-	if i := entryIndex(d, want); i >= 0 {
+	if i := d.EntryIndex(want); i >= 0 {
 		return d.Entries[i], true, nil
 	}
 	return store.DirEntry{}, false, nil
-}
-
-// cloneDir copies a directory deeply enough to be rewritten: the cache hands
-// out shared pointers, and an entry slice appended to in place would be
-// appended to under every reader that had already resolved through it.
-func cloneDir(d *store.Directory) *store.Directory {
-	out := &store.Directory{Salt: d.Salt, Entries: make([]store.DirEntry, len(d.Entries))}
-	copy(out.Entries, d.Entries)
-	return out
 }

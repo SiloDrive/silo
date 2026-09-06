@@ -369,7 +369,7 @@ func (l *EncryptedLibrary) DecryptPath(p string) (string, error) {
 		// By the ciphertext rather than by re-encrypting the name just
 		// decrypted: SIV is deterministic, so those are the same bytes, and
 		// Decrypt has already applied the name rules on the way back.
-		j := entryIndex(d.dir, ct)
+		j := d.dir.EntryIndex(ct)
 		if j < 0 {
 			return "", fmt.Errorf("%w: %s is no longer in the tree", ErrNotFound, strings.Join(out, "/"))
 		}
