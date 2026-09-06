@@ -28,8 +28,8 @@ var ErrName = errors.New("invalid entry name")
 // beside the local index — but the cold start is a tree walk. Moving an entry
 // re-encrypts one name; renaming an ancestor re-encrypts nothing.
 func NameKey(ck []byte, salt [DirSaltSize]byte) ([]byte, error) {
-	if len(ck) == 0 {
-		return nil, errors.New("store: deriving a name key needs a content key")
+	if err := checkCK(ck, "deriving a name key"); err != nil {
+		return nil, err
 	}
 	key, err := hkdf.Key(sha256.New, ck, []byte("silo/names/v1"), string(salt[:]), SIVKeySize)
 	if err != nil {

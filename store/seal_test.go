@@ -54,7 +54,7 @@ func TestAnotherLibraryCannotReadTheChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := SealChunk([]byte("a different library's content key"), plain)
+	other, err := SealChunk([]byte("another library's content key!!!"), plain)
 	if err != nil {
 		t.Fatal(err)
 	}

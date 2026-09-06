@@ -163,6 +163,14 @@ func (p Params) ValidateFor(e2ee bool, ck []byte) error {
 	case !e2ee && len(ck) > 0:
 		return fmt.Errorf("%w: a plain library has no content key", ErrParams)
 	case len(ck) > 0:
+		// The width, before the seed. ChunkerSeed takes a bare []byte and
+		// checks nothing — HKDF absorbs any length — so this is the one place
+		// a wrong-width key would otherwise reach a derivation. objmgr.New
+		// calls this before it builds a Store, which is what lets HasKey stay
+		// a non-empty test rather than a second width rule. silo#53.
+		if err := checkCK(ck, "validating parameters"); err != nil {
+			return err
+		}
 		if p.Seed != ChunkerSeed(ck) {
 			return fmt.Errorf("%w: the seed is not this content key's", ErrParams)
 		}

@@ -142,8 +142,8 @@ func (d *Directory) Encode() ([]byte, error) { return d.encode(nil) }
 // tag, which needs the content key. The per-directory name keys are not the
 // graft defence and would not survive being mistaken for it.
 func (d *Directory) EncodeSealed(ck []byte) ([]byte, error) {
-	if len(ck) == 0 {
-		return nil, fmt.Errorf("store: sealing a directory needs a content key")
+	if err := checkCK(ck, "sealing a directory"); err != nil {
+		return nil, err
 	}
 	return d.encode(ck)
 }
@@ -216,8 +216,8 @@ func DecodeDirectory(b []byte) (*Directory, error) { return decodeDirectory(b, n
 // DecodeSealedDirectory reads an E2EE library's directory object and opens its
 // sealed section.
 func DecodeSealedDirectory(b, ck []byte) (*Directory, error) {
-	if len(ck) == 0 {
-		return nil, fmt.Errorf("store: opening a directory needs a content key")
+	if err := checkCK(ck, "opening a directory"); err != nil {
+		return nil, err
 	}
 	return decodeDirectory(b, ck)
 }

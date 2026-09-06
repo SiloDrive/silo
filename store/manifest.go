@@ -128,8 +128,8 @@ func (m *Manifest) Encode() ([]byte, error) { return m.encode(nil) }
 // key, sealing the per-chunk plaintext hashes — or, for an inline file, the
 // file's own bytes.
 func (m *Manifest) EncodeSealed(ck []byte) ([]byte, error) {
-	if len(ck) == 0 {
-		return nil, fmt.Errorf("store: sealing a manifest needs a content key")
+	if err := checkCK(ck, "sealing a manifest"); err != nil {
+		return nil, err
 	}
 	return m.encode(ck)
 }
@@ -199,8 +199,8 @@ func DecodeManifest(b []byte) (*Manifest, error) { return decodeManifest(b, nil)
 // DecodeSealedManifest reads an E2EE library's manifest and opens its sealed
 // section.
 func DecodeSealedManifest(b, ck []byte) (*Manifest, error) {
-	if len(ck) == 0 {
-		return nil, fmt.Errorf("store: opening a manifest needs a content key")
+	if err := checkCK(ck, "opening a manifest"); err != nil {
+		return nil, err
 	}
 	return decodeManifest(b, ck)
 }

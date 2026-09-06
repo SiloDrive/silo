@@ -50,8 +50,8 @@ func (c *Commit) Encode() ([]byte, error) { return c.encode(nil) }
 // EncodeSealed encodes the commit for an E2EE library, sealing the author and
 // message under its content key.
 func (c *Commit) EncodeSealed(ck []byte) ([]byte, error) {
-	if len(ck) == 0 {
-		return nil, fmt.Errorf("store: sealing a commit needs a content key")
+	if err := checkCK(ck, "sealing a commit"); err != nil {
+		return nil, err
 	}
 	return c.encode(ck)
 }
@@ -116,8 +116,8 @@ func DecodeCommit(b []byte) (*Commit, error) { return decodeCommit(b, nil) }
 // DecodeSealedCommit reads an E2EE library's commit and opens its sealed
 // section.
 func DecodeSealedCommit(b, ck []byte) (*Commit, error) {
-	if len(ck) == 0 {
-		return nil, fmt.Errorf("store: opening a commit needs a content key")
+	if err := checkCK(ck, "opening a commit"); err != nil {
+		return nil, err
 	}
 	return decodeCommit(b, ck)
 }

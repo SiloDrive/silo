@@ -83,7 +83,7 @@ func TestAnotherLibraryCannotReadTheName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := NameKey([]byte("a different library's content key"), saltA)
+	other, err := NameKey([]byte("another library's content key!!!"), saltA)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -538,11 +538,17 @@ carry `encoded_hex`; the rest are pinned by `object_id`.
 `content_key_utf8` is **32 bytes**, because a content key is — a port may type
 it as fixed-width and load it directly. The first published stand-in was 33: a
 readable sentence nobody counted, which no port typing its key to the spec
-could have loaded at all. Nothing on the generating path caught it, because the
-only two places that check a key's width are `NewKeyring` and `WrapCK`, and
-neither is on it — `SealChunk`, `NameKey` and the `EncodeSealed` pair ask only
-that a key be non-empty, the chunker seed asks nothing, and HKDF absorbs any
-width. It is held to 32 by a test now.
+could have loaded at all. Nothing caught it because the width was checked only
+where a key entered — `NewKeyring` and `WrapCK` — and nowhere it was used, and
+HKDF absorbs any width, so it derived good subkeys and stable ids for a key no
+library can hold.
+
+**Every entry point taking a content key now refuses one of the wrong width**,
+which is a conformance rule: `SealChunk`, `OpenChunk`, `NameKey`, the three
+`EncodeSealed` methods, the three `DecodeSealed*` functions, and
+`Params.ValidateFor`. A port that accepts other widths computes identical ids
+for the keys it shares and merely accepts libraries this one refuses — but it
+also cannot detect the mistake that produced this paragraph.
 
 ## Directory and commit objects
 

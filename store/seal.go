@@ -134,9 +134,23 @@ type SealedChunk struct {
 //
 // Cross-library and cross-user dedup end for E2EE libraries, since a different
 // CK gives a different frame. That was always the price of E2EE.
+// checkCK holds a content key to the width the format gives it.
+//
+// The check is here rather than only at NewKeyring and WrapCK because those
+// are the two boundaries a key crosses on its way in, and everything between
+// them used to ask only that a key be non-empty. HKDF absorbs any width, so a
+// wrong one derives good subkeys and produces stable ids for a key no library
+// can hold — see silo#53.
+func checkCK(ck []byte, verb string) error {
+	if len(ck) != CKSize {
+		return fmt.Errorf("store: %s needs a %d-byte content key, got %d", verb, CKSize, len(ck))
+	}
+	return nil
+}
+
 func SealChunk(ck, plaintext []byte) (SealedChunk, error) {
-	if len(ck) == 0 {
-		return SealedChunk{}, errors.New("store: sealing a chunk needs a content key")
+	if err := checkCK(ck, "sealing a chunk"); err != nil {
+		return SealedChunk{}, err
 	}
 	hp := PlaintextHash(plaintext)
 	aead, err := chunkAEAD(ck, hp)
@@ -150,8 +164,8 @@ func SealChunk(ck, plaintext []byte) (SealedChunk, error) {
 // OpenChunk decrypts a chunk frame, given the plaintext hash its manifest
 // carried for it, and verifies the plaintext against that hash.
 func OpenChunk(ck []byte, hp ID, frame []byte) ([]byte, error) {
-	if len(ck) == 0 {
-		return nil, errors.New("store: opening a chunk needs a content key")
+	if err := checkCK(ck, "opening a chunk"); err != nil {
+		return nil, err
 	}
 	aead, err := chunkAEAD(ck, hp)
 	if err != nil {
