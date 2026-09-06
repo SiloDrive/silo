@@ -43,6 +43,50 @@ func publishOver(library *libmgr.Library, author string, m *store.Manifest) erro
 	return err
 }
 
+// commitDuring runs one reclaimer over a library holding a stalled upload,
+// and lands that upload's commit in the window after the reclaimer has read
+// the head. It returns the store and the upload's chunk, or refused when the
+// guard turned the commit away -- which is one of the two right answers, and
+// the caller has nothing left to check.
+func commitDuring(t *testing.T, run func(libraryID string) error) (st *objmgr.Store, chunk store.ID, refused bool) {
+	t.Helper()
+	libraryID, acct := testLibrary(t)
+	library, err := libmgr.GetWithReason(libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err = library.Store()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, chunk := stalledUpload(t, st)
+
+	var landed error
+	fired := false
+	gcAfterHeadRead = func(string) {
+		if fired {
+			return
+		}
+		fired = true
+		landed = publishOver(library, acct.Email, m)
+	}
+	t.Cleanup(func() { gcAfterHeadRead = nil })
+
+	if err := run(libraryID); err != nil {
+		t.Fatal(err)
+	}
+	if !fired {
+		t.Fatal("the seam never fired")
+	}
+	if errors.Is(landed, ErrGCConflict) {
+		return st, chunk, true
+	}
+	if landed != nil {
+		t.Fatalf("the commit failed for a reason other than the guard: %v", landed)
+	}
+	return st, chunk, false
+}
+
 // A commit that starts after a collection has begun can reference, by dedup,
 // an object the collection has already decided is dead. The generation guard
 // is documented as the backstop for exactly this -- a client that uploaded and
@@ -55,40 +99,13 @@ func publishOver(library *libmgr.Library, author string, m *store.Manifest) erro
 // it. What is not acceptable is a commit that lands and a collection that
 // takes its chunks.
 func TestACommitThatStartsDuringASweepCannotLoseItsChunksToIt(t *testing.T) {
-	libraryID, acct := testLibrary(t)
-	library, err := libmgr.GetWithReason(libraryID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	st, err := library.Store()
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, chunk := stalledUpload(t, st)
-
-	var landed error
-	fired := false
-	gcAfterHeadRead = func(string) {
-		if fired {
-			return
-		}
-		fired = true
-		landed = publishOver(library, acct.Email, m)
-	}
-	t.Cleanup(func() { gcAfterHeadRead = nil })
-
-	sweep, err := sweepOrphans(libraryID, 0, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !fired {
-		t.Fatal("the seam never fired")
-	}
-	if errors.Is(landed, ErrGCConflict) {
-		return // refused, which is one of the two right answers
-	}
-	if landed != nil {
-		t.Fatalf("the commit failed for a reason other than the guard: %v", landed)
+	var sweep orphanSweep
+	st, chunk, refused := commitDuring(t, func(libraryID string) (err error) {
+		sweep, err = sweepOrphans(libraryID, 0, true)
+		return err
+	})
+	if refused {
+		return
 	}
 	if sweep.chosen() != 0 {
 		t.Fatalf("the commit landed and the sweep still chose %d objects (%d deferred) from a head that reaches them", sweep.chosen(), sweep.deferred)
@@ -101,39 +118,12 @@ func TestACommitThatStartsDuringASweepCannotLoseItsChunksToIt(t *testing.T) {
 // The same window in compaction, which is what actually removes bytes on a
 // packed store. Here the wrong answer is not a count but a missing chunk.
 func TestACommitThatStartsDuringACompactionCannotLoseItsChunksToIt(t *testing.T) {
-	libraryID, acct := testLibrary(t)
-	library, err := libmgr.GetWithReason(libraryID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	st, err := library.Store()
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, chunk := stalledUpload(t, st)
-
-	var landed error
-	fired := false
-	gcAfterHeadRead = func(string) {
-		if fired {
-			return
-		}
-		fired = true
-		landed = publishOver(library, acct.Email, m)
-	}
-	t.Cleanup(func() { gcAfterHeadRead = nil })
-
-	if _, err := compactLibrary(libraryID, compactOpts{threshold: 0, minAge: 0, del: true}); err != nil {
-		t.Fatal(err)
-	}
-	if !fired {
-		t.Fatal("the seam never fired")
-	}
-	if errors.Is(landed, ErrGCConflict) {
+	st, chunk, refused := commitDuring(t, func(libraryID string) error {
+		_, err := compactLibrary(libraryID, compactOpts{threshold: 0, minAge: 0, del: true})
+		return err
+	})
+	if refused {
 		return
-	}
-	if landed != nil {
-		t.Fatalf("the commit failed for a reason other than the guard: %v", landed)
 	}
 	if ok, err := st.HasChunk(chunk); err != nil || !ok {
 		t.Fatalf("chunk %s: present=%v err=%v after a compaction the commit referencing it survived", chunk, ok, err)

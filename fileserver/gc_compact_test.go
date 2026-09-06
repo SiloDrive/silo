@@ -2,7 +2,6 @@ package silod
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -62,7 +61,7 @@ func deadFramesFixture(t *testing.T) (libraryID string, ids []string) {
 // the "no directory yet" case are spelled in a single place.
 func packFiles(t *testing.T, objType, libraryID string) []os.DirEntry {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(objstore.LibraryDir(absDataDir, objType, libraryID), "packs"))
+	entries, err := os.ReadDir(objstore.PackDir(absDataDir, objType, libraryID))
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -311,8 +310,7 @@ func TestCompactionAppliesTheCutExpiryCouldNotCarryOut(t *testing.T) {
 	sqliteTestDB(t)
 	libraryID, _ := packedHistoryFixture(t, 40*24*time.Hour, 30*24*time.Hour, 1*24*time.Hour)
 
-	window := 14 * 24 * time.Hour
-	got, err := expireHistory(libraryID, window, true)
+	got, err := expireHistory(libraryID, deadFramesWindow, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +321,7 @@ func TestCompactionAppliesTheCutExpiryCouldNotCarryOut(t *testing.T) {
 
 	before := diskUsage(t, libraryID)
 	if _, err := compactLibrary(libraryID, compactOpts{
-		threshold: 0.0, expire: true, expireWindow: window, del: true,
+		threshold: 0.0, expire: true, expireWindow: deadFramesWindow, del: true,
 	}); err != nil {
 		t.Fatal(err)
 	}

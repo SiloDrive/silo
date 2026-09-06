@@ -177,7 +177,7 @@ func TestATypeChangeAccountsBothSides(t *testing.T) {
 // because a quota that only worked on libraries the server can open would make
 // encryption the way to store for free.
 func TestTheServerCanBillALibraryItCannotRead(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	client, err := New(Config{
 		DataDir: dir, StoreID: testStoreID, E2EE: true, CK: testCK,
 		Params: store.DefaultParams(store.ChunkerSeed(testCK)),

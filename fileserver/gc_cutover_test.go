@@ -60,15 +60,14 @@ func TestSpaceComesBackOnADefaultStore(t *testing.T) {
 	before := diskUsage(t, libraryID)
 
 	// The full chain, in the order RunGC runs it.
-	window := 14 * 24 * time.Hour
-	if _, err := expireHistory(libraryID, window, true); err != nil {
+	if _, err := expireHistory(libraryID, deadFramesWindow, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sweepOrphans(libraryID, 0, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := compactLibrary(libraryID, compactOpts{
-		threshold: 0.0, minAge: 0, expire: true, expireWindow: window, del: true,
+		threshold: 0.0, minAge: 0, expire: true, expireWindow: deadFramesWindow, del: true,
 	}); err != nil {
 		t.Fatal(err)
 	}

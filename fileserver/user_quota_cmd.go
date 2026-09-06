@@ -122,38 +122,22 @@ func reportUserQuota(email string) error {
 // has set a cap four orders of magnitude from the one they meant, and neither
 // the command nor the table would say so.
 func parseQuotaSize(size string) (quota int64, remove bool, err error) {
-	s := strings.ToLower(strings.TrimSpace(size))
-	switch s {
+	switch strings.ToLower(strings.TrimSpace(size)) {
 	case "none", "unlimited":
 		return 0, true, nil
 	case "":
 		return 0, false, errors.New("no size given; use a size like 100gb, or \"none\" to remove the cap")
 	}
-
-	units := []struct {
-		suffix string
-		scale  int64
-	}{
-		{"kb", option.KB}, {"mb", option.MB}, {"gb", option.GB}, {"tb", option.TB},
+	n, err := option.ParseBytes(size)
+	if err != nil {
+		return 0, false, fmt.Errorf("%w, or \"none\" to remove the cap", err)
 	}
-	for _, u := range units {
-		digits, ok := strings.CutSuffix(s, u.suffix)
-		if !ok {
-			continue
-		}
-		n, err := strconv.ParseInt(strings.TrimSpace(digits), 10, 64)
-		if err != nil || n <= 0 {
-			return 0, false, fmt.Errorf("%q is not a size; write a positive whole number of %s, like 100%s",
-				size, strings.ToUpper(u.suffix), u.suffix)
-		}
-		// A quota that overflows int64 is not a large quota, it is a negative
-		// one, and AccountQuota reads anything <= 0 as no ceiling at all.
-		if n > (1<<63-1)/u.scale {
-			return 0, false, fmt.Errorf("%q is too large to store as a number of bytes", size)
-		}
-		return n * u.scale, false, nil
+	if n <= 0 {
+		// AccountQuota reads anything <= 0 as no ceiling at all, and a cap of
+		// nothing typed as a number is a request nobody meant.
+		return 0, false, fmt.Errorf("%q is not a cap; use a positive size like 100gb, or \"none\" to remove it", size)
 	}
-	return 0, false, fmt.Errorf("%q has no unit; write kb, mb, gb or tb, like 100gb, or \"none\" to remove the cap", size)
+	return n, false, nil
 }
 
 // formatBytes renders a size the way the units it was typed in are written.

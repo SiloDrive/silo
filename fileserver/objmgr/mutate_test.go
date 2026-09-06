@@ -335,7 +335,7 @@ func TestADirectoryCannotBeMovedIntoItself(t *testing.T) {
 }
 
 func TestTheServerViewCannotMutateAnEncryptedTree(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	client, err := New(Config{
 		DataDir: dir, StoreID: testStoreID, E2EE: true, CK: testCK,
 		Params: store.DefaultParams(store.ChunkerSeed(testCK)),

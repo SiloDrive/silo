@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/store"
 )
@@ -16,7 +17,6 @@ import (
 // made.
 func TestAHeadMoveOverAMissingChunkIsRefused(t *testing.T) {
 	libraryID, acct := testLibrary(t)
-	vars := map[string]string{"libraryid": libraryID}
 	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
@@ -43,29 +43,7 @@ func TestAHeadMoveOverAMissingChunkIsRefused(t *testing.T) {
 	}
 	commitBytes, commitID := buildCommit(t, rootID, []store.ID{parent}, acct.Email)
 
-	for _, o := range []struct {
-		id store.ID
-		b  []byte
-	}{{manifestID, manifestBytes}, {rootID, dirBytes}, {commitID, commitBytes}} {
-		w := idReq(t, putObjectHandler, acct, http.MethodPut, "/objects/"+o.id.String(),
-			merge(vars, "id", o.id.String()), o.b, nil)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("PUT %s = %d (%s), want 201", o.id, w.Code, w.Body.String())
-		}
-	}
-
-	w := idReq(t, putHeadHandler, acct, http.MethodPut, "/head", vars,
-		[]byte(commitID.String()), map[string]string{"If-Match": `"` + library.HeadCommitID + `"`})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("head move over a missing chunk = %d (%s), want 400", w.Code, w.Body.String())
-	}
-	after, err := libmgr.GetWithReason(libraryID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.HeadCommitID != library.HeadCommitID {
-		t.Fatalf("the head moved to %s over a missing chunk", after.HeadCommitID)
-	}
+	headMoveIsRefused(t, acct, library, []object{{manifestID, manifestBytes}, {rootID, dirBytes}, {commitID, commitBytes}}, commitID, "chunk")
 }
 
 // The same for a directory: the delta walk happened to read every changed
@@ -74,7 +52,6 @@ func TestAHeadMoveOverAMissingChunkIsRefused(t *testing.T) {
 // walk can be optimised without quietly losing the check.
 func TestAHeadMoveOverAMissingSubdirectoryIsRefused(t *testing.T) {
 	libraryID, acct := testLibrary(t)
-	vars := map[string]string{"libraryid": libraryID}
 	library, err := libmgr.GetWithReason(libraryID)
 	if err != nil {
 		t.Fatal(err)
@@ -94,10 +71,22 @@ func TestAHeadMoveOverAMissingSubdirectoryIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	commitBytes, commitID := buildCommit(t, rootID, []store.ID{parent}, acct.Email)
-	for _, o := range []struct {
-		id store.ID
-		b  []byte
-	}{{rootID, dirBytes}, {commitID, commitBytes}} {
+	headMoveIsRefused(t, acct, library, []object{{rootID, dirBytes}, {commitID, commitBytes}}, commitID, "directory")
+}
+
+// object is one encoded object and its id, as a test uploads it.
+type object struct {
+	id store.ID
+	b  []byte
+}
+
+// headMoveIsRefused uploads a commit's objects the way a client does, asks
+// for the head move, and checks the move was refused as a client error over
+// the missing kind and that the head stayed where it was.
+func headMoveIsRefused(t *testing.T, acct *account.Account, library *libmgr.Library, objects []object, commitID store.ID, missing string) {
+	t.Helper()
+	vars := map[string]string{"libraryid": library.ID}
+	for _, o := range objects {
 		w := idReq(t, putObjectHandler, acct, http.MethodPut, "/objects/"+o.id.String(),
 			merge(vars, "id", o.id.String()), o.b, nil)
 		if w.Code != http.StatusCreated {
@@ -108,13 +97,13 @@ func TestAHeadMoveOverAMissingSubdirectoryIsRefused(t *testing.T) {
 	w := idReq(t, putHeadHandler, acct, http.MethodPut, "/head", vars,
 		[]byte(commitID.String()), map[string]string{"If-Match": `"` + library.HeadCommitID + `"`})
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("head move over a missing directory = %d (%s), want 400", w.Code, w.Body.String())
+		t.Fatalf("head move over a missing %s = %d (%s), want 400", missing, w.Code, w.Body.String())
 	}
-	after, err := libmgr.GetWithReason(libraryID)
+	after, err := libmgr.GetWithReason(library.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if after.HeadCommitID != library.HeadCommitID {
-		t.Fatalf("the head moved to %s over a missing directory", after.HeadCommitID)
+		t.Fatalf("the head moved to %s over a missing %s", after.HeadCommitID, missing)
 	}
 }

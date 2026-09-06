@@ -435,6 +435,29 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	oldRoot, err := store.ParseID(library.RootID)
+	if err != nil {
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to parse current root of library %s", library.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	// Everything the commit reaches that the current head does not has to be
+	// here before the head moves. Each upload was verified on its own; this
+	// is the only check that the set is complete, and after the head moves
+	// the one who finds a hole is a reader on another device. It runs before
+	// the owner lock: it reads the tree and nothing the lock protects, and the
+	// generation read above is what keeps the objects from vanishing under it.
+	if err := st.VerifyDelta(oldRoot, commit.Root); err != nil {
+		var missing *objmgr.MissingObject
+		if errors.As(err, &missing) {
+			http.Error(w, "That commit reaches a "+missing.Kind+" that is not in this library; upload it first: "+missing.ID.String(), http.StatusBadRequest)
+			return
+		}
+		log.WithContext(r.Context()).WithError(err).Errorf("failed to verify the tree of library %s", library.ID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	// This is the load-bearing quota check, not the per-chunk estimate every
 	// upload already passed: those admit content that names nothing yet, and a
 	// head move is what makes it reachable. The lock is held through the
@@ -449,26 +472,6 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 	unlock := lockOwner(owner)
 	defer unlock()
 
-	oldRoot, err := store.ParseID(library.RootID)
-	if err != nil {
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to parse current root of library %s", library.ID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	// Everything the commit reaches that the current head does not has to be
-	// here before the head moves. Each upload was verified on its own; this
-	// is the only check that the set is complete, and after the head moves
-	// the one who finds a hole is a reader on another device.
-	if err := st.VerifyDelta(oldRoot, commit.Root); err != nil {
-		var missing *objmgr.MissingObject
-		if errors.As(err, &missing) {
-			http.Error(w, "That commit reaches a "+missing.Kind+" that is not in this library; upload it first: "+missing.ID.String(), http.StatusBadRequest)
-			return
-		}
-		log.WithContext(r.Context()).WithError(err).Errorf("failed to verify the tree of library %s", library.ID)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
 	delta, err := st.MeasureDelta(oldRoot, commit.Root)
 	if err != nil {
 		log.WithContext(r.Context()).WithError(err).Errorf("failed to measure usage delta for library %s", library.ID)

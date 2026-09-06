@@ -122,10 +122,6 @@ func testExists(t *testing.T) {
 	if _, err := os.Stat(loose); !os.IsNotExist(err) {
 		t.Errorf("the object is also in a file of its own at %s", loose)
 	}
-	packs, open := packFiles(t, dataDir, "commit")
-	if packs+open == 0 {
-		t.Fatal("the object is neither loose nor in a pack")
-	}
 	if _, e, ok, err := bend.packs.find(libraryID, objID); err != nil || !ok {
 		t.Fatalf("the pack lookup does not hold the object: ok=%v err=%v", ok, err)
 	} else if e.Length != int64(objectSize+frameOverhead) {

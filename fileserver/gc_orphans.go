@@ -19,17 +19,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// DefaultOrphanAge is how long an unreferenced object must have sat there
-// before a sweep will consider it.
-//
-// The number is a safety margin and not a tuning knob. An upload that stopped
-// halfway and an upload still in progress leave the same trace — objects
-// nothing points at — and the only thing separating them is elapsed time. A
-// day is orders of magnitude longer than any client takes to go from its first
-// chunk to its head move, including one on a bad connection retrying, and it
-// is short enough that a server does not carry a week of dead uploads.
-const DefaultOrphanAge = 24 * time.Hour
-
 // orphanSweep is what one library's sweep found and what it did.
 type orphanSweep struct {
 	libraryID string
@@ -93,23 +82,11 @@ func (s orphanSweep) chosen() int { return s.removed + s.deferred }
 func sweepOrphans(libraryID string, minAge time.Duration, del bool) (orphanSweep, error) {
 	sweep := orphanSweep{libraryID: libraryID}
 
-	// Before the head is read, never after. See beginCollection.
-	library, err := libmgr.GetWithReason(libraryID)
+	st, head, end, err := openForCollection(libraryID, true)
 	if err != nil {
 		return sweep, err
 	}
-	if err := beginCollection(library.StoreID); err != nil {
-		return sweep, err
-	}
-	defer endCollection(library.StoreID)
-
-	library, st, head, err := openLibraryAtHead(libraryID)
-	if err != nil {
-		return sweep, err
-	}
-	if gcAfterHeadRead != nil {
-		gcAfterHeadRead(libraryID)
-	}
+	defer end()
 
 	cutoff := time.Now().Add(-minAge)
 	var doomed []objmgr.Orphan
@@ -224,6 +201,42 @@ func stampGCID(storeID, prefix string) error {
 // reclaimer reading the head and acting on it, which is the window the
 // generation guard is supposed to close.
 var gcAfterHeadRead func(libraryID string)
+
+// openForCollection is how every reclaimer starts: mark the store as being
+// collected, then read the head, in that order and never the other -- see
+// beginCollection. The caller defers end, which lifts the marker after its
+// last removal.
+//
+// mark is false for a dry run that deletes nothing, which is then a plain
+// read. The orphan sweep passes true even when reporting: it has read the
+// store, a client cannot tell a report from a collection, and the cost is one
+// client retry.
+//
+// The library is loaded twice on a marked run. The first load is only for the
+// store id the marker is stamped on, and the head has to be read after the
+// stamp, so the second load is the one that counts.
+func openForCollection(libraryID string, mark bool) (st *objmgr.Store, head storefmt.ID, end func(), err error) {
+	end = func() {}
+	if mark {
+		library, err := libmgr.GetWithReason(libraryID)
+		if err != nil {
+			return nil, storefmt.ID{}, end, err
+		}
+		if err := beginCollection(library.StoreID); err != nil {
+			return nil, storefmt.ID{}, end, err
+		}
+		end = func() { endCollection(library.StoreID) }
+	}
+	_, st, head, err = openLibraryAtHead(libraryID)
+	if err != nil {
+		end()
+		return nil, storefmt.ID{}, func() {}, err
+	}
+	if gcAfterHeadRead != nil {
+		gcAfterHeadRead(libraryID)
+	}
+	return st, head, end, nil
+}
 
 // runOrphanSweep sweeps every live library and prints what it found.
 //

@@ -38,20 +38,6 @@ func contentionBackoff(attempt int) time.Duration {
 	return time.Duration(rand.Int63n(int64(window)))
 }
 
-// commitAttempts bounds the compare-and-swap retry loop.
-//
-// A retry is cheap and a livelock is not: each pass re-reads the head and
-// re-applies one tree mutation onto the new root, and the content it is
-// committing was stored before the loop began and is not rewritten. Five
-// passes is far past what contention on one library produces; beyond that the
-// honest answer is that the caller is losing a race it should be told about.
-//
-// A var only so a test can lower it to force exhaustion without racing a
-// scheduler — nothing in the server writes it. One name rather than a const
-// and a shadowing var, so the loop and the message it ends with cannot report
-// different budgets.
-var commitAttempts = 5
-
 // errE2EEWriteByID is what a client is told when it asks the server to write
 // into an end-to-end encrypted library through a path. Spelled once because it
 // is a wire string three handlers hand back, and three copies of a sentence a
@@ -158,7 +144,7 @@ func mutateTree(library *libmgr.Library, author string, mutate func(st *objmgr.S
 	}
 
 	head := library
-	for attempt := 0; attempt < commitAttempts; attempt++ {
+	for attempt := 0; attempt < option.CommitAttempts; attempt++ {
 		// Read before the mutation, so a GC that starts mid-write is caught by
 		// the generation check below rather than racing the objects this is
 		// about to publish.
@@ -232,7 +218,7 @@ func mutateTree(library *libmgr.Library, author string, mutate func(st *objmgr.S
 	// usually succeed. Left bare it fell to the default arm — a 500 with no
 	// Retry-After, filed to Sentry — which is exactly the outcome
 	// docs/bugs/fixed/write-contention-returns-500.md exists to prevent.
-	return store.ID{}, store.ID{}, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", commitAttempts, library.ID, ErrRetriesExhausted)
+	return store.ID{}, store.ID{}, fmt.Errorf("gave up after %d attempts to move the head of %s: %w", option.CommitAttempts, library.ID, ErrRetriesExhausted)
 }
 
 // ErrGCConflict and ErrRetriesExhausted are the two ways a write can lose

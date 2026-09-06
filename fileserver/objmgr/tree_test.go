@@ -365,7 +365,7 @@ func TestAnIdenticalTreeHasAnIdenticalRoot(t *testing.T) {
 // The server's view of an E2EE library cannot walk the tree, because names are
 // the one thing it has no way to read.
 func TestTheServerViewCannotWalkAnEncryptedTree(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	client, err := New(Config{
 		DataDir: dir, StoreID: testStoreID, E2EE: true, CK: testCK,
 		Params: store.DefaultParams(store.ChunkerSeed(testCK)),

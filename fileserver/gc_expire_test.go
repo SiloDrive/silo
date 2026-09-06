@@ -375,14 +375,9 @@ func TestExpireByPolicyDoesNothingWhenNothingIsConfigured(t *testing.T) {
 // still on the disk they ran this to free.
 func TestExpireDoesNotReportCommitsItCouldNotRemove(t *testing.T) {
 	sqliteTestDB(t)
-	t.Cleanup(func() { _ = objstore.Close() })
-
-	libraryID, ids := historyFixture(t, 40*24*time.Hour, 30*24*time.Hour, 1*24*time.Hour)
-	// Seal, so the commits are inside immutable packs rather than in an open
-	// one this process could still be appending to.
-	if err := objstore.Close(); err != nil {
-		t.Fatalf("sealing: %v", err)
-	}
+	// Sealed, so the commits are inside immutable packs rather than in an
+	// open one this process could still be appending to.
+	libraryID, ids := packedHistoryFixture(t, 40*24*time.Hour, 30*24*time.Hour, 1*24*time.Hour)
 
 	got, err := expireHistory(libraryID, 14*24*time.Hour, true)
 	if err != nil {

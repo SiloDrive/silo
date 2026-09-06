@@ -56,6 +56,23 @@ func packFiles(t *testing.T, dataDir, objType string) (sealed int, open int) {
 	return sealed, open
 }
 
+// waitForPacks polls the chunk store's pack directory until it holds the
+// counts wanted, or fails with why after a few seconds.
+func waitForPacks(t *testing.T, dataDir string, wantSealed, wantOpen int, why string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		sealed, open := packFiles(t, dataDir, TypeChunks)
+		if sealed == wantSealed && open == wantOpen {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d sealed and %d open, want %d and %d: %s", sealed, open, wantSealed, wantOpen, why)
+		}
+		time.Sleep(packSweep)
+	}
+}
+
 // osReadDirNames lists a directory, treating a missing one as empty: a library
 // that has never been packed and one whose packs were all removed are the same
 // answer here.
@@ -193,18 +210,8 @@ func TestAPackSealsOnAgeWithNoFurtherWrites(t *testing.T) {
 		t.Fatalf("the write did not open a pack")
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		sealed, open := packFiles(t, dataDir, TypeChunks)
-		if sealed == 1 && open == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the pack was not sealed on age: %d sealed, %d open — "+
-				"without this rule the last chunks of a quiet day sit on one disk indefinitely", sealed, open)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	waitForPacks(t, dataDir, 1, 0, "the pack was not sealed on age; "+
+		"without this rule the last chunks of a quiet day sit on one disk indefinitely")
 
 	got, err := s.ReadInto(libraryID, id, nil)
 	if err != nil {
@@ -608,17 +615,7 @@ func TestARecoveredPackIsSealedByTheSweeper(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		sealed, open := packFiles(t, dataDir, TypeChunks)
-		if sealed == 1 && open == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d sealed and %d open after waiting well past the age; the recovered pack was never sealed", sealed, open)
-		}
-		time.Sleep(packSweep)
-	}
+	waitForPacks(t, dataDir, 1, 0, "the recovered pack was never sealed")
 	if _, err := second.ReadInto(libraryID, id, nil); err != nil {
 		t.Fatalf("reading after the sweeper sealed the recovered pack: %v", err)
 	}

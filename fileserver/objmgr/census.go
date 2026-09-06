@@ -177,15 +177,13 @@ func (s *Store) Unreferenced(head store.ID, fn func(Orphan) error) error {
 	if err != nil {
 		return fmt.Errorf("walking the history: %w", err)
 	}
-	for _, st := range []struct {
-		store   *objstore.ObjectStore
-		isChunk bool
-	}{{s.objects, false}, {s.chunks, true}} {
-		if err := st.store.List(s.storeID, func(o objstore.ObjectInfo) error {
-			if all.has(o.ID, st.isChunk) {
+	for _, st := range s.stores() {
+		_, isChunk := s.storeFor(st.ObjType)
+		if err := st.List(s.storeID, func(o objstore.ObjectInfo) error {
+			if all.has(o.ID, isChunk) {
 				return nil
 			}
-			return fn(Orphan{ID: o.ID, IsChunk: st.isChunk, Size: o.Size, ModTime: o.ModTime})
+			return fn(Orphan{ID: o.ID, IsChunk: isChunk, Size: o.Size, ModTime: o.ModTime})
 		}); err != nil {
 			return err
 		}

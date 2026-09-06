@@ -24,18 +24,18 @@ func frameSite(t *testing.T, s *ObjectStore, id string) (path string, at indexEn
 	if err != nil {
 		t.Fatal(err)
 	}
-	open, sealed := set.packs()
-	if open != nil {
-		if e, ok := open.lookup(id); ok {
-			return open.path, e
-		}
+	// The store's own lookup, so the test measures the pack a read would use.
+	r, e, ok := set.find(id)
+	if !ok {
+		t.Fatalf("%s is in no pack of the %s store", id, s.ObjType)
 	}
-	for _, p := range sealed {
-		if e, ok := p.lookup(id); ok {
-			return p.path, e
-		}
+	switch p := r.(type) {
+	case *openPack:
+		return p.path, e
+	case *sealedPack:
+		return p.path, e
 	}
-	t.Fatalf("%s is in no pack of the %s store", id, s.ObjType)
+	t.Fatalf("%s is in a %T, which has no path", id, r)
 	return "", indexEntry{}
 }
 

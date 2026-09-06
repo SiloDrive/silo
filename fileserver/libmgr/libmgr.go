@@ -218,7 +218,7 @@ func scanLibraryRow(rows *sql.Rows, id string, library *Library) error {
 
 // GetWithReason returns the library, or the reason it could not be returned —
 // one of ErrLibraryNotFound, ErrLibraryCorrupted or ErrLibraryUnavailable, wrapped with
-// the detail. Faults are logged here, once per library per libraryFaultInterval, so
+// the detail. Faults are logged here, once per library per option.LibraryFaultInterval, so
 // callers should not log again.
 func GetWithReason(id string) (*Library, error) {
 	ctx, cancel := option.WithDBTimeout(context.Background())
@@ -329,8 +329,8 @@ func StatusFor(err error) (int, string) {
 // identical lines in thirty-four seconds, which is enough to bury the first
 // occurrence in the log and to turn one server fault into twelve reports in
 // whatever the error hook forwards to. Each (library, kind) is reported once,
-// then held for libraryFaultInterval.
-const libraryFaultInterval = 5 * time.Minute
+// then held for option.LibraryFaultInterval, read per fault so a change to
+// the setting does not need a rebuild.
 
 type faultKey struct {
 	libraryID string
@@ -363,14 +363,14 @@ func firstReport(libraryID string, kind error) bool {
 	defer libraryFaults.Unlock()
 
 	key := faultKey{libraryID, kind}
-	if last, ok := libraryFaults.lastLogged[key]; ok && now.Sub(last) < libraryFaultInterval {
+	if last, ok := libraryFaults.lastLogged[key]; ok && now.Sub(last) < option.LibraryFaultInterval {
 		return false
 	}
 	// Entries are only ever added by a fault and dropped by a repair, so the
 	// map tracks broken libraries. Sweeping the stale ones here keeps a library
 	// that was deleted rather than repaired from being remembered forever.
 	for k, last := range libraryFaults.lastLogged {
-		if now.Sub(last) >= libraryFaultInterval {
+		if now.Sub(last) >= option.LibraryFaultInterval {
 			delete(libraryFaults.lastLogged, k)
 		}
 	}

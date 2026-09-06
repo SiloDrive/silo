@@ -21,7 +21,7 @@ import (
 // (TestStoredObjectIsCiphertextOnDisk); this one extends it to the case where
 // the object was already ciphertext when it arrived.
 func TestAnE2EEChunkGetsASecondWrapOnDisk(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	s, err := New(Config{
 		DataDir: dir,
 		StoreID: testStoreID,

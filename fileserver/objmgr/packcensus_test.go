@@ -52,7 +52,7 @@ func expunge(t *testing.T, s *Store, ids ...store.ID) {
 // what is on the disk read this rather than a file per object.
 func packBytes(t *testing.T, dataDir, objType, storeID string) []byte {
 	t.Helper()
-	dir := filepath.Join(objstore.LibraryDir(dataDir, objType, storeID), "packs")
+	dir := objstore.PackDir(dataDir, objType, storeID)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)

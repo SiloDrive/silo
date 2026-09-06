@@ -101,7 +101,7 @@ func TestARangedReadOfAnInlinedFile(t *testing.T) {
 // than return ciphertext, which would be bytes the client cannot distinguish
 // from the file it asked for.
 func TestTheServerViewCannotRangeReadAnEncryptedFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	client, err := New(Config{
 		DataDir: dir,
 		StoreID: testStoreID,

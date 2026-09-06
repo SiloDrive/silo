@@ -27,14 +27,22 @@ func testData(label string, n int) []byte {
 	return out[:n]
 }
 
-// Every store here seals its packs on the way out, before the temp directory
-// under it goes. objstore.Close is process-wide -- the pack registry is -- so a
-// test that left an open pack behind would have the next test's Close trip over
-// a directory that is no longer there.
-func plainStore(t *testing.T) *Store {
+// storeDir is a temp directory for a store to live in. Every store here seals
+// its packs on the way out, before the directory goes: objstore.Close is
+// process-wide -- the pack registry is -- so a test that left an open pack
+// behind would have the next test's Close trip over a directory that is no
+// longer there. A test that opens a store directly takes its directory from
+// here for that reason.
+func storeDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Cleanup(func() { _ = objstore.Close() })
+	return dir
+}
+
+func plainStore(t *testing.T) *Store {
+	t.Helper()
+	dir := storeDir(t)
 	s, err := New(Config{
 		DataDir: dir,
 		StoreID: testStoreID,
@@ -48,8 +56,7 @@ func plainStore(t *testing.T) *Store {
 
 func sealedStore(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-	t.Cleanup(func() { _ = objstore.Close() })
+	dir := storeDir(t)
 	s, err := New(Config{
 		DataDir: dir,
 		StoreID: testStoreID,
@@ -201,7 +208,7 @@ func TestSealedChunkIDsNameCiphertext(t *testing.T) {
 	}
 
 	plain, err := New(Config{
-		DataDir: t.TempDir(),
+		DataDir: storeDir(t),
 		StoreID: testStoreID,
 		Params:  store.DefaultParams(store.PlainSeed()),
 	})
@@ -242,7 +249,7 @@ func TestSealedChunkIDsNameCiphertext(t *testing.T) {
 // The server's permanent state for an E2EE library: it stores and serves bytes,
 // verifies ids, and reads the public chunk list. Everything else says so.
 func TestTheServerViewCanDoItsJobAndNoMore(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	client, err := New(Config{
 		DataDir: dir,
 		StoreID: testStoreID,
@@ -436,7 +443,7 @@ func TestDirectoriesAndCommitsRoundTripInBothLibraryTypes(t *testing.T) {
 // library type is an input from the catalog, never something read out of the
 // object — a server flipping the flag must not select a different parse.
 func TestAnObjectFromOneLibraryTypeDoesNotReadAsTheOther(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	plain, err := New(Config{
 		DataDir: dir, StoreID: testStoreID,
 		Params: store.DefaultParams(store.PlainSeed()),
@@ -469,7 +476,7 @@ func TestAnObjectFromOneLibraryTypeDoesNotReadAsTheOther(t *testing.T) {
 // make seal_hash — computed over plaintext hashes — reproducible without the
 // key, which is a content-confirmation oracle rather than a performance bug.
 func TestAMisconfiguredStoreIsRefused(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	for _, tc := range []struct {
 		what string
 		cfg  Config
@@ -581,7 +588,7 @@ func TestIdenticalContentConvergesOnOneManifest(t *testing.T) {
 }
 
 func TestTheServerViewReadsEdgesAndRootsWithoutTheKey(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	client, err := New(Config{
 		DataDir: dir, StoreID: testStoreID, E2EE: true, CK: testCK,
 		Params: store.DefaultParams(store.ChunkerSeed(testCK)),
@@ -633,7 +640,7 @@ func TestTheServerViewReadsEdgesAndRootsWithoutTheKey(t *testing.T) {
 
 func TestAnEncryptedLibraryCannotBeOpenedOnThePlainSeed(t *testing.T) {
 	_, err := New(Config{
-		DataDir: t.TempDir(), StoreID: testStoreID, E2EE: true,
+		DataDir: storeDir(t), StoreID: testStoreID, E2EE: true,
 		Params: store.DefaultParams(store.PlainSeed()),
 	})
 	if err == nil {

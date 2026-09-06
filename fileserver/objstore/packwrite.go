@@ -14,7 +14,6 @@ package objstore
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -29,12 +28,16 @@ import (
 // consulted from the sweeper. The sweeper runs on its own goroutine, so a
 // package variable it read on every tick would be shared mutable state with
 // whatever set it — which is a data race in exactly the tests that shorten it.
-var packMaxAge = 5 * time.Minute
+const defaultPackMaxAge = 5 * time.Minute
+
+var packMaxAge = defaultPackMaxAge
 
 // packSweep is how often the sealer looks. It only has to be fine enough that
 // "sealed within about packMaxAge" is true, so it is a fraction of it rather
 // than a second timer to reason about. Copied at creation, like packMaxAge.
-var packSweep = 30 * time.Second
+const defaultPackSweep = 30 * time.Second
+
+var packSweep = defaultPackSweep
 
 // The registry of open packs, one per store directory, for the whole process.
 //
@@ -100,25 +103,10 @@ func forgetPackStore(objDir string) {
 func Close() error {
 	packStoresMu.Lock()
 	stores := make([]*packStore, 0, len(packStores))
-	var gone []*packStore
-	for dir, ps := range packStores {
-		// A store directory that has been removed is dropped rather than
-		// sealed. There is nothing to flush to a directory that is not there,
-		// and a stale entry would keep an open pack's descriptor alive against
-		// a file nothing can reach — so this is the registry noticing that a
-		// store it was told about has gone, not an error to report at shutdown.
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			delete(packStores, dir)
-			gone = append(gone, ps)
-			continue
-		}
+	for _, ps := range packStores {
 		stores = append(stores, ps)
 	}
 	packStoresMu.Unlock()
-
-	for _, ps := range gone {
-		ps.discard()
-	}
 
 	var firstErr error
 	for _, ps := range stores {

@@ -228,11 +228,22 @@ not reclaim unreferenced history inside a library that still exists.
 | `SILO_SENTRY_RELEASE` | Release name on reported events | `silo@<version>` |
 | `SILO_SENTRY_TRACES_SAMPLE_RATE` | Share of requests timed as performance transactions, `0` to `1` | `0.1` |
 | `SILO_SENTRY_SERVER_NAME` | Name distinguishing this instance from others reporting to the same project | hostname |
+| `SILO_PACK_SIZE` | Size at which a pack is sealed | `512mb` |
+| `SILO_PACK_MAX_AGE` | How long a pack may stay open before it is sealed regardless of size — see [configuration.md](docs/configuration.md) | `5m` |
+| `SILO_PACK_SWEEP` | How often the age sealer looks | `30s` |
+| `SILO_ORPHAN_AGE` | How long an unreferenced object must sit before `gc -orphans` considers it | `24h` |
+| `SILO_COMPACT_THRESHOLD` | Dead fraction at which a pack is worth rewriting | `0.5` |
+| `SILO_COMPACT_MIN_AGE` | How long ago a pack must have sealed before `gc -compact` touches it | `24h` |
+| `SILO_COMPACT_BUDGET` | Live bytes one compaction run may copy (`0`: no cap) | `0` |
+| `SILO_COMMIT_ATTEMPTS` | Head compare-and-swap retries per commit | `5` |
+| `SILO_LIBRARY_FAULT_INTERVAL` | How long a library fault is held before being logged again | `5m` |
 | `SILO_URL` | Server base URL (client/TUI) | `http://localhost:8082` |
 | `SILO_EMAIL` | Account email (client/TUI) | — |
 | `SILO_PASSWORD` | Account password (client/TUI) | — |
 
 Env vars take precedence over `silo.conf`, so the same binary can be pointed at different deployments without editing files. `silo.conf` itself is optional — if you don't pass `-C`, Silo uses compiled defaults.
+
+The storage knobs above are the `[storage]` section of `silo.conf`; [docs/configuration.md](docs/configuration.md) documents them and what to weigh when changing them.
 
 ### CLI flags
 

@@ -75,7 +75,7 @@ func age(t *testing.T, libraryID string, d time.Duration) {
 	t.Helper()
 	when := time.Now().Add(-d)
 	for _, objType := range objstore.Types {
-		dir := filepath.Join(objstore.LibraryDir(absDataDir, objType, libraryID), "packs")
+		dir := objstore.PackDir(absDataDir, objType, libraryID)
 		for _, e := range packFiles(t, objType, libraryID) {
 			if filepath.Ext(e.Name()) != ".pack" {
 				continue

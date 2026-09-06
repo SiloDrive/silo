@@ -52,6 +52,10 @@ func sqliteTestDB(t *testing.T) {
 	libmgr.Init(pair.Read, pair.Write, absDataDir)
 
 	t.Cleanup(func() {
+		// The packs opened under this data directory are sealed before the
+		// directory goes: objstore's registry is process-wide, so an open pack
+		// left behind here is one the next test's Close trips over.
+		_ = objstore.Close()
 		siloPair = origPair
 		absDataDir = origDataDir
 		option.DBOpTimeout = origTimeout

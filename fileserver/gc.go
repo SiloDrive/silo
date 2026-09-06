@@ -3,6 +3,7 @@ package silod
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 
 	"github.com/dkam/silo/fileserver/objstore"
@@ -43,10 +44,15 @@ func RunGC(args []string) error {
 	orphans := flags.Bool("orphans", false, "sweep unreferenced objects inside live libraries too")
 	expire := flags.Bool("expire-history", false, "expire history per each library's retention policy, keeping the head")
 	expireWindow := flags.Duration("expire-window", 0, "with -expire-history, override every library's policy with this window")
-	minAge := flags.Duration("min-age", DefaultOrphanAge, "with -orphans or -compact, how long an object or pack must have sat there before it is a candidate")
+	// These three carry no default of their own: what they fall back to is the
+	// [storage] section, which is not loaded until openStores runs below. A
+	// flag default evaluated here would be the compiled-in number and would
+	// silently beat the configured one -- so the zero values are sentinels and
+	// the block after openStores fills in whatever was not typed.
+	minAge := flags.Duration("min-age", 0, "with -orphans or -compact, how long an object or pack must have sat there before it is a candidate (default: [storage] orphan_age, compact_min_age)")
 	compact := flags.Bool("compact", false, "rewrite sealed packs without the frames nothing reaches (offline: stop the server)")
-	threshold := flags.Float64("compact-threshold", DefaultCompactThreshold, "with -compact, the dead fraction at which a pack is worth rewriting")
-	budgetFlag := flags.String("compact-budget", "0", "with -compact, the live bytes one run may copy, as a size like 10gb (0: no cap)")
+	thresholdFlag := flags.String("compact-threshold", "", "with -compact, the dead fraction at which a pack is worth rewriting, as in 0.5 (default: [storage] compact_threshold)")
+	budgetFlag := flags.String("compact-budget", "", "with -compact, the live bytes one run may copy, as a size like 10gb (0: no cap) (default: [storage] compact_budget)")
 	rest, done, err := parseCommandArgs("gc", flags, args)
 	if err != nil || done {
 		return err
@@ -54,12 +60,27 @@ func RunGC(args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("usage: silo gc [-d datadir] [-C config] [-delete] [-q]")
 	}
-	if err := checkCompactThreshold(*threshold); err != nil {
-		return err
+
+	// What was actually typed, so that a value taken from the config file can
+	// be told apart from the same value typed on the command line.
+	given := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { given[f.Name] = true })
+
+	// A typed value is checked before any database is opened, so a typo costs
+	// an error rather than a startup, and by the same reader as the config
+	// key, so the two accept the same spellings. A configured one was already
+	// checked when the section was read.
+	var threshold float64
+	var budget int64
+	if given["compact-threshold"] {
+		if threshold, err = option.ParseFraction(*thresholdFlag); err != nil {
+			return fmt.Errorf("-compact-threshold: %w", err)
+		}
 	}
-	budget, err := parseCompactBudget(*budgetFlag)
-	if err != nil {
-		return err
+	if given["compact-budget"] {
+		if budget, err = parseCompactBudget(*budgetFlag); err != nil {
+			return err
+		}
 	}
 
 	// The server keeps no lock on the data directory, so GC cannot detect a
@@ -82,6 +103,23 @@ func RunGC(args []string) error {
 		return err
 	}
 
+	// The config is loaded now, so the flags that were left off can take their
+	// defaults from it. -min-age serves both passes, so typing it sets both;
+	// leaving it off lets each take its own key, which is the point of there
+	// being two -- an orphan's age guard protects an upload in flight, and a
+	// pack's protects the frames inside it, and an operator may reasonably
+	// want them different.
+	orphanAge, compactAge := option.OrphanAge, option.CompactMinAge
+	if given["min-age"] {
+		orphanAge, compactAge = *minAge, *minAge
+	}
+	if !given["compact-threshold"] {
+		threshold = option.CompactThreshold
+	}
+	if !given["compact-budget"] {
+		budget = option.CompactBudget
+	}
+
 	// Expiry runs first so that what it releases is collectable by the sweep
 	// in the same invocation: an operator who asked for both meant "reclaim
 	// what retention allows", not "reclaim it next time".
@@ -93,7 +131,7 @@ func RunGC(args []string) error {
 	}
 
 	if *orphans {
-		if err := runOrphanSweep(*minAge, *del, *quiet); err != nil {
+		if err := runOrphanSweep(orphanAge, *del, *quiet); err != nil {
 			return err
 		}
 		fmt.Println()
@@ -105,8 +143,8 @@ func RunGC(args []string) error {
 	// frees what retention allows without waiting for the next one.
 	if *compact {
 		if err := runCompaction(compactOpts{
-			threshold:    *threshold,
-			minAge:       *minAge,
+			threshold:    threshold,
+			minAge:       compactAge,
 			budget:       budget,
 			expire:       *expire,
 			expireWindow: *expireWindow,

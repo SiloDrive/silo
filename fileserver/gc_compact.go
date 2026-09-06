@@ -1,25 +1,14 @@
 package silod
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/internal/format"
 	storefmt "github.com/dkam/silo/store"
 	log "github.com/sirupsen/logrus"
 )
-
-// DefaultCompactThreshold is the dead fraction at which a pack is worth
-// rewriting.
-//
-// Half, because a rewrite copies what is live and reclaims what is not: at 0.5
-// the copy and the reclaim are the same number of bytes, and below it the run
-// costs more I/O than it gives back. It is a default and not a rule — an
-// operator with a full disk and idle spindles lowers it.
-const DefaultCompactThreshold = 0.5
 
 // packCompaction is what one library's compaction pass found and did.
 type packCompaction struct {
@@ -39,6 +28,17 @@ type packCompaction struct {
 	// not what the frames added up to.
 	compacted int
 	reclaimed int64
+}
+
+// add folds one library's result into a run's total.
+func (c *packCompaction) add(o packCompaction) {
+	c.planned += o.planned
+	c.dropped += o.dropped
+	c.tooYoung += o.tooYoung
+	c.held += o.held
+	c.pruned += o.pruned
+	c.compacted += o.compacted
+	c.reclaimed += o.reclaimed
 }
 
 // compactOpts is one compaction run's settings.
@@ -90,25 +90,12 @@ func compactLibrary(libraryID string, opt compactOpts) (packCompaction, error) {
 	var out packCompaction
 
 	// A dry run rewrites nothing and marks nothing. A real one is a collection
-	// from before its head is read until its last rewrite: see beginCollection.
-	if opt.del {
-		library, err := libmgr.GetWithReason(libraryID)
-		if err != nil {
-			return out, err
-		}
-		if err := beginCollection(library.StoreID); err != nil {
-			return out, err
-		}
-		defer endCollection(library.StoreID)
-	}
-
-	_, st, head, err := openLibraryAtHead(libraryID)
+	// from before its head is read until its last rewrite.
+	st, head, end, err := openForCollection(libraryID, opt.del)
 	if err != nil {
 		return out, err
 	}
-	if gcAfterHeadRead != nil {
-		gcAfterHeadRead(libraryID)
-	}
+	defer end()
 
 	// The retention cut, as a decision rather than as a deletion. On a packed
 	// store the expiry pass cannot delete a commit inside a sealed pack, so it
@@ -173,8 +160,7 @@ func runCompaction(opt compactOpts, quiet bool) error {
 		return nil
 	}
 
-	var planned, tooYoung, held, pruned, compacted int
-	var dropped, reclaimed int64
+	var total packCompaction
 	for _, id := range ids {
 		got, err := compactLibrary(id, opt)
 		if err != nil {
@@ -184,13 +170,7 @@ func runCompaction(opt compactOpts, quiet bool) error {
 			log.Errorf("Failed to compact %s: %v", id, err)
 			continue
 		}
-		planned += got.planned
-		dropped += got.dropped
-		tooYoung += got.tooYoung
-		held += got.held
-		pruned += got.pruned
-		compacted += got.compacted
-		reclaimed += got.reclaimed
+		total.add(got)
 
 		if quiet || (got.planned == 0 && got.tooYoung == 0 && got.held == 0 && got.pruned == 0) {
 			continue
@@ -219,19 +199,19 @@ func runCompaction(opt compactOpts, quiet bool) error {
 	if opt.del {
 		// File bytes rather than frame bytes: this is the number df changes by,
 		// and an operator who ran this to free space is watching a disk.
-		fmt.Printf("Rewrote %d packs, %s freed.\n", compacted, format.Bytes(reclaimed))
+		fmt.Printf("Rewrote %d packs, %s freed.\n", total.compacted, format.Bytes(total.reclaimed))
 	} else {
 		fmt.Printf("%d packs past the %.0f%% threshold, holding %s of dead frames. Re-run with -delete to rewrite them.\n",
-			planned, opt.threshold*100, format.Bytes(dropped))
+			total.planned, opt.threshold*100, format.Bytes(total.dropped))
 	}
-	if held > 0 {
+	if total.held > 0 {
 		// Named, because a run that stopped short otherwise looks exactly like
 		// a run with nothing left to do.
-		fmt.Printf("%d packs were left for a later run: this one's budget was spent.\n", held)
+		fmt.Printf("%d packs were left for a later run: this one's budget was spent.\n", total.held)
 	}
-	if tooYoung > 0 {
+	if total.tooYoung > 0 {
 		fmt.Printf("%d packs were sealed less than %s ago and were not considered; "+
-			"they may hold uploads in progress.\n", tooYoung, opt.minAge)
+			"they may hold uploads in progress.\n", total.tooYoung, opt.minAge)
 	}
 	return nil
 }
@@ -259,17 +239,6 @@ func parseCompactBudget(s string) (int64, error) {
 		return 0, nil
 	}
 	return n, nil
-}
-
-// checkCompactThreshold refuses a dead fraction that is not one.
-//
-// A threshold above 1 silently compacts nothing and a negative one silently
-// compacts everything, and both look like the command having done its job.
-func checkCompactThreshold(v float64) error {
-	if v < 0 || v > 1 {
-		return errors.New("-compact-threshold is a dead fraction between 0 and 1, as in 0.5")
-	}
-	return nil
 }
 
 // compactionIsOffline is the warning gc prints before it rewrites anything.

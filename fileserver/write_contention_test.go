@@ -12,6 +12,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/objmgr"
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/store"
 )
 
@@ -69,9 +70,9 @@ func TestLostRaceIsReportedAsContention(t *testing.T) {
 		t.Fatalf("uncontended write = %d (%s)", w.Code, w.Body.String())
 	}
 
-	orig := commitAttempts
-	commitAttempts = 1
-	t.Cleanup(func() { commitAttempts = orig })
+	orig := option.CommitAttempts
+	option.CommitAttempts = 1
+	t.Cleanup(func() { option.CommitAttempts = orig })
 
 	_, _, err = mutateTree(stale, acct.Email, func(st *objmgr.Store, root store.ID, now int64) (store.ID, error) {
 		return st.Mkdir(root, "/loser", defaultDirMode, now)
@@ -153,7 +154,7 @@ func TestContentionBackoffIsBounded(t *testing.T) {
 	// Ten attempts at the old flat 100–3000ms could hold a connection for 30
 	// seconds before answering. Every window is capped at the ceiling, so the
 	// whole budget is bounded by attempts × ceiling.
-	if budget := time.Duration(commitAttempts) * ceiling; budget > 10*time.Second {
+	if budget := time.Duration(option.CommitAttempts) * ceiling; budget > 10*time.Second {
 		t.Errorf("worst-case retry budget %v is back to holding the request path", budget)
 	}
 	if worst == 0 {

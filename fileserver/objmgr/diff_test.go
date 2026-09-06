@@ -136,7 +136,7 @@ func TestDiffReportsASubtreeInFull(t *testing.T) {
 // The server's view of an E2EE library can still diff it: names come back as
 // base64url of the ciphertext, which is exactly what entries/{path} routes on.
 func TestTheServerViewCanDiffAnEncryptedLibrary(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	client, err := New(Config{
 		DataDir: dir, StoreID: testStoreID, E2EE: true, CK: testCK,
 		Params: store.DefaultParams(store.ChunkerSeed(testCK)),

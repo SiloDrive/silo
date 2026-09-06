@@ -148,15 +148,14 @@ func selectForCompaction(stats []objstore.PackStat, threshold float64, sealedBef
 	})
 
 	var spent int64
-	held := false
-	for _, p := range eligible {
-		// Once one pack has been held, everything behind it is held too: the
-		// order is a priority order, and skipping past a held pack to a cheaper
-		// one further down would spend the budget on the less valuable rewrite.
-		if held || (budget > 0 && spent+p.LiveBytes > budget) {
-			held = true
-			plan.Held = append(plan.Held, p)
-			continue
+	for i, p := range eligible {
+		// The first pack the budget cannot cover is held, and so is everything
+		// behind it: the order is a priority order, and skipping past a held
+		// pack to a cheaper one further down would spend the budget on the
+		// less valuable rewrite.
+		if budget > 0 && spent+p.LiveBytes > budget {
+			plan.Held = append(plan.Held, eligible[i:]...)
+			break
 		}
 		spent += p.LiveBytes
 		plan.Candidates = append(plan.Candidates, p)

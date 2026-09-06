@@ -42,7 +42,9 @@ const (
 // the filesystem.
 //
 // It is a variable so a test can seal a pack without writing half a gigabyte.
-var packTarget int64 = 512 << 20
+const defaultPackTarget int64 = 512 << 20
+
+var packTarget = defaultPackTarget
 
 // ErrPackCorrupt reports a pack whose header is not one. A short tail is not
 // this: that is what recovery is for.
@@ -59,6 +61,12 @@ const packDirName = "packs"
 
 func packDir(objDir, libraryID string) string {
 	return filepath.Join(objDir, libraryID, packDirName)
+}
+
+// PackDir is where a library's packs live, for the tools and tests that look
+// at the files themselves.
+func PackDir(dataDir, objType, libraryID string) string {
+	return packDir(TypeDir(dataDir, objType), libraryID)
 }
 
 // newPackID mints a pack's name: 32 random bytes, hex.

@@ -168,6 +168,7 @@ func initDefaultOptions() {
 	LoginRateLimit = true
 	TrustProxyHeaders = false
 	EnableNotification = true
+	initStorageDefaults()
 }
 
 // envBool reads the first of names that is set and parses it as a boolean,
@@ -285,6 +286,12 @@ func LoadFileServerOptions(configFile string) {
 			}
 		}
 	}
+
+	// Storage is loaded whether or not the section exists, because the
+	// environment overrides apply either way: a deployment configured entirely
+	// through SILO_* variables has no file for a section to be in.
+	storageSection, _ := config.GetSection("storage")
+	loadStorageOptions(storageSection)
 
 	if section, err := config.GetSection("quota"); err == nil {
 		// Both of these say so when a value was given and could not be read.

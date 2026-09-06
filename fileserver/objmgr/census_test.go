@@ -191,7 +191,7 @@ func TestCensusCountsWhatNoCommitReaches(t *testing.T) {
 // ordinary case for a server holding one, and a census that needed the key
 // would be a census that never ran.
 func TestCensusMeasuresAnEncryptedLibraryWithoutItsKey(t *testing.T) {
-	dir := t.TempDir()
+	dir := storeDir(t)
 	params := store.DefaultParams(store.ChunkerSeed(testCK))
 	s, err := New(Config{DataDir: dir, StoreID: testStoreID, E2EE: true, CK: testCK, Params: params})
 	if err != nil {

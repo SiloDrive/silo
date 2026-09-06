@@ -83,25 +83,12 @@ func expireHistory(libraryID string, keep time.Duration, del bool) (historyExpir
 	out := historyExpiry{libraryID: libraryID}
 
 	// A dry run deletes nothing and marks nothing. A real one is a collection
-	// from before its head is read until its last removal: see beginCollection.
-	if del {
-		library, err := libmgr.GetWithReason(libraryID)
-		if err != nil {
-			return out, err
-		}
-		if err := beginCollection(library.StoreID); err != nil {
-			return out, err
-		}
-		defer endCollection(library.StoreID)
-	}
-
-	_, st, head, err := openLibraryAtHead(libraryID)
+	// from before its head is read until its last removal.
+	st, head, end, err := openForCollection(libraryID, del)
 	if err != nil {
 		return out, err
 	}
-	if gcAfterHeadRead != nil {
-		gcAfterHeadRead(libraryID)
-	}
+	defer end()
 
 	// Measured before, because after the commits are gone there is nothing
 	// left to attribute the space to.

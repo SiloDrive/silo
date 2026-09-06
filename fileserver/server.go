@@ -199,6 +199,12 @@ func openStores() error {
 		return err
 	}
 	option.LoadFileServerOptions(configFile)
+	// Before loadDatabase and before libmgr, because a library opened here is
+	// a packStore created here, and two of the pack settings are read once at
+	// that moment. See objstore.Configure.
+	if err := objstore.Configure(option.Packs); err != nil {
+		return err
+	}
 	loadDatabase()
 	libmgr.Init(siloPair.Read, siloPair.Write, dataDir)
 	return nil
@@ -350,6 +356,11 @@ func Run(args []string) error {
 	}
 
 	option.LoadFileServerOptions(configFile)
+	// Run does not go through openStores, so the same rule applies here: see
+	// objstore.Configure.
+	if err := objstore.Configure(option.Packs); err != nil {
+		log.Fatalf("Failed to apply the [storage] settings: %v", err)
+	}
 	// After the options, so the flag beats both SILO_HOST and the config file.
 	// Same precedence as -d over SILO_DATA_DIR: what you typed on this command
 	// line wins over what the environment happens to be carrying.
