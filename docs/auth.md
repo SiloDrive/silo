@@ -199,7 +199,9 @@ concurrent workload behind an always-on mount's polling, and five minutes answer
 
 **`expires_at` is absolute and does not slide.** A sliding expiry means a client
 that polls constantly never ages out, which makes the TTL unreachable in the one
-case it was written for. `Issue` refuses a negative lifetime rather than reading
+case it was written for. A live credential can ask for a successor — see
+[renewing a credential](#renewing-a-credential) — and that writes a second row
+rather than moving this one's expiry, which is the difference. `Issue` refuses a negative lifetime rather than reading
 it as none: zero means "no expiry", and the arithmetic that skips the column
 would otherwise turn the request that most clearly means *this must not work*
 into the credential that works forever.
@@ -495,7 +497,8 @@ door.
 that.** `logout` is about the row presenting it, which is not wider than that
 row's own scope, so a credential cut to one library may sign itself out;
 `middleware.RequireOwnCredential` is the lane that skips the scope check for
-exactly this reason, and nothing else uses it. `logout/everywhere` answers about
+exactly this reason, and [renewal](#renewing-a-credential) is the only other
+route on it. `logout/everywhere` answers about
 every credential the account holds, which is strictly wider than any scope, so a
 scoped credential gets `403` from the ordinary rule.
 
@@ -503,6 +506,75 @@ That is also why "everywhere" is a second route rather than a field in the body:
 a flag inside the body would put the answer somewhere the middleware cannot see,
 and the scope check would have to move into the handler, where the failure it
 prevents is a handler that forgets it.
+
+## Renewing a credential
+
+A credential that is still alive can mint its successor.
+
+```
+POST /api/silo/v1/auth/renew    Authorization: Bearer silo_device_…
+
+201 { "credential": "silo_device_…", "expires_at": …, "email": "…" }
+```
+
+Enrolment's shape, byte for byte, because it answers enrolment's question — here
+is your credential and here is when it dies — and a client should not need a
+second decoder for it. Feature name `credential-renew`.
+
+**This is not the sliding expiry the kinds table refuses, and the distinction is
+the whole argument.** Sliding means a credential that polls never ages out, so
+the TTL is unreachable in the case it was written for. This is an explicit
+request that writes a *new row* and leaves the old one to die on its own
+absolute `expires_at`: every credential still lasts ninety days and no longer,
+revoking a row still stops that row, and `last_used` still answers *is anybody
+still using this?*. Renewal needs a live credential — `Resolve` refuses an
+expired one before the handler runs — so a client that has been off past its
+expiry enrols from the password, exactly as it did before.
+
+**It exists because the alternative is the password at rest.**
+[`protocol.md`](protocol.md#the-credential-on-the-device) tells a client not to
+architect around a password, and to keep the credential behind an interface that
+answers *authenticate this request* rather than *give me the password*. Without
+a renewal route that advice buys a tidier call site and nothing else: a macOS
+File Provider extension has no window to collect a password in and does not own
+its own lifecycle, so on day 90 it either has the password or it stops working.
+A daemon meets the same wall from the other side. The narrow interface is worth
+having either way; renewal is what makes it worth more than the refactor.
+
+**The request has no body.** Every field of the new row — `kind`, `label`,
+`scope`, `perm`, `client_id` — is copied from the presenting one, so there is no
+input a ceiling could be widened with and the *may they ask for this?* question
+does not arise at all. A caller that wants a different perm or scope is asking
+for a different credential rather than for this one again, and enrols.
+
+| Request | Answer |
+|---|---|
+| A live `device` credential | `201`, enrolment's shape, a full fresh lifetime |
+| A `session` credential | `403` |
+| An expired or revoked credential | `401`, from `Resolve`, before the handler |
+| No credential | `401` |
+
+**Only the device lane renews.** A session lasts a day because a person walked
+away from a terminal, and a session that can renew itself is one that never
+ends. The client that has nobody to ask is the device, and it is the case this
+was built for; the TUI logs in again. It is `403` rather than `400` because the
+request is well formed and the credential making it is the thing that may not.
+
+**Renewal is on the `RequireOwnCredential` lane**, with logout and for the same
+reason: the subject is the row making the request, which is not wider than that
+row's own scope, so a mount cut to one library may replace its own credential
+without an operator.
+
+**The old row is left alone, and that is a choice with a cost.** One-in-one-out
+would be tidier to reason about — and it would mean a response lost in transit
+costs a headless client both the credential it was holding and the one it never
+received, which is the exact lockout this route exists to prevent. What it costs
+instead is that a stolen credential can mint successors, so revoking the row an
+operator can see is not by itself enough. Two things keep that visible rather
+than hidden: a successor inherits its parent's `label`, so `silo token list`
+shows every row ever minted under the name the operator went looking for, and
+`auth/logout/everywhere` and `silo token revoke <email>` remain the complete
+answer. A renewal is logged with both ids for the same reason.
 
 ## Changing a password, and what it revokes
 

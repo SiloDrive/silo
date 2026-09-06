@@ -99,12 +99,37 @@ access away.
 
 A scoped credential is refused every route that names no library, because such
 a route answers about the account and that is wider than the scope. `POST
-/auth/logout` is the one exception, and it is not a special case: its subject
-is the row presenting it rather than the account, so it is mounted on
-`RequireOwnCredential`, which is `RequireCredential` without the scope check.
-Nothing else uses that lane.
+/auth/logout` and `POST /auth/renew` are the two exceptions, and neither is a
+special case: the subject of each is the row presenting it rather than the
+account, so both are mounted on `RequireOwnCredential`, which is
+`RequireCredential` without the scope check. Nothing else uses that lane.
 
 See [`docs/auth.md`](auth.md) for the model.
+
+### Renewing a credential
+
+```
+POST /api/silo/v1/auth/renew    Authorization: Bearer silo_device_…
+  → 201 {"credential": "silo_device_…", "expires_at": …, "email": …}
+```
+
+Enrolment's shape exactly, because it answers enrolment's question — here is
+your credential and here is when it dies — and one decoder should serve both.
+Feature name `credential-renew`.
+
+**No body.** `kind`, `label`, `scope`, `perm` and `client_id` are copied from
+the credential presenting the request, so there is nothing a ceiling could be
+widened with. A client that wants a different perm or scope is asking for a
+different credential and should enrol.
+
+**A new row, not a moved expiry.** The credential that asked goes on working
+and dies on its original `expires_at`; nothing slides. Renew before the cliff
+rather than after it — a credential that has already expired is refused here
+like anywhere else, and the way back from that is the password.
+
+Only a `device` credential may renew; a `session` gets `403`. A session lasts a
+day because a person walked away from a terminal, and the client with nobody to
+ask is the device.
 
 ### Discarding a credential, and changing a password
 
@@ -222,13 +247,14 @@ the sync clients. Protected by `RequireCredential`, except the four marked
 (`NewServer` in `fileserver/server.go`) because they are what a client needs *before* it
 has a credential: one to learn what it is talking to, one to get the parameters
 that turn a password into what it sends, one to get a token, and one to create
-the first account on a server that has none. `auth/logout`
-is registered there too, but is authenticated: see the lane note above.
+the first account on a server that has none. `auth/logout` and `auth/renew`
+are registered there too, but are authenticated: see the lane note above.
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.5.0","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. Carries `"setup_required": true` on a server that has no accounts yet, and omits the key entirely otherwise, so a claimed server's body is unchanged from before the field existed. No chunker parameters: they belong to the library, and the libraries listing carries them. The `libraries` name says this server serves `/libraries/…`; a client that does not find it is talking to a build that predates the word and should say so rather than read the 404 that follows as an empty account |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → a `session` credential, or an enrolled one. Not a JWT: it names a row in `Credential` that can be revoked, labelled and narrowed |
+| POST | `/api/silo/v1/auth/renew` | Mint the presenting credential's successor: no body, a full fresh lifetime, every field inherited. `device` only — a `session` gets `403`. The old credential is untouched and expires when it always would have. A scoped credential may reach it. Feature name `credential-renew` |
 | POST | `/api/silo/v1/auth/logout` | Discard the credential that made the request. No write permission needed, and a scoped credential may reach it |
 | POST | `/api/silo/v1/auth/logout/everywhere` | Discard every credential the account holds, including this one |
 | POST | `/api/silo/v1/auth/password` | `{"current_password":…,"new_password":…}` — change the password. Needs `rw` and the current password; revokes `session` credentials and leaves `device` ones mounted. With `"client_kdf_params":…` it is the split-derivation crossover instead: `new_password` carries an `authKey`, and hash and parameters are written together. Feature name `split-login` |
@@ -812,15 +838,24 @@ against 24 hours and carries the label an operator revokes by. Call
 `POST auth/logout` when the user removes the account, or the credential stays
 live for the rest of its 90 days on a machine that has stopped using it.
 
-**Do not architect around a password at rest.** Re-presenting the password on
-a `401` is what works today, and it is also what
-[`auth.md`](auth.md#proof-of-possession) and
-[`storage.md`](storage.md)'s split derivation go on to remove: the password
-becomes an enrolment credential, presented once and discarded, and the identity
-key in the platform key store is what a device holds. Keep the credential
-behind a narrow interface — something that answers *authenticate this request*,
-not *give me the password* — so the swap is a new implementation rather than
-an unwind.
+**Do not architect around a password at rest.** The password is an enrolment
+credential, presented once and discarded, and the identity key in the platform
+key store is what a device holds; [`auth.md`](auth.md#proof-of-possession) and
+[`storage.md`](storage.md)'s split derivation go on from there. Keep the
+credential behind a narrow interface — something that answers *authenticate
+this request*, not *give me the password* — so the swap is a new implementation
+rather than an unwind.
+
+**`POST auth/renew` is what makes that advice affordable**, and a client with no
+window has to check for it. Ninety days is not long enough to hold a credential
+for the life of an install, and until renewal existed the only way to the next
+one was the password — so a File Provider extension, which has no UI to ask in
+and does not own its own lifecycle, had to keep the password on the device
+forever or stop working on day 90. Renew somewhere inside the lifetime rather
+than on a `401`: past the expiry there is no live credential left to ask with.
+A server that does not name `credential-renew` in `features` is one where the
+password is still the only route, and that is a decision to make at enrolment
+rather than on the morning it lapses.
 
 If several requests are in flight when a credential expires they all `401` at
 once. Collapse that into one re-login rather than a stampede; `client/` does it

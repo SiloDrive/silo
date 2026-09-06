@@ -44,15 +44,16 @@ func RequireCredential(next http.Handler) http.Handler {
 }
 
 // RequireOwnCredential authenticates a route whose subject is the presenting
-// credential itself -- logging out, and nothing else so far.
+// credential itself: logging out, and asking for a successor.
 //
 // It differs from RequireCredential in one thing: it does not apply the
 // narrowing. A scoped credential is refused every route that names no library
 // because such a route answers about the account, which is strictly wider
-// than the scope. This one is strictly narrower -- it is about the row that
-// carries the scope -- and refusing it would leave a mount cut to one library
-// unable to sign itself out, needing an operator with shell access to do what
-// it is entitled to do to itself.
+// than the scope. These are strictly narrower -- they are about the row that
+// carries the scope -- and refusing them would leave a mount cut to one
+// library unable to sign itself out, or to renew before its credential lapses,
+// needing an operator with shell access to do what it is entitled to do to
+// itself.
 func RequireOwnCredential(next http.Handler) http.Handler {
 	return resolveCredential(next, resolveOpts{aboutSelf: true})
 }

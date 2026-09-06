@@ -620,6 +620,12 @@ func newHTTPRouter() *mux.Router {
 	// itself out; see middleware.RequireOwnCredential.
 	r.Handle("/api/silo/v1/auth/logout",
 		middleware.RequireOwnCredential(http.HandlerFunc(api.LogoutHandler))).Methods("POST")
+	// Renewal is about the credential presenting it for the same reason logout
+	// is -- it is that row asking for its own successor -- so it takes the same
+	// lane. A mount cut to one library must be able to replace its credential
+	// without an operator, exactly as it must be able to sign itself out.
+	r.Handle("/api/silo/v1/auth/renew",
+		middleware.RequireOwnCredential(http.HandlerFunc(api.RenewHandler))).Methods("POST")
 	apiRouter := r.PathPrefix("/api/silo/v1").Subrouter()
 	apiRouter.Use(middleware.RequireCredential)
 	// Both of these are account-wide, so both take the narrowing: a credential

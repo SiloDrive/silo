@@ -120,6 +120,13 @@ func features() []string {
 		// credential live.
 		"logout",          // POST auth/logout, POST auth/logout/everywhere
 		"password-change", // POST auth/password
+		// A live device credential minting its successor. This one has to be
+		// discoverable rather than learned from a 404, because the fallback is
+		// not "try again later" but an architecture: a client that cannot renew
+		// must keep the password at rest to survive day 90, and it has to make
+		// that decision at enrolment rather than on the morning it stops
+		// working. See renew.go for why this is not a sliding expiry.
+		"credential-renew", // POST auth/renew
 		// The account side of end-to-end encryption. A client that cannot see
 		// this name is talking to a server with nowhere to put an identity
 		// key, and must say so rather than enrol into a library whose content
