@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 
 	log "github.com/sirupsen/logrus"
+
+	"github.com/dkam/silo/fileserver/account"
 )
 
 // Event type strings exchanged over the wire.
@@ -88,6 +90,34 @@ func NotifyLibraryUpdate(libraryID, commitID string) {
 			// rather than denied it, and it gets it as soon as its queue moves.
 			log.Debugf("notif: deferring library-update for slow client %d", c.ID)
 			c.noteMissed(libraryID, commitID)
+		}
+	}
+}
+
+// NotifyAccountUpdate tells every account-scoped socket of one account that
+// its set moved, for the change that has no library to find them by: a
+// library created, which nothing was subscribed to yet.
+//
+// Off the commit path, like NotifyLibraryChanged: what it asks each socket for
+// is a resync, which reads the database on the socket's own goroutine.
+func NotifyAccountUpdate(acct account.ID) {
+	for _, c := range snapshotAccountSockets(acct) {
+		c.nudge()
+	}
+}
+
+// NotifyLibraryChanged tells every account-scoped socket watching a library
+// that something about the library other than its contents moved -- its name,
+// or its existence. The per-library index already knows who watches it, so
+// neither the owner nor the grantees are looked up.
+//
+// A per-library socket is not told. That lane's frame carries a commit id,
+// and a rename mints no commit: the name is catalog data, which the account
+// lane was built to cover.
+func NotifyLibraryChanged(libraryID string) {
+	for _, c := range snapshotSubscribers(libraryID) {
+		if c.accountScoped.Load() {
+			c.nudge()
 		}
 	}
 }

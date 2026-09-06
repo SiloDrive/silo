@@ -28,7 +28,7 @@ func authorizeReturning(t *testing.T, fn func(*credential.Credential, string) bo
 // dialWithCredential opens a socket authenticated the way the API routes are.
 func dialWithCredential(t *testing.T, cred *credential.Credential) *websocket.Conn {
 	t.Helper()
-	acct := &account.Account{Email: "watcher@example.com", IsActive: true}
+	acct := &account.Account{ID: cred.AccountID, Email: "watcher@example.com", IsActive: true}
 	return dialSocket(t, func(r *http.Request) *http.Request {
 		return middleware.WithCredential(r, cred, acct)
 	})

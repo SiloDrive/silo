@@ -1,11 +1,16 @@
 package silod
 
 import (
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/dkam/silo/client"
 	"github.com/dkam/silo/fileserver/notif"
@@ -122,4 +127,95 @@ func hasEntry(entries []client.DirEntry, name string) bool {
 		}
 	}
 	return false
+}
+
+// A rename rings an account-scoped socket, and moves no head.
+//
+// End to end, because the thing that was missing was a producer: the rename
+// handler is one UPDATE and mints no commit, so nothing on the commit path
+// ever announced it. The socket here is opened the way a client opens it --
+// the session credential in the header, one frame saying "everything" -- and
+// the ring is what arrives.
+func TestARenameRingsAnAccountScopedSocket(t *testing.T) {
+	origEnabled := option.EnableNotification
+	t.Cleanup(func() { option.EnableNotification = origEnabled })
+	option.EnableNotification = true
+	notif.Init()
+
+	base, token := wire(t)
+	libraryID := makeLibrary(t, base, token)
+	headBefore := libraryHead(t, base, token, libraryID)
+
+	header := http.Header{"Authorization": {"Bearer " + token}}
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(base, "http")+"/notification", header)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "content": map[string]any{"account": true}}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	// Read on a goroutine rather than under a deadline: a read that times out
+	// poisons the connection for every read after it, so a polling loop over
+	// deadlines probes once and then fails instantly forever.
+	frames := make(chan notif.Message, 8)
+	go func() {
+		for {
+			var msg notif.Message
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			frames <- msg
+		}
+	}()
+
+	// The subscribe is handled on the server's read loop, so a rename made
+	// before it lands rings nobody. Rename until one comes back; every one of
+	// them is a rename that must ring, so the loop is the assertion.
+	rung := false
+	for i := 0; i < 100 && !rung; i++ {
+		code, body := call(t, "PATCH", base+"/api/silo/v1/libraries/"+libraryID, token,
+			`{"name":"renamed `+strconv.Itoa(i)+`"}`)
+		if code != http.StatusOK {
+			t.Fatalf("rename: status %d, body %s", code, body)
+		}
+		select {
+		case msg := <-frames:
+			if msg.Type != notif.EventTypeAccountUpdate {
+				t.Fatalf("an account socket was sent %s, want %s", msg.Type, notif.EventTypeAccountUpdate)
+			}
+			rung = true
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if !rung {
+		t.Fatal("a rename never rang the account socket")
+	}
+	if after := libraryHead(t, base, token, libraryID); after != headBefore {
+		t.Errorf("the rename moved the head from %s to %s; it must mint no commit", headBefore, after)
+	}
+}
+
+// libraryHead reads a library's head commit id off the listing.
+func libraryHead(t *testing.T, base, token, libraryID string) string {
+	t.Helper()
+	code, body := call(t, "GET", base+"/api/silo/v1/libraries", token, "")
+	if code != http.StatusOK {
+		t.Fatalf("listing: status %d, body %s", code, body)
+	}
+	var rows []struct {
+		ID   string `json:"id"`
+		Head string `json:"head_commit_id"`
+	}
+	if err := json.Unmarshal([]byte(body), &rows); err != nil {
+		t.Fatalf("decode listing: %v", err)
+	}
+	for _, r := range rows {
+		if r.ID == libraryID {
+			return r.Head
+		}
+	}
+	t.Fatalf("library %s is not in the listing", libraryID)
+	return ""
 }

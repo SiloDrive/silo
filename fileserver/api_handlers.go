@@ -10,6 +10,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
@@ -132,6 +133,9 @@ func renameLibrary(w http.ResponseWriter, r *http.Request, library *libmgr.Libra
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return false
 	}
+	// No commit means the commit path announces nothing, so this is the one
+	// place a rename can ring.
+	notif.NotifyLibraryChanged(library.ID)
 	return true
 }
 

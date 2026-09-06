@@ -12,6 +12,8 @@ package notif
 import (
 	"sync"
 	"sync/atomic"
+
+	"github.com/dkam/silo/fileserver/account"
 )
 
 var (
@@ -20,6 +22,13 @@ var (
 	// NotifyLibraryUpdate's snapshot.
 	subMu         sync.RWMutex
 	subscriptions map[string]*subscribers
+
+	// accountSockets is the clients subscribed to each account's whole set,
+	// under subMu with the rest. It exists for the one change the per-library
+	// index cannot find a socket by: a library created, which nothing was
+	// subscribed to yet. Every other change reaches the socket through the
+	// library it is about.
+	accountSockets map[account.ID]map[uint64]*Client
 
 	nextClientID uint64
 )
@@ -32,6 +41,7 @@ type subscribers struct {
 func Init() {
 	subMu.Lock()
 	subscriptions = make(map[string]*subscribers)
+	accountSockets = make(map[account.ID]map[uint64]*Client)
 	subMu.Unlock()
 }
 
@@ -77,6 +87,46 @@ func snapshotSubscribers(libraryID string) []*Client {
 	}
 	out := make([]*Client, 0, len(subs.clients))
 	for _, c := range subs.clients {
+		out = append(out, c)
+	}
+	return out
+}
+
+func addAccountSocket(acct account.ID, c *Client) {
+	subMu.Lock()
+	defer subMu.Unlock()
+	socks, ok := accountSockets[acct]
+	if !ok {
+		socks = make(map[uint64]*Client)
+		accountSockets[acct] = socks
+	}
+	socks[c.ID] = c
+}
+
+func removeAccountSocket(acct account.ID, c *Client) {
+	subMu.Lock()
+	defer subMu.Unlock()
+	socks, ok := accountSockets[acct]
+	if !ok {
+		return
+	}
+	delete(socks, c.ID)
+	if len(socks) == 0 {
+		delete(accountSockets, acct)
+	}
+}
+
+// snapshotAccountSockets returns a copy of the clients subscribed to an
+// account's set, or nil.
+func snapshotAccountSockets(acct account.ID) []*Client {
+	subMu.RLock()
+	defer subMu.RUnlock()
+	socks := accountSockets[acct]
+	if len(socks) == 0 {
+		return nil
+	}
+	out := make([]*Client, 0, len(socks))
+	for _, c := range socks {
 		out = append(out, c)
 	}
 	return out

@@ -108,6 +108,11 @@ type Client struct {
 	missed   map[string]string
 	resyncCh chan struct{}
 
+	// resyncNow asks the account socket to re-resolve its set before the
+	// next tick: a hook has said something moved. Buffered by one for the
+	// reason resyncCh is.
+	resyncNow chan struct{}
+
 	// lastPongUnix is read and written atomically.
 	lastPongUnix atomic.Int64
 
@@ -205,6 +210,7 @@ func NewClient(conn *websocket.Conn, acct *account.Account, cred *credential.Cre
 		wch:       make(chan *Message, wchBuffer),
 		missed:    make(map[string]string),
 		resyncCh:  make(chan struct{}, 1),
+		resyncNow: make(chan struct{}, 1),
 		libraries: make(map[string]subscription),
 		closeCh:   make(chan struct{}),
 	}
@@ -254,6 +260,9 @@ func NewClient(conn *websocket.Conn, acct *account.Account, cred *credential.Cre
 	c.missedMu.Unlock()
 	for _, id := range ids {
 		removeSubscription(id, c)
+	}
+	if c.accountScoped.Load() {
+		removeAccountSocket(c.account.ID, c)
 	}
 	_ = conn.Close()
 }
@@ -475,6 +484,13 @@ func (c *Client) sweepLoop() {
 			if c.accountScoped.Load() {
 				c.resyncAccount()
 			}
+		case <-c.resyncNow:
+			// A hook said the set moved, or that something in it did. The
+			// resync rings if it finds a difference; a rename is a change it
+			// cannot see, so a resync that found nothing rings anyway.
+			if c.accountScoped.Load() && !c.resyncAccount() {
+				c.ring()
+			}
 		case <-c.closeCh:
 			return
 		}
@@ -631,6 +647,7 @@ func (c *Client) subscribeAccount() {
 	}
 
 	c.accountScoped.Store(true)
+	addAccountSocket(c.account.ID, c)
 	for _, id := range ids {
 		c.subscribe(id, "", subscription{lane: laneAccount})
 	}
@@ -654,26 +671,30 @@ func (c *Client) subscribeAccount() {
 // is none of those: dropping every account socket on a slow query would turn
 // it into a reconnect storm asking the same database, so that tick is logged
 // and the next one asks again.
-func (c *Client) resyncAccount() {
+//
+// It reports whether the client has been told anything -- rung, or closed --
+// so a caller acting on a hook can ring for the change the resync could not
+// see.
+func (c *Client) resyncAccount() bool {
 	cred, err := recheckCredential(c.cred.ID)
 	switch {
 	case errors.Is(err, credential.ErrInvalid), errors.Is(err, credential.ErrExpired), errors.Is(err, credential.ErrInactive):
 		log.Infof("notif: closing client %d: credential %s no longer resolves: %v", c.ID, c.cred.ID, err)
 		c.signalClose()
-		return
+		return true
 	case err != nil:
 		log.Warnf("notif: client %d: re-reading credential %s: %v", c.ID, c.cred.ID, err)
-		return
+		return false
 	case cred.Scope.LibraryID != "":
 		log.Infof("notif: closing client %d: credential %s was narrowed to %q since it subscribed to the account", c.ID, c.cred.ID, cred.Scope)
 		c.signalClose()
-		return
+		return true
 	}
 
 	ids, err := visibleLibraries(c.account.ID)
 	if err != nil {
 		log.Warnf("notif: client %d: resolving the libraries account %s can see: %v", c.ID, c.account.ID, err)
-		return
+		return false
 	}
 	visible := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -700,8 +721,19 @@ func (c *Client) resyncAccount() {
 	for _, id := range left {
 		c.unsubscribe(id)
 	}
-	if len(appeared)+len(left) > 0 {
-		c.ring()
+	if len(appeared)+len(left) == 0 {
+		return false
+	}
+	c.ring()
+	return true
+}
+
+// nudge asks for a resync before the next tick. Non-blocking, and a second
+// nudge for a resync already pending is nothing to remember.
+func (c *Client) nudge() {
+	select {
+	case c.resyncNow <- struct{}{}:
+	default:
 	}
 }
 

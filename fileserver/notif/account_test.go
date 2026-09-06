@@ -341,3 +341,63 @@ func TestAResyncThatCannotReadTheStoreKeepsTheSocket(t *testing.T) {
 		t.Errorf("a failed resync left %d subscriber(s), want 1", n)
 	}
 }
+
+// A rename rings, with no commit and no head movement.
+//
+// This is the regression the account mode was asked for. A rename is one
+// UPDATE on the catalog and mints no commit -- under E2EE the server could
+// not write one -- so the head does not move, the per-library lane says
+// nothing, and a client carried each library's name in its anchor purely to
+// notice on its own.
+func TestARenameRingsAnAccountSocketWithoutACommit(t *testing.T) {
+	visibleLibrariesReturning(t, testLibrary)
+	stillGood(t)
+
+	conn, _ := liveAccountClient(t)
+
+	NotifyLibraryChanged(testLibrary)
+
+	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
+	if n := subscriberCount(testLibrary); n != 1 {
+		t.Errorf("a rename left %d subscriber(s), want 1: the library is still there", n)
+	}
+}
+
+// A library created rings its owner's sockets, and is watched from then on.
+//
+// Nothing was subscribed to the new library, so the per-library index cannot
+// find the sockets to ring; this is the one change that needs the account
+// key. The ring says the set moved, and the resync it provokes is what makes
+// the next commit to the new library arrive.
+func TestACreatedLibraryRingsItsOwnerAndIsThenWatched(t *testing.T) {
+	const created = "11111111-2222-3333-4444-555555555555"
+	set := []string{testLibrary}
+	visibleLibrariesFrom(t, func() []string { return set })
+	stillGood(t)
+
+	conn, _ := liveAccountClient(t)
+
+	set = []string{testLibrary, created}
+	NotifyAccountUpdate(testCredential().AccountID)
+
+	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
+	waitForSubscribers(t, created, 1)
+
+	NotifyLibraryUpdate(created, "0123456789abcdef0123456789abcdef01234567")
+	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
+}
+
+// A library deleted rings everyone watching it, and they stop.
+func TestADeletedLibraryRingsAndIsNoLongerWatched(t *testing.T) {
+	set := []string{testLibrary}
+	visibleLibrariesFrom(t, func() []string { return set })
+	stillGood(t)
+
+	conn, _ := liveAccountClient(t)
+
+	set = nil
+	NotifyLibraryChanged(testLibrary)
+
+	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
+	waitForSubscribers(t, testLibrary, 0)
+}

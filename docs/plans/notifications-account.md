@@ -355,15 +355,26 @@ socket on a slow query would be a reconnect storm asking the same database.
 The token half of `sweepSubscriptions` stays exactly as it is — a socket can
 hold both kinds of subscription, and the per-library lane is unchanged.
 
-### 4. `account-update`, and the three hooks
+### 4. `account-update`, and the three hooks — **done**
 
-The event type and `notif.NotifyAccountUpdate(account.ID)`, fanned out over a
-new account-keyed index. Rung from create, delete and rename. Delete already
-has `libmgr.OnLibraryDeleted`; the other two are direct calls, since
-`fileserver/api` may import `notif` without a cycle.
+Two producers rather than one, because the sockets to ring are found two
+ways. `notif.NotifyLibraryChanged(libraryID)` is delete and rename: the
+per-library index already holds every account socket watching the library —
+owner and grantees alike — so neither is looked up, and `share.ForLibrary` is
+not consulted. `notif.NotifyAccountUpdate(account.ID)` is create, the one
+change with no library to find a socket by, over an account-keyed index that
+exists for it alone.
 
-Rename rings the owner and every principal holding a grant — `share.ForLibrary`
-is the inverse lookup, and it is off the commit path so it may query.
+Neither rings directly. Each nudges the socket's own loop to run the step 3
+resync early, which subscribes a created library and unsubscribes a deleted
+one before it rings — so the next commit to a new library arrives without
+waiting for the tick. A rename is a change the resync cannot see, so a nudged
+resync that found nothing rings anyway.
+
+All three are direct calls from the handlers — `fileserver/api` imports
+`notif` without a cycle — and `libmgr.OnLibraryDeleted` stays as it was,
+unregistered. A per-library socket is not told about a rename: that lane's
+frame carries a commit id, and a rename mints none.
 
 ### 5. The scoped ring
 
@@ -402,10 +413,12 @@ advertise a distinction no caller can act on.
 3. A commit to a library the account cannot see reaches it not at all.
    **Done.**
 4. A rename rings, with no commit and no head movement — the regression the
-   issue was filed for, and it must fail against today's server.
+   issue was filed for, and it must fail against today's server. **Done**,
+   twice: at the socket, and end to end through `PATCH libraries/{id}` with
+   the head read off the listing before and after.
 5. A library created after the socket was up rings, and its next commit is
-   delivered. **Done**, as a change to the set the resync tick finds — the
-   create hook of step 4 is what makes it immediate. And the inverse: a
+   delivered. **Done**, both as a change the resync tick finds and as the
+   create hook making it immediate. And the inverse: a
    library that leaves the set is unsubscribed and rings, and an unchanged
    set rings nothing.
 6. A credential revoked under a live account socket closes it on the next tick.

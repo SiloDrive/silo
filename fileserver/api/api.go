@@ -13,6 +13,7 @@ import (
 	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/setup"
 	"github.com/dkam/silo/fileserver/share"
@@ -774,6 +775,7 @@ func CreateLibraryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	notif.NotifyAccountUpdate(acct.ID)
 	writeJSON(w, http.StatusCreated, createLibraryResponse{ID: libraryID, Name: req.Name})
 }
 
@@ -825,6 +827,7 @@ func createEncryptedLibrary(w http.ResponseWriter, r *http.Request, acct *accoun
 		return
 	}
 
+	notif.NotifyAccountUpdate(acct.ID)
 	writeJSON(w, http.StatusCreated, createLibraryResponse{ID: libraryID, Name: req.Name})
 }
 
@@ -898,6 +901,7 @@ func DeleteLibraryHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+	notif.NotifyLibraryChanged(libraryID)
 
 	w.WriteHeader(http.StatusOK)
 }
