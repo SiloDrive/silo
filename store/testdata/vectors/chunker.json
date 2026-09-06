@@ -16,15 +16,15 @@
     },
     {
       "name": "e2ee",
-      "seed": "8499673f3b10cbf1a4af52423d9da81ff0573564697dd85045007f96af1a92a6",
+      "seed": "6839a26fe889995712ce8e9c44c761e14799ae31564531ed66b828df30d8a36b",
       "first_four": [
-        "0b376ca4b9d86fb2",
-        "46056a0c8b926e66",
-        "244da7c4d97eef46",
-        "28ef25d00bd4822a"
+        "06515e583b25e37a",
+        "8ef58d50555b0b44",
+        "9b4597c685cf4383",
+        "1852f229210f6fa4"
       ],
-      "last": "40430abe21dbfcb2",
-      "table_sha256": "534615fba4ddfe262558428d4afd07dde894d03bb5b2808da464a73cf442ed47"
+      "last": "d7291ded01830a20",
+      "table_sha256": "5f57a8b0ca4914457c582ad1c012af21e1ad2990add359b2a8de19d0a93ff8b0"
     }
   ],
   "masks": [
@@ -316,7 +316,7 @@
       "why": "the same bytes under a derived seed: every boundary moves",
       "params": {
         "algorithm": "fastcdc-gear64/v1",
-        "seed": "8499673f3b10cbf1a4af52423d9da81ff0573564697dd85045007f96af1a92a6",
+        "seed": "6839a26fe889995712ce8e9c44c761e14799ae31564531ed66b828df30d8a36b",
         "min_size": 262144,
         "target_size": 1048576,
         "max_size": 4194304,
@@ -327,72 +327,92 @@
         "label": "silo/vector/random",
         "length": 16777216
       },
-      "chunk_count": 13,
+      "chunk_count": 17,
       "chunks": [
         {
           "offset": 0,
-          "size": 1524123,
-          "id": "0c31212a70dd38e29eba6741ce81f3cd3d25f0a22eb173c3e0cf59b8514fb16d"
+          "size": 1517671,
+          "id": "89fe417c2d605291406cb35b202ca09a882400f5d438a658be9e66d2c99a3b5a"
         },
         {
-          "offset": 1524123,
-          "size": 1147862,
-          "id": "fa7a0e52dbc9ada3f7377123b042957eff6e59393c4bd8ef80a705ddaf0d92e0"
+          "offset": 1517671,
+          "size": 1922778,
+          "id": "fa3bfc5bd24d142dc76d8770ce3a054df0e750f211483c7324e0e253f887fa69"
         },
         {
-          "offset": 2671985,
-          "size": 698656,
-          "id": "6dc17b6b761cb4084e90c48037f026d5143f04e566b40431d4ce8ad46aa04c37"
+          "offset": 3440449,
+          "size": 392039,
+          "id": "8de9fb74c3eae5570b25eafab5d6fa8cb174566991c8e867b3c4bc1f3c03135f"
         },
         {
-          "offset": 3370641,
-          "size": 1750019,
-          "id": "7de13edcfb632dee01a6da7a7d3082d8a7f7add588cc6e19277cec1c2152c329"
+          "offset": 3832488,
+          "size": 506022,
+          "id": "da40cfc3c241d2ddfd65429ad30ec01bf9808bc9127d5e1416a0a81a135b589c"
         },
         {
-          "offset": 5120660,
-          "size": 1992217,
-          "id": "a37bf53a36582b120a2dc469135ddc1f3b6a10db2d38347e799a9e3d23397bf4"
+          "offset": 4338510,
+          "size": 927879,
+          "id": "006ab772611aeff94c372c0410a67851a90f117646ca48c2cd5e331cb341771a"
         },
         {
-          "offset": 7112877,
-          "size": 1202334,
-          "id": "b4cb05409fd095ea1bfba938c3c34a1ff36e1724729774ec2b9b85b7378749d1"
+          "offset": 5266389,
+          "size": 1251907,
+          "id": "c67c94cb4fd8c10fa9f94c2ed18e592e2522187de1421e9ecba30d9cb9ca8a71"
         },
         {
-          "offset": 8315211,
-          "size": 1164725,
-          "id": "7736fa19245f6ecb086157f2340bd410a49f2524c948475e00fd85fd8a523f80"
+          "offset": 6518296,
+          "size": 1155566,
+          "id": "2a25a4b122968fb1040c70c34e7decd6fdc7a78898d86dd1597369e46edaaf15"
         },
         {
-          "offset": 9479936,
-          "size": 1633468,
-          "id": "56c5b58c3587d3d3ff0782375f78da1390ddf09b4d9ead4b9e0f57f17b31ec7e"
+          "offset": 7673862,
+          "size": 1170479,
+          "id": "600e594bad24a43c216842802a677359de251664262bce28a0595972e8065cfe"
         },
         {
-          "offset": 11113404,
-          "size": 1240120,
-          "id": "84d4d4183f56b89c1d27aeef4a1124c9bd5a7a8f4543f6d362e2d72ea2c07bdb"
+          "offset": 8844341,
+          "size": 1366005,
+          "id": "ae899136abd244086293b9e25c1ab1082e09e6056f27e044497572d7b07a1978"
         },
         {
-          "offset": 12353524,
-          "size": 1188758,
-          "id": "e2d613eb8fd91144d87038c4b788d212a7113954546b2f621e22d114886d5fc6"
+          "offset": 10210346,
+          "size": 1164984,
+          "id": "01707b17379e0e30754cb3f1e6dbf235a62613c2fc7bdfaa3a61840166786b1d"
         },
         {
-          "offset": 13542282,
-          "size": 1087172,
-          "id": "f57b887e5ccf1491ccaeaf688e68caf9401a552ded74fddfc2e203366d307aba"
+          "offset": 11375330,
+          "size": 389222,
+          "id": "f4df947f2f1dc2281f2fe1d4a7cd0ba7878d2f2bb2e3472d8f17ebf7c87980e8"
         },
         {
-          "offset": 14629454,
-          "size": 1293305,
-          "id": "107cf5d9e42941a01b9c19578d371afdb1603f6819ee8867dad3057fd954dab6"
+          "offset": 11764552,
+          "size": 770021,
+          "id": "936671bcb4e6ab9e7f54e23a74f6ab3d44e554a1bcff78eb192fc502cd8488e6"
         },
         {
-          "offset": 15922759,
-          "size": 854457,
-          "id": "eecb15b2a031cc66c06ebdbddaa1d47da4a44a85f9302dba77a274f9739564c7"
+          "offset": 12534573,
+          "size": 1068975,
+          "id": "a11e9de6bb42155c2e1e09bb528673e818ccb0d86847e9274bc05964bf253ef4"
+        },
+        {
+          "offset": 13603548,
+          "size": 628635,
+          "id": "d07eba66df515c1866399293a5ca18d09d715a9ed962be0cc8ba2f5a7b73eb1b"
+        },
+        {
+          "offset": 14232183,
+          "size": 1234808,
+          "id": "12ff99d873790666c6c199de87d8ecf00d83ddedc4359a491d88587464f691f8"
+        },
+        {
+          "offset": 15466991,
+          "size": 442556,
+          "id": "4f04e9d78689739370528f8547a8b9049eb5a5bcbf0a7e76767649012297dc42"
+        },
+        {
+          "offset": 15909547,
+          "size": 867669,
+          "id": "fefb2c074237dc7fd9ec7ef65ef7c9607919ebde14b6948e70e2b7c044579cc1"
         }
       ]
     },
@@ -1072,14 +1092,14 @@
     {
       "name": "e2ee-with-key-under-the-plain-seed",
       "e2ee": true,
-      "content_key_utf8": "silo test content key, not secret",
+      "content_key_utf8": "silo test content key, 32 bytes!",
       "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
       "why": "the same library with the key in hand; holding CK is not permission to ignore the seed"
     },
     {
       "name": "e2ee-under-another-librarys-seed",
       "e2ee": true,
-      "content_key_utf8": "silo test content key, not secret",
+      "content_key_utf8": "silo test content key, 32 bytes!",
       "seed": "25f1fe5ca7c8c4b013ac558dfef7f6a00f30e2d72af3fc095fa4345cca693aeb",
       "why": "a real derived seed, derived from the wrong key — the case a client hits by reusing a Config across libraries"
     },
@@ -1087,13 +1107,13 @@
       "name": "plain-under-a-derived-seed",
       "e2ee": false,
       "content_key_utf8": "",
-      "seed": "8499673f3b10cbf1a4af52423d9da81ff0573564697dd85045007f96af1a92a6",
+      "seed": "6839a26fe889995712ce8e9c44c761e14799ae31564531ed66b828df30d8a36b",
       "why": "the other direction: a plain library off the published seed dedups against nothing"
     },
     {
       "name": "plain-with-a-content-key",
       "e2ee": false,
-      "content_key_utf8": "silo test content key, not secret",
+      "content_key_utf8": "silo test content key, 32 bytes!",
       "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
       "why": "the seed is right and the pair is not; a plain library has no content key"
     }

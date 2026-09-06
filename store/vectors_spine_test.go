@@ -79,17 +79,6 @@ type spineSealedVector struct {
 	Rewritten bool `json:"rewritten"`
 }
 
-// spineCK is this file's content key.
-//
-// It is not objects.json's vectorCK, and the difference is deliberate:
-// RewriteSpine is a Keyring method, NewKeyring holds a content key to the 32
-// bytes the format says it is, and vectorCK is 33. Sealing functions called
-// with the key directly do not check, which is how that went unnoticed; the
-// keyring does. Changing vectorCK would move every id in objects.json and
-// names.json for no reason a reader of those files could see, so this file
-// publishes its own key instead and says so here.
-var spineCK = []byte("silo test content key, 32 bytes!")
-
 var spineNodeTypes = map[NodeType]string{
 	NodeFile:    "file",
 	NodeDir:     "dir",
@@ -301,7 +290,7 @@ func spineCases() []spineCase {
 
 func buildSpineVectors(t *testing.T) spineVectorDoc {
 	t.Helper()
-	k, err := NewKeyring(spineCK)
+	k, err := NewKeyring(vectorCK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +305,7 @@ func buildSpineVectors(t *testing.T) spineVectorDoc {
 			"mutation's timestamp — never a file's. sealed is what each level became, " +
 			"with child_entry_mtime stating the mtime rule's outcome per level so a " +
 			"port can check it without decoding.",
-		ContentKey: string(spineCK),
+		ContentKey: string(vectorCK),
 	}
 
 	for _, c := range spineCases() {

@@ -13,7 +13,15 @@ const objectVectorFile = "testdata/vectors/objects.json"
 // vectorCK is the published stand-in for a library content key. A real one is
 // 32 random bytes; this one is in the spec so every derived value below is
 // reproducible.
-var vectorCK = []byte("silo test content key, not secret")
+//
+// It is 32 bytes because a content key is, and TestTheVectorContentKeyIsOne
+// holds it there. The first stand-in was 33 — a readable sentence nobody
+// counted — and nothing on this path counts either: SealChunk, NameKey and the
+// EncodeSealed pair check only that a key is non-empty, ChunkerSeed checks
+// nothing, and HKDF absorbs any width. It derived perfectly stable ids from a
+// key the format says cannot exist, which a port typing its key as 32 bytes
+// could not load at all.
+var vectorCK = []byte("silo test content key, 32 bytes!")
 
 type objectVectorDoc struct {
 	Format         string                     `json:"format"`
@@ -398,6 +406,30 @@ func encodeCommit(c *Commit) func(bool) ([]byte, error) {
 			return c.EncodeSealed(vectorCK)
 		}
 		return c.Encode()
+	}
+}
+
+// The published content key has to be one the format would accept.
+//
+// Every id in objects.json, names.json and spine.json derives from it, so a
+// stand-in of the wrong width makes all three unusable by a port that types a
+// content key the way the spec describes it — and the two boundaries that do
+// check a key's width, NewKeyring and WrapCK, are not on the path that
+// generates any of them.
+func TestTheVectorContentKeyIsOne(t *testing.T) {
+	if len(vectorCK) != CKSize {
+		t.Fatalf("the published content key is %d bytes, a content key is %d",
+			len(vectorCK), CKSize)
+	}
+	if _, err := NewKeyring(vectorCK); err != nil {
+		t.Fatalf("the published content key is not one: %v", err)
+	}
+	id, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WrapCK(id.Public(), "3f2a1c58-9b0d-4e77-8a61-5c2d0e4f9ab3", vectorCK); err != nil {
+		t.Fatalf("the published content key cannot be wrapped: %v", err)
 	}
 }
 

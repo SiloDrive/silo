@@ -535,6 +535,15 @@ described exactly as in `chunker.json`; the content key is the literal ASCII
 string in `content_key_utf8`. Objects small enough to compare byte for byte
 carry `encoded_hex`; the rest are pinned by `object_id`.
 
+`content_key_utf8` is **32 bytes**, because a content key is — a port may type
+it as fixed-width and load it directly. The first published stand-in was 33: a
+readable sentence nobody counted, which no port typing its key to the spec
+could have loaded at all. Nothing on the generating path caught it, because the
+only two places that check a key's width are `NewKeyring` and `WrapCK`, and
+neither is on it — `SealChunk`, `NameKey` and the `EncodeSealed` pair ask only
+that a key be non-empty, the chunker seed asks nothing, and HKDF absorbs any
+width. It is held to 32 by a test now.
+
 ## Directory and commit objects
 
 Both take the same public/sealed split as manifests, for a reason that is not
