@@ -323,18 +323,20 @@ re-check is the resync loop of step 3, not the per-library question the
 credential lane asks, and a sweep that asked `PermFor` per library for the
 whole set would be the reverse index decision 1 refused, on a timer.
 
-### 2. The frame branch, and a one-bit debt
+### 2. The frame branch, and a one-bit debt — **done**
 
 `NotifyLibraryUpdate` writes `account-update` to an account-scoped subscriber
-and `library-update` to every other. One `if` where the message is handed to
-`wch`, and the only change the commit path sees.
+and `library-update` to every other. One `if` on `Client.accountScoped` where
+the message is handed to `wch`, and the only change the commit path sees. The
+flag is atomic, because the fanout takes no lock of the client's.
 
 The deferred-delivery machinery does not follow it across. A per-library socket
 keeps `missed`, `noteMissed` and collapse-into-newest, because a commit id per
 library is a thing that can be stale and has to be reconciled. An account
-socket's debt is one bit — a ring is owed or it is not — so a full `wch` sets a
-flag and the writer sends one ring when the queue moves. Two mechanisms, and
-the second is five lines, because there is nothing in a ring to collapse.
+socket's debt is one bit — `ringOwed` — so a full `wch` sets it and the writer
+sends one ring when the queue moves, on the same wake the per-library resync
+uses. Two mechanisms, and the second is a handful of lines, because there is
+nothing in a ring to collapse.
 
 ### 3. The resync loop
 

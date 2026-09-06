@@ -94,16 +94,87 @@ func TestAnAccountSubscribeFromANarrowedCredentialIsRefused(t *testing.T) {
 //
 // This is the mode's whole point: the client subscribes once and is told about
 // every library in its set, including the ones it has not heard of yet.
-func TestACommitToAVisibleLibraryReachesAnAccountScopedSocket(t *testing.T) {
+//
+// What reaches it is a bare ring, not the library-update a per-library socket
+// gets. The ring carries nothing, and that is what makes this lane need no
+// lease: there is nothing in the frame to have been authorized, and the fetch
+// it provokes is authorized on its own. A library-update here would carry a
+// library id and a commit id on a socket that was never checked against that
+// library in particular.
+func TestACommitToAVisibleLibraryRingsAnAccountScopedSocket(t *testing.T) {
 	const commitID = "0123456789abcdef0123456789abcdef01234567"
 	visibleLibrariesReturning(t, testLibrary)
 
+	conn, _ := liveAccountClient(t)
+
+	NotifyLibraryUpdate(testLibrary, commitID)
+
+	msg := nextFrame(t, conn, 2*time.Second)
+	if msg.Type != EventTypeAccountUpdate {
+		t.Fatalf("an account socket was sent %s, want %s", msg.Type, EventTypeAccountUpdate)
+	}
+	if string(msg.Content) != "{}" {
+		t.Errorf("the ring carried %s; it must carry nothing", msg.Content)
+	}
+	expectNoFrame(t, conn, 200*time.Millisecond)
+}
+
+// Several commits an account socket could not be handed collapse into one ring.
+//
+// The per-library lane owes a commit id per library and reconciles them; this
+// lane's debt is one bit. A ring is owed or it is not, and one ring after the
+// queue moves says everything thirty would.
+func TestDropsForAnAccountSocketCollapseIntoOneRing(t *testing.T) {
+	visibleLibrariesReturning(t, testLibrary)
+
+	conn, c := liveAccountClient(t)
+	resume := stall(t, c)
+
+	NotifyLibraryUpdate(testLibrary, "1111111111111111111111111111111111111111")
+	NotifyLibraryUpdate(testLibrary, "2222222222222222222222222222222222222222")
+	NotifyLibraryUpdate(testLibrary, "3333333333333333333333333333333333333333")
+
+	resume()
+
+	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
+
+	// And no second ring. The filler stall queued is still draining, so read
+	// past it rather than demanding silence.
+	if err := conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var msg Message
+		if err := conn.ReadJSON(&msg); err != nil {
+			return // the read deadline: nothing more came, which is the point
+		}
+		if msg.Type == EventTypeAccountUpdate {
+			t.Fatal("a second ring arrived; the drops should have collapsed into one")
+		}
+	}
+}
+
+// liveAccountClient dials a socket with a credential, subscribes it to the
+// account, and returns both ends once the server has registered it.
+func liveAccountClient(t *testing.T) (*websocket.Conn, *Client) {
+	t.Helper()
 	conn := dialWithCredential(t, testCredential())
 	subscribeToAccount(t, conn)
 	waitForSubscribers(t, testLibrary, 1)
+	return conn, snapshotSubscribers(testLibrary)[0]
+}
 
-	NotifyLibraryUpdate(testLibrary, commitID)
-	awaitUpdate(t, conn, testLibrary)
+// nextFrame reads whatever arrives next, or fails at the deadline.
+func nextFrame(t *testing.T, conn *websocket.Conn, d time.Duration) *Message {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(d)); err != nil {
+		t.Fatal(err)
+	}
+	var msg Message
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("waiting for a frame: %v", err)
+	}
+	return &msg
 }
 
 // A commit to a library the account cannot see reaches it not at all.
@@ -115,9 +186,7 @@ func TestACommitToAnInvisibleLibraryDoesNotReachAnAccountScopedSocket(t *testing
 	const other = "11111111-2222-3333-4444-555555555555"
 	visibleLibrariesReturning(t, testLibrary)
 
-	conn := dialWithCredential(t, testCredential())
-	subscribeToAccount(t, conn)
-	waitForSubscribers(t, testLibrary, 1)
+	conn, _ := liveAccountClient(t)
 
 	if n := subscriberCount(other); n != 0 {
 		t.Fatalf("an account subscribe registered %d subscriber(s) on a library outside its set", n)

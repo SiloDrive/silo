@@ -24,6 +24,11 @@ const (
 	// log, where the operator is the audience, for the reason
 	// middleware.credentialRefused gives.
 	EventTypeSubscribeDenied = "subscribe-denied"
+
+	// EventTypeAccountUpdate is the bare ring an account-scoped socket gets
+	// where a per-library socket gets library-update: something in the set
+	// moved, and GET /libraries says what.
+	EventTypeAccountUpdate = "account-update"
 )
 
 // Message is the wire format exchanged with clients. Both inbound
@@ -39,10 +44,23 @@ type LibraryUpdateEvent struct {
 	CommitID  string `json:"commit_id"`
 }
 
+// accountRing is the frame an account-scoped socket gets. It carries nothing,
+// and that is the point: there is nothing in it to have been authorized, so
+// the socket needs no lease on any library it rings for.
+func accountRing() *Message {
+	return &Message{Type: EventTypeAccountUpdate, Content: json.RawMessage("{}")}
+}
+
 // NotifyLibraryUpdate fans a library-update event out to every client currently
 // subscribed to libraryID. Delivery is best-effort and non-blocking: if a
 // client's write channel is full, the message is dropped for that client
 // rather than back-pressuring the caller (which is the commit-write hot path).
+//
+// The frame is chosen per client, not per event. A per-library socket gets
+// the library and the commit it subscribed to hear about; an account socket
+// gets a bare ring, because it was never checked against this library in
+// particular and the frame must carry nothing that check would have covered.
+// One set of subscribers, one branch at the point of writing.
 func NotifyLibraryUpdate(libraryID, commitID string) {
 	targets := snapshotSubscribers(libraryID)
 	if len(targets) == 0 {
@@ -54,11 +72,20 @@ func NotifyLibraryUpdate(libraryID, commitID string) {
 		log.Warnf("notif: failed to encode library-update event: %v", err)
 		return
 	}
-	msg := &Message{Type: EventTypeLibraryUpdate, Content: content}
+	update := &Message{Type: EventTypeLibraryUpdate, Content: content}
+	ring := accountRing()
 
 	for _, c := range targets {
+		if c.accountScoped.Load() {
+			select {
+			case c.wch <- ring:
+			default:
+				c.noteRingOwed()
+			}
+			continue
+		}
 		select {
-		case c.wch <- msg:
+		case c.wch <- update:
 		default:
 			// Not dropped -- deferred. The send stays non-blocking because
 			// this runs on the commit path and one stuck socket must not hold

@@ -107,9 +107,17 @@ type Client struct {
 	libraries   map[string]subscription // libraryID -> subscription. nil after close.
 
 	// accountScoped says the client asked for its account's whole set, and
-	// holds a laneAccount subscription for each library in it. Under
-	// librariesMu, beside the set it describes.
-	accountScoped bool
+	// holds a laneAccount subscription for each library in it. It is what
+	// the fanout branches on -- an account socket is rung, not told -- and
+	// atomic because the fanout runs on the commit path and takes no lock of
+	// this client's.
+	accountScoped atomic.Bool
+
+	// ringOwed is the account socket's whole debt: a ring could not be
+	// handed to wch, and one is due when the queue moves. One bit rather
+	// than the per-library map above, because there is nothing in a ring to
+	// collapse -- every one says the same thing.
+	ringOwed atomic.Bool
 
 	// graceTimer closes the connection if provisionalGrace passes with nothing
 	// subscribed. nil when the handshake carried a credential.
@@ -322,6 +330,12 @@ func (c *Client) writeLoop() {
 				log.Debugf("notif: client %d resync write error: %v", c.ID, err)
 				return
 			}
+			if c.ringOwed.Swap(false) {
+				if err := c.writeMessage(accountRing()); err != nil {
+					log.Debugf("notif: client %d ring write error: %v", c.ID, err)
+					return
+				}
+			}
 		case <-c.closeCh:
 			return
 		}
@@ -360,6 +374,17 @@ func (c *Client) noteMissed(libraryID, commitID string) {
 	default:
 		// Already nudged, and the flush takes whatever the set holds when it
 		// runs -- including what was just added.
+	}
+}
+
+// noteRingOwed records that a ring could not be delivered, and wakes the
+// writer to deliver one when it can. Later drops change nothing: the bit is
+// already set, and one ring pays for all of them.
+func (c *Client) noteRingOwed() {
+	c.ringOwed.Store(true)
+	select {
+	case c.resyncCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -591,9 +616,7 @@ func (c *Client) subscribeAccount() {
 		return
 	}
 
-	c.librariesMu.Lock()
-	c.accountScoped = true
-	c.librariesMu.Unlock()
+	c.accountScoped.Store(true)
 	for _, id := range ids {
 		c.subscribe(id, "", subscription{lane: laneAccount})
 	}
