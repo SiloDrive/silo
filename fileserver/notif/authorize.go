@@ -72,3 +72,13 @@ var visibleLibraries = func(acct account.ID) ([]string, error) {
 	}
 	return ids, nil
 }
+
+// recheckCredential re-reads the credential behind an account socket, so the
+// resync tick can drop a socket whose credential is gone, disabled, expired
+// or narrowed since the handshake. A variable for the reason authorize is
+// one.
+var recheckCredential = func(id string) (*credential.Credential, error) {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	return credential.ByID(ctx, id)
+}

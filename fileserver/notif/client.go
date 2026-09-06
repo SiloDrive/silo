@@ -3,6 +3,7 @@ package notif
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,13 @@ const (
 	// frequent enough for those, and it is the same order as the time a
 	// client would take to notice through polling.
 	sweepPeriod = 1 * time.Hour
+
+	// resyncPeriod is how often an account socket re-resolves the credential
+	// behind it and the set it rings for. A freshness number, not an
+	// authorization one: the ring carries nothing, and every fetch it
+	// provokes re-resolves the credential on its own. Five minutes matches
+	// the sweep the desktop client already runs against the listing.
+	resyncPeriod = 5 * time.Minute
 
 	// wchBuffer is the outbound channel depth. Large enough to absorb a
 	// burst of events without dropping; small enough that a stuck client
@@ -455,12 +463,18 @@ func (c *Client) pingLoop() {
 
 func (c *Client) sweepLoop() {
 	defer c.signalClose()
-	ticker := time.NewTicker(sweepPeriod)
-	defer ticker.Stop()
+	sweep := time.NewTicker(sweepPeriod)
+	defer sweep.Stop()
+	resync := time.NewTicker(resyncPeriod)
+	defer resync.Stop()
 	for {
 		select {
-		case <-ticker.C:
+		case <-sweep.C:
 			c.sweepSubscriptions()
+		case <-resync.C:
+			if c.accountScoped.Load() {
+				c.resyncAccount()
+			}
 		case <-c.closeCh:
 			return
 		}
@@ -619,6 +633,84 @@ func (c *Client) subscribeAccount() {
 	c.accountScoped.Store(true)
 	for _, id := range ids {
 		c.subscribe(id, "", subscription{lane: laneAccount})
+	}
+}
+
+// resyncAccount is one tick of the account socket's loop: is the credential
+// still good, and is the set still the set.
+//
+// This loop is the mechanism, and the hooks that ring on create, delete and
+// rename are only latency. It is the one thing that covers a change made by
+// a process that is not this one -- an operator's command, a repair script, a
+// second server on the same database -- and it delivers every kind of change
+// with no producer anywhere else.
+//
+// The credential half is hygiene rather than the security boundary. The ring
+// carries nothing, and every fetch it provokes re-resolves the credential on
+// its own; what this stops is a revoked device being told the account is
+// active, and holding a socket for free. Gone, expired, disabled and narrowed
+// all close the socket, because in each case the credential that was granted
+// the account's set can no longer answer for it. A store that cannot be read
+// is none of those: dropping every account socket on a slow query would turn
+// it into a reconnect storm asking the same database, so that tick is logged
+// and the next one asks again.
+func (c *Client) resyncAccount() {
+	cred, err := recheckCredential(c.cred.ID)
+	switch {
+	case errors.Is(err, credential.ErrInvalid), errors.Is(err, credential.ErrExpired), errors.Is(err, credential.ErrInactive):
+		log.Infof("notif: closing client %d: credential %s no longer resolves: %v", c.ID, c.cred.ID, err)
+		c.signalClose()
+		return
+	case err != nil:
+		log.Warnf("notif: client %d: re-reading credential %s: %v", c.ID, c.cred.ID, err)
+		return
+	case cred.Scope.LibraryID != "":
+		log.Infof("notif: closing client %d: credential %s was narrowed to %q since it subscribed to the account", c.ID, c.cred.ID, cred.Scope)
+		c.signalClose()
+		return
+	}
+
+	ids, err := visibleLibraries(c.account.ID)
+	if err != nil {
+		log.Warnf("notif: client %d: resolving the libraries account %s can see: %v", c.ID, c.account.ID, err)
+		return
+	}
+	visible := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		visible[id] = true
+	}
+
+	var appeared, left []string
+	c.librariesMu.Lock()
+	for id, sub := range c.libraries {
+		if sub.lane == laneAccount && !visible[id] {
+			left = append(left, id)
+		}
+	}
+	for _, id := range ids {
+		if _, ok := c.libraries[id]; !ok {
+			appeared = append(appeared, id)
+		}
+	}
+	c.librariesMu.Unlock()
+
+	for _, id := range appeared {
+		c.subscribe(id, "", subscription{lane: laneAccount})
+	}
+	for _, id := range left {
+		c.unsubscribe(id)
+	}
+	if len(appeared)+len(left) > 0 {
+		c.ring()
+	}
+}
+
+// ring hands the account socket its frame, or notes that one is owed.
+func (c *Client) ring() {
+	select {
+	case c.wch <- accountRing():
+	default:
+		c.noteRingOwed()
 	}
 }
 

@@ -73,15 +73,10 @@ func NotifyLibraryUpdate(libraryID, commitID string) {
 		return
 	}
 	update := &Message{Type: EventTypeLibraryUpdate, Content: content}
-	ring := accountRing()
 
 	for _, c := range targets {
 		if c.accountScoped.Load() {
-			select {
-			case c.wch <- ring:
-			default:
-				c.noteRingOwed()
-			}
+			c.ring()
 			continue
 		}
 		select {

@@ -197,16 +197,8 @@ func Resolve(r *http.Request, kinds ...Kind) (*Credential, error) {
 	// Expiry and the account check come after the proof, so a caller who
 	// cannot prove the credential does not learn that an id they guessed
 	// belongs to a disabled account.
-	if cred.ExpiresAt != 0 && cred.ExpiresAt <= time.Now().Unix() {
-		return nil, ErrExpired
-	}
-
-	// The check that could not be retrofitted. Disabling an account has to
-	// kill every lane at once, and it only does if every lane asks — which is
-	// what having one Resolve buys, and what three separate token stores made
-	// impossible. load read it alongside the credential row.
-	if !cred.acct.IsActive {
-		return nil, ErrInactive
+	if err := stillGood(cred); err != nil {
+		return nil, err
 	}
 
 	// Detached, not merely given a detached context. The write goes to a pool
@@ -217,6 +209,23 @@ func Resolve(r *http.Request, kinds ...Kind) (*Credential, error) {
 	// now it is.
 	stampLastUsed(cred)
 	return cred, nil
+}
+
+// stillGood is the part of resolving that is about the row rather than the
+// proof: not expired, and the account behind it active.
+//
+// The account check is the one that could not be retrofitted. Disabling an
+// account has to kill every lane at once, and it only does if every lane asks
+// -- which is what having one Resolve buys, and what three separate token
+// stores made impossible. load reads it alongside the credential row.
+func stillGood(cred *Credential) error {
+	if cred.ExpiresAt != 0 && cred.ExpiresAt <= time.Now().Unix() {
+		return ErrExpired
+	}
+	if !cred.acct.IsActive {
+		return ErrInactive
+	}
+	return nil
 }
 
 // tokenFromRequest pulls the credential out of the request without touching
@@ -429,4 +438,24 @@ func permRank(p string) int {
 	default:
 		return 0
 	}
+}
+
+// ByID re-reads a credential the caller has already proven.
+//
+// Resolve is the answer to "who is this request from", and it needs the
+// secret. A holder that resolved once and kept the credential -- the
+// notification socket, for the life of its connection -- has a different
+// question: is this still good. Revoked, expired, and a disabled account are
+// each their Resolve error; the row's current scope comes back for the
+// caller to compare against the one it holds. No proof, because the proof
+// was given; no last-used stamp, because nothing was used.
+func ByID(ctx context.Context, id string) (*Credential, error) {
+	cred, err := load(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := stillGood(cred); err != nil {
+		return nil, err
+	}
+	return cred, nil
 }

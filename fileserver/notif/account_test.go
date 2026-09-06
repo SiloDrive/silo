@@ -2,6 +2,7 @@ package notif
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -193,4 +194,150 @@ func TestACommitToAnInvisibleLibraryDoesNotReachAnAccountScopedSocket(t *testing
 	}
 	NotifyLibraryUpdate(other, "0123456789abcdef0123456789abcdef01234567")
 	expectNoFrame(t, conn, 200*time.Millisecond)
+}
+
+// visibleLibrariesFrom is visibleLibrariesReturning for a set the test moves
+// under the socket.
+func visibleLibrariesFrom(t *testing.T, get func() []string) {
+	t.Helper()
+	orig := visibleLibraries
+	visibleLibraries = func(account.ID) ([]string, error) { return get(), nil }
+	t.Cleanup(func() { visibleLibraries = orig })
+}
+
+// recheckReturning replaces the credential re-read for one test.
+func recheckReturning(t *testing.T, fn func(id string) (*credential.Credential, error)) {
+	t.Helper()
+	orig := recheckCredential
+	recheckCredential = fn
+	t.Cleanup(func() { recheckCredential = orig })
+}
+
+// stillGood is a recheck that finds the credential as it was.
+func stillGood(t *testing.T) {
+	t.Helper()
+	recheckReturning(t, func(string) (*credential.Credential, error) { return testCredential(), nil })
+}
+
+// A library that appears in the set after the socket was up rings, and its
+// next commit is delivered.
+//
+// This is what makes the resync loop the mechanism and not a hook: a library
+// created by another process, or granted by a path this server does not
+// have yet, still appears -- one tick late rather than never.
+func TestALibraryThatAppearsInTheSetRingsAndIsThenWatched(t *testing.T) {
+	const created = "11111111-2222-3333-4444-555555555555"
+	set := []string{testLibrary}
+	visibleLibrariesFrom(t, func() []string { return set })
+	stillGood(t)
+
+	conn, c := liveAccountClient(t)
+
+	set = []string{testLibrary, created}
+	c.resyncAccount()
+
+	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
+	if n := subscriberCount(created); n != 1 {
+		t.Fatalf("the new library has %d subscriber(s) after the resync, want 1", n)
+	}
+
+	NotifyLibraryUpdate(created, "0123456789abcdef0123456789abcdef01234567")
+	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
+}
+
+// A library that leaves the set is unsubscribed, and the leaving rings.
+//
+// Deleted or unshared, the client's listing is stale either way, and the
+// commit that will never come for it is not what tells it so.
+func TestALibraryThatLeavesTheSetRingsAndIsNoLongerWatched(t *testing.T) {
+	set := []string{testLibrary}
+	visibleLibrariesFrom(t, func() []string { return set })
+	stillGood(t)
+
+	conn, c := liveAccountClient(t)
+
+	set = nil
+	c.resyncAccount()
+
+	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
+	if n := subscriberCount(testLibrary); n != 0 {
+		t.Errorf("a library that left the set still has %d subscriber(s)", n)
+	}
+}
+
+// An unchanged set rings nothing. The tick is a freshness check, and a client
+// rung every five minutes for no reason would learn to ignore the ring.
+func TestAnUnchangedSetDoesNotRing(t *testing.T) {
+	visibleLibrariesReturning(t, testLibrary)
+	stillGood(t)
+
+	conn, c := liveAccountClient(t)
+	c.resyncAccount()
+
+	expectNoFrame(t, conn, 200*time.Millisecond)
+	if n := subscriberCount(testLibrary); n != 1 {
+		t.Errorf("an unchanged resync left %d subscriber(s), want 1", n)
+	}
+}
+
+// A credential revoked under a live account socket closes it on the next tick.
+//
+// Hygiene rather than the security boundary -- the ring carries nothing, and
+// every fetch it provokes re-resolves the credential -- but a revoked device
+// should not be told the account is active, and should not hold a socket for
+// free.
+func TestARevokedCredentialClosesTheAccountSocketOnResync(t *testing.T) {
+	visibleLibrariesReturning(t, testLibrary)
+	recheckReturning(t, func(string) (*credential.Credential, error) { return nil, credential.ErrInvalid })
+
+	conn, c := liveAccountClient(t)
+	c.resyncAccount()
+
+	if !closedWithin(t, conn, 2*time.Second) {
+		t.Fatal("the socket stayed open on a revoked credential")
+	}
+}
+
+// A credential narrowed after the handshake closes the socket likewise.
+//
+// The account ring was granted to a credential that could answer for the
+// whole account; one that no longer can must not keep ringing for it. The
+// client reconnects, and its subscribe is answered by the credential it now
+// holds.
+func TestANarrowedCredentialClosesTheAccountSocketOnResync(t *testing.T) {
+	visibleLibrariesReturning(t, testLibrary)
+	recheckReturning(t, func(string) (*credential.Credential, error) {
+		cred := testCredential()
+		cred.Scope = credential.Scope{LibraryID: testLibrary}
+		return cred, nil
+	})
+
+	conn, c := liveAccountClient(t)
+	c.resyncAccount()
+
+	if !closedWithin(t, conn, 2*time.Second) {
+		t.Fatal("the socket stayed open on a credential narrowed since the handshake")
+	}
+}
+
+// A store that cannot be reached is not a revocation.
+//
+// Dropping every account socket on a database hiccup would turn one slow
+// query into a reconnect storm, each reconnect asking the same database. The
+// tick logs and waits for the next one.
+func TestAResyncThatCannotReadTheStoreKeepsTheSocket(t *testing.T) {
+	visibleLibrariesReturning(t, testLibrary)
+	recheckReturning(t, func(string) (*credential.Credential, error) {
+		return nil, errors.New("database is locked")
+	})
+
+	conn, c := liveAccountClient(t)
+	c.resyncAccount()
+
+	if closedWithin(t, conn, 300*time.Millisecond) {
+		t.Fatal("the socket was dropped because the store could not be read")
+	}
+	if n := subscriberCount(testLibrary); n != 1 {
+		t.Errorf("a failed resync left %d subscriber(s), want 1", n)
+	}
 }

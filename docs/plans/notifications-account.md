@@ -338,11 +338,19 @@ sends one ring when the queue moves, on the same wake the per-library resync
 uses. Two mechanisms, and the second is a handful of lines, because there is
 nothing in a ring to collapse.
 
-### 3. The resync loop
+### 3. The resync loop — **done**
 
-A ticker per account socket. Re-resolve the credential; drop on revoked,
-disabled, or newly narrowed. Re-resolve the set; `addSubscription` /
-`removeSubscription` the difference; ring once if the difference is non-empty.
+A second ticker in `sweepLoop`, at `resyncPeriod` (five minutes), that runs
+`resyncAccount` on an account-scoped client. Re-resolve the credential through
+`credential.ByID` — Resolve without the proof and without the last-used stamp,
+for a holder that proved it once and kept it — and close the socket on
+revoked, expired, disabled, or newly narrowed. Re-resolve the set and diff it
+against the account-lane subscriptions; subscribe what appeared, unsubscribe
+what left, ring once if either was non-empty.
+
+A store that cannot be read is none of those and does not close the socket:
+that tick logs and the next one asks again, because dropping every account
+socket on a slow query would be a reconnect storm asking the same database.
 
 The token half of `sweepSubscriptions` stays exactly as it is — a socket can
 hold both kinds of subscription, and the per-library lane is unchanged.
@@ -396,9 +404,13 @@ advertise a distinction no caller can act on.
 4. A rename rings, with no commit and no head movement — the regression the
    issue was filed for, and it must fail against today's server.
 5. A library created after the socket was up rings, and its next commit is
-   delivered.
+   delivered. **Done**, as a change to the set the resync tick finds — the
+   create hook of step 4 is what makes it immediate. And the inverse: a
+   library that leaves the set is unsubscribed and rings, and an unchanged
+   set rings nothing.
 6. A credential revoked under a live account socket closes it on the next tick.
-7. A narrowed-after-connect credential closes it likewise.
+   **Done**, and a store that cannot be read does not.
+7. A narrowed-after-connect credential closes it likewise. **Done.**
 8. A path-scoped credential is rung for a commit elsewhere in its library —
    pinning decision 6's trade as deliberate, so that narrowing it later is a
    change to a test rather than a silent one.
@@ -429,7 +441,7 @@ pointing here.
 
 ## Open
 
-- **The interval.** Five minutes is the proposal, as a freshness number — see
+- **The interval.** Five minutes, as `resyncPeriod`, a freshness number — see
   decision 3 for why it is not an authorization one. A compiled-in constant
   first; a `[notifications]` key in [`configuration.md`](../configuration.md)
   if a deployment ever wants it different.
