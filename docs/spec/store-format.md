@@ -184,7 +184,13 @@ Three things a port gets wrong silently, all pinned above:
    the boundaries, so it is part of the format rather than an implementation
    choice.
 2. **Hashing begins at `data[min_size - 1]`**, so the shortest chunk is exactly
-   `min_size` — not `min_size + 1`.
+   `min_size` — not `min_size + 1`. This one hides: `h << 1` discards the top
+   bit, so the hash forgets where it started after 64 bytes, and an
+   implementation beginning at `data[min_size]` agrees with this one everywhere
+   except a cut inside the first 64 hashed bytes. At the default `min_size` of
+   256 KiB that never happens in any input anyone will generate — 16 MiB of
+   pseudorandom data cuts *identically* under both rules. The `min-size-cut`
+   vector uses a 64-byte minimum for exactly this reason.
 3. **A byte that satisfies the mask ends the chunk it belongs to**, so a hit at
    index *i* yields a chunk of *i+1* bytes.
 
@@ -213,9 +219,38 @@ rule instead of us committing them:
   `SHA-256(L ‖ uint64le(i))` for i = 0, 1, 2, … truncated to *n* bytes.
 - `zeros` with length *n*: *n* zero bytes.
 
-Each case lists every chunk as `(offset, size, id)`. The `zeros` case exists to
-pin the forced cut at `max_size`; the `-e2ee` case pins that a different seed
-moves every boundary; `empty` and `inline-sized` pin the short-stream edges.
+Each case carries a `why`, its full parameters, and every chunk as
+`(offset, size, id)`. Four groups:
+
+- **The default parameters.** `pseudorandom-16MiB` is the ordinary case;
+  `zeros-16MiB` pins the forced cut at `max_size`; `-e2ee` pins that a
+  different seed moves every boundary; `empty` and `inline-sized` pin the
+  short-stream edges.
+- **The size edges.** `min-size-exactly`, `min-size-minus-one` and
+  `min-size-plus-one` isolate the minimum rule; `max-size-exactly` pins a
+  stream ending exactly on a forced cut, and `max-size-plus-one` the one-byte
+  final chunk after it — the last chunk is the only one allowed below
+  `min_size`.
+- **Parameters that are not the defaults**, because nothing about the defaults
+  is a constant: a library is created with whatever its server chose, and those
+  numbers reach the client in the library listing. `normalization-0` (where the
+  two loops collapse into one, `mask_s == mask_l`) and `normalization-3` (the
+  top of the permitted range) sit at the ends of that field;
+  `target-not-a-power-of-two` has `target_bits` 19 for a 768 KiB target, which
+  is where `floor(log2(t))` and a rounded floating-point `log2` disagree;
+  `small-parameters` is a 1 KiB target; `min-size-cut` is the only case that
+  catches hashing from `data[min_size]` — see the cut rules above for why no
+  default-parameter case ever could.
+- **`masks`**, separately from any cut: eight parameter sets with their derived
+  `target_bits`, `mask_s` and `mask_l`. A port that transcribed the default's
+  two constants passes every default-parameter cut above and fails the first
+  row here. `largest-permitted` derives a mask of the top 33 bits, which is the
+  row that catches a port deriving masks in a 32-bit word.
+
+`params_invalid` lists parameter sets no chunker may be built from — the bounds
+are the format's, not one implementation's, and a port that accepts more
+accepts libraries no other client can read. `params_refused` is the separate
+seed rule; see Chunker seeds.
 
 Regenerate with `go test ./store -run TestVectors -update` — deliberately, with
 the diff reviewed. A change to this file is a change to every id in every

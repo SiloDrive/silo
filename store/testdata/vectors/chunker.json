@@ -27,9 +27,100 @@
       "table_sha256": "534615fba4ddfe262558428d4afd07dde894d03bb5b2808da464a73cf442ed47"
     }
   ],
+  "masks": [
+    {
+      "name": "default",
+      "min_size": 262144,
+      "target_size": 1048576,
+      "max_size": 4194304,
+      "normalization": 2,
+      "target_bits": 20,
+      "mask_s": "fffffc0000000000",
+      "mask_l": "ffffc00000000000",
+      "why": "the parameters every library is created with today: floor(log2(1048576)) = 20, so the strict mask is the top 22 bits and the lax one the top 18"
+    },
+    {
+      "name": "normalization-0",
+      "min_size": 262144,
+      "target_size": 1048576,
+      "max_size": 4194304,
+      "normalization": 0,
+      "target_bits": 20,
+      "mask_s": "fffff00000000000",
+      "mask_l": "fffff00000000000",
+      "why": "level 0 collapses the two loops into one: mask_s == mask_l, and a port that special-cases the second loop away must still cut in the same places"
+    },
+    {
+      "name": "normalization-3",
+      "min_size": 262144,
+      "target_size": 1048576,
+      "max_size": 4194304,
+      "normalization": 3,
+      "target_bits": 20,
+      "mask_s": "fffffe0000000000",
+      "mask_l": "ffff800000000000",
+      "why": "the far edge of the permitted range, 0..3"
+    },
+    {
+      "name": "target-not-a-power-of-two",
+      "min_size": 196608,
+      "target_size": 786432,
+      "max_size": 3145728,
+      "normalization": 2,
+      "target_bits": 19,
+      "mask_s": "fffff80000000000",
+      "mask_l": "ffff800000000000",
+      "why": "the row that separates floor(log2(t)) from round(log2(t)): 786432 has bit length 20, so target_bits is 19, while a port taking log2 in floating point and rounding gets 20 and every mask off by one"
+    },
+    {
+      "name": "target-just-over-a-power-of-two",
+      "min_size": 262144,
+      "target_size": 1572864,
+      "max_size": 4194304,
+      "normalization": 2,
+      "target_bits": 20,
+      "mask_s": "fffffc0000000000",
+      "mask_l": "ffffc00000000000",
+      "why": "the same trap in the other direction: 1.5 MiB rounds up to 21 and floors to 20, and the masks here are the default's — so only the switch point moves"
+    },
+    {
+      "name": "small-target",
+      "min_size": 64,
+      "target_size": 1024,
+      "max_size": 8192,
+      "normalization": 2,
+      "target_bits": 10,
+      "mask_s": "fff0000000000000",
+      "mask_l": "ff00000000000000",
+      "why": "a parameter set nothing like the default, for a port that hardcoded the default"
+    },
+    {
+      "name": "narrowest-permitted",
+      "min_size": 64,
+      "target_size": 65,
+      "max_size": 4096,
+      "normalization": 3,
+      "target_bits": 6,
+      "mask_s": "ff80000000000000",
+      "mask_l": "e000000000000000",
+      "why": "the smallest target the bounds admit above the 64-byte minimum: target_bits 6, so the lax mask is the top 3 bits and cuts land almost immediately"
+    },
+    {
+      "name": "largest-permitted",
+      "min_size": 64,
+      "target_size": 1073741824,
+      "max_size": 1073741824,
+      "normalization": 3,
+      "target_bits": 30,
+      "mask_s": "ffffffff80000000",
+      "mask_l": "ffffffe000000000",
+      "why": "target_bits 30 and a strict mask of the top 33 bits: the row that catches a port deriving masks in a 32-bit word"
+    }
+  ],
   "chunker": [
     {
       "name": "empty",
+      "why": "a zero-length stream yields no chunks at all, not one empty chunk",
       "params": {
         "algorithm": "fastcdc-gear64/v1",
         "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
@@ -48,6 +139,7 @@
     },
     {
       "name": "inline-sized",
+      "why": "under the inline threshold, so a real client never chunks it; one chunk if it did",
       "params": {
         "algorithm": "fastcdc-gear64/v1",
         "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
@@ -72,6 +164,7 @@
     },
     {
       "name": "one-chunk",
+      "why": "shorter than min_size, so the cut loop never runs and no byte is hashed",
       "params": {
         "algorithm": "fastcdc-gear64/v1",
         "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
@@ -96,6 +189,7 @@
     },
     {
       "name": "pseudorandom-16MiB",
+      "why": "the ordinary case: thirteen cuts under the default parameters",
       "params": {
         "algorithm": "fastcdc-gear64/v1",
         "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
@@ -180,6 +274,7 @@
     },
     {
       "name": "zeros-16MiB",
+      "why": "content with no boundary in it, forced to cut at max_size four times",
       "params": {
         "algorithm": "fastcdc-gear64/v1",
         "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
@@ -218,6 +313,7 @@
     },
     {
       "name": "pseudorandom-16MiB-e2ee",
+      "why": "the same bytes under a derived seed: every boundary moves",
       "params": {
         "algorithm": "fastcdc-gear64/v1",
         "seed": "8499673f3b10cbf1a4af52423d9da81ff0573564697dd85045007f96af1a92a6",
@@ -299,6 +395,670 @@
           "id": "eecb15b2a031cc66c06ebdbddaa1d47da4a44a85f9302dba77a274f9739564c7"
         }
       ]
+    },
+    {
+      "name": "min-size-exactly",
+      "why": "a stream of exactly min_size: n \u003c= min_size returns n, and nothing is hashed",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 2
+      },
+      "input": {
+        "generator": "pseudorandom",
+        "label": "silo/vector/min",
+        "length": 262144
+      },
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "offset": 0,
+          "size": 262144,
+          "id": "fea687fc3f046261a26dc771b23dfd83f3a773e8b726f4eb13c230cd37c6b128"
+        }
+      ]
+    },
+    {
+      "name": "min-size-minus-one",
+      "why": "one byte below the minimum, still one chunk",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 2
+      },
+      "input": {
+        "generator": "pseudorandom",
+        "label": "silo/vector/min",
+        "length": 262143
+      },
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "offset": 0,
+          "size": 262143,
+          "id": "2766773f72a6af1c8078198d26410c09834dc114b043aa4dffb3331ea614ab30"
+        }
+      ]
+    },
+    {
+      "name": "min-size-plus-one",
+      "why": "one byte above it, so exactly one byte is hashed — data[min_size-1] — and misses the mask, as a random byte does with probability 1 - 2^-22",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 2
+      },
+      "input": {
+        "generator": "pseudorandom",
+        "label": "silo/vector/min",
+        "length": 262145
+      },
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "offset": 0,
+          "size": 262145,
+          "id": "a408153600f6192c722a90f338b25db08bf5c75040224c34aae66dcc9ff86dd0"
+        }
+      ]
+    },
+    {
+      "name": "max-size-exactly",
+      "why": "a stream ending exactly on the forced cut: one chunk, no empty second one",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 2
+      },
+      "input": {
+        "generator": "zeros",
+        "length": 4194304
+      },
+      "chunk_count": 1,
+      "chunks": [
+        {
+          "offset": 0,
+          "size": 4194304,
+          "id": "bb9f8df61474d25e71fa00722318cd387396ca1736605e1248821cc0de3d3af8"
+        }
+      ]
+    },
+    {
+      "name": "max-size-plus-one",
+      "why": "one byte past it: the forced cut, then a final chunk of one byte — the last chunk is the only one allowed below min_size",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 2
+      },
+      "input": {
+        "generator": "zeros",
+        "length": 4194305
+      },
+      "chunk_count": 2,
+      "chunks": [
+        {
+          "offset": 0,
+          "size": 4194304,
+          "id": "bb9f8df61474d25e71fa00722318cd387396ca1736605e1248821cc0de3d3af8"
+        },
+        {
+          "offset": 4194304,
+          "size": 1,
+          "id": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+        }
+      ]
+    },
+    {
+      "name": "normalization-0",
+      "why": "the same bytes as pseudorandom-16MiB's first half with one mask instead of two",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 0
+      },
+      "input": {
+        "generator": "pseudorandom",
+        "label": "silo/vector/random",
+        "length": 8388608
+      },
+      "chunk_count": 8,
+      "chunks": [
+        {
+          "offset": 0,
+          "size": 535412,
+          "id": "9412884130b21f15a272eb673302fa00d9bd67246049d7510de578360dc8b0d1"
+        },
+        {
+          "offset": 535412,
+          "size": 2800273,
+          "id": "8b4ce58e6266619e5f14d07a92e440eba9311953e38085981cee5cb91b1e76af"
+        },
+        {
+          "offset": 3335685,
+          "size": 1543077,
+          "id": "8b07a59468e97f1bbb4d4d2629cf05eca45d9332ec602011fb7ba419af8f88a0"
+        },
+        {
+          "offset": 4878762,
+          "size": 509200,
+          "id": "3ae1f9a09bbccb45c504851d1ab7cab62cd64ea625405c2947a61859fd04f1c6"
+        },
+        {
+          "offset": 5387962,
+          "size": 1451358,
+          "id": "cab110987f81875af4771df935aebf992ea4d753b6567dded8ffb1e15fe20255"
+        },
+        {
+          "offset": 6839320,
+          "size": 439484,
+          "id": "81158f7ed222c7f44cec0a1928f12423c92eb834e85c8c5e25f7d6f511893dca"
+        },
+        {
+          "offset": 7278804,
+          "size": 707578,
+          "id": "c88c9d0fa78001fad75ccfbee8de496f59c48dd03cdd3e83a0ac98d5b43f6386"
+        },
+        {
+          "offset": 7986382,
+          "size": 402226,
+          "id": "252c2ef4b53cde74b89ebf6b83045dcb73bf8fe25781f36d2b55c22d4228f145"
+        }
+      ]
+    },
+    {
+      "name": "normalization-3",
+      "why": "and at the top of the permitted range, where sizes crowd hard onto the target",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 3
+      },
+      "input": {
+        "generator": "pseudorandom",
+        "label": "silo/vector/random",
+        "length": 8388608
+      },
+      "chunk_count": 8,
+      "chunks": [
+        {
+          "offset": 0,
+          "size": 1067676,
+          "id": "a744ad81d04224e08ec38f4070c299d6a00ce519f143521cff296c4d894d58ed"
+        },
+        {
+          "offset": 1067676,
+          "size": 1287932,
+          "id": "91c5bcf1cd6df09e0b6f5ff2428758bfc0c853e2d60e3fb32fc8be0258932fbe"
+        },
+        {
+          "offset": 2355608,
+          "size": 1257302,
+          "id": "b4ce7563cdc18d15fce99262e70a48fdf036f8bb2ea7140b10c8a39761603f7a"
+        },
+        {
+          "offset": 3612910,
+          "size": 1091480,
+          "id": "b0faf683675e904454b8217fd62c6ed14c5157cbbfc155a09355f1e9401a4e53"
+        },
+        {
+          "offset": 4704390,
+          "size": 1096835,
+          "id": "fbe106aeb8622b1bb3d7e2dc9747270c2158813f57417c57c177d360c33833c6"
+        },
+        {
+          "offset": 5801225,
+          "size": 1085052,
+          "id": "cd8e1ca4dd6bcdd9e058c00e25fdbff0c9774ce5b1fda580f18334528d37b179"
+        },
+        {
+          "offset": 6886277,
+          "size": 1100105,
+          "id": "8f6fa6b37da2c1e2e221e830e18ed0a43f26c7cc124af57adb37904afe300f80"
+        },
+        {
+          "offset": 7986382,
+          "size": 402226,
+          "id": "252c2ef4b53cde74b89ebf6b83045dcb73bf8fe25781f36d2b55c22d4228f145"
+        }
+      ]
+    },
+    {
+      "name": "target-not-a-power-of-two",
+      "why": "min, target and max all off a power of two, and target_bits 19 rather than 20: a port that rounds log2 instead of flooring it fails here and nowhere else",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 196608,
+        "target_size": 786432,
+        "max_size": 3145728,
+        "normalization": 2
+      },
+      "input": {
+        "generator": "pseudorandom",
+        "label": "silo/vector/random",
+        "length": 8388608
+      },
+      "chunk_count": 10,
+      "chunks": [
+        {
+          "offset": 0,
+          "size": 839600,
+          "id": "01491464cfc120274ee9d1fd3749ae5f90ae7ad5ed2f8bd3606ed4b6719dd723"
+        },
+        {
+          "offset": 839600,
+          "size": 1516008,
+          "id": "c3451f982cf59303682463cbe1be6d27e92323eea7bf9132f1c359b773534606"
+        },
+        {
+          "offset": 2355608,
+          "size": 817823,
+          "id": "a664d3c95e19d627e2606fbd0e7e78fede87bedf4a6dd31597192e4a6369f5c3"
+        },
+        {
+          "offset": 3173431,
+          "size": 837412,
+          "id": "1b53da308efabafbc991654a316fde7a9936bd7f608bf9a61ebe4d1675510f2e"
+        },
+        {
+          "offset": 4010843,
+          "size": 856036,
+          "id": "3af404e433e91deb0a3b2143d686bb7806bb085f2a65a5fdc611bbc3b3d75ebd"
+        },
+        {
+          "offset": 4866879,
+          "size": 934346,
+          "id": "cf695f5db1e518498fab5f1794202d24e77d0b18219996e0141bd272db5e34c8"
+        },
+        {
+          "offset": 5801225,
+          "size": 980377,
+          "id": "cb2f63e79be5cfdd3eb34167f3bbd6cbdc6db5d9082e89305369a3e0a2441735"
+        },
+        {
+          "offset": 6781602,
+          "size": 940916,
+          "id": "f6bc5b6788eb40b25168605bf9f29852c1470487f24b1d0e7cbedbb2bd4ccc86"
+        },
+        {
+          "offset": 7722518,
+          "size": 263864,
+          "id": "164e418a34a057d7214912cc5799af0206a63dba2404bbd7279c7e2496d16082"
+        },
+        {
+          "offset": 7986382,
+          "size": 402226,
+          "id": "252c2ef4b53cde74b89ebf6b83045dcb73bf8fe25781f36d2b55c22d4228f145"
+        }
+      ]
+    },
+    {
+      "name": "small-parameters",
+      "why": "a 1 KiB target over the same stream: nothing about the default sizes is a constant",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 64,
+        "target_size": 1024,
+        "max_size": 8192,
+        "normalization": 2
+      },
+      "input": {
+        "generator": "pseudorandom",
+        "label": "silo/vector/random",
+        "length": 32768
+      },
+      "chunk_count": 29,
+      "chunks": [
+        {
+          "offset": 0,
+          "size": 1068,
+          "id": "8652b501156c51226e8a4c72ddf3197190d1aea1e12c1bf006642894a068239f"
+        },
+        {
+          "offset": 1068,
+          "size": 1210,
+          "id": "16fb65cd42a34857ac703b7e31d4f946fbdb7abcee7a4c9ac335fb7f5f3c6b38"
+        },
+        {
+          "offset": 2278,
+          "size": 718,
+          "id": "231257b97c7a5df91aeeb87305f32c8ae248546a7f55cf8d1c0dc7415a4de69e"
+        },
+        {
+          "offset": 2996,
+          "size": 915,
+          "id": "e0a6c37af84e1c6bcbbc2963c7f489adf10538175a7767eee0a1caee244c334f"
+        },
+        {
+          "offset": 3911,
+          "size": 1216,
+          "id": "a40e47623c4cd78d25f6ac645b8be146ddb0efcc213e3229447116cdfcb3c2b6"
+        },
+        {
+          "offset": 5127,
+          "size": 1180,
+          "id": "718ee2b767fe7df6e9b6f6e6c4f543b39c0174c32e6136d78798c7f1677099f2"
+        },
+        {
+          "offset": 6307,
+          "size": 1378,
+          "id": "9e4dc0f3a9388788dbe8c93da6daf8b0a73e21c48acb034685b3d92414ed139d"
+        },
+        {
+          "offset": 7685,
+          "size": 1491,
+          "id": "e5497dcd1d7da7e932787ffda606da9cd9390cbfe130a71874bfaf03f3c2dd9c"
+        },
+        {
+          "offset": 9176,
+          "size": 1112,
+          "id": "ad59cb08fc02673735a873cdb781f22cbb6b298ffdaa24ad4d96fa695cdefdaf"
+        },
+        {
+          "offset": 10288,
+          "size": 1272,
+          "id": "4dafda6cc1712fde2c068720d4540180d1fb5c56136233960db5be5f0e76c928"
+        },
+        {
+          "offset": 11560,
+          "size": 1131,
+          "id": "40db0368a65bd51c939cedc5f3c30234b0e71c61327630a2bab1819f67a02e56"
+        },
+        {
+          "offset": 12691,
+          "size": 1093,
+          "id": "5972f87f910bebdeea867b958aa780da097a02cfe47f4952ad88b41dba6267cb"
+        },
+        {
+          "offset": 13784,
+          "size": 1486,
+          "id": "5465580615e9173eb9ee0213ab3e3ada69c0ad0bd9049ff89332dd45fe78abad"
+        },
+        {
+          "offset": 15270,
+          "size": 1058,
+          "id": "c882ebf8cee7738d94a1da8795da7299855dd8388521bc19410be218176d1ff7"
+        },
+        {
+          "offset": 16328,
+          "size": 1142,
+          "id": "9e9a98e2a8046136c7f6681b4eca43a4d17b6b48f94c128ebbb7b9ee3454d19d"
+        },
+        {
+          "offset": 17470,
+          "size": 1380,
+          "id": "c26872981e693882b890b86c21acb15e1a2a2e53f6129b2d3db563bd23f0fc75"
+        },
+        {
+          "offset": 18850,
+          "size": 1545,
+          "id": "94c213c8b7a08f1ad62c651c65a57961babcf500a632bde88c72473c220ee087"
+        },
+        {
+          "offset": 20395,
+          "size": 1132,
+          "id": "086bc34bca472ce9512e5b638c3ec9020e595ba0a553a39c3777f7fb538be529"
+        },
+        {
+          "offset": 21527,
+          "size": 1188,
+          "id": "e53477a17a205913b7b8deed820e748edd4441508944e727bd8b348ecb573502"
+        },
+        {
+          "offset": 22715,
+          "size": 1239,
+          "id": "22a3e707026d80834bb692309d0921b456b14fd94b383eed815034ad02479e32"
+        },
+        {
+          "offset": 23954,
+          "size": 1138,
+          "id": "0cec277332c8101b81cf8ec12932ec4ce2d82441b2956058e20d3bd997fae7ff"
+        },
+        {
+          "offset": 25092,
+          "size": 1788,
+          "id": "73baf5aa2d7a587062ae2bc8e5d24bf250f4707ef772e7b578a067899fc47ab3"
+        },
+        {
+          "offset": 26880,
+          "size": 1088,
+          "id": "2426db13697f463339db51604835b00667e00dd9f85daa01b9aa4e2c5e23d7aa"
+        },
+        {
+          "offset": 27968,
+          "size": 1216,
+          "id": "73d4638f1943bda36aa85bc7ce3cb80b84aa25a92b78c1725e19eed040048ae2"
+        },
+        {
+          "offset": 29184,
+          "size": 650,
+          "id": "9884ee0d16422db22b50a1ea5f1130143f0accf014303964913310b868492e83"
+        },
+        {
+          "offset": 29834,
+          "size": 1217,
+          "id": "4289272389edbb9f2e86019b483c261d2bbbbaef2b1c063f8d3971349adede09"
+        },
+        {
+          "offset": 31051,
+          "size": 1043,
+          "id": "794fd01d5651b0429199216d1c0ef1535653ab08e1c3e099e072718ddad04d1e"
+        },
+        {
+          "offset": 32094,
+          "size": 448,
+          "id": "66cc5174ddf1631d64357c629c899cd164fad8006003ad20b7a6916e844e6b14"
+        },
+        {
+          "offset": 32542,
+          "size": 226,
+          "id": "de51cbf183d4cbae734593117cdcc2dd0308061ae4c32cce0e8ff28e70c68164"
+        }
+      ]
+    },
+    {
+      "name": "min-size-cut",
+      "why": "the only case here that catches hashing from data[min_size] instead of data[min_size-1]. The gear hash forgets where it started after 64 bytes, so the two differ only when a cut lands inside the first 64 hashed bytes — impossible to observe at the default min_size, and routine at 64. This label was chosen so the output holds both a chunk of exactly min_size and one of exactly max_size",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 64,
+        "target_size": 256,
+        "max_size": 1024,
+        "normalization": 0
+      },
+      "input": {
+        "generator": "pseudorandom",
+        "label": "silo/vector/min-cut/44",
+        "length": 4096
+      },
+      "chunk_count": 15,
+      "chunks": [
+        {
+          "offset": 0,
+          "size": 250,
+          "id": "8d0cc751d3ca238072165bc1242ff93025df57d5550608c2ff3138b2d9058d28"
+        },
+        {
+          "offset": 250,
+          "size": 342,
+          "id": "0cfd84083fd891fae8ce9f1beeba5f6e93e53ec65390790ec0efddad40083898"
+        },
+        {
+          "offset": 592,
+          "size": 224,
+          "id": "e5e1003f05cf9020632805e731cbf1a9790f63eb00839d594710c97f72392efd"
+        },
+        {
+          "offset": 816,
+          "size": 82,
+          "id": "3361f8ca21be697441f254656cd10e67c80da93b43bc83ee62b0b908fd8b6e86"
+        },
+        {
+          "offset": 898,
+          "size": 64,
+          "id": "776e404feb05ef0a52c88e96bf69ce7ee8d8945678ad70e52281fa7c8f842c02"
+        },
+        {
+          "offset": 962,
+          "size": 316,
+          "id": "e6006d3e3cec012437fbffd8375baa4bf2a74f8cf10c0912f73a72e6be5a3570"
+        },
+        {
+          "offset": 1278,
+          "size": 262,
+          "id": "e13db68f8c710cd8da0b470195b9213e532e7c33e0c825dedb971df284a54a9a"
+        },
+        {
+          "offset": 1540,
+          "size": 76,
+          "id": "eb4ec9701c13fa89df68dc4e75c6ec9d7d12ef006772113ad7ff4b51ce019506"
+        },
+        {
+          "offset": 1616,
+          "size": 92,
+          "id": "8e65539745fb4f3bbbe8ac6f0647b4f92b880e312533b955ca279a7324c1d852"
+        },
+        {
+          "offset": 1708,
+          "size": 401,
+          "id": "9a39c143363fcf96e4b8ccbab2ddab295558887a083b73d23e6625c183d4a1f9"
+        },
+        {
+          "offset": 2109,
+          "size": 89,
+          "id": "161ac0519d8259b25fde5d06b8a7b23426351a7c451639235d47fec7ef1d85cc"
+        },
+        {
+          "offset": 2198,
+          "size": 333,
+          "id": "73c41f0f961df37426609b0ccadec6060c01cd25b90c72026b967eaed424fc54"
+        },
+        {
+          "offset": 2531,
+          "size": 1024,
+          "id": "e963b8eeb5615ea668ae606bccf841defa6aee68598a7abee1566b23cf1901de"
+        },
+        {
+          "offset": 3555,
+          "size": 93,
+          "id": "7b18b894cf58e441e4ab4c3f042752ddfc6dd3c03f91539b12fe2bee3d1362ff"
+        },
+        {
+          "offset": 3648,
+          "size": 448,
+          "id": "b8cc1640b95d4c593f66de9981931950394a141f84fc587e704f9c97b8d3d74b"
+        }
+      ]
+    }
+  ],
+  "params_invalid": [
+    {
+      "name": "unknown-algorithm",
+      "params": {
+        "algorithm": "fastcdc-gear64/v2",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 2
+      },
+      "why": "a profile this format does not define; a client that chunks anyway computes ids under a rule the library was not created with"
+    },
+    {
+      "name": "min-size-below-64",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 63,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 2
+      },
+      "why": "the floor exists because the gear hash's window is 64 bytes: below it the first hashed byte still carries the initial zero state"
+    },
+    {
+      "name": "min-size-equal-to-target",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 1048576,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 2
+      },
+      "why": "min_size must be strictly below the target, or the strict loop has no bytes to run over"
+    },
+    {
+      "name": "target-above-max",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 1048575,
+        "normalization": 2
+      },
+      "why": "the lax loop would start after the forced cut, so it never runs"
+    },
+    {
+      "name": "max-size-above-1-GiB",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 2147483648,
+        "normalization": 2
+      },
+      "why": "the ceiling a decoder sizes its buffer from; a stranger's number must not"
+    },
+    {
+      "name": "normalization-above-3",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": 4
+      },
+      "why": "the level is 0..3; 4 is a mask of the top 24 bits, which no library is created with"
+    },
+    {
+      "name": "normalization-negative",
+      "params": {
+        "algorithm": "fastcdc-gear64/v1",
+        "seed": "6d4c4d55f494657e45d099563ab3a2f1f9b3381b9c17c65b4ac6b438edce1d68",
+        "min_size": 262144,
+        "target_size": 1048576,
+        "max_size": 4194304,
+        "normalization": -1
+      },
+      "why": "the other end of the same bound, and the one a port using an unsigned type silently reads as a very large level"
     }
   ],
   "params_refused": [

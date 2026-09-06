@@ -464,10 +464,15 @@ chunks out, `Content-Type: application/vnd.silo.chunks`. One frame is
 
 ```
 id      32 bytes   the chunk's id
-status   1 byte    0 present, 1 absent
+status   1 byte    0 present, 1 absent, 2 the terminator
 length   4 bytes   big-endian, the chunk's stored length; 0 when absent
 bytes    length    the chunk exactly as stored
 ```
+
+Every complete body ends with a terminator frame — a zero id, status 2 and a
+zero length — and a body that stops without one is truncation rather than a
+short answer. The same rule going up is the first of the three refusals under
+`chunks/upload` below.
 
 The framing is `store.WriteChunkFrame` / `store.DecodeChunkFrames`
 (`store/chunkstream.go`), in the shared module for the same reason the chunker
@@ -487,6 +492,21 @@ Three things the layout decides, each on purpose:
 - **The length is fixed-width.** Everything else in this format that counts
   uses a varint; a frame header wants to be a fixed offset a port can read
   without a loop, and the saving would be two bytes per megabyte.
+
+The framing has vectors: `chunk_stream` in
+[`objects.json`](../store/testdata/vectors/objects.json) commits five bodies —
+a present frame, an absent one, the mixed case, a sealed chunk, and an empty
+stream — as hex, with each frame's payload described rather than stored.
+`chunk_stream_refused` commits seven bodies a decoder must refuse, which is the
+half a port passes every valid stream without: the length checked against what
+remains, the status byte against the three this version defines, the bytes
+against the id they arrived under, and the body against the terminator that
+says it is whole. The `ends-without-a-terminator` row is the one a port is
+likeliest to pass by accident, since a decoder that simply stops at the end of
+its buffer reads a cut-off response as a complete one. The sealed row is the
+one worth reading twice — the bytes on the wire are the sealed frame and the id is the sealed id,
+so a decoder hashing what it thinks is plaintext rejects every frame it is
+sent.
 
 At most **256 chunks** in one request, and over that is `400` rather than a
 short answer — for the reason pagination is opt-in with no default, sharpened

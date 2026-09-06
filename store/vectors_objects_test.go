@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"strconv"
 	"testing"
@@ -15,13 +16,57 @@ const objectVectorFile = "testdata/vectors/objects.json"
 var vectorCK = []byte("silo test content key, not secret")
 
 type objectVectorDoc struct {
-	Format      string            `json:"format"`
-	Note        string            `json:"note"`
-	ContentKey  string            `json:"content_key_utf8"`
-	Chunks      []chunkSealVector `json:"chunk_seal"`
-	Manifests   []manifestVector  `json:"manifest"`
-	Directories []objectVector    `json:"directory"`
-	Commits     []objectVector    `json:"commit"`
+	Format         string                     `json:"format"`
+	Note           string                     `json:"note"`
+	ContentKey     string                     `json:"content_key_utf8"`
+	Chunks         []chunkSealVector          `json:"chunk_seal"`
+	Manifests      []manifestVector           `json:"manifest"`
+	Directories    []objectVector             `json:"directory"`
+	Commits        []objectVector             `json:"commit"`
+	Streams        []chunkStreamVector        `json:"chunk_stream"`
+	StreamsRefused []chunkStreamRefusedVector `json:"chunk_stream_refused"`
+}
+
+// The chunk stream: the framing POST chunks/fetch answers in, pinned here
+// because it is the one wire format in this package that had no vectors and
+// the one a port meets on the download half of a sync.
+//
+// A frame is id (32) ‖ status (1) ‖ length (4, big-endian) ‖ bytes. The two
+// things a port gets wrong silently are both committed below: the length is
+// big-endian where every other count in this format is a varint, and the bytes
+// are the chunk **as stored**, so in an E2EE library they are the sealed frame
+// and the id is the sealed id — a decoder hashing what it thinks is plaintext
+// rejects every frame it is sent.
+type chunkStreamVector struct {
+	Name   string             `json:"name"`
+	Why    string             `json:"why"`
+	Frames []chunkFrameVector `json:"frames"`
+	Len    int                `json:"stream_len"`
+	SHA256 string             `json:"stream_sha256"`
+	Stream string             `json:"stream_hex,omitempty"`
+}
+
+// chunkFrameVector describes one frame by its content rather than storing it:
+// the payload is the described input, sealed under the content key when the
+// library is. id is what the frame carries and what a decoder must hash to.
+type chunkFrameVector struct {
+	Present bool        `json:"present"`
+	Sealed  bool        `json:"sealed"`
+	Input   inputVector `json:"input"`
+	ID      string      `json:"id"`
+	Length  int         `json:"length"`
+}
+
+// chunkStreamRefusedVector is a body a decoder must refuse. This is the half a
+// port passes every stream above without: every valid stream decodes whether
+// or not an implementation checks the length against what remains, the status
+// byte against the two it knows, or the bytes against the id they arrived
+// under — and that last check is what makes a chunk from a cache of uncertain
+// provenance safe to use at all.
+type chunkStreamRefusedVector struct {
+	Name   string `json:"name"`
+	Stream string `json:"stream_hex"`
+	Why    string `json:"why"`
 }
 
 // objectVector pins a directory or commit whose fields are literals rather
@@ -82,6 +127,54 @@ func vectorManifest(t *testing.T, in inputVector, sealed bool) *Manifest {
 	return m
 }
 
+// vectorStream builds the body a server writes for these frames, filling in
+// each frame's id and stored length. The generator and the from-the-file check
+// both go through it, so the committed hex and the check cannot drift apart.
+func vectorStream(t *testing.T, frames []chunkFrameVector) ([]byte, []chunkFrameVector) {
+	t.Helper()
+	var buf bytes.Buffer
+	out := make([]chunkFrameVector, len(frames))
+	for i, f := range frames {
+		stored := f.Input.bytes()
+		id := ChunkID(stored)
+		if f.Sealed {
+			sc, err := SealChunk(vectorCK, stored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, id = sc.Frame, sc.ID
+		}
+		f.ID, f.Length = id.String(), 0
+		if f.Present {
+			f.Length = len(stored)
+			if err := WriteChunkFrame(&buf, id, stored); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := WriteAbsentChunkFrame(&buf, id); err != nil {
+			t.Fatal(err)
+		}
+		out[i] = f
+	}
+	// The terminator, which is what makes the body self-delimiting. Without it
+	// a server that dies half way through emits whole frames and stops, and
+	// the short body decodes cleanly under a status committed before the first
+	// byte moved.
+	if err := WriteChunkStreamEnd(&buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes(), out
+}
+
+// rawFrame assembles a frame header by hand, for the bodies below that no
+// writer in this package will produce.
+func rawFrame(id ID, status byte, length uint32, payload []byte) []byte {
+	b := make([]byte, ChunkFrameHeaderSize, ChunkFrameHeaderSize+len(payload))
+	copy(b[:IDSize], id[:])
+	b[IDSize] = status
+	binary.BigEndian.PutUint32(b[IDSize+1:], length)
+	return append(b, payload...)
+}
+
 func buildObjectVectors(t *testing.T) objectVectorDoc {
 	t.Helper()
 	doc := objectVectorDoc{
@@ -89,7 +182,9 @@ func buildObjectVectors(t *testing.T) objectVectorDoc {
 		Note: "Generated by go test ./store -run TestObjectVectors -update. Inputs are " +
 			"described as in chunker.json. content_key_utf8 is the library content key as " +
 			"literal ASCII. encoded_hex is present where the object is small enough to " +
-			"compare byte for byte; where it is not, object_id serves.",
+			"compare byte for byte; where it is not, object_id serves. chunk_stream is " +
+			"the framing POST chunks/fetch answers in: id (32) || status (1, 0 present " +
+			"and 1 absent) || length (4, big-endian) || the chunk as stored.",
 		ContentKey: string(vectorCK),
 	}
 
@@ -169,6 +264,80 @@ func buildObjectVectors(t *testing.T) objectVectorDoc {
 			encodedVector(t, "root-only"+suffix, sealed, encodeCommit(&Commit{Root: id(7)})),
 			encodedVector(t, "two-parents"+suffix, sealed, encodeCommit(vectorCommit())),
 		)
+	}
+
+	onebyte := inputVector{"pseudorandom", "silo/vector/onebyte", 1}
+	small := inputVector{"pseudorandom", "silo/vector/small", 1000}
+	absentee := inputVector{"pseudorandom", "silo/vector/one", 300000}
+	for _, c := range []struct {
+		name   string
+		why    string
+		frames []chunkFrameVector
+	}{
+		{"empty", "no chunk frames at all, so the body is the terminator alone. " +
+			"A stream of no chunks is still 37 bytes: zero bytes would be a " +
+			"truncated body, and the two must not look alike", nil},
+		{"one-present", "the ordinary frame, with a payload long enough that a " +
+			"little-endian length reader reads a wildly different number",
+			[]chunkFrameVector{{Present: true, Input: small}}},
+		{"one-absent", "the store does not hold this id. The frame is a header and " +
+			"nothing else, and the id is the one this input hashes to — described " +
+			"rather than stored so a port derives it",
+			[]chunkFrameVector{{Input: absentee}}},
+		{"present-absent-present", "the mixed case a real fetch returns, and the one " +
+			"that catches a decoder advancing by a fixed stride: the absent frame in " +
+			"the middle has no payload to skip",
+			[]chunkFrameVector{
+				{Present: true, Input: onebyte},
+				{Input: absentee},
+				{Present: true, Input: small},
+			}},
+		{"sealed", "an E2EE library's chunk on the wire. The bytes are the sealed " +
+			"frame, the id is the sealed id, and the plaintext hash appears nowhere " +
+			"in the stream — a decoder that hashes plaintext rejects every frame",
+			[]chunkFrameVector{{Present: true, Sealed: true, Input: small}}},
+	} {
+		body, frames := vectorStream(t, c.frames)
+		v := chunkStreamVector{
+			Name: c.name, Why: c.why, Frames: frames,
+			Len: len(body), SHA256: ObjectID(body).String(),
+		}
+		if len(body) <= 4096 {
+			v.Stream = hex.EncodeToString(body)
+		}
+		doc.Streams = append(doc.Streams, v)
+	}
+
+	payload := []byte("silo")
+	wrongID := ChunkID(payload)
+	wrongID[IDSize-1] ^= 1
+	doc.StreamsRefused = []chunkStreamRefusedVector{
+		{"ends-mid-header", hex.EncodeToString(rawFrame(id(0x11), 1, 0, nil)[:ChunkFrameHeaderSize-1]),
+			"one byte short of a header. The header is fixed-width so a reader can " +
+				"take it without a loop, which is also why a short one is unambiguous"},
+		{"ends-mid-payload", hex.EncodeToString(rawFrame(ChunkID(payload), 0, 1000, payload)),
+			"declares 1000 bytes and carries four. A decoder that trusts the length " +
+				"hands its caller a truncated chunk, or reads past its buffer"},
+		{"length-over-the-limit", hex.EncodeToString(rawFrame(id(0x22), 0, 1<<27, nil)),
+			"128 MiB, over the 64 MiB frame bound. The bound exists so an allocation " +
+				"is sized from the format and not from the number a stranger sent"},
+		{"absent-with-a-length", hex.EncodeToString(rawFrame(id(0x33), 1, 5, nil)),
+			"absence is a status byte, not a length of zero, and the two must not " +
+				"disagree — a reader inferring absence from the length reads this as present"},
+		{"unknown-status", hex.EncodeToString(rawFrame(id(0x44), 3, 0, nil)),
+			"a status this version does not define — 0, 1 and 2 are present, absent " +
+				"and the terminator. A later version may define more, and a decoder " +
+				"that treats anything non-zero as absent would silently lose those bytes"},
+		{"ends-without-a-terminator", hex.EncodeToString(rawFrame(id(0x55), 1, 0, nil)),
+			"one complete, well-formed frame and then the body stops. This is the " +
+				"shape a server cut off mid-response produces, and it is the reason " +
+				"the terminator exists: nothing in a run of whole frames says whether " +
+				"the count was the intended one, so a decoder that stops at the end " +
+				"of the buffer reports a short answer as a complete one"},
+		{"id-does-not-match-the-bytes", hex.EncodeToString(rawFrame(wrongID, 0, uint32(len(payload)), payload)),
+			"the valid frame for the four bytes \"silo\" with one bit flipped in its id. " +
+				"Verifying on arrival is what makes a chunk from a cache of uncertain " +
+				"provenance, a peer, or a mirror legal to use at all"},
 	}
 	return doc
 }
@@ -398,5 +567,73 @@ func TestEveryManifestVectorIsReadableWithoutTheKey(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no manifest vector carried encoded bytes to check")
+	}
+}
+
+// The chunk streams, rebuilt from their descriptions and then decoded. The
+// second half is the one that matters for a port: the committed bytes are what
+// a server sends, and a decoder has to get the same frames back out of them.
+func TestTheCommittedChunkStreamsAreReproducibleFromTheFile(t *testing.T) {
+	var doc objectVectorDoc
+	loadVectors(t, objectVectorFile, &doc)
+	if len(doc.Streams) == 0 {
+		t.Fatal("the file commits no chunk streams")
+	}
+	for _, v := range doc.Streams {
+		t.Run("stream/"+v.Name, func(t *testing.T) {
+			body, frames := vectorStream(t, v.Frames)
+			if len(body) != v.Len || ObjectID(body).String() != v.SHA256 {
+				t.Fatalf("rebuilt %d bytes hashing to %s, the vector says %d and %s",
+					len(body), ObjectID(body), v.Len, v.SHA256)
+			}
+			if v.Stream != "" && hex.EncodeToString(body) != v.Stream {
+				t.Fatal("rebuilt bytes differ from the committed stream")
+			}
+			for i, f := range frames {
+				if f.ID != v.Frames[i].ID || f.Length != v.Frames[i].Length {
+					t.Fatalf("frame %d is (%s, %d), the vector says (%s, %d)",
+						i, f.ID, f.Length, v.Frames[i].ID, v.Frames[i].Length)
+				}
+			}
+
+			// And the decode, from the committed bytes rather than the ones
+			// just built, so this exercises the reader against a body this
+			// build did not write.
+			raw := body
+			if v.Stream != "" {
+				raw = mustHex(t, v.Stream)
+			}
+			got, err := DecodeChunkFrames(raw)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(got) != len(v.Frames) {
+				t.Fatalf("decoded %d frames, the vector describes %d", len(got), len(v.Frames))
+			}
+			for i, f := range got {
+				want := v.Frames[i]
+				if f.ID.String() != want.ID || f.Present != want.Present || len(f.Bytes) != want.Length {
+					t.Errorf("frame %d decoded as (%s, present=%v, %d bytes), the vector says (%s, present=%v, %d)",
+						i, f.ID, f.Present, len(f.Bytes), want.ID, want.Present, want.Length)
+				}
+			}
+		})
+	}
+}
+
+// Every body the file says must be refused, refused. Nothing in the streams
+// above notices a decoder that skips the length check, the status check or the
+// hash check: they all decode correctly either way.
+func TestTheCommittedChunkStreamsRefusedAreRefused(t *testing.T) {
+	var doc objectVectorDoc
+	loadVectors(t, objectVectorFile, &doc)
+	if len(doc.StreamsRefused) == 0 {
+		t.Fatal("the file commits no refused streams")
+	}
+	for _, v := range doc.StreamsRefused {
+		if frames, err := DecodeChunkFrames(mustHex(t, v.Stream)); err == nil {
+			t.Errorf("%s: decoded into %d frames, and the vector says it must not (%s)",
+				v.Name, len(frames), v.Why)
+		}
 	}
 }
