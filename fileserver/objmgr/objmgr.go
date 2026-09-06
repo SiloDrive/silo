@@ -260,8 +260,37 @@ func (s *Store) HasObject(id store.ID) (bool, error) {
 
 // putEncoded stores encoded bytes under their own hash and returns the id.
 func (s *Store) putEncoded(encoded []byte) (store.ID, error) {
+	return s.storeObject(encoded)
+}
+
+// storeChunk and storeObject hash the bytes and write them under their own id.
+//
+// They exist so the internal write path is not SHA-256'd twice. PutChunk and
+// PutObject go through objstore.WriteVerified, which hashes what it is given
+// and refuses it unless it matches the id -- the right rule for the exported
+// ingest of client-supplied bytes, where the id is a claim someone made about
+// content the server did not produce. On this path the id was computed from
+// the identical slice a few instructions earlier, so verifying it re-derives a
+// number we already hold: measured on a 1 MiB chunk, about a third of the
+// write.
+//
+// The invariant WriteVerified's comment defends -- that an object's id is the
+// hash of exactly the bytes stored under it -- is not weakened, because these
+// take no id to get wrong. A caller cannot pass a mismatched one; there is
+// nothing to pass. That is a stronger guarantee than checking a caller's
+// arithmetic after the fact, and it is why these hash rather than accepting a
+// precomputed digest.
+func (s *Store) storeChunk(data []byte) (store.ID, error) {
+	id := store.ChunkID(data)
+	if err := s.chunks.Write(s.storeID, id.String(), bytes.NewReader(data), option.SyncObjectWrites); err != nil {
+		return store.ID{}, err
+	}
+	return id, nil
+}
+
+func (s *Store) storeObject(encoded []byte) (store.ID, error) {
 	id := store.ObjectID(encoded)
-	if err := s.PutObject(id, encoded); err != nil {
+	if err := s.objects.Write(s.storeID, id.String(), bytes.NewReader(encoded), option.SyncObjectWrites); err != nil {
 		return store.ID{}, err
 	}
 	return id, nil
@@ -554,8 +583,8 @@ func (s *Store) ManifestFromChunks(ids []store.ID) (*store.Manifest, []store.ID,
 func (s *Store) putChunkData(data []byte) (store.ChunkRef, error) {
 	size := int64(len(data))
 	if !s.e2ee {
-		id := store.ChunkID(data)
-		if err := s.PutChunk(id, data); err != nil {
+		id, err := s.storeChunk(data)
+		if err != nil {
 			return store.ChunkRef{}, err
 		}
 		return store.ChunkRef{ID: id, Size: size}, nil
@@ -565,10 +594,14 @@ func (s *Store) putChunkData(data []byte) (store.ChunkRef, error) {
 	if err != nil {
 		return store.ChunkRef{}, err
 	}
-	if err := s.PutChunk(sealed.ID, sealed.Frame); err != nil {
+	// storeChunk returns ChunkID(sealed.Frame), which is what SealChunk
+	// already put in sealed.ID -- an E2EE chunk is addressed by its sealed
+	// bytes. TestTheSealedChunkIsStoredUnderTheIdSealChunkGave pins that.
+	id, err := s.storeChunk(sealed.Frame)
+	if err != nil {
 		return store.ChunkRef{}, err
 	}
-	return store.ChunkRef{ID: sealed.ID, Size: size, PlaintextHash: sealed.PlaintextHash}, nil
+	return store.ChunkRef{ID: id, Size: size, PlaintextHash: sealed.PlaintextHash}, nil
 }
 
 // ReadFileRange writes n bytes of a manifest's file content to w, starting at

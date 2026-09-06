@@ -359,7 +359,13 @@ func (s *ObjectStore) ReadAt(libraryID string, objID string, p []byte, off int64
 	return n, nil
 }
 
-// Write data to storage backends.
+// Write stores an object under objID without checking that its content hashes
+// to it.
+//
+// For callers that derived objID from the bytes they are passing, which is
+// every writer inside objmgr. Where the id is a claim made by somebody else —
+// an upload — use WriteVerified, which is the same write with the claim
+// checked first.
 func (s *ObjectStore) Write(libraryID string, objID string, r io.Reader, sync bool) error {
 	if err := s.ready(); err != nil {
 		return err
@@ -371,8 +377,17 @@ func (s *ObjectStore) Write(libraryID string, objID string, r io.Reader, sync bo
 // to objID.
 //
 // Every object's id is the hash of exactly the bytes stored under it —
-// chunks, manifests, directories and commits alike — so this is the invariant
-// of the store itself, enforced here rather than at each caller.
+// chunks, manifests, directories and commits alike. This is where that
+// invariant is enforced for bytes the server did not produce: an upload
+// arrives as a claim that some content hashes to some id, and the claim is
+// checked before it is published.
+//
+// It is not the only way the invariant holds. objmgr's internal writers hash
+// the bytes and write them under the result, so they have no id to get wrong
+// and use Write instead — verifying there would re-derive a digest computed
+// from the identical slice a few instructions earlier, at about a third of the
+// write. Reaching for this one because it sounds safer costs that for nothing
+// unless the id came from somewhere else.
 //
 // The digest is not the caller's to choose. See verifierFor.
 //
