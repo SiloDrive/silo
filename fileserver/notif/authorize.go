@@ -11,8 +11,14 @@ package notif
 // It runs in-process now, so it simply asks.
 
 import (
+	"context"
+
+	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/credential"
+	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/dkam/silo/fileserver/option"
+	"github.com/dkam/silo/fileserver/share"
 )
 
 // authorize reports whether cred may watch libraryID.
@@ -30,4 +36,39 @@ var authorize = func(cred *credential.Credential, libraryID string) bool {
 // no credential is not authorized, and the question is not asked.
 func authorized(cred *credential.Credential, libraryID string) bool {
 	return cred != nil && authorize(cred, libraryID)
+}
+
+// visibleLibraries is every library an account can see: owned, and granted
+// whole to it or to a group it is in. It is the union GET /libraries answers
+// with, read from the same two tables, so that a socket subscribed to the
+// account rings for exactly what the listing would show.
+//
+// A variable for the reason authorize is one.
+var visibleLibraries = func(acct account.ID) ([]string, error) {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+
+	owned, err := libmgr.OwnedLibraryIDs(ctx, acct)
+	if err != nil {
+		return nil, err
+	}
+	granted, err := share.LibrariesFor(ctx, share.PrincipalsFor(acct))
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(owned)+len(granted))
+	ids := make([]string, 0, len(owned)+len(granted))
+	for _, id := range owned {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for id := range granted {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }

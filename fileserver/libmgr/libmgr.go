@@ -464,6 +464,29 @@ func SetLibraryName(libraryID, name string) error {
 	return nil
 }
 
+// OwnedLibraryIDs lists the libraries an account owns, by id alone.
+//
+// The listing endpoints carry their own copies of this join because they
+// need the name, the head and the usage beside the id; this is for a caller
+// that needs the set and nothing about its members.
+func OwnedLibraryIDs(ctx context.Context, owner account.ID) ([]string, error) {
+	rows, err := readDB.QueryContext(ctx, "SELECT library_id FROM LibraryOwner WHERE account_id = ?", owner)
+	if err != nil {
+		return nil, fmt.Errorf("listing owned libraries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetLibraryOwner get the owner of library.
 func GetLibraryOwner(libraryID string) (account.ID, error) {
 	var owner account.ID

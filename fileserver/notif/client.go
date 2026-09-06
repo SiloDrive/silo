@@ -106,6 +106,11 @@ type Client struct {
 	librariesMu sync.Mutex
 	libraries   map[string]subscription // libraryID -> subscription. nil after close.
 
+	// accountScoped says the client asked for its account's whole set, and
+	// holds a laneAccount subscription for each library in it. Under
+	// librariesMu, beside the set it describes.
+	accountScoped bool
+
 	// graceTimer closes the connection if provisionalGrace passes with nothing
 	// subscribed. nil when the handshake carried a credential.
 	graceTimer *time.Timer
@@ -118,24 +123,46 @@ type Client struct {
 // subscription is one library this client watches, and which lane authorized
 // it.
 //
-// The lane is a field rather than an inference from exp, even though a
-// credential-authorized subscription is the only one that carries no expiry.
-// The sweep treats the two completely differently -- one is re-checked against
-// the database, the other against the clock -- and a rule that reads "exp == 0
-// means ask the authorizer" is one refactor away from silently reclassifying
-// every subscription on the wrong lane.
+// The lane is a field rather than an inference from exp, even though the token
+// lane is the only one that carries an expiry. The sweep treats the lanes
+// completely differently -- one is re-checked against the database, one
+// against the clock -- and a rule that reads "exp == 0 means ask the
+// authorizer" is one refactor away from silently reclassifying every
+// subscription on the wrong lane.
 type subscription struct {
-	// exp is the JWT's expiry in unix seconds, and 0 on the credential lane,
-	// where nothing in the subscription expires on its own.
-	exp int64
+	lane lane
 
-	// byCredential says the socket's credential authorized this, rather than
-	// a token in the subscribe frame.
-	byCredential bool
+	// exp is the JWT's expiry in unix seconds on the token lane, and 0 on the
+	// others, where nothing in the subscription expires on its own.
+	exp int64
 }
+
+// lane is what authorized a subscription, and so what can end it.
+type lane int
+
+const (
+	// laneToken is a library-scoped JWT presented in the subscribe frame. It
+	// ends on the token's expiry.
+	laneToken lane = iota
+
+	// laneCredential is the socket's credential, asked about one library the
+	// frame named. It ends when the sweep finds the credential no longer
+	// reaches the library.
+	laneCredential
+
+	// laneAccount is the socket's credential, asked for every library the
+	// account can see. One frame registers the whole set, and the set moves
+	// underneath it; the resync loop is what keeps it true, and nothing here
+	// re-checks it until that loop lands.
+	laneAccount
+)
 
 type subscribeFrame struct {
 	Libraries []subscribeLibrary `json:"libraries"`
+
+	// Account asks for every library the socket's account can see, resolved
+	// from the credential that opened the socket. See subscribeAccount.
+	Account bool `json:"account,omitempty"`
 }
 
 // subscribeLibrary is one entry of a subscribe or unsubscribe frame.
@@ -439,11 +466,13 @@ func (c *Client) sweepSubscriptions() {
 	dropped := map[string]string{} // library id -> the frame that says why
 	c.librariesMu.Lock()
 	for id, sub := range c.libraries {
-		switch {
-		case sub.byCredential:
+		switch sub.lane {
+		case laneCredential:
 			byCredential = append(byCredential, id)
-		case sub.exp < now:
-			dropped[id] = EventTypeJWTExpired
+		case laneToken:
+			if sub.exp < now {
+				dropped[id] = EventTypeJWTExpired
+			}
 		}
 	}
 	c.librariesMu.Unlock()
@@ -467,6 +496,9 @@ func (c *Client) handleMessage(msg *Message) error {
 		if err := json.Unmarshal(msg.Content, &frame); err != nil {
 			return fmt.Errorf("bad subscribe frame: %w", err)
 		}
+		if frame.Account {
+			c.subscribeAccount()
+		}
 		for _, r := range frame.Libraries {
 			// No token means the credential lane. The two are never mixed for
 			// one library: a frame either presents proof or asks the server to
@@ -477,7 +509,7 @@ func (c *Client) handleMessage(msg *Message) error {
 					c.sendLibraryFrame(EventTypeSubscribeDenied, r.LibraryID)
 					continue
 				}
-				c.subscribe(r.LibraryID, "", subscription{byCredential: true})
+				c.subscribe(r.LibraryID, "", subscription{lane: laneCredential})
 				continue
 			}
 			user, exp, ok := parseNotifToken(r.Token, r.LibraryID)
@@ -485,7 +517,7 @@ func (c *Client) handleMessage(msg *Message) error {
 				c.sendLibraryFrame(EventTypeJWTExpired, r.LibraryID)
 				continue
 			}
-			c.subscribe(r.LibraryID, user, subscription{exp: exp})
+			c.subscribe(r.LibraryID, user, subscription{lane: laneToken, exp: exp})
 		}
 		return nil
 	case "unsubscribe":
@@ -524,6 +556,56 @@ func (c *Client) subscribe(libraryID, user string, sub subscription) {
 	}
 }
 
+// subscribeAccount registers the client for every library its account can see.
+//
+// The set is resolved here, once, and registered in the same per-library index
+// every other subscription uses. NotifyLibraryUpdate does not learn about
+// accounts: it runs inside the commit write, and a reverse index consulted per
+// event would put a query on that path to serve a mode one client uses. The
+// cost is that the registration is a snapshot of a set that moves, which is
+// the resync loop's problem to solve and not this function's.
+//
+// Two refusals, both answered with subscribe-denied naming no library. No
+// credential means nothing to resolve the set from; the token lane cannot
+// stand in, because a token names one library and this frame names none. A
+// narrowed credential cannot answer for the set either: its scope is a ceiling
+// below the account, and this lane's frames are about libraries the scope
+// excludes. That second refusal is what the scoped ring will turn into a
+// subscription to the one library the scope names; until it lands, a narrowed
+// credential keeps the token lane, which works for it exactly as before.
+func (c *Client) subscribeAccount() {
+	if c.cred == nil || c.account == nil {
+		log.Debugf("notif: client %d refused an account subscribe: no credential on the socket", c.ID)
+		c.sendAccountDenied()
+		return
+	}
+	if c.cred.Scope.LibraryID != "" {
+		log.Debugf("notif: client %d refused an account subscribe: credential %s is scoped to %q", c.ID, c.cred.ID, c.cred.Scope)
+		c.sendAccountDenied()
+		return
+	}
+	ids, err := visibleLibraries(c.account.ID)
+	if err != nil {
+		log.Errorf("notif: client %d: resolving the libraries account %s can see: %v", c.ID, c.account.ID, err)
+		c.sendAccountDenied()
+		return
+	}
+
+	c.librariesMu.Lock()
+	c.accountScoped = true
+	c.librariesMu.Unlock()
+	for _, id := range ids {
+		c.subscribe(id, "", subscription{lane: laneAccount})
+	}
+}
+
+// sendAccountDenied answers an account subscribe the server will not grant.
+// The same frame as a per-library refusal, naming the mode instead of a
+// library, so a client reads one type for "no" on either lane.
+func (c *Client) sendAccountDenied() {
+	c.queueFrame(EventTypeSubscribeDenied, map[string]bool{"account": true})
+}
+
 func (c *Client) unsubscribe(libraryID string) {
 	c.librariesMu.Lock()
 	delete(c.libraries, libraryID)
@@ -539,15 +621,21 @@ func (c *Client) unsubscribe(libraryID string) {
 }
 
 // sendLibraryFrame queues one of the frames whose whole payload is a library
-// id: jwt-expired, or subscribe-denied. Dropped rather than deferred when the
-// queue is full: unlike an update, there is nothing here that becomes wrong by
-// arriving late, and the sweep that produced it runs again.
+// id: jwt-expired, or subscribe-denied.
 func (c *Client) sendLibraryFrame(typ, libraryID string) {
-	content, err := json.Marshal(map[string]string{"library_id": libraryID})
+	c.queueFrame(typ, map[string]string{"library_id": libraryID})
+}
+
+// queueFrame queues a frame that answers the client rather than reporting a
+// commit. Dropped rather than deferred when the queue is full: unlike an
+// update, there is nothing here that becomes wrong by arriving late, and the
+// sweep or the client that produced it asks again.
+func (c *Client) queueFrame(typ string, content any) {
+	raw, err := json.Marshal(content)
 	if err != nil {
 		return
 	}
-	msg := &Message{Type: typ, Content: content}
+	msg := &Message{Type: typ, Content: raw}
 	select {
 	case c.wch <- msg:
 	default:

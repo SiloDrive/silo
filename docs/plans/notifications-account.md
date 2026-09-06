@@ -303,18 +303,25 @@ credential; drop on revoked, disabled, or newly narrowed" has nothing to call.
 The hourly sweep covers a withdrawn *share*; a revoked *credential* still holds
 its subscriptions until the socket drops. Step 3 needs that lookup built.
 
-### 1. The subscribe frame, and the visible set
+### 1. The subscribe frame, and the visible set — **done**
 
-`subscribeFrame` grows `Account bool`. `handleMessage` routes it to a new path:
-refuse when there is no credential, refuse when the scope is narrowed —
-step 5 is what turns that second refusal into the scoped ring, and until it
-lands a narrowed credential keeps using the token lane exactly as it does
-today — otherwise resolve owned ∪ granted and `addSubscription` for each. Stop
-the grace timer, as any subscribe does. Mark the client account-scoped and
-remember the account id and credential id.
+`subscribeFrame` grew `Account bool`, and `handleMessage` routes it to
+`subscribeAccount`: refuse when there is no credential, refuse when the scope
+is narrowed — step 5 is what turns that second refusal into the scoped ring,
+and until it lands a narrowed credential keeps using the token lane exactly as
+it does today — otherwise resolve owned ∪ granted through `visibleLibraries`
+and subscribe to each. The owned half is `libmgr.OwnedLibraryIDs`, ids only;
+the listing handlers keep their own joins because they need the columns.
 
-The owned half wants a `libmgr` function rather than a third copy of the query
-— `ListLibrariesHandler` and `ListAdminLibrariesHandler` each have their own.
+Both refusals are `subscribe-denied` with `{"account": true}` as the content,
+naming the mode where a per-library refusal names the library, so a client
+reads one type for "no" on either lane.
+
+A subscription now records its lane as a three-valued `lane` rather than a
+flag, and `laneAccount` is the third. The sweep leaves that lane alone: its
+re-check is the resync loop of step 3, not the per-library question the
+credential lane asks, and a sweep that asked `PermFor` per library for the
+whole set would be the reverse index decision 1 refused, on a timer.
 
 ### 2. The frame branch, and a one-bit debt
 
@@ -377,9 +384,13 @@ advertise a distinction no caller can act on.
    asking for the account's set gets its own library's ring and not the
    account's. Both before anything is built: the first is the rule, the second
    is the whole of decisions 5 and 6 in one assertion.
+   **Done, in its step 1 form:** an anonymous account subscribe is refused,
+   and a narrowed one is refused rather than rung. The scoped ring's half is
+   step 5's to write.
 2. A commit to a library the account owns reaches an account-scoped socket that
-   never named that library.
+   never named that library. **Done.**
 3. A commit to a library the account cannot see reaches it not at all.
+   **Done.**
 4. A rename rings, with no commit and no head movement — the regression the
    issue was filed for, and it must fail against today's server.
 5. A library created after the socket was up rings, and its next commit is

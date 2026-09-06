@@ -140,7 +140,7 @@ func TestACredentialAuthorizedSubscriptionSurvivesTheSweep(t *testing.T) {
 
 	c := fakeClient()
 	c.cred = testCredential()
-	c.subscribe(libraryID, "", subscription{byCredential: true})
+	c.subscribe(libraryID, "", subscription{lane: laneCredential})
 
 	c.sweepSubscriptions()
 
@@ -164,7 +164,7 @@ func TestASweepDropsASubscriptionTheCredentialNoLongerReaches(t *testing.T) {
 
 	c := fakeClient()
 	c.cred = testCredential()
-	c.subscribe(libraryID, "", subscription{byCredential: true})
+	c.subscribe(libraryID, "", subscription{lane: laneCredential})
 
 	allowed = false
 	c.sweepSubscriptions()
@@ -184,7 +184,7 @@ func TestTheSweepStillExpiresATokenAuthorizedSubscription(t *testing.T) {
 	Init()
 
 	c := fakeClient()
-	c.subscribe(libraryID, "alice@example.com", subscription{exp: time.Now().Add(-time.Minute).Unix()})
+	c.subscribe(libraryID, "alice@example.com", subscription{lane: laneToken, exp: time.Now().Add(-time.Minute).Unix()})
 
 	c.sweepSubscriptions()
 
