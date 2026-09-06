@@ -31,8 +31,13 @@ decide whether to shim it.
 
 - **silo** — our own Go TUI (`cmd/silo`)
 - **silo-drive** — our file-access client, as a macOS File Provider extension
-  and as a FUSE mount. Speaks `/api/silo/v1` only: `entries`, `changes`,
-  `notify-token` and the notification socket.
+  and as a FUSE mount. Speaks `/api/silo/v1` and nothing else: `server-info`,
+  `auth/login`, `libraries`, `account/usage`, `entries`, `changes`,
+  `notify-token`, the notification socket, and the chunk surface —
+  `chunks/missing` and `PUT chunks/{id}` going up, `GET objects/{id}` and
+  `GET chunks/{id}` coming back down on the FUSE build. The list summarises what
+  has a client and grows as the client does; `/api/silo/v1` is the half of the
+  sentence that is a limit.
 
 ## Authentication
 
@@ -52,7 +57,7 @@ which response comes back**:
   → 200 {"token": "silo_session_…"}          a 24h session; unchanged, byte for byte
 
 {"email":…, "password":…, "kind":"device",   enrolment: any of kind, client_name,
- "client_name":"Silo Drive 1.2 (macOS)",         public_key, perm or scope makes it one
+ "client_name":"SiloDrive 1.2 (macOS)",         public_key, perm or scope makes it one
  "perm":"r", "scope":"<library-id>"}
   → 201 {"credential": "silo_device_…", "expires_at": …, "email": …}
 ```
@@ -1120,8 +1125,13 @@ once for the total, once for what is free — so the used column lands within
 one block of the real number, on whichever side depends on where the quota
 falls relative to a block boundary; it is not reliably a round up, and it is
 not per-file occupancy. Report it as "the aggregate divided by the block size".
-Silo Drive uses 4096 because that is what every local filesystem on the machine
-reports, which is a tradeoff rather than a property of the interface.
+silo-drive-linux uses 4096 because that is what every local filesystem on the
+machine reports, which is a tradeoff rather than a property of the interface.
+The macOS build fills in no `df` at all — a File Provider extension does not
+get to declare a volume size, and Finder reports the disk behind the domain
+instead — so on that side the quota has to surface in the container app and in
+what a `507` is made to look like. See [`quota.md`](quota.md) § macOS File
+Provider.
 
 ### Chunks: what the reference does not say
 

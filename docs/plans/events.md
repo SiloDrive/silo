@@ -213,7 +213,7 @@ waits for evidence anyone needs it.
    sharing's phase 1 — the share surface should not ship without its
    trail. `sync.error` starts writing — there is nothing to retire, since
    `LibrarySyncError` has already been dropped.
-3. **The chain + `/events/head` + client pinning.** Silo Drive pins
+3. **The chain + `/events/head` + client pinning.** silo-drive pins
    `(seq, head)` in its local index and verifies on reconnect. The
    threat-model paragraph in [`storage.md`](../storage.md) gains its clause.
 4. **The tail as wake-up channel** — if and when measurement says

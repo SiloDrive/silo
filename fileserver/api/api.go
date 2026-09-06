@@ -206,7 +206,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 // docs/auth.md makes the password an *enrolment* credential rather than a
 // request credential -- presented once, exchanged, and forgotten -- so this is
 // where a device gets the thing it will actually hold. There is no device
-// grant because there is no third party: Silo Drive collects the password in its
+// grant because there is no third party: silo-drive collects the password in its
 // own window, and the code-and-approval dance would buy nothing.
 type loginRequest struct {
 	Email    string `json:"email"`

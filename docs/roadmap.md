@@ -254,7 +254,7 @@ cannot restore login.
 Tracked: milestone `e2ee-client`, #6 (key bootstrap), #7
 (`CreateEncryptedLibrary`), #8 (read path), #9 (write path), #10 (one
 interface, two implementations), #11 (round-trip test), #32 (recovery codes).
-Silo Drive's side: silo-drive-linux #1, #2; silo-drive-macos #1 — each an independent
+silo-drive's side: silo-drive-linux #1, #2; silo-drive-macos #1 — each an independent
 implementation against [`spec/store-format.md`](spec/store-format.md), so each
 reproduces the kind-2 wrap rather than inheriting it.
 
@@ -377,7 +377,7 @@ because they get proposed often: peer-to-peer federation (a mesh of untrusting
 instances agreeing on shared state is consensus, and consensus is a different
 project), a plugin system, LDAP and SAML (OIDC covers the ground with far less
 surface to get wrong, and a reverse proxy doing header auth stays acceptable),
-and mobile apps from this repository — a mobile client would be a Silo Drive
+and mobile apps from this repository — a mobile client would be a silo-drive
 project against `/api/silo/v1`, not a server feature.
 
 Upstream wire compatibility is gone deliberately and `compat-end` is the

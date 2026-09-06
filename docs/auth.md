@@ -346,7 +346,7 @@ an HTML page Silo has no other use for.
 POST /api/silo/v1/auth/login          (no auth)
 { "email": "…", "password": "…",
   "kind": "device",                    // optional; default "session"
-  "client_name": "Silo Drive 1.2 (macOS)", // required when asking for a credential
+  "client_name": "SiloDrive 1.2 (macOS)", // required when asking for a credential
   "perm": "r",                         // optional, narrowing only
   "scope": "<library-id>" }            // optional, narrowing only
 ```
@@ -1038,7 +1038,7 @@ sessions would introduce a class of vulnerability it currently cannot have.
 
 ```
 1. Client → Silo   POST /api/silo/v1/device/code
-                   { client_name: "Silo Drive 1.2 (macOS)", perm: "r" }
+                   { client_name: "SiloDrive 1.2 (macOS)", perm: "r" }
 
 2. Silo   → IdP    POST /oauth/device_authorization  (client_secret_post + PKCE)
    IdP    → Silo   user_code, verification_uri, device_code, interval, expires_in

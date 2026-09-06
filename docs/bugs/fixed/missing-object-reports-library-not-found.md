@@ -25,7 +25,7 @@ there.
 
 ```
 GET /api/silo/v1/libraries
-  200  [{"id":"328be500-…","name":"Silo Drive Test",
+  200  [{"id":"328be500-…","name":"SiloDrive Test",
          "head_commit_id":"ac9b78b5c6f7b1905277627bafef0fe99beb15ff", …}]
 
 GET /api/silo/v1/libraries/328be500-…/entries/

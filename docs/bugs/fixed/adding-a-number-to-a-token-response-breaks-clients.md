@@ -2,7 +2,7 @@
 
 **Found:** 18 Aug 2026, while building the `notify-token` endpoint proposed in
 `docs/feature-req/notify-token-on-the-silo-lane.md`.
-**Status: the bug is Silo Drive's, and is fixed.** Filed here because the trigger
+**Status: the bug is silo-drive's, and is fixed.** Filed here because the trigger
 was a Silo change, and because the same trap is waiting for the next field
 added to any response an existing client already parses.
 
@@ -20,7 +20,7 @@ are all strings:
 {"jwt_token": "…"}      GET  /repo/{id}/jwt-token
 ```
 
-So Silo Drive decoded all of them through one helper:
+So silo-drive decoded all of them through one helper:
 
 ```go
 var result map[string]string
@@ -44,7 +44,7 @@ That body does not decode into a `map[string]string`. Go stops at the number:
 json: cannot unmarshal number into Go value of type string
 ```
 
-Silo Drive would have failed on the endpoint it had itself requested, on the day
+silo-drive would have failed on the endpoint it had itself requested, on the day
 that endpoint shipped, having passed every test it had until then. Its own fake
 server could not have caught it either, because the fake emitted only strings —
 because every real endpoint did.
@@ -88,6 +88,6 @@ var result struct {
 }
 ```
 
-Silo Drive's fake server now emits `expires_at` as a number specifically because it
-is the field most likely to catch this class of mistake again. Silo Drive's own
+silo-drive's fake server now emits `expires_at` as a number specifically because it
+is the field most likely to catch this class of mistake again. silo-drive's own
 account of the bug is in `silo-drive-linux/docs/server-asks.md`.

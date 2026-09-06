@@ -120,7 +120,7 @@ func (c *Credential) Bearer() bool { return len(c.secretHash) > 0 }
 // secret, and stamps last_used.
 //
 // kinds is the set of lanes the caller accepts. The API routes take a session
-// credential from the CLI and a device credential from Silo Drive, so the question
+// credential from the CLI and a device credential from silo-drive, so the question
 // is which of several rather than which one -- but it is still a question the
 // caller has to answer, and an empty set matches nothing: a caller that named
 // no kind forgot to say which lane it was, and reading that as "any lane will

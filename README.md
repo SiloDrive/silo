@@ -363,8 +363,9 @@ clients were deleted in 0.5.0, and every route they used now answers 404 — see
 Tested clients:
 
 - **Silo TUI** (`cmd/silo`) — full CRUD and browse
-- **silo-drive**, as a FUSE mount and as the macOS File Provider client — `entries`,
-  `changes`, `notify-token` and the notification socket; see
+- **silo-drive**, as a FUSE mount and as the macOS File Provider client —
+  `server-info`, `auth/login`, `libraries`, `account/usage`, `entries`,
+  `changes`, the chunk surface, `notify-token` and the notification socket; see
   [`docs/protocol.md`](docs/protocol.md#writing-a-client) § Writing a client
 
 ## What's not implemented

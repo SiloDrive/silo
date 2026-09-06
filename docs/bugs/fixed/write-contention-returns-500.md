@@ -149,10 +149,10 @@ server working as designed.
 
 **503, not the 409 the GC-conflict case uses.** 409 stopped being free three
 commits ago: `move-onto-directory-destroys-it.md` gave it to destination
-collisions, and Silo Drive maps that to `NSFileProviderError.filenameCollision` —
+collisions, and silo-drive maps that to `NSFileProviderError.filenameCollision` —
 "return the existing item so the system renames". Answering a contended write
 with 409 would tell a File Provider client to rename the user's file. 503 says
-transient, `Retry-After` says when, and Silo Drive's error table already routes
+transient, `Retry-After` says when, and silo-drive's error table already routes
 5xx to `.serverUnreachable` with backoff.
 
 **The same bug, one level worse, also fixed.** Five Silo-lane handlers —

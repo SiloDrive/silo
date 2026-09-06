@@ -6,7 +6,7 @@ document wins, by [`../roadmap.md`](../roadmap.md)'s rule.
 
 Tracked on git.booko.info: milestones `e2ee-client`, `split-login`,
 `grants-and-invites`, `sharing-e2ee` in `Silo/silo`, and one issue per
-bullet — numbers are given beside each step. Silo Drive's share lives in
+bullet — numbers are given beside each step. silo-drive's share lives in
 `Silo/silo-drive-linux` and `Silo/silo-drive-macos`. The issues carry state; this
 document carries the reasoning, and is not updated as they close.
 
@@ -156,7 +156,7 @@ this".
 member gets `404` on the key and `403` on the surface; a share to an account
 with no key is `409`; a member cannot re-share beyond their own ceiling.
 
-### 4. Silo Drive
+### 4. silo-drive
 
 Issues silo-drive-linux#1, #2 and silo-drive-macos#1, in those repositories. Owned by
 silo-drive's own docs; listed here because it is where a person meets the result.

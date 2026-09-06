@@ -262,7 +262,7 @@ var (
 //
 // 503 rather than 409, because 409 is not free: docs/bugs/fixed/
 // move-onto-directory-destroys-it.md gave it to destination collisions, and
-// Silo Drive maps that to NSFileProviderError.filenameCollision — "return the
+// silo-drive maps that to NSFileProviderError.filenameCollision — "return the
 // existing item so the system renames". Answering a contended write with 409
 // would tell a File Provider client to rename the user's file. 503 says
 // transient, and Retry-After says when.

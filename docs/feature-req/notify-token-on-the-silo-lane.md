@@ -1,9 +1,9 @@
 # A Silo-lane way to mint a notification token
 
 **Landed** in 0.4.4, as proposed: `fileserver/api/notify.go` and one route.
-Silo Drive's fallback path can go. See [What was done](#what-was-done) at the end.
+silo-drive's fallback path can go. See [What was done](#what-was-done) at the end.
 
-**Asked:** 18 Aug 2026, by Silo Drive, against 0.4.3.
+**Asked:** 18 Aug 2026, by silo-drive, against 0.4.3.
 **Size:** one handler and one route — 72 lines, prototyped and run end to end.
 **Blocks:** a client that speaks only the Silo lane. Today there is exactly one
 call that makes that impossible, and this is it.
@@ -25,17 +25,17 @@ GET  /repo/{id}/jwt-token                 <library-token header>: …  → {"jwt
 
 `protocol.md` § Writing a client is upfront that this is history: the notification endpoint
 predates the Silo lane and authenticates the way the upstream client does.
-Silo Drive implements it exactly as documented, and it works — verified against a
+silo-drive implements it exactly as documented, and it works — verified against a
 live 0.4.2, push landing in tens of milliseconds.
 
-So this began as a tidying ask. It stopped being one when Silo Drive grew a
+So this began as a tidying ask. It stopped being one when silo-drive grew a
 credential model.
 
-Silo Drive now presents **no credential by default**, for a server that asks for
+silo-drive now presents **no credential by default**, for a server that asks for
 none. Every call it makes works that way for free, because they all go through
 one authorizer and an anonymous authorizer stamps nothing. This one does not:
 it needs a *library token*, and a library token exists because the upstream
-client needs one. The only part of Silo Drive that cannot be made credential-agnostic is
+client needs one. The only part of silo-drive that cannot be made credential-agnostic is
 the part that speaks the credential model `auth.md` proposes replacing.
 
 That is the argument. It is not "two requests instead of one" — it is that the
@@ -129,23 +129,23 @@ Not present on `getJWTTokenCB`, and worth adding here.
 
 Without it a client learns its 72-hour token has lapsed when the socket says
 `jwt-expired` — after the fact, mid-session, as an error to recover from. With
-it, a long-lived client re-mints *before* it is disconnected. Silo Drive does not
+it, a long-lived client re-mints *before* it is disconnected. silo-drive does not
 need it yet, because it mints one per subscription and a token cannot go stale
 in its hands, but a client that cached one would.
 
 One warning, learned the hard way: adding a number to a token response is a
-client-visible change. Silo Drive decoded every token body into a
+client-visible change. silo-drive decoded every token body into a
 `map[string]string` — which is correct for `{"token":…}` and for
-`{"jwt_token":…}`, and fails the moment a body carries a number. Silo Drive would
+`{"jwt_token":…}`, and fails the moment a body carries a number. silo-drive would
 have broken on the endpoint it had itself requested, on the day it shipped,
-having passed every test until then. That is Silo Drive's bug and it is fixed, but
+having passed every test until then. That is silo-drive's bug and it is fixed, but
 it is the shape of thing worth knowing before adding a field to a response
 other clients already parse.
 
 ## Verified
 
 Built against silo HEAD (`5cd182a`) in a throwaway worktree, then driven by
-Silo Drive. Nothing of the working tree or the running server was disturbed: the
+silo-drive. Nothing of the working tree or the running server was disturbed: the
 prototype ran on `:8092` against a copy of the data directory.
 
 Handler behaviour:
@@ -158,7 +158,7 @@ Handler behaviour:
 | with `EnableNotification` off | `404 Notification server is not enabled` |
 | claims in the issued token | `library_id`, `username`, `aud: [silo:notif]`, `exp` — identical to `getJWTTokenCB` |
 
-Then Silo Drive mounted through a logging proxy, so "no legacy-lane calls" could be
+Then silo-drive mounted through a logging proxy, so "no legacy-lane calls" could be
 counted rather than asserted. Every request it made over a mount, a read, a
 poll and a push:
 
@@ -176,16 +176,16 @@ No `/repo/…`, no `/sync-token`, no `/api2/…`. Push still landed in single-di
 milliseconds, and getting subscribed cost one request per library where the old
 path cost two.
 
-## What Silo Drive deletes when this lands
+## What silo-drive deletes when this lands
 
 `notifyJWT`, `syncToken`, the sync-token cache and the `notifyLane` field —
-about 70 lines, and with them the only place in Silo Drive that builds its own
+about 70 lines, and with them the only place in silo-drive that builds its own
 `http.Request` in order to avoid the function that attaches credentials.
 
-Silo Drive is already written for it: `NotifyToken` asks for `notify-token` first,
+silo-drive is already written for it: `NotifyToken` asks for `notify-token` first,
 falls back to the legacy pair on a 404, and tags the log line with the lane it
 used, so the compatibility path stays visible rather than becoming a habit. The
-day the endpoint exists Silo Drive uses it with no change at all.
+day the endpoint exists silo-drive uses it with no change at all.
 
 The patch is kept at `silo-drive-linux/docs/silo-notify-token.patch`.
 

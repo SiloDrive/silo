@@ -54,11 +54,11 @@ func TestAPlainLoginIsUnchanged(t *testing.T) {
 	}
 }
 
-// Asking for a device credential is what Silo Drive does once, at enrolment.
+// Asking for a device credential is what silo-drive does once, at enrolment.
 func TestEnrollingADeviceReturnsTheDocumentedShape(t *testing.T) {
 	base, _ := wire(t)
 
-	code, out := enrol(t, base, `{`+wireLogin+`,"kind":"device","client_name":"Silo Drive 1.2 (macOS)"}`)
+	code, out := enrol(t, base, `{`+wireLogin+`,"kind":"device","client_name":"SiloDrive 1.2 (macOS)"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: %v", code, out)
 	}
