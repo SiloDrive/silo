@@ -442,7 +442,10 @@ func (s *Store) WriteFile(r io.Reader) (*store.Manifest, error) {
 	}
 	head = head[:n]
 	if n < store.InlineThreshold {
-		return &store.Manifest{FileSize: int64(n), Inline: head}, nil
+		// Cloned, not sliced. head is a store.InlineThreshold array and the
+		// manifest is the return value, so slicing would hand the caller 64 KiB
+		// of live backing array per file however few bytes the file holds.
+		return &store.Manifest{FileSize: int64(n), Inline: bytes.Clone(head)}, nil
 	}
 
 	m := &store.Manifest{}
