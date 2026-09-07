@@ -32,12 +32,6 @@ var authorize = func(cred *credential.Credential, libraryID string) bool {
 	return middleware.PermFor(cred, libraryID, "") != ""
 }
 
-// authorized is authorize with the answer a caller must not have to remember:
-// no credential is not authorized, and the question is not asked.
-func authorized(cred *credential.Credential, libraryID string) bool {
-	return cred != nil && authorize(cred, libraryID)
-}
-
 // visibleLibraries is every library an account can see: owned, and granted
 // whole to it or to a group it is in. It is the union GET /libraries answers
 // with, read from the same two tables, so that a socket subscribed to the

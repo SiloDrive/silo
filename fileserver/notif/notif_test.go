@@ -12,7 +12,7 @@ func fakeClient() *Client {
 	return &Client{
 		ID:        nextID(),
 		wch:       make(chan *Message, wchBuffer),
-		libraries: make(map[string]subscription),
+		libraries: make(map[string]lane),
 	}
 }
 

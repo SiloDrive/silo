@@ -51,9 +51,6 @@ type LibraryUpdateEvent struct {
 // frame serves every ring, because nothing writes to a queued message.
 var ringFrame = &Message{Type: EventTypeAccountUpdate, Content: json.RawMessage("{}")}
 
-// accountRing is the frame an account-scoped socket gets.
-func accountRing() *Message { return ringFrame }
-
 // NotifyLibraryUpdate fans a library-update event out to every client currently
 // subscribed to libraryID. Delivery is best-effort and non-blocking: if a
 // client's write channel is full, the message is dropped for that client
@@ -70,17 +67,23 @@ func NotifyLibraryUpdate(libraryID, commitID string) {
 		return
 	}
 
-	content, err := json.Marshal(&LibraryUpdateEvent{LibraryID: libraryID, CommitID: commitID})
-	if err != nil {
-		log.Warnf("notif: failed to encode library-update event: %v", err)
-		return
-	}
-	update := &Message{Type: EventTypeLibraryUpdate, Content: content}
-
+	// Built on the first per-library target rather than up front: an account
+	// socket is rung with the shared frame instead, so a library watched only
+	// that way would marshal a payload nobody is sent -- on the commit path,
+	// per commit.
+	var update *Message
 	for _, c := range targets {
 		if c.accountScoped.Load() {
 			c.ring()
 			continue
+		}
+		if update == nil {
+			content, err := json.Marshal(&LibraryUpdateEvent{LibraryID: libraryID, CommitID: commitID})
+			if err != nil {
+				log.Warnf("notif: failed to encode library-update event: %v", err)
+				return
+			}
+			update = &Message{Type: EventTypeLibraryUpdate, Content: content}
 		}
 		select {
 		case c.wch <- update:
@@ -99,23 +102,41 @@ func NotifyLibraryUpdate(libraryID, commitID string) {
 // its set moved, for the change that has no library to find them by: a
 // library created, which nothing was subscribed to yet.
 //
-// Off the commit path, like NotifyLibraryChanged: what it asks each socket for
-// is a resync, which reads the database on the socket's own goroutine.
+// Off the commit path, like NotifyLibraryGone: what it asks each socket for is
+// a resync, which reads the database on the socket's own goroutine.
 func NotifyAccountUpdate(acct account.ID) {
 	for _, c := range snapshotAccountSockets(acct) {
 		c.nudge()
 	}
 }
 
-// NotifyLibraryChanged tells every account-scoped socket watching a library
-// that something about the library other than its contents moved -- its name,
-// or its existence. The per-library index already knows who watches it, so
+// NotifyLibraryRenamed rings every account-scoped socket watching a library
+// whose name changed. The per-library index already knows who watches it, so
 // neither the owner nor the grantees are looked up.
+//
+// It rings rather than nudging, which is the whole difference from
+// NotifyLibraryGone. A nudge asks the socket to re-resolve its set and rings
+// only if the set moved, or on being told the resync found nothing -- and a
+// rename can never move a set, so every one of those queries is asked to
+// produce an answer already known. That is four reads per socket, and a
+// library shared with a hundred accounts has a socket per device of each.
 //
 // A per-library socket is not told. That lane's frame carries a commit id,
 // and a rename mints no commit: the name is catalog data, which the account
 // lane was built to cover.
-func NotifyLibraryChanged(libraryID string) {
+func NotifyLibraryRenamed(libraryID string) {
+	for _, c := range snapshotSubscribers(libraryID) {
+		if c.accountScoped.Load() {
+			c.ring()
+		}
+	}
+}
+
+// NotifyLibraryGone tells every account-scoped socket watching a library that
+// it is no longer there. Unlike a rename this does move the set, so it asks
+// for a resync: the socket has a subscription to drop, and dropping it is what
+// the resync is for.
+func NotifyLibraryGone(libraryID string) {
 	for _, c := range snapshotSubscribers(libraryID) {
 		if c.accountScoped.Load() {
 			c.nudge()

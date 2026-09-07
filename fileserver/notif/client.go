@@ -22,11 +22,16 @@ const (
 	pingPeriod = 30 * time.Second
 	pongWait   = 90 * time.Second
 
-	// sweepPeriod is how often each client re-examines what it is subscribed
-	// to: expired JWTs on the token lane, withdrawn access on the credential
-	// lane. Subscribe JWTs are minted with a 72h lifetime, so hourly is
-	// frequent enough for those, and it is the same order as the time a
-	// client would take to notice through polling.
+	// sweepPeriod is how often each client re-asks whether the credential
+	// that authorized its subscriptions still reaches them. Withdrawn access
+	// is the only thing it looks for: nothing expires on its own since the
+	// token lane went, and a device credential need never expire at all, so
+	// without this a subscription would outlive its authorization for the
+	// life of the process.
+	//
+	// An hour is the same order as the time a client would take to notice
+	// through polling, which is the bound this is chosen against -- there is
+	// no lifetime here to divide into any more.
 	sweepPeriod = 1 * time.Hour
 
 	// resyncPeriod is how often an account socket re-resolves the credential
@@ -45,26 +50,19 @@ const (
 type Client struct {
 	ID uint64
 
-	// account is the account named by a credential at the handshake, or nil
-	// for a connection that offered none. A named connection may sit idle; an
-	// anonymous one has provisionalGrace to subscribe. It is also what a
-	// per-account connection limit will count, when there is one.
-	account *account.Account
-
-	// cred is the credential that authenticated the handshake, or nil for a
-	// connection that offered none. It is what authorizes a subscribe on the
-	// credential lane -- see authorize.go -- and it is held for the life of
-	// the socket because the sweep asks the same question again.
+	// cred is the credential that authenticated the handshake, never nil:
+	// RequireSocketCredential refuses a socket without one. It is what
+	// authorizes a subscribe -- see authorize.go -- and it is held for the
+	// life of the socket because the sweep asks the same question again.
 	cred *credential.Credential
 
-	// User is the authenticated username, set on the first
-	// successful subscribe from the JWT claims. It is unused today (only
-	// library-update events flow, and those fan out to every subscriber of a
-	// library), but will be needed when per-user events like
-	// folder-perm-changed are added — the upstream notification server
-	// filters fanout by this field. See notification-server/event.go for
-	// the upstream pattern.
-	User string
+	// account is who the socket belongs to, never nil for the same reason.
+	// Held beside cred rather than read off it because the two answer
+	// different questions: the account is the ring's addressee, while the
+	// credential is what that holder may reach -- a credential narrowed to one
+	// library still names a whole account. It is also what a per-account
+	// connection limit will count, when there is one.
+	account *account.Account
 
 	conn   *websocket.Conn
 	connMu sync.Mutex // serializes writes to conn
@@ -88,7 +86,7 @@ type Client struct {
 	lastPongUnix atomic.Int64
 
 	librariesMu sync.Mutex
-	libraries   map[string]subscription // libraryID -> subscription. nil after close.
+	libraries   map[string]lane // libraryID -> the lane that authorized it. nil after close.
 
 	// accountScoped says the client asked for its account's whole set, and
 	// holds a laneAccount subscription for each library in it. It is what
@@ -113,20 +111,16 @@ type Client struct {
 	wg        sync.WaitGroup
 }
 
-// subscription is one library this client watches, and which lane authorized
-// it.
+// lane is what authorized a subscription, and so what can end it. It is the
+// whole of what a subscription records.
 //
 // There was a third lane, and its removal is why nothing here carries an
 // expiry any more. A subscribe frame could present a library-scoped JWT minted
 // by POST notify-token, from when the notification server ran in a process
 // with no database and the answer had to arrive pre-signed. It runs in-process
 // and asks, so both remaining lanes are the socket's credential re-checked
-// against the database, and a clock authorizes nothing.
-type subscription struct {
-	lane lane
-}
-
-// lane is what authorized a subscription, and so what can end it.
+// against the database, a clock authorizes nothing, and there is nothing left
+// to carry beside the lane.
 type lane int
 
 const (
@@ -169,21 +163,17 @@ type subscribeLibrary struct {
 func NewClient(conn *websocket.Conn, acct *account.Account, cred *credential.Credential) {
 	c := &Client{
 		ID:        nextID(),
-		account:   acct,
 		cred:      cred,
+		account:   acct,
 		conn:      conn,
 		wch:       make(chan *Message, wchBuffer),
 		missed:    make(map[string]string),
 		resyncCh:  make(chan struct{}, 1),
 		resyncNow: make(chan struct{}, 1),
-		libraries: make(map[string]subscription),
+		libraries: make(map[string]lane),
 		closeCh:   make(chan struct{}),
 	}
 	c.lastPongUnix.Store(time.Now().Unix())
-
-	if acct != nil {
-		c.User = acct.Email
-	}
 
 	conn.SetPongHandler(func(string) error {
 		c.lastPongUnix.Store(time.Now().Unix())
@@ -282,7 +272,7 @@ func (c *Client) writeLoop() {
 				return
 			}
 			if c.ringOwed.Swap(false) {
-				if err := c.writeMessage(accountRing()); err != nil {
+				if err := c.writeMessage(ringFrame); err != nil {
 					log.Debugf("notif: client %d ring write error: %v", c.ID, err)
 					return
 				}
@@ -448,24 +438,21 @@ func (c *Client) sweepSubscriptions() {
 	// subscribe -- so the ids are collected here and the question is asked
 	// once the lock is gone.
 	var byCredential []string
-	dropped := map[string]string{} // library id -> the frame that says why
 	c.librariesMu.Lock()
-	for id, sub := range c.libraries {
-		if sub.lane == laneCredential {
+	for id, l := range c.libraries {
+		if l == laneCredential {
 			byCredential = append(byCredential, id)
 		}
 	}
 	c.librariesMu.Unlock()
 
 	for _, id := range byCredential {
-		if !authorized(c.cred, id) {
-			log.Infof("notif: client %d loses library %s: the credential that authorized it no longer reaches it", c.ID, id)
-			dropped[id] = EventTypeSubscribeDenied
+		if authorize(c.cred, id) {
+			continue
 		}
-	}
-	for id, frame := range dropped {
+		log.Infof("notif: client %d loses library %s: the credential that authorized it no longer reaches it", c.ID, id)
 		c.unsubscribe(id)
-		c.sendLibraryFrame(frame, id)
+		c.denySubscribe(map[string]string{"library_id": id})
 	}
 }
 
@@ -480,12 +467,12 @@ func (c *Client) handleMessage(msg *Message) error {
 			c.subscribeAccount()
 		}
 		for _, r := range frame.Libraries {
-			if !authorized(c.cred, r.LibraryID) {
+			if !authorize(c.cred, r.LibraryID) {
 				log.Debugf("notif: client %d refused a credential subscribe to %q", c.ID, r.LibraryID)
-				c.sendLibraryFrame(EventTypeSubscribeDenied, r.LibraryID)
+				c.denySubscribe(map[string]string{"library_id": r.LibraryID})
 				continue
 			}
-			c.subscribe(r.LibraryID, subscription{lane: laneCredential})
+			c.subscribe(r.LibraryID, laneCredential)
 		}
 		return nil
 	case "unsubscribe":
@@ -503,13 +490,13 @@ func (c *Client) handleMessage(msg *Message) error {
 	}
 }
 
-func (c *Client) subscribe(libraryID string, sub subscription) {
+func (c *Client) subscribe(libraryID string, l lane) {
 	c.librariesMu.Lock()
 	if c.libraries == nil {
 		c.librariesMu.Unlock()
 		return
 	}
-	c.libraries[libraryID] = sub
+	c.libraries[libraryID] = l
 	c.librariesMu.Unlock()
 	addSubscription(libraryID, c)
 }
@@ -532,32 +519,26 @@ func (c *Client) subscribe(libraryID string, sub subscription) {
 // on its own -- which is the opposite of the per-library lane's answer, where
 // the frame carries a commit id and a folder scope is refused the library.
 //
-// One refusal, answered with subscribe-denied naming no library: no
-// credential means nothing to resolve the set from, and this frame names no
-// library the refusal could point at.
+// One refusal, answered with subscribe-denied naming no library: the set
+// cannot be read, and this frame names no library the refusal could point at.
 func (c *Client) subscribeAccount() {
-	if c.cred == nil || c.account == nil {
-		log.Debugf("notif: client %d refused an account subscribe: no credential on the socket", c.ID)
-		c.sendAccountDenied()
-		return
-	}
 	if lib := c.cred.Scope.LibraryID; lib != "" {
 		c.scopedTo = lib
 		c.accountScoped.Store(true)
-		c.subscribe(lib, subscription{lane: laneAccount})
+		c.subscribe(lib, laneAccount)
 		return
 	}
 	ids, err := visibleLibraries(c.account.ID)
 	if err != nil {
 		log.Errorf("notif: client %d: resolving the libraries account %s can see: %v", c.ID, c.account.ID, err)
-		c.sendAccountDenied()
+		c.denySubscribe(map[string]bool{"account": true})
 		return
 	}
 
 	c.accountScoped.Store(true)
 	addAccountSocket(c.account.ID, c)
 	for _, id := range ids {
-		c.subscribe(id, subscription{lane: laneAccount})
+		c.subscribe(id, laneAccount)
 	}
 }
 
@@ -617,8 +598,8 @@ func (c *Client) resyncAccount() bool {
 
 	var appeared, left []string
 	c.librariesMu.Lock()
-	for id, sub := range c.libraries {
-		if sub.lane == laneAccount && !visible[id] {
+	for id, l := range c.libraries {
+		if l == laneAccount && !visible[id] {
 			left = append(left, id)
 		}
 	}
@@ -630,7 +611,7 @@ func (c *Client) resyncAccount() bool {
 	c.librariesMu.Unlock()
 
 	for _, id := range appeared {
-		c.subscribe(id, subscription{lane: laneAccount})
+		c.subscribe(id, laneAccount)
 	}
 	for _, id := range left {
 		c.unsubscribe(id)
@@ -654,17 +635,10 @@ func (c *Client) nudge() {
 // ring hands the account socket its frame, or notes that one is owed.
 func (c *Client) ring() {
 	select {
-	case c.wch <- accountRing():
+	case c.wch <- ringFrame:
 	default:
 		c.noteRingOwed()
 	}
-}
-
-// sendAccountDenied answers an account subscribe the server will not grant.
-// The same frame as a per-library refusal, naming the mode instead of a
-// library, so a client reads one type for "no" on either lane.
-func (c *Client) sendAccountDenied() {
-	c.queueFrame(EventTypeSubscribeDenied, map[string]bool{"account": true})
 }
 
 func (c *Client) unsubscribe(libraryID string) {
@@ -681,22 +655,23 @@ func (c *Client) unsubscribe(libraryID string) {
 	c.missedMu.Unlock()
 }
 
-// sendLibraryFrame queues a frame whose whole payload is a library id, which
-// is subscribe-denied and nothing else since jwt-expired went.
-func (c *Client) sendLibraryFrame(typ, libraryID string) {
-	c.queueFrame(typ, map[string]string{"library_id": libraryID})
-}
-
-// queueFrame queues a frame that answers the client rather than reporting a
-// commit. Dropped rather than deferred when the queue is full: unlike an
-// update, there is nothing here that becomes wrong by arriving late, and the
-// sweep or the client that produced it asks again.
-func (c *Client) queueFrame(typ string, content any) {
+// denySubscribe queues a subscribe-denied naming what was refused: a library
+// id, or the account mode. One type for "no" on either lane, so a client reads
+// one frame.
+//
+// It is the only frame this client ever composes -- everything else it sends
+// is an update or the shared ring -- which is why the type is not a parameter.
+// It was one while jwt-expired existed to be the other value.
+//
+// Dropped rather than deferred when the queue is full: unlike an update, there
+// is nothing here that becomes wrong by arriving late, and the sweep or the
+// client that produced it asks again.
+func (c *Client) denySubscribe(content any) {
 	raw, err := json.Marshal(content)
 	if err != nil {
 		return
 	}
-	msg := &Message{Type: typ, Content: raw}
+	msg := &Message{Type: EventTypeSubscribeDenied, Content: raw}
 	select {
 	case c.wch <- msg:
 	default:

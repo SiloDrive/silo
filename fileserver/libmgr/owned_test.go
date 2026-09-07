@@ -2,7 +2,7 @@ package libmgr
 
 import (
 	"context"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
@@ -44,15 +44,10 @@ func TestOwnedLibraryIDsListsOnlyTheAccountsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OwnedLibraryIDs: %v", err)
 	}
-	sort.Strings(got)
-	sort.Strings(want)
-	if len(got) != len(want) {
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("got %v, want %v", got, want)
-		}
 	}
 
 	none, err := OwnedLibraryIDs(ctx, account.ID{})

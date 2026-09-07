@@ -76,7 +76,7 @@ type Watcher struct {
 	api    *APIClient
 	events chan LibraryUpdate
 	// wake asks the live connection to re-assert subscriptions — a new
-	// library, or a token that has come due for another try.
+	// library, or one whose retry hold has come due.
 	wake chan struct{}
 
 	// cancel stops everything; done is what the loops select on. A context
@@ -237,15 +237,13 @@ func (w *Watcher) dial() (*websocket.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The session token, when there is one. The server accepts a socket
-	// without it -- the endpoint is older than the header -- but a connection
-	// that names an account may sit with nothing subscribed, which is exactly
-	// what this watcher does between opening and the caller's first Subscribe.
-	// Anonymous sockets have a deadline to subscribe by.
-	var headers http.Header
-	if token := w.api.getToken(); token != "" {
-		headers = http.Header{"Authorization": []string{"Bearer " + token}}
-	}
+	// The credential, always. The server refuses the handshake without it --
+	// every subscribe is answered from it, so a socket carrying none could be
+	// subscribed to nothing. Sending an empty one is left to fail as a 401
+	// rather than short-circuited here: a Watch before login is a caller bug,
+	// and the retry loop reports it the same way it reports any other refused
+	// dial.
+	headers := http.Header{"Authorization": []string{"Bearer " + w.api.getToken()}}
 
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
 	conn, resp, err := dialer.DialContext(w.ctx, endpoint, headers)
@@ -400,15 +398,18 @@ func (w *Watcher) handle(msg wireMessage) bool {
 // resubscribe asserts every watched library that is not in a retry hold, and
 // returns the ones it asserted. The server treats a repeated subscribe as the
 // same subscription, so re-sending one already in place costs nothing.
+//
+// It asserts all of them or none. There was a per-library failure here when
+// each entry needed a token minted for it; with the token gone the frame is
+// built from ids alone, so the only way to send some is to fail to send any.
 func (w *Watcher) resubscribe(conn *websocket.Conn) ([]string, error) {
-	var frame wireSubscribe
-	var sent []string
-	for _, id := range w.pending() {
-		frame.Libraries = append(frame.Libraries, wireSubscribeLibrary{LibraryID: id})
-		sent = append(sent, id)
-	}
-	if len(frame.Libraries) == 0 {
+	ids := w.pending()
+	if len(ids) == 0 {
 		return nil, nil
+	}
+	frame := wireSubscribe{Libraries: make([]wireSubscribeLibrary, 0, len(ids))}
+	for _, id := range ids {
+		frame.Libraries = append(frame.Libraries, wireSubscribeLibrary{LibraryID: id})
 	}
 	raw, err := json.Marshal(frame)
 	if err != nil {
@@ -418,7 +419,7 @@ func (w *Watcher) resubscribe(conn *websocket.Conn) ([]string, error) {
 	if err := conn.WriteJSON(wireMessage{Type: msgSubscribe, Content: raw}); err != nil {
 		return nil, err
 	}
-	return sent, nil
+	return ids, nil
 }
 
 // announceResync tells the caller that these libraries may have moved while

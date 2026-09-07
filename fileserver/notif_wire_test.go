@@ -23,10 +23,7 @@ import (
 // announcing, the socket fanning out, the client resubscribing — so it is worth
 // one test that owns none of them.
 func TestADeleteReachesAWatchingClient(t *testing.T) {
-	origEnabled := option.EnableNotification
-	t.Cleanup(func() { option.EnableNotification = origEnabled })
-	option.EnableNotification = true
-	notif.Init()
+	enableNotifications(t)
 
 	base, _ := wire(t)
 
@@ -136,10 +133,7 @@ func hasEntry(entries []client.DirEntry, name string) bool {
 // the session credential in the header, one frame saying "everything" -- and
 // the ring is what arrives.
 func TestARenameRingsAnAccountScopedSocket(t *testing.T) {
-	origEnabled := option.EnableNotification
-	t.Cleanup(func() { option.EnableNotification = origEnabled })
-	option.EnableNotification = true
-	notif.Init()
+	enableNotifications(t)
 
 	base, token := wire(t)
 	libraryID := makeLibrary(t, base, token)
@@ -155,19 +149,7 @@ func TestARenameRingsAnAccountScopedSocket(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	// Read on a goroutine rather than under a deadline: a read that times out
-	// poisons the connection for every read after it, so a polling loop over
-	// deadlines probes once and then fails instantly forever.
-	frames := make(chan notif.Message, 8)
-	go func() {
-		for {
-			var msg notif.Message
-			if err := conn.ReadJSON(&msg); err != nil {
-				return
-			}
-			frames <- msg
-		}
-	}()
+	frames := readFrames(conn)
 
 	// The subscribe is handled on the server's read loop, so a rename made
 	// before it lands rings nobody. Rename until one comes back; every one of
@@ -229,10 +211,7 @@ func libraryHead(t *testing.T, base, token, libraryID string) string {
 // that the surface is absent in the exact shape the documentation claims,
 // rather than absent in some shape.
 func TestTheNotifyTokenLaneIsGone(t *testing.T) {
-	origEnabled := option.EnableNotification
-	t.Cleanup(func() { option.EnableNotification = origEnabled })
-	option.EnableNotification = true
-	notif.Init()
+	enableNotifications(t)
 
 	base, token := wire(t)
 	libraryID := makeLibrary(t, base, token)
@@ -286,16 +265,7 @@ func TestTheNotifyTokenLaneIsGone(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	frames := make(chan notif.Message, 8)
-	go func() {
-		for {
-			var msg notif.Message
-			if err := conn.ReadJSON(&msg); err != nil {
-				return
-			}
-			frames <- msg
-		}
-	}()
+	frames := readFrames(conn)
 
 	// Commit until an update comes back, since the subscribe lands on the
 	// server's read loop; a subscribe-denied at any point is the failure.
@@ -319,4 +289,33 @@ func TestTheNotifyTokenLaneIsGone(t *testing.T) {
 	if !granted {
 		t.Error("a subscribe carrying a stale jwt_token never received an update")
 	}
+}
+
+// enableNotifications turns the socket on for one test and puts the package
+// back the way it was.
+func enableNotifications(t *testing.T) {
+	t.Helper()
+	orig := option.EnableNotification
+	t.Cleanup(func() { option.EnableNotification = orig })
+	option.EnableNotification = true
+	notif.Init()
+}
+
+// readFrames pumps a socket onto a channel.
+//
+// A goroutine rather than a read deadline: a read that times out poisons the
+// connection for every read after it, so a polling loop over deadlines probes
+// once and then fails instantly forever.
+func readFrames(conn *websocket.Conn) <-chan notif.Message {
+	frames := make(chan notif.Message, 8)
+	go func() {
+		for {
+			var msg notif.Message
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			frames <- msg
+		}
+	}()
+	return frames
 }

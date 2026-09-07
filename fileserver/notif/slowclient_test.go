@@ -22,7 +22,7 @@ func liveClient(t *testing.T, libraryID string) (*websocket.Conn, *Client) {
 	authorizeReturning(t, func(*credential.Credential, string) bool { return true })
 
 	conn := dialWithCredential(t, testCredential())
-	sendSubscribe(t, conn, subscribeLibrary{LibraryID: libraryID})
+	sendSubscribe(t, conn, libraryID)
 	waitForSubscribers(t, libraryID, 1)
 	return conn, snapshotSubscribers(libraryID)[0]
 }

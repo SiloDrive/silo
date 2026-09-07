@@ -135,7 +135,7 @@ func renameLibrary(w http.ResponseWriter, r *http.Request, library *libmgr.Libra
 	}
 	// No commit means the commit path announces nothing, so this is the one
 	// place a rename can ring.
-	notif.NotifyLibraryChanged(library.ID)
+	notif.NotifyLibraryRenamed(library.ID)
 	return true
 }
 

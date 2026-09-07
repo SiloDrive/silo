@@ -580,16 +580,12 @@ func newHTTPRouter() *mux.Router {
 	}
 	// in-process notification-server WebSocket endpoint
 	//
-	// OptionalCredential rather than RequireCredential: the endpoint predates
-	// the header
-	// and silo-drive and every older TUI dial it with no credential,
-	// so requiring one here would break them all on the day it shipped. What
-	// authenticating buys a client is the right to hold an idle socket; one
-	// that offers nothing has to subscribe -- with a token the server verifies
-	// -- inside provisionalGrace or be dropped. A credential that is offered
-	// and bad is still refused, in either mode.
+	// RequireSocketCredential rather than RequireCredential: the socket names
+	// no library in its path, so the door check would refuse every scoped
+	// credential a mount holds. Each subscribe frame names its own library and
+	// is checked against this credential instead.
 	if option.EnableNotification {
-		r.Handle("/notification", middleware.OptionalCredential(http.HandlerFunc(notif.Handler)))
+		r.Handle("/notification", middleware.RequireSocketCredential(http.HandlerFunc(notif.Handler)))
 	}
 
 	// pprof

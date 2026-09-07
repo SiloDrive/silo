@@ -910,7 +910,7 @@ func DeleteLibraryHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	notif.NotifyLibraryChanged(libraryID)
+	notif.NotifyLibraryGone(libraryID)
 
 	w.WriteHeader(http.StatusOK)
 }

@@ -43,12 +43,6 @@ func testCredential() *credential.Credential {
 	}
 }
 
-// subscribeByCredentialTo sends a subscribe frame naming one library.
-func subscribeByCredentialTo(t *testing.T, conn *websocket.Conn, libraryID string) {
-	t.Helper()
-	sendSubscribe(t, conn, subscribeLibrary{LibraryID: libraryID})
-}
-
 // A subscribe frame with no token is authorized by the socket's credential.
 //
 // This is the point of the change: /notification is the last endpoint that
@@ -63,7 +57,7 @@ func TestASubscribeWithNoTokenIsAuthorizedByTheCredential(t *testing.T) {
 	authorizeReturning(t, func(*credential.Credential, string) bool { return true })
 
 	conn := dialWithCredential(t, testCredential())
-	subscribeByCredentialTo(t, conn, libraryID)
+	sendSubscribe(t, conn, libraryID)
 
 	// The subscribe is handled on the read loop, so give it a moment to land
 	// before the fanout snapshots subscribers.
@@ -87,7 +81,7 @@ func TestASubscribeWithNoTokenIsRefusedWhenTheCredentialCannotReachTheLibrary(t 
 	authorizeReturning(t, func(*credential.Credential, string) bool { return false })
 
 	conn := dialWithCredential(t, testCredential())
-	subscribeByCredentialTo(t, conn, libraryID)
+	sendSubscribe(t, conn, libraryID)
 
 	msg := awaitFrame(t, conn, EventTypeSubscribeDenied, 2*time.Second)
 	var denied map[string]string
@@ -100,32 +94,6 @@ func TestASubscribeWithNoTokenIsRefusedWhenTheCredentialCannotReachTheLibrary(t 
 
 	if n := subscriberCount(libraryID); n != 0 {
 		t.Errorf("a refused subscribe left %d subscriber(s) behind", n)
-	}
-}
-
-// An anonymous socket cannot subscribe on a credential it does not have.
-//
-// This used to send a bare library id down an accepted anonymous socket and
-// assert it was denied without the authorizer ever being consulted -- the
-// worry being that the credential lane, read carelessly, becomes an
-// unauthenticated subscribe to any library id a stranger can guess. The
-// handshake now refuses a request with no credential, so the frame cannot be
-// sent at all, and the guard sits one layer earlier than the test that found
-// it.
-func TestAnAnonymousSocketIsRefusedBeforeItCanSubscribe(t *testing.T) {
-	const libraryID = testLibrary
-
-	// Would say yes if it were ever asked. It must not be asked.
-	authorizeReturning(t, func(*credential.Credential, string) bool {
-		t.Error("the authorizer was consulted for a socket with no credential")
-		return true
-	})
-
-	if got := dialRefused(t, nil); got != http.StatusUnauthorized {
-		t.Errorf("the handshake answered %d, want %d", got, http.StatusUnauthorized)
-	}
-	if n := subscriberCount(libraryID); n != 0 {
-		t.Errorf("an anonymous socket left %d subscriber(s) behind", n)
 	}
 }
 
@@ -144,7 +112,7 @@ func TestACredentialAuthorizedSubscriptionSurvivesTheSweep(t *testing.T) {
 
 	c := fakeClient()
 	c.cred = testCredential()
-	c.subscribe(libraryID, subscription{lane: laneCredential})
+	c.subscribe(libraryID, laneCredential)
 
 	c.sweepSubscriptions()
 
@@ -168,7 +136,7 @@ func TestASweepDropsASubscriptionTheCredentialNoLongerReaches(t *testing.T) {
 
 	c := fakeClient()
 	c.cred = testCredential()
-	c.subscribe(libraryID, subscription{lane: laneCredential})
+	c.subscribe(libraryID, laneCredential)
 
 	allowed = false
 	c.sweepSubscriptions()

@@ -104,7 +104,8 @@ second server against one database — is a library that never appears.
 
 Today the 72h notification JWT is the only re-authorization a live socket ever
 gets. The credential is resolved once, at the upgrade
-(`middleware.OptionalCredential` in `newHTTPRouter`), and never again;
+(`middleware.OptionalCredential` in `newHTTPRouter` — `RequireSocketCredential`
+since the token lane went), and never again;
 `sweepSubscriptions` checks per-library JWT expiry, and re-asks the permission
 question hourly on the credential lane; revoking a credential closes no
 sockets. When the token expires the subscription is
@@ -217,7 +218,8 @@ credential on that account, that is inference about working hours rather than
 disclosure of data, and it would not on its own justify a refusal.
 
 Refused loudly — a frame back saying so — rather than silently serving the
-per-library lane instead, on the same rule as `OptionalCredential`: a
+per-library lane instead, on the same rule the socket's own middleware
+follows: a
 credential that is offered and not good enough is never quietly downgraded,
 because the caller believes it is authorized and would learn otherwise only
 from what it stopped receiving.
@@ -365,10 +367,13 @@ hold both kinds of subscription, and the per-library lane is unchanged.
 ### 4. `account-update`, and the three hooks — **done**
 
 Two producers rather than one, because the sockets to ring are found two
-ways. `notif.NotifyLibraryChanged(libraryID)` is delete and rename: the
-per-library index already holds every account socket watching the library —
-owner and grantees alike — so neither is looked up, and `share.ForLibrary` is
-not consulted. `notif.NotifyAccountUpdate(account.ID)` is create, the one
+ways. `notif.NotifyLibraryGone(libraryID)` and `notif.NotifyLibraryRenamed(libraryID)`
+are delete and rename: the per-library index already holds every account socket
+watching the library — owner and grantees alike — so neither is looked up, and
+`share.ForLibrary` is not consulted. They were one function until a rename was
+shown to be paying for a resync that could not tell it anything: a rename moves
+no set, so it rings directly, while a delete nudges because the socket has a
+subscription to drop. `notif.NotifyAccountUpdate(account.ID)` is create, the one
 change with no library to find a socket by, over an account-keyed index that
 exists for it alone.
 

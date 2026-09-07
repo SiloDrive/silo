@@ -31,12 +31,12 @@ func waitForSubscribers(t *testing.T, libraryID string, n int) {
 
 // sendSubscribe writes a subscribe frame for one library.
 //
-// With a Token it is the token lane; without one it is the credential lane,
+// The frame carries an id and nothing else. It once carried a token beside it,
 // and the absence is the whole signal: it says "authorize this from whatever
 // opened the socket", which is what every other route already does.
-func sendSubscribe(t *testing.T, conn *websocket.Conn, lib subscribeLibrary) {
+func sendSubscribe(t *testing.T, conn *websocket.Conn, libraryID string) {
 	t.Helper()
-	content, err := json.Marshal(subscribeFrame{Libraries: []subscribeLibrary{lib}})
+	content, err := json.Marshal(subscribeFrame{Libraries: []subscribeLibrary{{LibraryID: libraryID}}})
 	if err != nil {
 		t.Fatal(err)
 	}

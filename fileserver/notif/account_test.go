@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
-	"net/http"
 	"testing"
 	"time"
 
@@ -20,9 +19,7 @@ import (
 // own neither. What is under test is what the socket does with the answer.
 func visibleLibrariesReturning(t *testing.T, ids ...string) {
 	t.Helper()
-	orig := visibleLibraries
-	visibleLibraries = func(account.ID) ([]string, error) { return ids, nil }
-	t.Cleanup(func() { visibleLibraries = orig })
+	visibleLibrariesFrom(t, func() []string { return ids })
 }
 
 // subscribeToAccount sends the frame that asks for the account's whole set.
@@ -50,28 +47,6 @@ func expectNoFrame(t *testing.T, conn *websocket.Conn, d time.Duration) {
 	}
 	if nerr, ok := err.(net.Error); !ok || !nerr.Timeout() {
 		t.Fatalf("waiting for silence: %v", err)
-	}
-}
-
-// An account subscribe with no credential never gets to be refused.
-//
-// The account's set is resolved from the credential that opened the socket,
-// and an anonymous socket has nothing to resolve it from. That refusal is
-// still in subscribeAccount and still reachable -- a credential can be dropped
-// under a live socket -- but the handshake now turns away a request carrying
-// no credential, so the frame this test used to send cannot be sent.
-//
-// It is kept as a handshake assertion rather than deleted because the property
-// it guards is the one that matters: nothing anonymous ends up subscribed to
-// an account's whole set.
-func TestAnAccountSubscribeWithNoCredentialIsRefused(t *testing.T) {
-	visibleLibrariesReturning(t, testLibrary)
-
-	if got := dialRefused(t, nil); got != http.StatusUnauthorized {
-		t.Errorf("the handshake answered %d, want %d", got, http.StatusUnauthorized)
-	}
-	if n := subscriberCount(testLibrary); n != 0 {
-		t.Errorf("an anonymous account subscribe registered %d subscriber(s)", n)
 	}
 }
 
@@ -169,7 +144,7 @@ func TestARenameRingsAScopedSocket(t *testing.T) {
 	subscribeToAccount(t, conn)
 	waitForSubscribers(t, testLibrary, 1)
 
-	NotifyLibraryChanged(testLibrary)
+	NotifyLibraryRenamed(testLibrary)
 	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
 }
 
@@ -279,8 +254,7 @@ func TestACommitToAnInvisibleLibraryDoesNotReachAnAccountScopedSocket(t *testing
 	expectNoFrame(t, conn, 200*time.Millisecond)
 }
 
-// visibleLibrariesFrom is visibleLibrariesReturning for a set the test moves
-// under the socket.
+// visibleLibrariesFrom is the same for a set the test moves under the socket.
 func visibleLibrariesFrom(t *testing.T, get func() []string) {
 	t.Helper()
 	orig := visibleLibraries
@@ -438,7 +412,7 @@ func TestARenameRingsAnAccountSocketWithoutACommit(t *testing.T) {
 
 	conn, _ := liveAccountClient(t)
 
-	NotifyLibraryChanged(testLibrary)
+	NotifyLibraryRenamed(testLibrary)
 
 	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
 	if n := subscriberCount(testLibrary); n != 1 {
@@ -479,7 +453,7 @@ func TestADeletedLibraryRingsAndIsNoLongerWatched(t *testing.T) {
 	conn, _ := liveAccountClient(t)
 
 	set = nil
-	NotifyLibraryChanged(testLibrary)
+	NotifyLibraryGone(testLibrary)
 
 	awaitFrame(t, conn, EventTypeAccountUpdate, 2*time.Second)
 	waitForSubscribers(t, testLibrary, 0)

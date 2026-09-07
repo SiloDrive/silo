@@ -236,33 +236,28 @@ func TestRequireCredentialSaysSignaturesAreNotImplemented(t *testing.T) {
 	}
 }
 
-// The notification socket predates the header, so a client that offers nothing
-// still gets in -- and gets in as nobody, so a route that needs an account has
-// to ask for one.
-func TestOptionalCredentialLetsAnAnonymousRequestThrough(t *testing.T) {
+// The socket used to admit an anonymous request, because a subscribe frame
+// could carry a token that authorized itself. With that lane gone there is
+// nothing such a socket could ever subscribe to, so it is refused here rather
+// than upgraded into a connection whose every frame is denied.
+func TestSocketCredentialRefusesAnAnonymousRequest(t *testing.T) {
 	testDB(t)
 
-	rec, got := run(t, OptionalCredential, "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	rec, got := run(t, RequireSocketCredential, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
 	}
-	if !got.reached {
-		t.Fatal("the handler was not reached")
-	}
-	if got.acct != nil {
-		t.Errorf("account = %v, want nil", got.acct)
-	}
-	if got.cred != nil {
-		t.Errorf("credential = %v, want nil", got.cred)
+	if got.reached {
+		t.Error("the handler ran on a refused request")
 	}
 }
 
-func TestOptionalCredentialAuthenticatesWhenOffered(t *testing.T) {
+func TestSocketCredentialAuthenticatesWhenOffered(t *testing.T) {
 	pair := testDB(t)
 	dan := addUser(t, pair, "dan@example.com")
 	_, secret := issue(t, dan, credential.KindSession, 24*time.Hour)
 
-	rec, got := run(t, OptionalCredential, "Bearer "+secret)
+	rec, got := run(t, RequireSocketCredential, "Bearer "+secret)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
 	}
@@ -271,17 +266,16 @@ func TestOptionalCredentialAuthenticatesWhenOffered(t *testing.T) {
 	}
 }
 
-// The rule that makes "optional" safe: a credential that is offered and bad is
-// refused, never quietly downgraded to anonymous. A caller that believes it is
-// authenticated would otherwise learn otherwise only from the permissions it
-// silently stopped having.
-func TestOptionalCredentialStillRefusesABadOne(t *testing.T) {
+// A credential that is offered and bad is refused, never quietly downgraded to
+// anonymous. A caller that believes it is authenticated would otherwise learn
+// otherwise only from the permissions it silently stopped having.
+func TestSocketCredentialRefusesABadOne(t *testing.T) {
 	pair := testDB(t)
 	dan := addUser(t, pair, "dan@example.com")
 	_, good := issue(t, dan, credential.KindSession, 24*time.Hour)
 
 	for _, header := range []string{"Bearer " + mutateID(good), "Bearer nonsense", "Bearer "} {
-		rec, got := run(t, OptionalCredential, header)
+		rec, got := run(t, RequireSocketCredential, header)
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%q: status = %d, want 401", header, rec.Code)
 		}
@@ -300,12 +294,12 @@ func TestOptionalCredentialStillRefusesABadOne(t *testing.T) {
 // leaves a mount cut to one library with no push at all -- and 403 before the
 // upgrade is a failure a client cannot fall back from the way it falls back
 // from a missing feature name.
-func TestOptionalCredentialAdmitsAScopedCredential(t *testing.T) {
+func TestSocketCredentialAdmitsAScopedCredential(t *testing.T) {
 	pair := testDB(t)
 	dan := addUser(t, pair, "dan@example.com")
 	_, secret := issueScoped(t, dan, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 
-	rec, got := runAt(t, OptionalCredential, "/notification", "Bearer "+secret)
+	rec, got := runAt(t, RequireSocketCredential, "/notification", "Bearer "+secret)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200: a library-scoped credential could not open the socket", rec.Code)

@@ -10,9 +10,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/middleware"
 )
 
 // dialSocket opens a notification socket against a server that authenticates
@@ -37,32 +34,6 @@ func dialSocket(t *testing.T, inject func(*http.Request) *http.Request) *websock
 	return conn
 }
 
-// dialRefused opens a socket that is expected to be refused, and returns the
-// handshake's status.
-func dialRefused(t *testing.T, inject func(*http.Request) *http.Request) int {
-	t.Helper()
-	Init()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if inject != nil {
-			r = inject(r)
-		}
-		Handler(w, r)
-	}))
-	t.Cleanup(srv.Close)
-
-	conn, resp, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
-	if err == nil {
-		_ = conn.Close()
-		t.Fatal("the handshake was accepted")
-	}
-	if resp == nil {
-		t.Fatalf("dial failed without a response: %v", err)
-	}
-	t.Cleanup(func() { _ = resp.Body.Close() })
-	return resp.StatusCode
-}
-
 // closedWithin reports whether the server hung up before the deadline. A read
 // that times out is the connection still being held, which is the opposite of
 // what is being asked.
@@ -80,40 +51,6 @@ func closedWithin(t *testing.T, conn *websocket.Conn, d time.Duration) bool {
 			return true
 		}
 		// A frame arrived -- keep reading until the deadline or the close.
-	}
-}
-
-// A socket that presents no credential is refused at the handshake.
-//
-// It used to be accepted and put on a clock. A subscribe frame could carry a
-// library-scoped JWT, which was the one thing an anonymous connection could
-// prove anything with, so it was given provisionalGrace to do that in and
-// reaped if it did not -- and the socket was free to hold four goroutines, a
-// connection and its buffers until then, since anything that answers pings
-// survives a ping reaper and every WebSocket library answers pings for you.
-//
-// With the token lane gone there is nothing such a connection could ever be
-// subscribed to, so the deadline became a slow way of saying no. This is the
-// fast way, and it is the same answer every other route gives.
-func TestASocketWithNoCredentialIsRefusedAtTheHandshake(t *testing.T) {
-	if got := dialRefused(t, nil); got != http.StatusUnauthorized {
-		t.Errorf("the handshake answered %d, want %d", got, http.StatusUnauthorized)
-	}
-}
-
-// An account on the request is not a credential, and does not open the socket.
-//
-// The two are separate fields for a reason -- the account is who the socket
-// belongs to, the credential is what that holder may reach -- and a subscribe
-// is answered from the credential alone. A socket admitted on the account
-// would be one whose every subscribe is denied.
-func TestASocketWithAnAccountButNoCredentialIsRefused(t *testing.T) {
-	acct := &account.Account{Email: "idle@example.com", IsActive: true}
-	got := dialRefused(t, func(r *http.Request) *http.Request {
-		return middleware.WithAccount(r, acct)
-	})
-	if got != http.StatusUnauthorized {
-		t.Errorf("the handshake answered %d, want %d", got, http.StatusUnauthorized)
 	}
 }
 

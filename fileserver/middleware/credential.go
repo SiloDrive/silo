@@ -58,17 +58,17 @@ func RequireOwnCredential(next http.Handler) http.Handler {
 	return resolveCredential(next, resolveOpts{skipDoorCheck: true})
 }
 
-// OptionalCredential resolves a credential when one is offered and lets the
-// request through either way.
+// RequireSocketCredential authenticates the notification socket.
 //
-// It exists for the notification socket, which has to accept clients that
-// predate the header while giving the ones that send it something for it. A
-// credential that is offered and bad is still refused -- a rejected credential
-// must never be quietly downgraded to anonymous, because the caller believes
-// it is authenticated and would learn otherwise only from the permissions it
-// silently stopped having.
+// It used to be OptionalCredential, which let an anonymous request through:
+// the endpoint predated the Authorization header, and a subscribe frame
+// carried a library-scoped JWT that authorized itself, so a socket could
+// arrive as nobody and still prove something. With that lane gone a socket
+// without a credential can subscribe to nothing, ever, so it is refused here
+// -- once, with a status code -- rather than upgraded into a connection whose
+// every frame will be denied.
 //
-// It also skips the narrowing at the door, because the socket answers about a
+// It skips the narrowing at the door, because the socket answers about a
 // library only once a subscribe frame names one. The rule scopeReachesRoute
 // enforces reads "a route that names no library answers about the account,
 // which is wider than the scope" -- and that is true of every request-shaped
@@ -82,18 +82,18 @@ func RequireOwnCredential(next http.Handler) http.Handler {
 // upgrade -- which a client cannot fall back from the way it falls back from
 // an absent feature name, because 403 on a WebSocket handshake is
 // indistinguishable from a dozen other reasons a proxy might refuse it.
-func OptionalCredential(next http.Handler) http.Handler {
-	return resolveCredential(next, resolveOpts{optional: true, skipDoorCheck: true})
+// It is RequireOwnCredential's option set arrived at from the other
+// direction, and the two are kept apart because the reason is what a reader
+// needs: that one skips the door check because its routes are narrower than
+// the scope, this one because its route has not asked anything yet.
+func RequireSocketCredential(next http.Handler) http.Handler {
+	return resolveCredential(next, resolveOpts{skipDoorCheck: true})
 }
 
-// resolveOpts is how the three wrappers above differ. They are fields rather
-// than two boolean parameters because a call site reading (next, false, true)
-// says nothing about which false and which true.
+// resolveOpts is how the wrappers above differ. It is a field rather than a
+// boolean parameter because a call site reading (next, true) says nothing
+// about which switch is being thrown.
 type resolveOpts struct {
-	// optional lets an anonymous request through. A credential that is
-	// offered and bad is still refused.
-	optional bool
-
 	// skipDoorCheck admits a scoped credential to a route that names no
 	// library. The zero value refuses it, which is the safety net the door
 	// check exists to be; each wrapper that opts out says why at its own
@@ -106,10 +106,6 @@ func resolveCredential(next http.Handler, opts resolveOpts) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cred, err := credential.Resolve(r, apiKinds...)
 		if err != nil {
-			if errors.Is(err, credential.ErrMissing) && opts.optional {
-				next.ServeHTTP(w, r)
-				return
-			}
 			credentialRefused(w, r, err)
 			return
 		}
