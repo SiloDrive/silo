@@ -92,6 +92,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "migrate":
+		if err := silod.RunMigrate(rest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "backup-db":
 		if err := silod.RunBackupDB(rest); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -148,6 +153,7 @@ Usage:
   silo gc [-orphans] [-delete]    Reclaim disk: dead libraries, orphans, old history
   silo gc -compact [-delete]      Rewrite packs without the frames nothing reaches
   silo backup-db <dir>            Snapshot the databases (server may be running)
+  silo migrate [-n]               Bring the database to this build's schema (server stopped)
   silo sentry-test                Send a test event to $SILO_SENTRY_DSN and report
   silo setup-token                Print the token that creates the first account
   silo user list [-json]          Show every account (see "silo user -h")

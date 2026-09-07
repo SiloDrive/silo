@@ -8,11 +8,11 @@ import (
 	"github.com/dkam/silo/internal/lexicon"
 )
 
-// The version stamp has to cover the databases written before it existed.
+// The migration record has to cover the databases written before it existed.
 //
 // That is not a hypothetical population: it is every database in the field on
-// the day the stamp landed, and the rename that made the stamp necessary had
-// already gone out. A guard that only protects stamped databases protects
+// the day the record landed, and the rename that first made a guard necessary
+// had already gone out. A guard that only protects recorded databases protects
 // against the next rename and does nothing about the one that has happened.
 //
 // The failure it has to catch is specific. Most renamed tables cause no error
@@ -24,7 +24,7 @@ import (
 // never had.
 
 // oldShapeDB is a database from before the library rename: tables present, no
-// version stamp, and LastGCID carrying the column the rename replaced.
+// migration record, and LastGCID carrying the column the rename replaced.
 func oldShapeDB(t *testing.T) *DBPair {
 	t.Helper()
 	pair, err := OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
@@ -48,10 +48,10 @@ func oldShapeDB(t *testing.T) *DBPair {
 	return pair
 }
 
-func TestADatabaseFromBeforeVersioningIsRefusedClearly(t *testing.T) {
+func TestADatabaseFromBeforeMigrationsIsRefusedClearly(t *testing.T) {
 	pair := oldShapeDB(t)
 
-	err := CreateSiloTables(pair.Write)
+	err := Prepare(pair.Write)
 	if err == nil {
 		t.Fatal("started against a database in the old shape")
 	}
@@ -61,19 +61,24 @@ func TestADatabaseFromBeforeVersioningIsRefusedClearly(t *testing.T) {
 	// reason, and it reads as a bug in Silo rather than as a database this
 	// build cannot use.
 	if strings.Contains(err.Error(), "no such column") {
-		t.Errorf("got the raw SQLite failure, which is what the stamp exists to replace: %v", err)
+		t.Errorf("got the raw SQLite failure, which is what the record exists to replace: %v", err)
 	}
-	for _, want := range []string{"schema version", "delete it"} {
+	for _, want := range []string{"migrations", "delete it"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not mention %q, so it does not say what to do: %v", want, err)
 		}
 	}
+
+	// Migrate has no more idea what shape this is than Prepare does.
+	if _, err := Migrate(pair.Write); err == nil {
+		t.Error("Migrate ran against a database with no record of its shape")
+	}
 }
 
 // A genuinely new database is the case that must keep working, and it is the
-// only thing separating it from the one above: both are unstamped, and the
+// only thing separating it from the one above: both have no record, and the
 // difference is whether anything is in them.
-func TestAFreshDatabaseIsStillCreated(t *testing.T) {
+func TestAFreshDatabaseIsCreatedAtTheCurrentShape(t *testing.T) {
 	pair, err := OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
 	if err != nil {
 		t.Fatalf("OpenSQLite: %v", err)
@@ -83,23 +88,28 @@ func TestAFreshDatabaseIsStillCreated(t *testing.T) {
 		_ = pair.Write.Close()
 	})
 
-	if err := CreateSiloTables(pair.Write); err != nil {
+	if err := Prepare(pair.Write); err != nil {
 		t.Fatalf("a fresh database was refused: %v", err)
 	}
 
-	var v int
-	if err := pair.Write.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
-		t.Fatalf("reading the stamp: %v", err)
+	applied, err := appliedMigrations(pair.Write)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if v != SchemaVersion {
-		t.Errorf("user_version = %d, want %d — a database this build created is unstamped", v, SchemaVersion)
+	for _, m := range migrations {
+		if !applied[m.Name] {
+			t.Errorf("fresh database does not record %s, so a later start would run it against a shape that already has it", m.Name)
+		}
+	}
+	if len(applied) != len(migrations) {
+		t.Errorf("fresh database records %d migrations, want %d", len(applied), len(migrations))
 	}
 }
 
-// Running twice must stay a no-op. The refusal keys on "unstamped and not
+// Running twice must stay a no-op. The refusal keys on "no record and not
 // empty", and a database this build just created is not empty — so a guard
 // that read only that would refuse the server its own second start.
-func TestAStampedDatabaseStartsAgain(t *testing.T) {
+func TestARecordedDatabaseStartsAgain(t *testing.T) {
 	pair, err := OpenSQLite(filepath.Join(t.TempDir(), "silo.db"))
 	if err != nil {
 		t.Fatalf("OpenSQLite: %v", err)
@@ -109,10 +119,13 @@ func TestAStampedDatabaseStartsAgain(t *testing.T) {
 		_ = pair.Write.Close()
 	})
 
-	if err := CreateSiloTables(pair.Write); err != nil {
+	if err := Prepare(pair.Write); err != nil {
 		t.Fatalf("first start: %v", err)
 	}
-	if err := CreateSiloTables(pair.Write); err != nil {
+	if err := Prepare(pair.Write); err != nil {
 		t.Fatalf("second start against a database this build wrote: %v", err)
+	}
+	if applied, err := Migrate(pair.Write); err != nil || len(applied) != 0 {
+		t.Fatalf("Migrate on a current database = %v, %v; want nothing applied", applied, err)
 	}
 }

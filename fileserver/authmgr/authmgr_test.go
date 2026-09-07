@@ -108,7 +108,7 @@ func authTestDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open test database: %v", err)
 	}
-	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
+	if err := dbutil.Prepare(pair.Write); err != nil {
 		t.Fatalf("failed to create test tables: %v", err)
 	}
 

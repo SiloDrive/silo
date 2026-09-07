@@ -35,7 +35,7 @@ func getTestStore(t *testing.T) string {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = pair.Close() })
-	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
+	if err := dbutil.Prepare(pair.Write); err != nil {
 		t.Fatalf("create tables: %v", err)
 	}
 

@@ -199,6 +199,7 @@ And two that run against the data directory rather than the API:
 silo gc                             # report what deleted libraries left on disk
 silo gc -delete                     # reclaim it — refuses while a server holds the data dir
 silo backup-db <dir>                # snapshot the database; see Backups below
+silo migrate [-n]                   # bring the database to this build's schema; -n only lists what would run
 ```
 
 `silo gc` only ever touches libraries that have already been deleted; it does

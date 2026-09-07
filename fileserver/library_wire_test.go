@@ -365,7 +365,7 @@ func TestNoTableOrColumnSaysLibrary(t *testing.T) {
 		}
 		cols.Close()
 	}
-	_ = dbutil.CreateSiloTables // the schema under test is the one this builds
+	_ = dbutil.Prepare // the schema under test is the one this builds
 }
 
 // The access-token lane is gone. It minted a stateful capability token for

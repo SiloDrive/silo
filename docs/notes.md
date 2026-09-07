@@ -81,11 +81,11 @@ has one database. There is no upgrade path from upstream's two-file pair —
 - `InnerPubLibrary` — publicly shared libraries
 - Various permission tables
 
-Schema lives in `fileserver/dbutil/schema.go` and is applied at startup.
-`CreateSiloTables` stamps the database with `SchemaVersion` (SQLite's
-`PRAGMA user_version`) once the schema has applied cleanly, and refuses to
-start against a database already stamped with a different version — see
-[`backup.md`](backup.md#schema-version).
+Schema lives in `fileserver/dbutil/schema.go`, and the migrations that take
+an older database to it in `migrate.go` beside it. A fresh database loads the
+schema; an existing one runs the migrations it has not recorded in
+`SchemaMigration`, on `silo serve` or `silo migrate` — see
+[`backup.md`](backup.md#schema-migrations).
 
 ## Storage layout
 

@@ -52,7 +52,7 @@ func emptyDB(t *testing.T) *dbutil.DBPair {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = siloPair.Close() })
-	if err := dbutil.CreateSiloTables(siloPair.Write); err != nil {
+	if err := dbutil.Prepare(siloPair.Write); err != nil {
 		t.Fatalf("create tables: %v", err)
 	}
 	account.Init(siloPair.Read, siloPair.Write)

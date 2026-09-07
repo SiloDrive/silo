@@ -26,7 +26,7 @@ func testDB(t *testing.T) *dbutil.DBPair {
 	if err != nil {
 		t.Fatalf("opening test database: %v", err)
 	}
-	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
+	if err := dbutil.Prepare(pair.Write); err != nil {
 		t.Fatalf("creating test tables: %v", err)
 	}
 

@@ -44,9 +44,8 @@ and is the version that never has to be taken back.
 and the storage is wrong. A column per operation means a schema migration, a
 CLI flag, a JSON field and a checkbox for every administrative feature, forever;
 and "what can this person do" becomes a read of N columns that no query can ask
-generically. It also bumps `SchemaVersion` each time, which
-[`../dbutil`](../../fileserver/dbutil/schema.go) is explicit is for shapes that
-`CREATE TABLE IF NOT EXISTS` cannot apply — a cost worth paying for a real shape
+generically. It also needs a migration each time, since a column is a change
+to a table that already exists — a cost worth paying for a real shape
 change and not for a new verb.
 
 Rows ask one question:

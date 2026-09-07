@@ -241,6 +241,13 @@ func serveHandler(router http.Handler, debugLog bool) http.Handler {
 // the data directory.
 const DatabaseName = "silo.db"
 
+// migrateOnOpen is set by the one caller that holds the data directory lock
+// and may therefore change the shape of the database: the server. Every other
+// command opens the database beside a server that may be running, and gets
+// Prepare, which refuses a database that is behind rather than migrating it
+// under that server's feet.
+var migrateOnOpen bool
+
 func loadDatabase() {
 	dbPath := filepath.Join(absDataDir, DatabaseName)
 
@@ -250,8 +257,12 @@ func loadDatabase() {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 
-	if err := dbutil.CreateSiloTables(siloPair.Write); err != nil {
-		log.Fatalf("Failed to create tables: %v", err)
+	if migrateOnOpen {
+		if _, err := dbutil.Migrate(siloPair.Write); err != nil {
+			log.Fatalf("Failed to migrate the database: %v", err)
+		}
+	} else if err := dbutil.Prepare(siloPair.Write); err != nil {
+		log.Fatalf("Failed to open the database: %v", err)
 	}
 
 	log.Infof("Using database %s", dbPath)
@@ -389,6 +400,8 @@ func Run(args []string) error {
 	if bindAddr != "" {
 		option.Host = bindAddr
 	}
+	// The lock above is what makes this safe; see migrateOnOpen.
+	migrateOnOpen = true
 	loadDatabase()
 
 	level, err := log.ParseLevel(option.LogLevel)

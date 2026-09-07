@@ -160,67 +160,50 @@ To confirm the store matches the heads, restore into a scratch data directory
 and run `silo serve` against it — a client that syncs a library end to end has
 verified every object that library's head references.
 
-## Schema version
+## Schema migrations
 
-`silo.db` carries its own schema version in SQLite's `PRAGMA user_version` —
-no extra table, just the four bytes SQLite reserves in the file header for
-exactly this. `fileserver/dbutil/schema.go` defines `SchemaVersion`, the
-version the running binary expects.
+`silo.db` records which migrations produced its shape, in a `SchemaMigration`
+table with one row per applied migration name. `fileserver/dbutil/schema.go`
+holds the schema a fresh database is created in; `migrate.go` beside it holds
+the ordered list of migrations that take an older database to the same place.
 
-At startup, `CreateSiloTables` reads `PRAGMA user_version` before touching
-anything. Unstamped (`0`) is two different populations wearing one value — a
-database this call is about to create, and every database written before the
-stamp existed — and it tells them apart by whether `sqlite_master` already
-holds any tables:
+What happens at startup depends on what is already in the file:
 
-- **Unstamped and empty** — a genuinely fresh database. The schema is applied
-  (`CREATE TABLE`/`INDEX IF NOT EXISTS`), and only once that succeeds is the
-  database stamped with `SchemaVersion`.
-- **Unstamped but already holding tables** — written before this check
-  existed, which the library rename (`0.5.0`) already shipped against.
-  Refused immediately with its own message: *"this database has tables but
-  no schema version stamp, so it was written before this build's schema
-  (schema version N) ... this package has no migration path."* Different
-  wording from a version mismatch below, but from the operator's side it's
-  the same situation: a database this build cannot be trusted to run
-  against.
-- **Stamped, and it matches** — the schema is (re-)applied as above; normal
-  startup.
-- **Stamped, and it doesn't match** — refused immediately, before any SQL
-  runs, with an error naming both versions:
+- **No tables** — a fresh database. The schema is loaded and every migration
+  is recorded as applied, in one transaction, so a crash partway leaves
+  nothing for the next start to trip over.
+- **Tables, but no `SchemaMigration`** — written before migrations were
+  tracked. Refused: nothing can say what shape it is in. Silo had no
+  deployments when the record landed, so the answer is to delete it and let
+  the server recreate it.
+- **A record naming a migration this build does not list** — a newer build
+  has migrated it. Refused before any statement runs, naming the migration;
+  run the binary that wrote it.
+- **Migrations this build lists that the record lacks** — the database is
+  behind. `silo serve` applies them in order on start, each in its own
+  transaction with its row written last, so a migration either happened and
+  says so or did not happen. Every other command refuses a database that is
+  behind rather than migrating it beside a server that may be running.
 
-  ```
-  database schema version 3 does not match what this build expects (schema version 4);
-  refusing to start rather than run a mismatched schema against it. If this database
-  is disposable, delete it and let Silo recreate it; otherwise run the binary that
-  wrote version 3, or migrate the database by hand
-  ```
-
-This only catches a version *this build* wrote and a later or earlier build
-disagreeing about — it is not a migration system, for either case above.
-`SchemaVersion` bumps only for a change to `siloSchema` that `IF NOT EXISTS`
-cannot apply safely to an existing database: a rename, a drop, a type change.
-A purely additive change (new table, new index) needs no bump.
-
-**Version 2** is the current stamp. It bumped from 1 when `client_kdf_params`
-was added to `AccountPassword` — a column on a table that may already exist,
-which is exactly what `CREATE TABLE IF NOT EXISTS` cannot apply. The three
-tables that landed with it (`AccountIdentityKey`, `AccountRecoveryWrap`,
-`ServerSecret`) are additive and would not have needed one on their own. A
-database stamped `1` is refused at startup with the message below; since Silo
-has no deployments, the answer is to delete it and let the server recreate it.
-
-You can inspect or clear the stamp directly:
+`silo migrate` runs the same code without starting the server, for an
+operator who wants to watch it succeed before opening the port. It takes the
+data directory lock, so it refuses while a server is up. `silo migrate -n`
+lists what would run and runs nothing.
 
 ```sh
-sqlite3 <data-dir>/silo.db 'PRAGMA user_version'          # what it's stamped as
-sqlite3 <data-dir>/silo.db 'PRAGMA user_version = 0'       # forget the stamp
+silo backup-db /backup/silo/$(date +%F)   # first, always — the backup is the down migration
+silo migrate -n                           # what this build would do
+silo migrate                              # do it
 ```
 
-Clearing it does not make an incompatible database compatible — it only
-removes the fast, clear refusal in favour of whatever error the schema
-statements produce on their own, which is where every version predating this
-check already stood.
+There are no down migrations. The backup taken before the upgrade is the way
+back, which is why the order above is the order.
+
+To inspect the record directly:
+
+```sh
+sqlite3 <data-dir>/silo.db 'SELECT name, datetime(applied_at, "unixepoch") FROM SchemaMigration'
+```
 
 There is no upgrade path from any earlier release — including the two-file
 databases of 0.4.4 and before — and none is planned: there are no deployments,

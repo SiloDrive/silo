@@ -15,3 +15,7 @@ cmd/silo/silo
 *.log
 __pycache__/
 .cache/
+
+# The one database that is committed on purpose: the oldest shape the
+# migrations promise to bring forward. See fileserver/dbutil/migrate_test.go.
+!fileserver/dbutil/testdata/baseline.db

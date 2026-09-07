@@ -28,7 +28,7 @@ func setupShareTest(t *testing.T, cloud bool) *sql.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := dbutil.CreateSiloTables(pair.Write); err != nil {
+	if err := dbutil.Prepare(pair.Write); err != nil {
 		t.Fatalf("create tables: %v", err)
 	}
 	t.Cleanup(func() { _ = pair.Close() })

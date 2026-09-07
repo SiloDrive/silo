@@ -433,7 +433,10 @@ ignored). Tolerate a header-only pack at load.
 
 ### 20. Schema creation is not one transaction
 
-Status: **open.** Confirmed, first run only.
+Status: **fixed.** `loadSchema` in `fileserver/dbutil/migrate.go` creates the
+record table, the schema and every migration row in one transaction, and
+`TestAFailedSchemaLoadLeavesNothingBehind` pins that a failed load leaves no
+tables for the next start to refuse.
 
 `CreateSiloTables` runs each statement with `db.Exec` and stamps
 `user_version` afterwards. A crash between leaves tables present and version
