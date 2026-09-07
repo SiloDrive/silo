@@ -3,17 +3,10 @@ package share
 // The grant model: one table that answers "may this principal do op at
 // (library, path)".
 //
-// Before this there were three answers to that question -- SharedLibrary for a
-// user, LibraryGroup for a group, InnerPubLibrary for everybody signed in --
-// each read by its own function, in an order that was itself the policy. The
-// invariant docs/plans/sharing.md asks for is that CheckPerm consults one
-// model, and the reason is that the second reader is where the drift starts:
-// a rule added to one lookup and not the others is a permission that holds on
-// some paths and not others, and nothing says which.
-//
-// What has not changed is the answer. The precedence below is the old
-// behaviour written down rather than inferred from return-statement order, and
-// the tests that pinned it still pin it.
+// One table and one reader. The invariant docs/plans/sharing.md asks for is
+// that CheckPerm consults one model, and the reason is that a second reader is
+// where drift starts: a rule added to one lookup and not the others is a
+// permission that holds on some paths and not others, and nothing says which.
 
 import (
 	"context"
@@ -24,7 +17,6 @@ import (
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/option"
-	log "github.com/sirupsen/logrus"
 )
 
 // Principal is who a grant is for: the kind and its identifier in one string.
@@ -42,9 +34,6 @@ const Anon Principal = "anon"
 
 // UserPrincipal names one account.
 func UserPrincipal(id account.ID) Principal { return Principal("user:" + id.String()) }
-
-// GroupPrincipal names one group.
-func GroupPrincipal(id int) Principal { return Principal(fmt.Sprintf("group:%d", id)) }
 
 // LinkPrincipal names one share link's credential. Share links mint a real
 // grant row so that the credential's perm stays a ceiling over a grant rather
@@ -178,8 +167,7 @@ func LibrariesFor(ctx context.Context, principals []Principal) (map[string]strin
 		if err := rows.Scan(&libraryID, &perm); err != nil {
 			return nil, err
 		}
-		// A library reached through two principals takes the stronger of them,
-		// which is the same rule two groups already followed.
+		// A library reached through two principals takes the stronger of them.
 		if stronger(out[libraryID], perm) == perm {
 			out[libraryID] = perm
 		}
@@ -190,16 +178,12 @@ func LibrariesFor(ctx context.Context, principals []Principal) (map[string]strin
 // permFor answers the model's question: given every principal a caller carries,
 // what may they do at this path.
 //
-// The precedence is the old behaviour written down. It is deliberately not
-// "the strongest grant anywhere wins", because it never was: an individual
-// share answered and returned before a group share was looked at, so a user
-// shared "r" directly reads "r" even while a group they belong to holds "rw".
-// Surprising enough that a test pins it, and specific-beats-general is the rule
-// that makes it defensible rather than accidental -- a grant naming you is a
-// decision about you, and a grant naming a group you happen to be in is not.
+// The rule is specific-beats-general, not "the strongest grant anywhere wins".
+// A user granted "r" by name reads "r" even while the anonymous principal holds
+// "rw" on the same library, because a grant naming you is a decision about you
+// and a grant naming everybody is not. A test pins it.
 //
-// Within one kind the stronger permission wins, which is what two groups
-// disagreeing already did.
+// Within one kind the stronger permission wins.
 func permFor(ctx context.Context, libraryID, path string, principals []Principal) (string, error) {
 	if len(principals) == 0 {
 		return "", nil
@@ -230,9 +214,9 @@ func permFor(ctx context.Context, libraryID, path string, principals []Principal
 		return "", err
 	}
 	// Most specific first. A link is a decision about one request, a user
-	// grant is a decision about one person, a group grant is a decision about
-	// a set they belong to, and anon is a decision about everybody.
-	for _, kind := range []string{"link", "user", "group", "anon"} {
+	// grant is a decision about one person, and anon is a decision about
+	// everybody.
+	for _, kind := range []string{"link", "user", "anon"} {
 		if perm := byKind[kind]; perm != "" {
 			return perm, nil
 		}
@@ -252,30 +236,21 @@ func stronger(a, b string) string {
 	return ""
 }
 
-// PrincipalsFor is every principal an account carries: itself, and each group
-// it belongs to.
+// PrincipalsFor is every principal an account carries. Today that is the
+// account itself; a principal kind that stands for a set of accounts would be
+// added here and nowhere else.
 //
 // Exported because the listing endpoints ask the same question the permission
 // check does -- "what is this account, for the purposes of a grant" -- and two
-// expansions of that would be the second reader all over again, this time
-// between the answer a listing gives and the answer a fetch gives.
+// expansions of that would be a second reader, this time between the answer a
+// listing gives and the answer a fetch gives.
 //
 // Anon is deliberately not in this list. An account that holds no grant on a
 // library must not be let in by a grant to everybody -- that is a separate
 // decision the caller makes, because "signed in" and "anybody at all" are
-// different audiences and the old InnerPubLibrary lookup treated them as one
-// only outside cloud mode.
+// different audiences.
 func PrincipalsFor(user account.ID) []Principal {
-	out := []Principal{UserPrincipal(user)}
-	groups, err := getGroupsByUser(user, false)
-	if err != nil {
-		log.Errorf("Failed to get groups for %s: %v", user, err)
-		return out
-	}
-	for _, g := range groups {
-		out = append(out, GroupPrincipal(g.id))
-	}
-	return out
+	return []Principal{UserPrincipal(user)}
 }
 
 func scanGrants(rows *sql.Rows) ([]Grant, error) {

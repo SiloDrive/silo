@@ -59,7 +59,21 @@ func sqlMigration(name, statements string) Migration {
 // entry that has shipped is never reordered, renamed or removed: a database
 // that recorded it would then hold a name this build does not know, which
 // reads as a newer build's work and refuses to start.
-var migrations = []Migration{}
+var migrations = []Migration{
+	// Seven tables inherited from upstream that nothing wrote and, by the end,
+	// nothing read: three for groups, three for the share model LibraryGrant
+	// replaced, and one for per-token peer records on a lane that was
+	// deleted. See docs/plans/sharing.md § The grant model.
+	sqlMigration("drop-inherited-group-and-share-tables", `
+		DROP TABLE IF EXISTS GroupStructure;
+		DROP TABLE IF EXISTS GroupUser;
+		DROP TABLE IF EXISTS "Group";
+		DROP TABLE IF EXISTS LibraryGroup;
+		DROP TABLE IF EXISTS InnerPubLibrary;
+		DROP TABLE IF EXISTS SharedLibrary;
+		DROP TABLE IF EXISTS LibraryTokenPeerInfo;
+	`),
+}
 
 // migrationTable is the record. It is created by this package rather than by
 // siloSchema because it has to exist before the question "what has been

@@ -1066,7 +1066,7 @@ once per device, ever.
 ## Enrolling into an account that already exists
 
 Sharing a library with an address nobody has enrolled under has to mint something
-for `SharedLibrary.to_account_id` to point at: an inactive `Account` with the
+for the grant's `user:` principal to name: an inactive `Account` with the
 address claimed and no `AccountPassword`, which cannot be signed in to. Enrolment
 then finds the address taken and claims that account rather than colliding with
 it, which reunites the shares with the person they were meant for.

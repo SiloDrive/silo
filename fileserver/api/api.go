@@ -642,15 +642,12 @@ func ListLibrariesHandler(w http.ResponseWriter, r *http.Request) {
 		seen[r.ID] = true
 	}
 
-	// Shared with me, read through the grant model rather than through
-	// SharedLibrary. A listing that answered from a table CheckPerm no longer
-	// consults would show a library the caller cannot open, or hide one they
-	// can -- which is the second-reader drift the unification exists to end.
+	// Shared with me, read through the grant model, the one table CheckPerm
+	// consults. A listing that answered from anything else would show a
+	// library the caller cannot open, or hide one they can.
 	//
-	// Group grants come along for free: principalsFor expands the account into
-	// every principal it carries, so a library shared to a team the caller is
-	// in now appears here. It did not before, and that was a gap rather than a
-	// decision.
+	// PrincipalsFor is the one expansion of an account into its principals, so
+	// whatever CheckPerm would let in appears here.
 	principals := share.PrincipalsFor(id)
 	sharedRows, err := readDB.QueryContext(ctx,
 		librarySelect("g")+

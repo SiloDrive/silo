@@ -3,13 +3,13 @@
 ## The premise
 
 The database records what is true and destroys every record of how it got
-there. The pattern repeats across the schema: `LibraryInfo.update_time` and
-`LibraryTokenPeerInfo.sync_time` are last-write-wins stamps, and the inherited
-`LibrarySyncError` table kept exactly one error per token — the latest — with
-a PRIMARY KEY that guaranteed the one before it was gone. (That table, and the
-per-folder-permission and per-file-lock timestamp tables beside it, are gone
-from `fileserver/dbutil/schema.go`; the pattern is what matters, not any
-particular table.) `Credential.last_used` continues it: a single lossy stamp
+there. The pattern repeats across the schema: `LibraryInfo.update_time` is a
+last-write-wins stamp, and the inherited `LibrarySyncError` table kept exactly
+one error per token — the latest — with a PRIMARY KEY that guaranteed the one
+before it was gone. (That table, the `LibraryTokenPeerInfo.sync_time` stamp,
+and the per-folder-permission and per-file-lock timestamp tables beside them
+are gone from `fileserver/dbutil/schema.go`; the pattern is what matters, not
+any particular table.) `Credential.last_used` continues it: a single lossy stamp
 standing in for a history.
 
 The question an operator actually asks is never "when was this last

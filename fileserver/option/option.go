@@ -32,19 +32,8 @@ var (
 	Port          uint32
 	MaxUploadSize uint64
 
-	// general options
-	CloudMode bool
-
 	// notification server
 	EnableNotification bool
-
-	// GroupTableName is the table groups are read from.
-	//
-	// Configurable because upstream let the group table be provisioned
-	// externally under another name. Silo creates the schema itself, so the
-	// only value that works with a Silo-created database is the default —
-	// point it elsewhere and the table has to already exist.
-	GroupTableName string
 
 	// quota options
 	DefaultQuota int64
@@ -215,13 +204,6 @@ func LoadFileServerOptions(configFile string) {
 		// No config file — run on defaults + env vars.
 		config = ini.Empty(opts)
 	}
-	CloudMode = false
-	if section, err := config.GetSection("general"); err == nil {
-		if key, err := section.GetKey("cloud_mode"); err == nil {
-			CloudMode, _ = key.Bool()
-		}
-	}
-
 	// Notification server: silo runs it in-process at /notification.
 	// Enabled by default; set SILO_ENABLE_NOTIFICATIONS=false to disable.
 	EnableNotification = envBool(EnableNotification,
@@ -312,11 +294,6 @@ func LoadFileServerOptions(configFile string) {
 				log.Warnf("[quota] reserve = %q is not a size; keeping the default reserve", key.String())
 			}
 		}
-	}
-
-	GroupTableName = os.Getenv("SILO_GROUP_TABLE_NAME")
-	if GroupTableName == "" {
-		GroupTableName = "Group"
 	}
 
 	if lvl := os.Getenv("SILO_LOG_LEVEL"); lvl != "" {

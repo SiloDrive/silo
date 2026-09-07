@@ -20,7 +20,7 @@ func grantCtx(t *testing.T) context.Context {
 // answer would come from whichever the query happened to reach first -- which
 // is a permission that changes when nothing changed.
 func TestGrantingAgainReplacesRatherThanAccumulates(t *testing.T) {
-	setupShareTest(t, false)
+	setupShareTest(t)
 	owner := makeAccount(t, "owner@example.com")
 	friend := makeAccount(t, "friend@example.com")
 	libraryID := makeLibrary(t, owner)
@@ -48,7 +48,7 @@ func TestGrantingAgainReplacesRatherThanAccumulates(t *testing.T) {
 }
 
 func TestARevokedGrantStopsAnswering(t *testing.T) {
-	setupShareTest(t, false)
+	setupShareTest(t)
 	owner := makeAccount(t, "owner@example.com")
 	friend := makeAccount(t, "friend@example.com")
 	libraryID := makeLibrary(t, owner)
@@ -74,7 +74,7 @@ func TestARevokedGrantStopsAnswering(t *testing.T) {
 // something no rule recognises is a grant that matches nothing -- denied
 // everything, or allowed it, depending on which way the reader is written.
 func TestAGrantOutsideTheModelIsRefused(t *testing.T) {
-	setupShareTest(t, false)
+	setupShareTest(t)
 	owner := makeAccount(t, "owner@example.com")
 	libraryID := makeLibrary(t, owner)
 
@@ -94,32 +94,32 @@ func TestAGrantOutsideTheModelIsRefused(t *testing.T) {
 // The precedence the old return-statement order encoded, now asked of the model
 // directly: most specific kind wins, and within a kind the stronger permission.
 func TestPrecedenceIsMostSpecificKindThenStrongestWithin(t *testing.T) {
-	setupShareTest(t, false)
+	setupShareTest(t)
 	owner := makeAccount(t, "owner@example.com")
 	libraryID := makeLibrary(t, owner)
 	friend := makeAccount(t, "friend@example.com")
 
-	// A group grant of rw and a user grant of r: the user grant wins, because a
-	// grant naming you is a decision about you.
-	if err := Add(grantCtx(t), Grant{Principal: GroupPrincipal(7), LibraryID: libraryID, Perm: "rw"}); err != nil {
+	// An anonymous grant of rw and a user grant of r: the user grant wins,
+	// because a grant naming you is a decision about you.
+	if err := Add(grantCtx(t), Grant{Principal: Anon, LibraryID: libraryID, Perm: "rw"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Add(grantCtx(t), Grant{Principal: UserPrincipal(friend.ID), LibraryID: libraryID, Perm: "r"}); err != nil {
 		t.Fatal(err)
 	}
-	principals := []Principal{UserPrincipal(friend.ID), GroupPrincipal(7)}
+	principals := []Principal{UserPrincipal(friend.ID), Anon}
 	if got, err := permFor(grantCtx(t), libraryID, "/", principals); err != nil || got != "r" {
 		t.Errorf("permFor = %q, %v; want r — the user grant is the more specific decision", got, err)
 	}
 
-	// Two groups disagreeing: the stronger wins, which is what two groups
-	// already did before the model existed.
-	if err := Add(grantCtx(t), Grant{Principal: GroupPrincipal(8), LibraryID: libraryID, Perm: "r"}); err != nil {
+	// Two principals of one kind disagreeing: the stronger wins.
+	other := makeAccount(t, "other@example.com")
+	if err := Add(grantCtx(t), Grant{Principal: UserPrincipal(other.ID), LibraryID: libraryID, Perm: "rw"}); err != nil {
 		t.Fatal(err)
 	}
-	groupsOnly := []Principal{GroupPrincipal(7), GroupPrincipal(8)}
-	if got, err := permFor(grantCtx(t), libraryID, "/", groupsOnly); err != nil || got != "rw" {
-		t.Errorf("permFor over two groups = %q, %v; want rw", got, err)
+	usersOnly := []Principal{UserPrincipal(friend.ID), UserPrincipal(other.ID)}
+	if got, err := permFor(grantCtx(t), libraryID, "/", usersOnly); err != nil || got != "rw" {
+		t.Errorf("permFor over two user grants = %q, %v; want rw", got, err)
 	}
 
 	// A link is the most specific of all: it authorises one request.
@@ -132,27 +132,26 @@ func TestPrecedenceIsMostSpecificKindThenStrongestWithin(t *testing.T) {
 	}
 }
 
-// The shared-with-me question, which now answers for group grants too. It did
-// not before -- the listing read SharedLibrary and nothing else -- so a library
-// shared to a team was one you could open and could not see.
-func TestLibrariesForAnswersForGroupsAsWellAsUsers(t *testing.T) {
-	setupShareTest(t, false)
+// The shared-with-me question: every library any of the caller's principals
+// holds a whole-library grant on, each with its permission.
+func TestLibrariesForListsEveryGrantedLibrary(t *testing.T) {
+	setupShareTest(t)
 	owner := makeAccount(t, "owner@example.com")
 	friend := makeAccount(t, "friend@example.com")
-	direct := makeLibrary(t, owner)
-	viaGroup := makeLibrary(t, owner)
+	readable := makeLibrary(t, owner)
+	writable := makeLibrary(t, owner)
 
-	if err := Add(grantCtx(t), Grant{Principal: UserPrincipal(friend.ID), LibraryID: direct, Perm: "r"}); err != nil {
+	if err := Add(grantCtx(t), Grant{Principal: UserPrincipal(friend.ID), LibraryID: readable, Perm: "r"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(grantCtx(t), Grant{Principal: GroupPrincipal(3), LibraryID: viaGroup, Perm: "rw"}); err != nil {
+	if err := Add(grantCtx(t), Grant{Principal: UserPrincipal(friend.ID), LibraryID: writable, Perm: "rw"}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LibrariesFor(grantCtx(t), []Principal{UserPrincipal(friend.ID), GroupPrincipal(3)})
+	got, err := LibrariesFor(grantCtx(t), PrincipalsFor(friend.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got[direct] != "r" || got[viaGroup] != "rw" {
+	if got[readable] != "r" || got[writable] != "rw" {
 		t.Errorf("LibrariesFor = %v, want both libraries with their permissions", got)
 	}
 	if len(got) != 2 {
@@ -164,7 +163,7 @@ func TestLibrariesForAnswersForGroupsAsWellAsUsers(t *testing.T) {
 // with it -- otherwise a row outlives its subject and would reappear if the id
 // were ever reused.
 func TestRemovingALibraryTakesItsGrants(t *testing.T) {
-	setupShareTest(t, false)
+	setupShareTest(t)
 	owner := makeAccount(t, "owner@example.com")
 	friend := makeAccount(t, "friend@example.com")
 	libraryID := makeLibrary(t, owner)
@@ -194,7 +193,6 @@ func TestPrincipalKinds(t *testing.T) {
 		kind string
 	}{
 		{UserPrincipal(id), "user"},
-		{GroupPrincipal(12), "group"},
 		{LinkPrincipal("abc"), "link"},
 		{Anon, "anon"},
 	} {

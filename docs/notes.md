@@ -58,28 +58,25 @@ carries a credential, is deliberate — see `docs/capability-urls.md`.
 ## Database
 
 One database, `<data-dir>/silo.db`. SQLite is the only engine — embedded, WAL
-mode, one serialized write connection and a read-only read pool. Users and
-groups are in the same file as everything else: Silo runs one process, so it
-has one database. There is no upgrade path from upstream's two-file pair —
+mode, one serialized write connection and a read-only read pool. Accounts are
+in the same file as everything else: Silo runs one process, so it has one
+database. There is no upgrade path from upstream's two-file pair —
 `docs/backup.md` says why, and what a current server checks instead.
 
-### Users and groups
+### Accounts
 - `Account` / `AccountEmail` / `AccountIdentity` / `AccountPassword` — the
   identity split; `account_id` is the only user key on the live tables
 - `Credential` — every secret a client presents; see Authentication above
-- `GroupUser` — group membership
-- Groups table (configurable name)
+- `Invite` — the address an invite was minted for, beside its credential row
 
-### Repositories
+### Libraries
 - `Library` — repositories
 - `Branch` — branch heads (library_id, name, commit_id)
 - `LibraryOwner` — library ownership
-- `SharedLibrary` — user-to-user shares
-- `LibraryGroup` — group shares
+- `LibraryGrant` — who may do what in a library: the one table `CheckPerm`
+  reads, keyed by principal (`user:`, `link:`, `anon`)
 - `VirtualLibrary` — virtual library mappings (subdirs shared as libraries)
 - `LibraryInfo` — library metadata/settings
-- `InnerPubLibrary` — publicly shared libraries
-- Various permission tables
 
 Schema lives in `fileserver/dbutil/schema.go`, and the migrations that take
 an older database to it in `migrate.go` beside it. A fresh database loads the

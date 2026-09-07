@@ -83,7 +83,7 @@ func setupPerms(t *testing.T) {
 		t.Fatalf("seed LibraryOwner: %v", err)
 	}
 	libmgr.Init(siloPair.Read, siloPair.Write, t.TempDir())
-	share.Init(siloPair.Read, siloPair.Write, "Group", false)
+	share.Init(siloPair.Read, siloPair.Write)
 
 	// Seeded through the grant model, after share.Init, because that is what
 	// CheckPerm reads. A seeder writing the table the checker no longer

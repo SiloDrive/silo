@@ -94,10 +94,12 @@ CREATE TABLE Grant (
 );
 ```
 
-The existing inherited share tables (`SharedLibrary`, `LibraryGroup`) fold into this
-or are read through it — decided at implementation, but the invariant is that
-**`CheckPerm` consults one model**, and the credential's `perm` column remains
-a *ceiling* over the grant, never a grant itself (auth.md's rule).
+The inherited share tables are gone; this is the only model. The invariant is
+that **`CheckPerm` consults one model**, and the credential's `perm` column
+remains a *ceiling* over the grant, never a grant itself (auth.md's rule).
+The `group:` principal is reserved in the string format and nothing mints
+one — groups are not designed, and when they are it is a Silo design rather
+than an inheritance.
 
 - **User/group shares** are `user:`/`group:` grants, exposed on the endpoints
   this plan defines below (`/libraries/{id}/shares`, `shared-with-me`).

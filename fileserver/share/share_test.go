@@ -19,7 +19,7 @@ import (
 // handle a real server would share. It returns the write handle, because
 // share.go only ever holds a read one: seeding the relations it checks is
 // the test's job, not something Init gives a caller a way to do.
-func setupShareTest(t *testing.T, cloud bool) *sql.DB {
+func setupShareTest(t *testing.T) *sql.DB {
 	t.Helper()
 	if option.DBOpTimeout <= 0 {
 		option.DBOpTimeout = 5 * time.Second
@@ -35,7 +35,7 @@ func setupShareTest(t *testing.T, cloud bool) *sql.DB {
 
 	account.Init(pair.Read, pair.Write)
 	libmgr.Init(pair.Read, pair.Write, t.TempDir())
-	Init(pair.Read, pair.Write, "Group", cloud)
+	Init(pair.Read, pair.Write)
 	return pair.Write
 }
 
@@ -91,38 +91,6 @@ func shareLibrary(t *testing.T, write *sql.DB, libraryID string, from, to accoun
 	}
 }
 
-// makeGroup creates a group with one member and returns its id.
-func makeGroup(t *testing.T, write *sql.DB, name string, creator, member account.ID) int {
-	t.Helper()
-	res, err := write.Exec(`INSERT INTO "Group" (group_name, creator_account_id, timestamp, parent_group_id) VALUES (?, ?, ?, 0)`,
-		name, creator, 1700000000)
-	if err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	id64, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("group id: %v", err)
-	}
-	if _, err := write.Exec("INSERT INTO GroupUser (group_id, account_id, is_staff) VALUES (?, ?, 0)", id64, member); err != nil {
-		t.Fatalf("add group member: %v", err)
-	}
-	return int(id64)
-}
-
-func shareLibraryToGroup(t *testing.T, write *sql.DB, libraryID string, groupID int, sharer account.ID, perm string) {
-	t.Helper()
-	ctx, cancel := option.WithDBTimeout(context.Background())
-	defer cancel()
-	if err := Add(ctx, Grant{
-		Principal: GroupPrincipal(groupID), LibraryID: libraryID, Perm: perm, CreatedBy: sharer,
-	}); err != nil {
-		t.Fatalf("share library to group: %v", err)
-	}
-}
-
-// getDirPerm has no database behind it: a permission map and a path in, the
-// nearest ancestor's permission out. This is the rule a subfolder share
-// applies through, pinned without anything else in play.
 func TestGetDirPermWalksUpToTheNearestAncestor(t *testing.T) {
 	perms := map[string]string{
 		"/docs":      "r",
@@ -147,7 +115,7 @@ func TestGetDirPermWalksUpToTheNearestAncestor(t *testing.T) {
 // owner locked out of their own data — which is why it is tested directly
 // rather than only through the handlers that happen to call it.
 func TestCheckPermOwnerAlwaysHasReadWrite(t *testing.T) {
-	setupShareTest(t, false)
+	setupShareTest(t)
 	owner := makeAccount(t, "owner@example.com")
 	libraryID := makeLibrary(t, owner)
 
@@ -157,7 +125,7 @@ func TestCheckPermOwnerAlwaysHasReadWrite(t *testing.T) {
 }
 
 func TestCheckPermWithNoRelationIsDenied(t *testing.T) {
-	setupShareTest(t, false)
+	setupShareTest(t)
 	owner := makeAccount(t, "owner2@example.com")
 	stranger := makeAccount(t, "stranger2@example.com")
 	libraryID := makeLibrary(t, owner)
@@ -170,7 +138,7 @@ func TestCheckPermWithNoRelationIsDenied(t *testing.T) {
 func TestCheckPermIndividualShareGrantsTheRecordedPermission(t *testing.T) {
 	for _, perm := range []string{"r", "rw"} {
 		t.Run(perm, func(t *testing.T) {
-			write := setupShareTest(t, false)
+			write := setupShareTest(t)
 			owner := makeAccount(t, "owner-"+perm+"@example.com")
 			friend := makeAccount(t, "friend-"+perm+"@example.com")
 			libraryID := makeLibrary(t, owner)
@@ -183,95 +151,30 @@ func TestCheckPermIndividualShareGrantsTheRecordedPermission(t *testing.T) {
 	}
 }
 
-// A surprising enough rule to pin: checkLibrarySharePerm returns as soon as an
-// individual share answers, so a wider group grant on the same library never
-// even gets asked about. A user shared "r" individually reads "r", even if
-// a group they are also in was shared "rw".
-func TestCheckPermIndividualShareTakesPrecedenceOverAGroupShare(t *testing.T) {
-	write := setupShareTest(t, false)
-	owner := makeAccount(t, "owner3@example.com")
-	member := makeAccount(t, "member3@example.com")
+// A grant to the anonymous principal reaches a signed-in account that holds
+// no grant of its own. PrincipalsFor leaves Anon out on purpose, so this pins
+// that CheckPerm asks the second question itself rather than stopping at the
+// first.
+func TestCheckPermAnAnonymousGrantReachesASignedInStranger(t *testing.T) {
+	setupShareTest(t)
+	owner := makeAccount(t, "iowner@example.com")
+	stranger := makeAccount(t, "istranger@example.com")
 	libraryID := makeLibrary(t, owner)
-
-	shareLibrary(t, write, libraryID, owner.ID, member.ID, "r")
-	groupID := makeGroup(t, write, "team3", owner.ID, member.ID)
-	shareLibraryToGroup(t, write, libraryID, groupID, owner.ID, "rw")
-
-	if got := CheckPerm(libraryID, member.ID); got != "r" {
-		t.Errorf("permission = %q, want r — the individual share must win", got)
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	if err := Add(ctx, Grant{
+		Principal: Anon, LibraryID: libraryID, Perm: "r", Listed: true, CreatedBy: owner.ID,
+	}); err != nil {
+		t.Fatalf("grant the anonymous principal: %v", err)
 	}
-}
 
-func TestCheckPermGroupShareGrantsPermission(t *testing.T) {
-	write := setupShareTest(t, false)
-	owner := makeAccount(t, "owner4@example.com")
-	member := makeAccount(t, "member4@example.com")
-	libraryID := makeLibrary(t, owner)
-
-	groupID := makeGroup(t, write, "team4", owner.ID, member.ID)
-	shareLibraryToGroup(t, write, libraryID, groupID, owner.ID, "rw")
-
-	if got := CheckPerm(libraryID, member.ID); got != "rw" {
-		t.Errorf("group-shared permission = %q, want rw", got)
-	}
-}
-
-// checkGroupPermByUser's own precedence rule: rw from any group wins over r
-// from another, and the query carries no ORDER BY to make that trivial — the
-// loop has to get the right answer whichever order the rows arrive in.
-func TestCheckPermPrefersReadWriteWhenTwoGroupsDisagree(t *testing.T) {
-	write := setupShareTest(t, false)
-	owner := makeAccount(t, "owner5@example.com")
-	member := makeAccount(t, "member5@example.com")
-	libraryID := makeLibrary(t, owner)
-
-	readers := makeGroup(t, write, "readers", owner.ID, member.ID)
-	shareLibraryToGroup(t, write, libraryID, readers, owner.ID, "r")
-	writers := makeGroup(t, write, "writers", owner.ID, member.ID)
-	shareLibraryToGroup(t, write, libraryID, writers, owner.ID, "rw")
-
-	if got := CheckPerm(libraryID, member.ID); got != "rw" {
-		t.Errorf("permission with a read and a read-write group = %q, want rw", got)
-	}
-}
-
-// A grant to the anonymous principal is the self-hosted "anyone signed in may
-// read this" switch -- what InnerPubLibrary used to be -- and it must not leak
-// into cloud mode: a multi-tenant deployment has no business granting access on
-// the strength of a row meant for a single self-hosted instance's whole user
-// base. The row moved into the grant model; the rule did not move with it by
-// accident, so this still pins it.
-func TestCheckPermAnAnonymousGrantOnlyAppliesOutsideCloudMode(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		cloud bool
-		want  string
-	}{
-		{"self-hosted grants it", false, "r"},
-		{"cloud mode ignores it", true, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			setupShareTest(t, tc.cloud)
-			owner := makeAccount(t, "iowner-"+tc.name+"@example.com")
-			stranger := makeAccount(t, "istranger-"+tc.name+"@example.com")
-			libraryID := makeLibrary(t, owner)
-			ctx, cancel := option.WithDBTimeout(context.Background())
-			defer cancel()
-			if err := Add(ctx, Grant{
-				Principal: Anon, LibraryID: libraryID, Perm: "r", Listed: true, CreatedBy: owner.ID,
-			}); err != nil {
-				t.Fatalf("grant the anonymous principal: %v", err)
-			}
-
-			if got := CheckPerm(libraryID, stranger.ID); got != tc.want {
-				t.Errorf("permission = %q, want %q", got, tc.want)
-			}
-		})
+	if got := CheckPerm(libraryID, stranger.ID); got != "r" {
+		t.Errorf("permission = %q, want r", got)
 	}
 }
 
 func TestCheckPermVirtualLibraryOwnerOfOriginHasReadWrite(t *testing.T) {
-	write := setupShareTest(t, false)
+	write := setupShareTest(t)
 	owner := makeAccount(t, "owner7@example.com")
 	origin := makeLibrary(t, owner)
 	vLibraryID := makeVirtualLibrary(t, write, origin, "/sub")
@@ -285,7 +188,7 @@ func TestCheckPermVirtualLibraryOwnerOfOriginHasReadWrite(t *testing.T) {
 // origin's, and must not be visible through the origin library itself — sharing
 // "/sub" is not sharing the whole library.
 func TestCheckPermVirtualLibraryGrantsTheSubfolderShare(t *testing.T) {
-	write := setupShareTest(t, false)
+	write := setupShareTest(t)
 	owner := makeAccount(t, "owner9@example.com")
 	friend := makeAccount(t, "friend9@example.com")
 	origin := makeLibrary(t, owner)
@@ -305,7 +208,7 @@ func TestCheckPermVirtualLibraryGrantsTheSubfolderShare(t *testing.T) {
 // back to a blanket share of the whole origin library — the last of the three
 // checks it runs in order.
 func TestCheckPermVirtualLibraryFallsBackToABlanketOriginShare(t *testing.T) {
-	write := setupShareTest(t, false)
+	write := setupShareTest(t)
 	owner := makeAccount(t, "owner10@example.com")
 	friend := makeAccount(t, "friend10@example.com")
 	origin := makeLibrary(t, owner)
@@ -315,32 +218,5 @@ func TestCheckPermVirtualLibraryFallsBackToABlanketOriginShare(t *testing.T) {
 
 	if got := CheckPerm(vLibraryID, friend.ID); got != "rw" {
 		t.Errorf("permission via a blanket origin share = %q, want rw", got)
-	}
-}
-
-// GetLibrariesByOwner is the account's own-library listing, read by every
-// "your libraries" response; empty must mean exactly that, not an error.
-func TestGetLibrariesByOwnerListsOwnedLibrariesOnly(t *testing.T) {
-	setupShareTest(t, false)
-	owner := makeAccount(t, "lister@example.com")
-	other := makeAccount(t, "other@example.com")
-	libraryID := makeLibrary(t, owner)
-	_ = makeLibrary(t, other)
-
-	libraries, err := GetLibrariesByOwner(owner.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(libraries) != 1 || libraries[0].ID != libraryID {
-		t.Fatalf("GetLibrariesByOwner = %+v, want just %s", libraries, libraryID)
-	}
-
-	stranger := makeAccount(t, "nothing-owned@example.com")
-	none, err := GetLibrariesByOwner(stranger.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(none) != 0 {
-		t.Errorf("an owner with no libraries got %d back, want 0", len(none))
 	}
 }

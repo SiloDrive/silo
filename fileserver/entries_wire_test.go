@@ -23,7 +23,7 @@ import (
 func testLibrary(t *testing.T) (string, *account.Account) {
 	t.Helper()
 	sqliteTestDB(t)
-	share.Init(siloPair.Read, siloPair.Write, "Group", false)
+	share.Init(siloPair.Read, siloPair.Write)
 
 	ctx := context.Background()
 	if _, _, err := account.Create(ctx, "wire@example.com", "", account.RoleUser); err != nil {

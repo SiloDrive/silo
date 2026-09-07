@@ -48,7 +48,7 @@ import (
 func serveTestAPI(t *testing.T) string {
 	t.Helper()
 	sqliteTestDB(t)
-	share.Init(siloPair.Read, siloPair.Write, "Group", false)
+	share.Init(siloPair.Read, siloPair.Write)
 	api.Init(siloPair.Read, siloPair.Write)
 	authmgr.Init(siloPair.Read, siloPair.Write)
 	admin.Init(siloPair.Read, siloPair.Write)

@@ -220,7 +220,6 @@ not reclaim unreferenced history inside a library that still exists.
 | `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
 | `SILO_VERIFY_FS_OBJECT_HASHES` | Check uploaded fs objects hash to their id (costs a decompress each; chunks and commits are always checked) | `true` |
 | `SILO_ENABLE_NOTIFICATIONS` | Serve the WebSocket notification endpoint. `false` turns it off, and `/notification` then answers `404` | `true` |
-| `SILO_GROUP_TABLE_NAME` | Name of the groups table, for a database inherited from a deployment that renamed it | `Group` |
 | `SILO_LOGIN_RATE_LIMIT` | Throttle failed logins per address and per account | `true` |
 | `SILO_TRUST_PROXY_HEADERS` | Believe `X-Forwarded-For` / `X-Real-Ip` — **set this behind a reverse proxy** | `false` |
 | `SILO_SENTRY_DSN` | Send errors, panics and request timings to Sentry, [Splat](https://github.com/dkam/splat) or GlitchTip (`SENTRY_DSN` also works) | — (send nothing) |
@@ -384,11 +383,8 @@ Tested clients:
 Silo is a lean rewrite focused on the sync path and a minimal management API. The following are **not** available:
 
 - No user management API — the first account is created by claiming the setup token, and any further account needs `silo user add` on the host
-- No library sharing API — nothing can *create* a share. The share tables are read
-  and honoured: a row in `SharedLibrary` or `LibraryGroup` grants the access it
-  describes, and `GET /api/silo/v1/libraries` lists directly shared libraries beside
-  owned ones. Putting the row there means a direct database insert
-- No group management API
+- No groups — a library is shared to one account at a time, through
+  `POST /api/silo/v1/libraries/{id}/shares`
 - No `is_staff` / admin privilege check in the API layer — all authenticated users have equal permissions
 - No web UI — use the TUI
 - No trash / restore or history / revision endpoints

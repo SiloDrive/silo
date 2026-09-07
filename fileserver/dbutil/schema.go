@@ -199,14 +199,7 @@ CREATE TABLE IF NOT EXISTS SetupToken (
   ctime INTEGER NOT NULL
 );
 
--- Groups.
-CREATE TABLE IF NOT EXISTS "Group" (group_id INTEGER PRIMARY KEY AUTOINCREMENT, group_name VARCHAR(255), creator_account_id BLOB NOT NULL REFERENCES Account(id), timestamp BIGINT, type VARCHAR(32), parent_group_id INTEGER);
-CREATE TABLE IF NOT EXISTS GroupUser (group_id INTEGER, account_id BLOB NOT NULL REFERENCES Account(id), is_staff tinyint);
-CREATE UNIQUE INDEX IF NOT EXISTS groupid_account_indx on GroupUser (group_id, account_id);
-CREATE INDEX IF NOT EXISTS groupuser_account_indx on GroupUser (account_id);
-CREATE TABLE IF NOT EXISTS GroupStructure (group_id INTEGER PRIMARY KEY, path VARCHAR(1024));
-
--- Repositories, shares, tokens, permissions, quotas.
+-- Libraries, grants, quotas.
 -- The head of a library's history: which commit it is on, and the root that
 -- commit names.
 --
@@ -289,16 +282,6 @@ CREATE INDEX IF NOT EXISTS library_key_wrap_account_idx ON LibraryKeyWrap (accou
 CREATE TABLE IF NOT EXISTS LibraryOwner (library_id CHAR(37) PRIMARY KEY, account_id BLOB NOT NULL REFERENCES Account(id));
 CREATE INDEX IF NOT EXISTS OwnerIndex ON LibraryOwner (account_id);
 
-CREATE TABLE IF NOT EXISTS LibraryGroup (library_id CHAR(37), group_id INTEGER, account_id BLOB NOT NULL REFERENCES Account(id), permission CHAR(15));
-CREATE UNIQUE INDEX IF NOT EXISTS groupid_libraryid_indx on LibraryGroup (group_id, library_id);
-CREATE INDEX IF NOT EXISTS librarygroup_libraryid_index on LibraryGroup (library_id);
-CREATE INDEX IF NOT EXISTS librarygroup_account_indx on LibraryGroup (account_id);
-CREATE TABLE IF NOT EXISTS InnerPubLibrary (library_id CHAR(37) PRIMARY KEY, permission CHAR(15));
-
--- LibraryUserToken is gone. It held per-user, per-library sync tokens with no
--- expiry, for a lane that was deleted; the Credential table below replaced it.
-CREATE TABLE IF NOT EXISTS LibraryTokenPeerInfo (token CHAR(41) PRIMARY KEY, peer_id CHAR(41), peer_ip VARCHAR(50), peer_name VARCHAR(255), sync_time BIGINT, client_ver VARCHAR(20));
-
 CREATE TABLE IF NOT EXISTS LibraryHead (library_id CHAR(37) PRIMARY KEY, branch_name VARCHAR(10));
 -- What a library holds, as the number quota is charged on.
 --
@@ -367,11 +350,6 @@ CREATE TABLE IF NOT EXISTS LibraryInfo (library_id CHAR(36) PRIMARY KEY, name VA
 CREATE INDEX IF NOT EXISTS LibraryInfoTypeIndex on LibraryInfo (type);
 
 CREATE TABLE IF NOT EXISTS UserQuota (account_id BLOB PRIMARY KEY REFERENCES Account(id), quota BIGINT);
-
-CREATE TABLE IF NOT EXISTS SharedLibrary (library_id CHAR(37), from_account_id BLOB NOT NULL REFERENCES Account(id), to_account_id BLOB NOT NULL REFERENCES Account(id), permission CHAR(15));
-CREATE INDEX IF NOT EXISTS LibraryIdIndex on SharedLibrary (library_id);
-CREATE INDEX IF NOT EXISTS FromAccountIndex on SharedLibrary (from_account_id);
-CREATE INDEX IF NOT EXISTS ToAccountIndex on SharedLibrary (to_account_id);
 
 -- How long a library keeps history, in days.
 --

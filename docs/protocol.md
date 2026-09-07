@@ -267,7 +267,7 @@ are registered there too, but are authenticated: see the lane note above.
 | PUT | `/api/silo/v1/account/keys` | Publish all of it, replacing what was there. Needs `rw`. `400` names the specific refusal — every one is a client bug whose symptom otherwise appears on a device months later |
 | DELETE | `/api/silo/v1/account/keys/recovery/{n}` | Redeem one recovery wrap; the rest of the set stands. Needs `rw`. `404` if that ordinal is already spent |
 | GET | `/api/silo/v1/account/usage` | `{"usage": n, "quota": n, "kind": "logical-at-head"}` — the account's total. `quota` is absent when there is no ceiling. Feature name `usage`; per-library `size` and `file_count` are on the libraries listing, not here. See [Size and quota](#size-and-quota). `AccountUsageHandler` in `fileserver/api/api.go` |
-| GET | `/api/silo/v1/libraries` | List the caller's libraries — owned, plus any shared directly to them through `SharedLibrary` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account. Group shares are honoured by `CheckPerm` but do not appear in this list |
+| GET | `/api/silo/v1/libraries` | List the caller's libraries — owned, plus any granted to them through `LibraryGrant` — each with `head_commit_id`, the anchor `changes` starts from. `[]`, never `null`, for an empty account |
 | POST | `/api/silo/v1/libraries` | Create a new library. `{"name":…}` for a plain one; add `"e2ee": true` and the four fields above for an encrypted one |
 | GET | `/api/silo/v1/libraries/{libraryid}/key` | The library's content key, wrapped to the calling account. `404` on a plain library, and on an encrypted one nobody has shared with you |
 | DELETE | `/api/silo/v1/libraries/{libraryid}` | Delete a library |
