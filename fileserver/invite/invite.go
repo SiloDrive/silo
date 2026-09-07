@@ -119,18 +119,18 @@ func Mint(ctx context.Context, o Options) (*Invite, string, error) {
 		return nil, "", err
 	}
 
-	// Create is idempotent on the address: an existing tombstone is returned
-	// rather than duplicated, which is what keeps one address to one account.
-	id, created, err := account.Create(ctx, email, "", o.Role)
+	// Idempotent on the address: an existing tombstone is returned rather than
+	// duplicated, which is what keeps one address to one account. Inactive
+	// until somebody redeems, because an account that could log in before its
+	// person arrived would be an account the invite was not needed for.
+	//
+	// The same function a share to an unenrolled address calls. That is the
+	// point of it being a function: the two paths mint the same row, and an
+	// address that was shared to before it was invited must not end up with a
+	// second account beside the first.
+	id, err := account.Tombstone(ctx, email, o.Role)
 	if err != nil {
 		return nil, "", err
-	}
-	if created {
-		// Inactive until somebody redeems. An account that could log in before
-		// its person arrived would be an account the invite was not needed for.
-		if err := account.SetActive(ctx, id, false); err != nil {
-			return nil, "", err
-		}
 	}
 
 	cred, token, err := credential.Issue(ctx, credential.IssueOpts{

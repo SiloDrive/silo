@@ -715,6 +715,14 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/libraries/{libraryid}", api.DeleteLibraryHandler).Methods("DELETE")
 	apiRouter.HandleFunc("/libraries/{libraryid}", patchLibraryHandler).Methods("PATCH")
 	apiRouter.HandleFunc("/libraries/{libraryid}/key", api.LibraryKeyHandler).Methods("GET")
+	// The share surface. Whole-library grants, managed by the owner: see
+	// api.ownedLibrary for why that is the whole of the access rule, and
+	// docs/plans/sharing.md § The grant model for what a grant is. The
+	// principal is one path segment and carries a colon, which no route above
+	// it can be confused with.
+	apiRouter.HandleFunc("/libraries/{libraryid}/shares", api.ListSharesHandler).Methods("GET")
+	apiRouter.HandleFunc("/libraries/{libraryid}/shares", api.CreateShareHandler).Methods("POST")
+	apiRouter.HandleFunc("/libraries/{libraryid}/shares/{principal}", api.DeleteShareHandler).Methods("DELETE")
 	apiRouter.HandleFunc("/libraries/{libraryid}/changes", api.ChangesHandler).Methods("GET")
 	apiRouter.HandleFunc("/libraries/{libraryid}/commits", api.CommitsHandler).Methods("GET")
 	// The chunk surface. "missing" cannot collide with a chunk id — the id

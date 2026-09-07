@@ -201,6 +201,34 @@ func Create(ctx context.Context, email, passwordHash string, role Role) (id ID, 
 	return id, created, nil
 }
 
+// Tombstone is the account an address belongs to, minted inactive if nobody
+// holds it yet.
+//
+// It is what a share to an address nobody has enrolled needs, and what an
+// invite needs before anybody redeems it: a row for an address, holding
+// whatever has been given to that address, opening nothing. Inactive is what
+// makes it a placeholder rather than a way in -- credential.load refuses an
+// inactive account before it looks at anything else -- and idempotent on the
+// address is what keeps one address to one account, which is the invariant the
+// double-mint bug came from breaking.
+//
+// One function rather than the Create-then-SetActive pair written twice, so
+// that the pair cannot be got right in one caller and half-right in the other.
+// The role is provisional: whatever activates the account settles it.
+func Tombstone(ctx context.Context, email string, role Role) (ID, error) {
+	id, created, err := Create(ctx, email, "", role)
+	if err != nil {
+		return Zero, err
+	}
+	if !created {
+		return id, nil
+	}
+	if err := SetActive(ctx, id, false); err != nil {
+		return Zero, err
+	}
+	return id, nil
+}
+
 // CreateTx is Create inside a transaction the caller already holds.
 //
 // The split exists for the setup token, which has to consume itself and create

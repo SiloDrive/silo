@@ -164,6 +164,11 @@ func features() []string {
 		// it must not offer to redeem anything -- and a 404 on redemption
 		// reaches a person as a broken link rather than as an older server.
 		"invites", // POST auth/redeem, and the admin/invites routes behind it
+		// Managing who a library is shared with. The grant model has always
+		// been what CheckPerm reads; this name says there is a way to write
+		// it, which a client offering a share button has to know before it
+		// offers one.
+		"shares", // GET/POST libraries/{id}/shares, DELETE …/shares/{principal}
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification

@@ -384,6 +384,22 @@ purity here was already imperfect.
 1. **Grant model + roles + invites.** Grant table, `CheckPerm` unification,
    role column, invite kind + redemption flow with E2EE bootstrap. Requires
    auth.md's credential table; sequence with the account side of E2EE in [`storage.md`](../storage.md).
+
+   **Built.** The `LibraryGrant` table with one `CheckPerm` over it, the `role`
+   column, the invite kind with its `Invite` row, and both surfaces: the
+   administrative invite routes with `POST auth/redeem` in front of them, and
+   `GET`/`POST`/`DELETE libraries/{id}/shares` for the grants themselves.
+   Whole-library grants only — a subtree grant needs a virtual library and
+   nothing creates one — and owner-only management, because a grantee who could
+   re-share would make a share a decision they can copy. The two halves join at
+   the tombstone: a share to an address nobody has enrolled mints the inactive
+   account it will belong to, and redeeming an invite to that address claims it
+   and inherits what was shared there.
+
+   Sharing an **encrypted** library answers `501` rather than minting a grant
+   the recipient cannot use. That is step 3 of
+   [`e2ee-completion.md`](e2ee-completion.md), and the grant row it hangs off
+   now exists.
 2. **Public libraries.** Anonymous grants, `public-libraries` listing, anonymous
    read across entries + manifests + chunks, per-IP rate limiting, read-only
    enforcement on the write surface. silo-drive learns credential-less `ro`
