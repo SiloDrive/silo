@@ -240,16 +240,3 @@ func parseCompactBudget(s string) (int64, error) {
 	}
 	return n, nil
 }
-
-// compactionIsOffline is the warning gc prints before it rewrites anything.
-//
-// A sealed pack is opened by path on every read and the server holds its pack
-// set in memory, so a rewrite from a second process renames a pack into place
-// the server does not know about and deletes the one it does. The next read of
-// a frame that moved is a 404 to a client that stored it. Nothing locks the
-// data directory, so this cannot be detected — it is said instead.
-//
-// The in-process scheduler is what makes compaction safe to run against a
-// living server, and it is not built; see docs/plans/compaction.md.
-const compactionIsOffline = "Stop the server before running gc -compact -delete: " +
-	"a rewrite moves frames the running server still believes it can find by path."

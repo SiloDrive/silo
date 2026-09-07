@@ -300,15 +300,40 @@ func Run(args []string) error {
 		return err
 	}
 
+	if err := resolvePaths(); err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	// Before anything opens a pack, and before the pidfile, because a second
+	// server on one data directory destroys the first's open pack and takes
+	// every acknowledged frame in it with it. See objstore.LockDataDir for
+	// how. Held for the life of the process, and dropped by the kernel if the
+	// process does not get to drop it itself.
+	//
+	// Ahead of the pidfile so a refused start does not overwrite the running
+	// server's, which would leave an operator holding the pid of a process
+	// that exited.
+	dirLock, err := objstore.LockDataDir(absDataDir)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	// Deferred rather than released at the end of the shutdown sequence,
+	// because Run returns only once handleSignals has closed shutdownDone --
+	// so this is the last thing that happens, after the packs are sealed and
+	// the database is closed. The lock says this process owns the store, and
+	// it owns it until it has finished putting it down.
+	defer func() {
+		if err := dirLock.Release(); err != nil {
+			log.Warnf("Failed to release the data directory lock: %v", err)
+		}
+	}()
+
 	if pidFilePath != "" {
 		if err := writePidFile(pidFilePath); err != nil {
 			log.Fatalf("Failed to write pid file %s: %v", pidFilePath, err)
 		}
 	}
 
-	if err := resolvePaths(); err != nil {
-		log.Fatalf("%v", err)
-	}
 	log.Infof("Data directory: %s", absDataDir)
 
 	// Logging: default to stdout. Use -l to write to a file instead.

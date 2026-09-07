@@ -145,29 +145,46 @@ pack is marked sealed, so nothing lands past a footer.
 
 ### 6. Two servers on one data directory destroy each other's open pack
 
-Status: **open.** Reported.
+Status: **fixed.** Confirmed.
 
-Nothing locks the data directory (`server.go` takes no lock; `-P` writes a
-pidfile nobody reads). A second instance reaches `loadPackSet`, sees the
-first's sidecar, and `recoverPack` truncates the live pack to its last indexed
-record while the first is mid-append. The second then seals it, writing a
-footer at its offset and unlinking the sidecar the first still holds open.
-The first keeps appending past the footer. Next start: no sidecar means
+Nothing locked the data directory (`server.go` took no lock; `-P` writes a
+pidfile nobody reads). A second instance reached `loadPackSet`, saw the
+first's sidecar, and `recoverPack` truncated the live pack to its last indexed
+record while the first was mid-append. The second then sealed it, writing a
+footer at its offset and unlinking the sidecar the first still held open.
+The first kept appending past the footer. Next start: no sidecar means
 sealed, the trailer check fails, and the library is `ErrPackCorrupt`
 including every acknowledged frame.
 
-`docs/storage.md` admits "nothing locks the data directory" only in the
-context of offline compaction.
+**Tests.** `TestSecondProcessCannotAdoptALiveOpenPack` in
+`fileserver/objstore/datalock_test.go` is the one this item named, and it
+decides the behaviour as much as it checks it: a first holder with a live open
+pack, a second refused, and the first's acknowledged frame still found
+afterwards. Beside it, `TestTheDataDirRefusalNamesTheHolder`,
+`TestReleasingTheDataDirLetsTheNextProcessIn`, and
+`TestALeftoverLockFileIsNotALock`. All four were watched failing against a
+`LockDataDir` stubbed to take no lock, which is the behaviour they replaced —
+a compile error would have proved only that the symbol was missing.
 
-**Test first.** `TestSecondProcessCannotAdoptALiveOpenPack`: open a
-`packSet`, append; open a second on the same directory; assert refusal; assert
-the first's frames still read. This test decides the behaviour as much as it
-checks it.
+**What was done.** `objstore.LockDataDir` takes an exclusive non-blocking
+`flock` on `{data-dir}/silo.lock` and returns a `DirLock`; `Release` drops it
+and leaves the file, because unlinking would free an inode another process is
+already waiting on and let two holders in. `Run` takes it immediately after
+`resolvePaths` — before the pidfile, so a refused start does not overwrite the
+running server's, and before anything opens a pack — and releases it on the
+deferred path, which runs after the packs are sealed and the database is
+closed.
 
-**Fix.** An `flock` on a file in the data directory, taken at startup and by
-`gc -delete` and `-compact -delete`, held for the life of the process. A
-second holder refuses to start and names the pid. That also turns the
-"`gc -delete` warns to stop the server first" advice into a check.
+`flock` rather than a pidfile: the lock belongs to the open file description,
+so the kernel drops it however the process ends, and a leftover file is not a
+lock. The pid written inside is read only to name a holder in the refusal,
+never to decide whether one exists — verified by killing a server with
+`SIGKILL` and starting another over the file it left.
+
+`gc -delete` and `gc -compact -delete` take the same lock, which turns two
+warnings into a check and retires `compactionIsOffline`. A reporting pass
+takes nothing: it changes nothing, and what a running server would reclaim is
+a fair question to ask.
 
 ## Tier 2 — the store can be left refusing, or reclaim the wrong thing
 

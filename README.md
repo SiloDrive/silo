@@ -33,6 +33,7 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
 - One process. No RPC, no Python, no controller.
 - One embedded SQLite database, `silo.db`, in the data directory: users, groups, libraries, shares and tokens together.
 - Content-addressable object store under `{data-dir}/storage/` with two trees: `chunks/` for content and `objects/` for the manifests, directories and commits that describe it.
+- One writer per data directory, enforced: the server takes an `flock` on `{data-dir}/silo.lock` for its lifetime, and a second server — or a `gc -delete` — refuses to start and names the pid holding it.
 
 ## Features
 
@@ -196,7 +197,7 @@ And two that run against the data directory rather than the API:
 
 ```bash
 silo gc                             # report what deleted libraries left on disk
-silo gc -delete                     # reclaim it — stop the server first
+silo gc -delete                     # reclaim it — refuses while a server holds the data dir
 silo backup-db <dir>                # snapshot the database; see Backups below
 ```
 

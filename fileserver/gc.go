@@ -3,6 +3,7 @@ package silod
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 
@@ -50,7 +51,7 @@ func RunGC(args []string) error {
 	// silently beat the configured one -- so the zero values are sentinels and
 	// the block after openStores fills in whatever was not typed.
 	minAge := flags.Duration("min-age", 0, "with -orphans or -compact, how long an object or pack must have sat there before it is a candidate (default: [storage] orphan_age, compact_min_age)")
-	compact := flags.Bool("compact", false, "rewrite sealed packs without the frames nothing reaches (offline: stop the server)")
+	compact := flags.Bool("compact", false, "rewrite sealed packs without the frames nothing reaches (offline: -delete refuses while a server holds the data dir)")
 	thresholdFlag := flags.String("compact-threshold", "", "with -compact, the dead fraction at which a pack is worth rewriting, as in 0.5 (default: [storage] compact_threshold)")
 	budgetFlag := flags.String("compact-budget", "", "with -compact, the live bytes one run may copy, as a size like 10gb (0: no cap) (default: [storage] compact_budget)")
 	rest, done, err := parseCommandArgs("gc", flags, args)
@@ -83,20 +84,32 @@ func RunGC(args []string) error {
 		}
 	}
 
-	// The server keeps no lock on the data directory, so GC cannot detect a
-	// running instance. It only ever touches libraries that are already
-	// deleted, which a running server will not write to, but a server midway
-	// through DeleteLibrary is a genuine race.
+	// A pass that deletes takes the data directory, the way the server does.
+	//
+	// This was two warnings and a hope. GC only ever touches libraries that
+	// are already deleted, which a running server will not write to, but a
+	// server midway through DeleteLibrary is a genuine race -- and a
+	// compacting pass is worse than a race: it renames a new pack into place
+	// and deletes the one the running server holds in memory, so the next
+	// read of a frame that moved is a 404 to a client that stored it.
+	//
+	// Reporting takes nothing, because reporting changes nothing and an
+	// operator asking what a running server would reclaim is a fair question.
+	//
+	// After resolvePaths so absDataDir exists, and before openStores so the
+	// refusal comes out before any pack is opened.
 	if *del {
-		log.Warn("Stop the server before running gc -delete.")
-	}
-	if *compact && *del {
-		// Stronger than the warning above, and it is a rule rather than
-		// advice: a rewrite renames a new pack into place and deletes the one
-		// the running server holds in memory, so the next read of a frame that
-		// moved is a 404 to a client that stored it. Nothing locks the data
-		// directory, so it cannot be detected -- it is said.
-		log.Warn(compactionIsOffline)
+		if err := resolvePaths(); err != nil {
+			return err
+		}
+		lock, err := objstore.LockDataDir(absDataDir)
+		if err != nil {
+			if errors.Is(err, objstore.ErrDataDirLocked) {
+				return fmt.Errorf("%w\nStop the server before running gc -delete", err)
+			}
+			return err
+		}
+		defer func() { _ = lock.Release() }()
 	}
 
 	if err := openStores(); err != nil {

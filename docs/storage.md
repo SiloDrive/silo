@@ -713,14 +713,16 @@ them and everything only they reached. `-compact` on its own reclaims garbage
 and never history: expiring history is irreversible, and an operator who typed
 one flag should not get the other one's consequences.
 
-**`-compact -delete` is offline, and that is a rule rather than advice.** The
+**`-compact -delete` is offline, and it is enforced rather than advised.** The
 server holds its pack set in memory and opens a sealed pack by path, so a
 rewrite from a second process renames a new pack into place the server does not
 know about and deletes the one it does; the next read of a frame that moved is
-a `404` to a client that stored it. Nothing locks the data directory, so this
-cannot be detected. Compaction inside the server's own process is the
-in-process scheduler, which is unwritten and wants a kill switch before it
-wants code.
+a `404` to a client that stored it. A pass that deletes takes the same
+`flock` on `{data-dir}/silo.lock` the server holds for its lifetime, so it
+refuses to run against a live one and names the pid holding it. A reporting
+pass takes nothing, because it changes nothing. Compaction inside the server's
+own process is the in-process scheduler, which is unwritten and wants a kill
+switch before it wants code.
 
 **Retention is the definition of a live commit, not a second collector.**
 Without a limit every commit ever written is live and nothing short of deleting

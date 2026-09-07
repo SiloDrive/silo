@@ -376,9 +376,10 @@ frame that moved is a `404` to a client that stored it. The lock design in
 step 2 — compaction takes its own lock, off the write path — is for compaction
 *in the server's process*, which is the scheduler the roadmap lists as unwritten
 and which wants a kill switch before it wants code. Until it exists, `-compact
--delete` is an offline operation, said so in the usage text and refused if it
-can be detected. It cannot be, today — nothing locks the data directory — so
-the warning that `gc -delete` already prints carries it.
+-delete` is an offline operation, said so in the usage text and refused when a
+server is running: a deleting pass takes the data directory's `flock`, which
+the server holds for its lifetime. That is `data-safety.md` item 6, and it is
+what turned the warning `gc -delete` used to print into a check.
 
 Tests: `-compact` without `-delete` reports and leaves every pack file where it
 was; with `-delete`, `LibraryUsage` afterwards is smaller by what was reported.
