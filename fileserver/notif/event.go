@@ -11,16 +11,15 @@ import (
 // Event type strings exchanged over the wire.
 const (
 	EventTypeLibraryUpdate = "library-update"
-	EventTypeJWTExpired    = "jwt-expired"
 
-	// EventTypeSubscribeDenied answers a subscribe the server will not grant
-	// on the credential lane.
+	// EventTypeSubscribeDenied answers a subscribe the server will not grant.
 	//
-	// jwt-expired cannot carry this. It means "re-mint and try again", which
-	// is true of a stale token and false of a library the caller may not
-	// reach -- a client told that about a permission answer re-mints in a
-	// loop forever. And silence is worse than either: the client believes it
-	// is subscribed, stops polling, and the library appears to stop changing.
+	// It replaced jwt-expired, which could not carry this. That meant
+	// "re-mint and try again", which was true of a stale token and false of a
+	// library the caller may not reach -- a client told that about a
+	// permission answer re-mints in a loop forever. And silence is worse than
+	// either: the client believes it is subscribed, stops polling, and the
+	// library appears to stop changing.
 	//
 	// It names the library and nothing else. Why the answer was no is in the
 	// log, where the operator is the audience, for the reason
@@ -46,12 +45,14 @@ type LibraryUpdateEvent struct {
 	CommitID  string `json:"commit_id"`
 }
 
-// accountRing is the frame an account-scoped socket gets. It carries nothing,
-// and that is the point: there is nothing in it to have been authorized, so
-// the socket needs no lease on any library it rings for.
-func accountRing() *Message {
-	return &Message{Type: EventTypeAccountUpdate, Content: json.RawMessage("{}")}
-}
+// ringFrame is the one frame every account-scoped socket gets. It carries
+// nothing, and that is the point: there is nothing in it to have been
+// authorized, so the socket needs no lease on any library it rings for. One
+// frame serves every ring, because nothing writes to a queued message.
+var ringFrame = &Message{Type: EventTypeAccountUpdate, Content: json.RawMessage("{}")}
+
+// accountRing is the frame an account-scoped socket gets.
+func accountRing() *Message { return ringFrame }
 
 // NotifyLibraryUpdate fans a library-update event out to every client currently
 // subscribed to libraryID. Delivery is best-effort and non-blocking: if a

@@ -351,10 +351,6 @@ func Run(args []string) error {
 	// nobody is reading.
 	defer observability.Init("fileserver", option.Version)()
 
-	if err := option.LoadJWTConfig(); err != nil {
-		log.Fatalf("Failed to load JWT config: %v", err)
-	}
-
 	option.LoadFileServerOptions(configFile)
 	// Run does not go through openStores, so the same rule applies here: see
 	// objstore.Configure.
@@ -712,7 +708,6 @@ func newHTTPRouter() *mux.Router {
 	// bad method with 405 and an Allow header, which mux would otherwise turn
 	// into a 404 that reads as "wrong path".
 	apiRouter.HandleFunc("/libraries/{libraryid}/entries/{path:.*}", entriesHandler)
-	apiRouter.HandleFunc("/libraries/{libraryid}/notify-token", api.CreateNotifyTokenHandler).Methods("POST")
 
 	return r
 }

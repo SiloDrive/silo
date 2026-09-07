@@ -81,8 +81,9 @@ type siloServerInfo struct {
 // the check still passes.
 //
 // Runtime configuration belongs here too, which is why notifications is
-// conditional: a client that sees the name can go straight to notify-token
-// instead of learning from a 404 that this server was built without it.
+// conditional: a client that sees the name can go straight to the socket
+// instead of learning from a failed upgrade that this server was started
+// without it.
 func features() []string {
 	f := []string{
 		// The vocabulary, so a mismatch is legible. Every other rename in this
@@ -159,13 +160,14 @@ func features() []string {
 		"setup", // POST auth/setup, and setup_required on this response
 	}
 	if option.EnableNotification {
-		f = append(f, "notifications") // WS /notification, POST libraries/{id}/notify-token
+		f = append(f, "notifications") // WS /notification
 		// The socket authorizes a subscribe from the Authorization header the
-		// handshake carried, instead of from a token minted for one library.
-		// It needs a name because an older server answers the tokenless frame
+		// handshake carried. This is now the only lane -- the minted token and
+		// its endpoint are gone -- but the name stays and stays worth
+		// checking: a server old enough to lack it answers a tokenless frame
 		// with jwt-expired, and a client that reads that as a re-mint loops
-		// forever -- see notif.EventTypeSubscribeDenied. Seeing this name is
-		// what lets a client stop fetching notify-tokens at all.
+		// forever. Seeing this name is what says the tokenless frame is
+		// understood.
 		f = append(f, "notifications-credential") // subscribe with no jwt_token
 		// One subscribe frame for everything the account can see, answered
 		// with a bare ring; a narrowed credential gets its one library's

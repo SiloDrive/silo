@@ -18,10 +18,6 @@ import (
 	"github.com/dkam/silo/fileserver/option"
 )
 
-func init() {
-	option.JWTPrivateKey = "test-secret-key-for-unit-tests"
-}
-
 // Helper: generate a PBKDF2SHA256 stored hash for testing.
 func makePBKDF2Hash(password string, iter int, salt []byte) string {
 	derived := pbkdf2.Key([]byte(password), salt, iter, sha256.Size, sha256.New)

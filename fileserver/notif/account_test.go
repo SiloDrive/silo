@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -52,18 +53,23 @@ func expectNoFrame(t *testing.T, conn *websocket.Conn, d time.Duration) {
 	}
 }
 
-// An account subscribe with no credential is refused.
+// An account subscribe with no credential never gets to be refused.
 //
 // The account's set is resolved from the credential that opened the socket,
-// and an anonymous socket has nothing to resolve it from. The token lane
-// cannot stand in: a token names one library, and this frame names none.
+// and an anonymous socket has nothing to resolve it from. That refusal is
+// still in subscribeAccount and still reachable -- a credential can be dropped
+// under a live socket -- but the handshake now turns away a request carrying
+// no credential, so the frame this test used to send cannot be sent.
+//
+// It is kept as a handshake assertion rather than deleted because the property
+// it guards is the one that matters: nothing anonymous ends up subscribed to
+// an account's whole set.
 func TestAnAccountSubscribeWithNoCredentialIsRefused(t *testing.T) {
 	visibleLibrariesReturning(t, testLibrary)
 
-	conn := dialSocket(t, nil)
-	subscribeToAccount(t, conn)
-
-	awaitFrame(t, conn, EventTypeSubscribeDenied, 2*time.Second)
+	if got := dialRefused(t, nil); got != http.StatusUnauthorized {
+		t.Errorf("the handshake answered %d, want %d", got, http.StatusUnauthorized)
+	}
 	if n := subscriberCount(testLibrary); n != 0 {
 		t.Errorf("an anonymous account subscribe registered %d subscriber(s)", n)
 	}

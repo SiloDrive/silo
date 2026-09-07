@@ -32,15 +32,13 @@ const (
 	watchDialMin = 1 * time.Second
 	watchDialMax = 30 * time.Second
 
-	// Re-mint backoff, per library. A token the server rejects is usually one
-	// that expired, and a fresh one fixes it; a permission that was revoked
-	// will be rejected forever, which is what the ceiling is for.
-	watchRemintMin = 250 * time.Millisecond
-	watchRemintMax = 60 * time.Second
-
-	// renewBefore is how far ahead of expiry a cached token is replaced,
-	// rather than sent and rejected.
-	renewBefore = 5 * time.Minute
+	// Retry backoff, per library. A refused subscribe is usually a permission
+	// that was withdrawn, and retrying will be refused forever -- which is
+	// what the ceiling is for. It is retried at all because the other cause is
+	// a share being re-granted, or a credential re-scoped, under a socket that
+	// is still up.
+	watchRetryMin = 250 * time.Millisecond
+	watchRetryMax = 60 * time.Second
 
 	watchEventBuffer = 32
 	watchFrameBuffer = 8
@@ -50,9 +48,9 @@ const (
 // it sends is asserted against these in the tests, because a rename on that
 // side would otherwise compile here and simply stop delivering events.
 const (
-	msgSubscribe     = "subscribe"
-	msgLibraryUpdate = "library-update"
-	msgJWTExpired    = "jwt-expired"
+	msgSubscribe       = "subscribe"
+	msgLibraryUpdate   = "library-update"
+	msgSubscribeDenied = "subscribe-denied"
 )
 
 // wireMessage is the notification protocol's envelope, in both directions.
@@ -67,22 +65,6 @@ type wireSubscribe struct {
 
 type wireSubscribeLibrary struct {
 	LibraryID string `json:"id"`
-	Token     string `json:"jwt_token"`
-}
-
-// NotifyToken mints the library-scoped JWT the notification socket asks for.
-// It is a separate token from the session's: the socket carries no
-// Authorization header, and authorizes each subscription on its own.
-func (c *APIClient) NotifyToken(libraryID string) (token string, expiresAt int64, err error) {
-	var resp struct {
-		Token     string `json:"jwt_token"`
-		ExpiresAt int64  `json:"expires_at"`
-	}
-	path := "/api/silo/v1/libraries/" + url.PathEscape(libraryID) + "/notify-token"
-	if err := c.doRequest("POST", path, nil, &resp); err != nil {
-		return "", 0, err
-	}
-	return resp.Token, resp.ExpiresAt, nil
 }
 
 // Watcher keeps a notification socket open and turns library-update events
@@ -112,12 +94,9 @@ type Watcher struct {
 }
 
 type watchedLibrary struct {
-	token   string
-	expires int64 // unix seconds
-
 	// retryAt holds a library out of the next subscribe frame after the server
-	// refused its token, backoff is how long the hold grows to, and retry is
-	// the timer that wakes the connection when the hold is up.
+	// refused it, backoff is how long the hold grows to, and retry is the
+	// timer that wakes the connection when the hold is up.
 	retryAt time.Time
 	backoff time.Duration
 	retry   *time.Timer
@@ -163,8 +142,8 @@ func (w *Watcher) Subscribe(libraryID string) {
 	w.mu.Unlock()
 	// Only a new library is worth waking the connection for. Re-entering a
 	// library already watched would otherwise re-send every subscription held,
-	// each one a JWT the server verifies under a lock its other clients are
-	// waiting on.
+	// each one a permission the server re-checks under a lock its other
+	// clients are waiting on.
 	if !known {
 		w.nudge()
 	}
@@ -234,16 +213,23 @@ func (w *Watcher) run() {
 	}
 }
 
-// serverOffers asks whether this server has a notification endpoint at all,
-// so a build without one is not dialled every 30 seconds for the life of the
-// session. A server that will not answer gets the benefit of the doubt: an
-// unreachable /server-info says nothing about /notification.
+// serverOffers asks whether this server has a notification endpoint this
+// watcher can use, so a build without one is not dialled every 30 seconds for
+// the life of the session. A server that will not answer gets the benefit of
+// the doubt: an unreachable /server-info says nothing about /notification.
+//
+// Both names are required, and the second one is why this is not simply a
+// reachability check. This watcher subscribes with no jwt_token, and a server
+// old enough to want one answers that frame with jwt-expired -- which means
+// "re-mint and try again", so a client that believed it would re-mint forever
+// against an endpoint that has nothing to give it. notifications-credential is
+// the server saying it authorizes a subscribe from the handshake instead.
 func (w *Watcher) serverOffers() bool {
 	info, err := w.api.GetServerInfo()
 	if err != nil {
 		return true
 	}
-	return info.Has("notifications")
+	return info.Has("notifications") && info.Has("notifications-credential")
 }
 
 func (w *Watcher) dial() (*websocket.Conn, error) {
@@ -303,10 +289,11 @@ func (w *Watcher) serve(conn *websocket.Conn, resync bool) {
 		defer close(frames)
 		w.readLoop(conn, frames, stop)
 	}()
-	// Subscribing has to mint tokens, which is an HTTP round trip. Off this
-	// goroutine, because a loop parked on that request is a loop not reading
-	// events -- and, since the request has no deadline of its own, a Close the
-	// user waits on for as long as the server feels like taking.
+	// Off this goroutine so that a loop asserting subscriptions is not a loop
+	// that has stopped reading events. It used to be the stronger claim that
+	// subscribing meant an HTTP round trip to mint a token per library; a
+	// subscribe frame is now a socket write, and the separation is kept
+	// because the wake loop belongs to it either way.
 	go w.assertLoop(conn, stop, resync)
 
 	defer func() {
@@ -398,7 +385,7 @@ func (w *Watcher) handle(msg wireMessage) bool {
 		case <-w.done:
 			return false
 		}
-	case msgJWTExpired:
+	case msgSubscribeDenied:
 		var ev struct {
 			LibraryID string `json:"library_id"`
 		}
@@ -417,14 +404,7 @@ func (w *Watcher) resubscribe(conn *websocket.Conn) ([]string, error) {
 	var frame wireSubscribe
 	var sent []string
 	for _, id := range w.pending() {
-		token, err := w.token(id)
-		if err != nil {
-			// The token endpoint is unreachable or says no. Back off on this
-			// library alone; the rest of the frame still goes.
-			w.deferRetry(id)
-			continue
-		}
-		frame.Libraries = append(frame.Libraries, wireSubscribeLibrary{LibraryID: id, Token: token})
+		frame.Libraries = append(frame.Libraries, wireSubscribeLibrary{LibraryID: id})
 		sent = append(sent, id)
 	}
 	if len(frame.Libraries) == 0 {
@@ -471,32 +451,8 @@ func (w *Watcher) pending() []string {
 	return out
 }
 
-// token returns a usable notification token for libraryID, minting one if the
-// cached token is missing or close enough to expiry to be refused.
-func (w *Watcher) token(libraryID string) (string, error) {
-	w.mu.Lock()
-	if lib, ok := w.libs[libraryID]; ok && lib.token != "" && time.Until(time.Unix(lib.expires, 0)) > renewBefore {
-		token := lib.token
-		w.mu.Unlock()
-		return token, nil
-	}
-	w.mu.Unlock()
-
-	token, expires, err := w.api.NotifyToken(libraryID)
-	if err != nil {
-		return "", err
-	}
-
-	w.mu.Lock()
-	if lib, ok := w.libs[libraryID]; ok {
-		lib.token, lib.expires = token, expires
-	}
-	w.mu.Unlock()
-	return token, nil
-}
-
-// deferRetry drops a library's token and holds it out of the subscribe frame
-// for a growing interval, then wakes the connection to try again.
+// deferRetry holds a library out of the subscribe frame for a growing
+// interval, then wakes the connection to try again.
 func (w *Watcher) deferRetry(libraryID string) {
 	w.mu.Lock()
 	lib, ok := w.libs[libraryID]
@@ -504,11 +460,10 @@ func (w *Watcher) deferRetry(libraryID string) {
 		w.mu.Unlock()
 		return
 	}
-	lib.token, lib.expires = "", 0
 	if lib.backoff == 0 {
-		lib.backoff = watchRemintMin
+		lib.backoff = watchRetryMin
 	} else {
-		lib.backoff = min(lib.backoff*2, watchRemintMax)
+		lib.backoff = min(lib.backoff*2, watchRetryMax)
 	}
 	lib.retryAt = time.Now().Add(lib.backoff)
 	// One timer per library, not one per rejection: a library the server keeps

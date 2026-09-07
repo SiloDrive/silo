@@ -178,7 +178,6 @@ Server environment:
   SILO_DATA_DIR          Data directory (default: ~/.local/share/silo)
   SILO_HOST              Listen address (default: 127.0.0.1)
   SILO_PORT              Listen port (default: 8082)
-  SILO_JWT_SECRET        JWT signing key (auto-generated if unset)
   SILO_LOG_LEVEL         Log level: debug, info, warn, error
   SILO_SENTRY_DSN        Send errors, panics and request timings here
                          (SENTRY_DSN also works; unset means send nothing)

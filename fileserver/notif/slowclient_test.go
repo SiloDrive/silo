@@ -2,13 +2,12 @@ package notif
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/dkam/silo/fileserver/credential"
 )
 
 // liveClient dials a real notification socket and returns both ends of it: the
@@ -20,16 +19,10 @@ func liveClient(t *testing.T, libraryID string) (*websocket.Conn, *Client) {
 	t.Helper()
 	Init()
 
-	srv := httptest.NewServer(http.HandlerFunc(Handler))
-	t.Cleanup(srv.Close)
+	authorizeReturning(t, func(*credential.Credential, string) bool { return true })
 
-	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-
-	subscribeTo(t, conn, libraryID)
+	conn := dialWithCredential(t, testCredential())
+	sendSubscribe(t, conn, subscribeLibrary{LibraryID: libraryID})
 	waitForSubscribers(t, libraryID, 1)
 	return conn, snapshotSubscribers(libraryID)[0]
 }

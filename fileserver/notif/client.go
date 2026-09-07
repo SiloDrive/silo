@@ -9,14 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/utils"
 	"github.com/dkam/silo/internal/observability"
 )
 
@@ -44,32 +41,6 @@ const (
 	// doesn't pin unbounded memory.
 	wchBuffer = 32
 )
-
-// provisionalGrace is how long a connection that arrived without a credential
-// may hold a socket without subscribing to anything.
-//
-// A connection with no subscriptions receives nothing, ever -- the socket
-// carries library-update and nothing else -- so an anonymous one that never
-// subscribes is pure cost. Subscribing proves something: the frame carries a
-// library-scoped JWT the server verifies. So this is not a new authentication
-// requirement, it is a deadline on the one that was already there.
-//
-// Generous on purpose. It has to cover a client that connects, discovers its
-// notification token has expired, mints another and tries again, on a bad
-// link. The thing being prevented is a socket held indefinitely for free, and
-// thirty seconds does that just as well as one would.
-//
-// Atomic, and read through graceWindow. Production only ever reads it, but
-// tests shorten it while sockets accepted by a still-running test server are
-// reading -- and a hijacked connection is not a request the server waits for,
-// so there is no ordering between the two to rely on.
-var provisionalGrace atomic.Int64
-
-const defaultProvisionalGrace = 30 * time.Second
-
-func init() { provisionalGrace.Store(int64(defaultProvisionalGrace)) }
-
-func graceWindow() time.Duration { return time.Duration(provisionalGrace.Load()) }
 
 type Client struct {
 	ID uint64
@@ -137,10 +108,6 @@ type Client struct {
 	// collapse -- every one says the same thing.
 	ringOwed atomic.Bool
 
-	// graceTimer closes the connection if provisionalGrace passes with nothing
-	// subscribed. nil when the handshake carried a credential.
-	graceTimer *time.Timer
-
 	closeOnce sync.Once
 	closeCh   chan struct{}
 	wg        sync.WaitGroup
@@ -149,32 +116,24 @@ type Client struct {
 // subscription is one library this client watches, and which lane authorized
 // it.
 //
-// The lane is a field rather than an inference from exp, even though the token
-// lane is the only one that carries an expiry. The sweep treats the lanes
-// completely differently -- one is re-checked against the database, one
-// against the clock -- and a rule that reads "exp == 0 means ask the
-// authorizer" is one refactor away from silently reclassifying every
-// subscription on the wrong lane.
+// There was a third lane, and its removal is why nothing here carries an
+// expiry any more. A subscribe frame could present a library-scoped JWT minted
+// by POST notify-token, from when the notification server ran in a process
+// with no database and the answer had to arrive pre-signed. It runs in-process
+// and asks, so both remaining lanes are the socket's credential re-checked
+// against the database, and a clock authorizes nothing.
 type subscription struct {
 	lane lane
-
-	// exp is the JWT's expiry in unix seconds on the token lane, and 0 on the
-	// others, where nothing in the subscription expires on its own.
-	exp int64
 }
 
 // lane is what authorized a subscription, and so what can end it.
 type lane int
 
 const (
-	// laneToken is a library-scoped JWT presented in the subscribe frame. It
-	// ends on the token's expiry.
-	laneToken lane = iota
-
 	// laneCredential is the socket's credential, asked about one library the
 	// frame named. It ends when the sweep finds the credential no longer
 	// reaches the library.
-	laneCredential
+	laneCredential lane = iota
 
 	// laneAccount is the socket's credential, asked for every library the
 	// account can see. One frame registers the whole set, and the set moves
@@ -193,14 +152,15 @@ type subscribeFrame struct {
 
 // subscribeLibrary is one entry of a subscribe or unsubscribe frame.
 //
-// An absent Token is the credential lane, and the absence is the whole signal:
-// it says "authorize this from whatever opened the socket", which is what every
-// other route in Silo already does. A client that sends one is not asking for
-// anything a token would not have got it -- it is declining to fetch a token
-// first.
+// It carried a jwt_token beside the id, and that field is simply not read any
+// more: a client mid-migration that still sends one is subscribed on its
+// credential rather than refused, which is the kinder of the two answers and
+// the one protocol.md documents. Reading it would mean deciding what to do
+// with a token nothing mints, and every answer to that is worse. A library is
+// authorized from whatever opened the socket, which is what every other route
+// in Silo already does.
 type subscribeLibrary struct {
 	LibraryID string `json:"id"`
-	Token     string `json:"jwt_token,omitempty"`
 }
 
 // NewClient wires a freshly-upgraded WebSocket connection into the notif
@@ -230,23 +190,12 @@ func NewClient(conn *websocket.Conn, acct *account.Account, cred *credential.Cre
 		return nil
 	})
 
-	// An anonymous connection is on the clock from the moment it is accepted.
-	// Started before the loops so that a client which connects and then says
-	// nothing at all is still on it.
-	if acct == nil {
-		c.graceTimer = time.AfterFunc(graceWindow(), c.dropIfUnproven)
-	}
-
 	c.wg.Add(4)
 	go c.recover(c.readLoop)
 	go c.recover(c.writeLoop)
 	go c.recover(c.pingLoop)
 	go c.recover(c.sweepLoop)
 	c.wg.Wait()
-
-	if c.graceTimer != nil {
-		c.graceTimer.Stop()
-	}
 
 	// Drain subscriptions. Setting libraries=nil blocks any late subscribe()
 	// from a still-in-flight message to re-add state after close.
@@ -295,26 +244,6 @@ func (c *Client) signalClose() {
 			_ = c.conn.Close()
 		}
 	})
-}
-
-// dropIfUnproven closes a connection that arrived without a credential and has
-// not subscribed to anything since.
-//
-// Checked once rather than polled: the deadline is from the handshake, and a
-// connection that subscribes stops the timer rather than resetting it. There
-// is no second chance to schedule -- once something is subscribed the
-// connection has proved itself for good, and if it later unsubscribes
-// everything it is a client that is still talking, not an idle stranger.
-func (c *Client) dropIfUnproven() {
-	c.librariesMu.Lock()
-	subscribed := len(c.libraries)
-	c.librariesMu.Unlock()
-	if subscribed > 0 {
-		return
-	}
-	log.Debugf("notif: closing client %d: no credential at the handshake and nothing subscribed within %v",
-		c.ID, graceWindow())
-	c.signalClose()
 }
 
 func (c *Client) readLoop() {
@@ -504,21 +433,17 @@ func (c *Client) sweepLoop() {
 
 // sweepSubscriptions drops what this client should no longer be receiving.
 //
-// The two lanes fail in different ways and are told about it differently. A
-// token lapses on a clock both sides can read, and jwt-expired asks for a
-// fresh one. A credential-authorized subscription has no clock: what ends it
-// is a share being withdrawn, which the client cannot see coming and cannot
-// fix by re-minting, so it gets subscribe-denied instead.
+// What ends a subscription is a share being withdrawn, which the client cannot
+// see coming and cannot fix by trying again, so it gets subscribe-denied.
 //
-// The credential half is the price of the lane. A token bounded a withdrawn
-// share at 72 hours by expiry alone, whether or not anyone noticed; a device
-// credential need never expire, so without re-asking, a subscription would
-// outlive the access that authorized it for the life of the process -- and the
-// frames it goes on receiving carry a commit id.
+// This sweep is the price of authorizing from the socket's credential. The
+// deleted token lane bounded a withdrawn share at 72 hours by expiry alone,
+// whether or not anyone noticed; a device credential need never expire, so
+// without re-asking, a subscription would outlive the access that authorized
+// it for the life of the process -- and the frames it goes on receiving carry
+// a commit id.
 func (c *Client) sweepSubscriptions() {
-	now := time.Now().Unix()
-
-	// Decided under the lock, acted on after it. The credential half asks the
+	// Decided under the lock, acted on after it. The question goes to the
 	// database, and the lock is the one the read loop takes for every
 	// subscribe -- so the ids are collected here and the question is asked
 	// once the lock is gone.
@@ -526,13 +451,8 @@ func (c *Client) sweepSubscriptions() {
 	dropped := map[string]string{} // library id -> the frame that says why
 	c.librariesMu.Lock()
 	for id, sub := range c.libraries {
-		switch sub.lane {
-		case laneCredential:
+		if sub.lane == laneCredential {
 			byCredential = append(byCredential, id)
-		case laneToken:
-			if sub.exp < now {
-				dropped[id] = EventTypeJWTExpired
-			}
 		}
 	}
 	c.librariesMu.Unlock()
@@ -560,24 +480,12 @@ func (c *Client) handleMessage(msg *Message) error {
 			c.subscribeAccount()
 		}
 		for _, r := range frame.Libraries {
-			// No token means the credential lane. The two are never mixed for
-			// one library: a frame either presents proof or asks the server to
-			// use the proof it already has.
-			if r.Token == "" {
-				if !authorized(c.cred, r.LibraryID) {
-					log.Debugf("notif: client %d refused a credential subscribe to %q", c.ID, r.LibraryID)
-					c.sendLibraryFrame(EventTypeSubscribeDenied, r.LibraryID)
-					continue
-				}
-				c.subscribe(r.LibraryID, "", subscription{lane: laneCredential})
+			if !authorized(c.cred, r.LibraryID) {
+				log.Debugf("notif: client %d refused a credential subscribe to %q", c.ID, r.LibraryID)
+				c.sendLibraryFrame(EventTypeSubscribeDenied, r.LibraryID)
 				continue
 			}
-			user, exp, ok := parseNotifToken(r.Token, r.LibraryID)
-			if !ok {
-				c.sendLibraryFrame(EventTypeJWTExpired, r.LibraryID)
-				continue
-			}
-			c.subscribe(r.LibraryID, user, subscription{lane: laneToken, exp: exp})
+			c.subscribe(r.LibraryID, subscription{lane: laneCredential})
 		}
 		return nil
 	case "unsubscribe":
@@ -595,25 +503,15 @@ func (c *Client) handleMessage(msg *Message) error {
 	}
 }
 
-func (c *Client) subscribe(libraryID, user string, sub subscription) {
+func (c *Client) subscribe(libraryID string, sub subscription) {
 	c.librariesMu.Lock()
 	if c.libraries == nil {
 		c.librariesMu.Unlock()
 		return
 	}
 	c.libraries[libraryID] = sub
-	if c.User == "" {
-		c.User = user
-	}
 	c.librariesMu.Unlock()
 	addSubscription(libraryID, c)
-
-	// Proved. Either the token in the frame was verified to get here or the
-	// credential behind the socket was, which is the thing the deadline was
-	// waiting for.
-	if c.graceTimer != nil {
-		c.graceTimer.Stop()
-	}
 }
 
 // subscribeAccount registers the client for every library its account can see
@@ -635,9 +533,8 @@ func (c *Client) subscribe(libraryID, user string, sub subscription) {
 // the frame carries a commit id and a folder scope is refused the library.
 //
 // One refusal, answered with subscribe-denied naming no library: no
-// credential means nothing to resolve anything from, and the token lane
-// cannot stand in, because a token names one library and this frame names
-// none.
+// credential means nothing to resolve the set from, and this frame names no
+// library the refusal could point at.
 func (c *Client) subscribeAccount() {
 	if c.cred == nil || c.account == nil {
 		log.Debugf("notif: client %d refused an account subscribe: no credential on the socket", c.ID)
@@ -647,7 +544,7 @@ func (c *Client) subscribeAccount() {
 	if lib := c.cred.Scope.LibraryID; lib != "" {
 		c.scopedTo = lib
 		c.accountScoped.Store(true)
-		c.subscribe(lib, "", subscription{lane: laneAccount})
+		c.subscribe(lib, subscription{lane: laneAccount})
 		return
 	}
 	ids, err := visibleLibraries(c.account.ID)
@@ -660,7 +557,7 @@ func (c *Client) subscribeAccount() {
 	c.accountScoped.Store(true)
 	addAccountSocket(c.account.ID, c)
 	for _, id := range ids {
-		c.subscribe(id, "", subscription{lane: laneAccount})
+		c.subscribe(id, subscription{lane: laneAccount})
 	}
 }
 
@@ -733,7 +630,7 @@ func (c *Client) resyncAccount() bool {
 	c.librariesMu.Unlock()
 
 	for _, id := range appeared {
-		c.subscribe(id, "", subscription{lane: laneAccount})
+		c.subscribe(id, subscription{lane: laneAccount})
 	}
 	for _, id := range left {
 		c.unsubscribe(id)
@@ -784,8 +681,8 @@ func (c *Client) unsubscribe(libraryID string) {
 	c.missedMu.Unlock()
 }
 
-// sendLibraryFrame queues one of the frames whose whole payload is a library
-// id: jwt-expired, or subscribe-denied.
+// sendLibraryFrame queues a frame whose whole payload is a library id, which
+// is subscribe-denied and nothing else since jwt-expired went.
 func (c *Client) sendLibraryFrame(typ, libraryID string) {
 	c.queueFrame(typ, map[string]string{"library_id": libraryID})
 }
@@ -804,36 +701,4 @@ func (c *Client) queueFrame(typ string, content any) {
 	case c.wch <- msg:
 	default:
 	}
-}
-
-// parseNotifToken validates a library-scoped notification JWT. On success it
-// returns the claimed username, expiry (unix seconds), and true.
-func parseNotifToken(tokenString, libraryID string) (string, int64, bool) {
-	// An empty libraryID would otherwise match the empty LibraryID claim of a
-	// session token, which is signed with the same key.
-	if tokenString == "" || libraryID == "" {
-		return "", 0, false
-	}
-	claims := &utils.MyClaims{}
-	tok, err := jwt.ParseWithClaims(tokenString, claims,
-		func(*jwt.Token) (any, error) {
-			return []byte(option.JWTPrivateKey), nil
-		},
-		// Pin the algorithm rather than accepting whatever the token's header
-		// asks for, and require the notification audience so a session token
-		// cannot be replayed here.
-		jwt.WithValidMethods([]string{utils.SigningAlg}),
-		jwt.WithAudience(utils.AudNotif),
-	)
-	if err != nil || !tok.Valid {
-		return "", 0, false
-	}
-	if claims.LibraryID != libraryID {
-		return "", 0, false
-	}
-	exp, err := claims.GetExpirationTime()
-	if err != nil || exp == nil || exp.Before(time.Now()) {
-		return "", 0, false
-	}
-	return claims.UserName, exp.Unix(), true
 }

@@ -2,10 +2,6 @@ package option
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -145,8 +141,6 @@ var (
 	// on, or every client shares the proxy's bucket and one attacker
 	// throttles everyone.
 	TrustProxyHeaders bool
-
-	JWTPrivateKey string
 )
 
 func initDefaultOptions() {
@@ -433,26 +427,6 @@ func scale(digits string, unit int64) int64 {
 		return InfiniteQuota
 	}
 	return n * unit
-}
-
-func LoadJWTConfig() error {
-	// One name, no fallback. This read used to also accept JWT_PRIVATE_KEY,
-	// the unprefixed spelling from before the rename, and a fallback like that
-	// never ends: nothing expires it and nothing tells an operator which of the
-	// two names their server is actually signing with.
-	JWTPrivateKey = os.Getenv("SILO_JWT_SECRET")
-	if JWTPrivateKey == "" {
-		// Auto-generate a key. Tokens won't survive server restarts,
-		// which is fine for a single-server deployment.
-		buf := make([]byte, 32)
-		if _, err := io.ReadFull(rand.Reader, buf); err != nil {
-			return fmt.Errorf("failed to generate JWT key: %v", err)
-		}
-		JWTPrivateKey = hex.EncodeToString(buf)
-		log.Info("SILO_JWT_SECRET not set, generated ephemeral key")
-	}
-
-	return nil
 }
 
 // WithDBTimeout is the context a database call would otherwise build for

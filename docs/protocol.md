@@ -33,7 +33,7 @@ decide whether to shim it.
 - **silo-drive** — our file-access client, as a macOS File Provider extension
   and as a FUSE mount. Speaks `/api/silo/v1` and nothing else: `server-info`,
   `auth/login`, `libraries`, `account/usage`, `entries`, `changes`,
-  `notify-token`, the notification socket, and the chunk surface —
+  the notification socket, and the chunk surface —
   `chunks/missing` and `PUT chunks/{id}` going up, `GET objects/{id}` and
   `GET chunks/{id}` coming back down on the FUSE build. The list summarises what
   has a client and grows as the client does; `/api/silo/v1` is the half of the
@@ -90,8 +90,8 @@ A credential can carry a **ceiling**: a permission (`r` or `rw`) and a scope
 (every library, one library, or one folder and everything beneath it). What a
 caller may do is the account's permission intersected with that ceiling, never
 the account's alone, so a narrowed credential answers `403` where the account
-behind it would have been allowed. Library-wide operations — `changes`,
-`commits`, `notify-token` — and the id-addressed chunk and object surfaces are
+behind it would have been allowed. Library-wide operations — `changes` and
+`commits` — and the id-addressed chunk and object surfaces are
 refused to a folder-scoped credential outright, since neither can be answered
 partially. A plain login mints one unscoped `rw` session; an enrolment request
 mints whatever narrowing it asks for, since `perm` and `scope` can only take
@@ -272,7 +272,6 @@ are registered there too, but are authenticated: see the lane note above.
 | PATCH | `/api/silo/v1/libraries/{libraryid}` | `{"name":"New name"}` — rename a library. `PATCH` because the body names only what changes |
 | POST | `/api/silo/v1/libraries/{libraryid}/batch` | `{"ops":[…]}` — many operations, one commit. See the batch surface below |
 | GET | `/api/silo/v1/libraries/{libraryid}/commits` | `{"commits":[{id, created_at, author?, message?},…]}`, newest first. Pages with `?limit=`. `author` and `message` are absent under E2EE. The list ends where history ends — a collected commit stops the walk rather than erroring. `CommitsHandler` in `fileserver/api/history.go` |
-| POST | `/api/silo/v1/libraries/{libraryid}/notify-token` | Mint a notification JWT for `WS /notification` (72h; `404` if notifications are disabled) |
 
 #### The entries surface
 
@@ -740,19 +739,20 @@ polling.
 
 #### Subscribing with the credential you already have
 
-Since 0.5.0 a subscribe frame that carries no `jwt_token` is authorized by the
-`Authorization` header the handshake presented — the same credential, the same
-permission check (`middleware.PermFor`) and the same ceiling as every other
-route. Advertised as `notifications-credential`. There is no token to fetch, so
-there is nothing to re-mint and nothing to expire.
+Since 0.5.0 this is the only way to subscribe, and the subscribe frame carries
+no token. It is authorized by the `Authorization` header the handshake
+presented — the same credential, the same permission check
+(`middleware.PermFor`) and the same ceiling as every other route. Advertised as
+`notifications-credential`. There is no token to fetch, so there is nothing to
+re-mint and nothing to expire.
 
 ```json
 {"type": "subscribe", "content": {"libraries": [{"id": "<library>"}]}}
 ```
 
 A subscribe this lane will not grant is answered
-`{"type": "subscribe-denied", "content": {"library_id": …}}` — a distinct frame
-from `jwt-expired`, because there is no token to renew and a client told
+`{"type": "subscribe-denied", "content": {"library_id": …}}` — the frame that
+replaced `jwt-expired`, because there is no token to renew and a client told
 otherwise would re-mint in a loop. It names the library and not the reason;
 "you may not reach it", "no such library" and "you sent no credential" are one
 answer on the wire, as they are on the HTTP lane.
@@ -763,8 +763,11 @@ That check is what replaces the token's expiry: a credential need never expire,
 so nothing else would bound how long a subscription outlives the access that
 authorized it.
 
-The socket must have authenticated. An anonymous connection is refused this
-lane outright — the token was the only thing it could ever prove anything with.
+The socket must have authenticated, and it must do so at the handshake: a
+`/notification` upgrade that presents no credential is answered `401` before
+it becomes a socket, and one that presents a bad credential is answered `401`
+rather than downgraded to anonymous. There is nothing an anonymous socket
+could subscribe to, so there is nothing for it to hold open.
 
 A **scoped credential may open the socket**, unlike every other route that
 names no library: the upgrade answers nothing, and each subscribe is checked
@@ -785,11 +788,9 @@ the set `GET /libraries` answers with. Advertised as `notifications-account`.
 {"type": "subscribe", "content": {"account": true}}
 ```
 
-It is authorized by the credential the handshake presented and by nothing
-else: an anonymous socket is refused it with
-`{"type": "subscribe-denied", "content": {"account": true}}`, and there is no
-token that could stand in, because a token names one library and this frame
-names none.
+It is authorized by the credential the handshake presented, which by then is
+the only thing the socket has: an anonymous connection never reaches this
+frame, having been refused at the upgrade.
 
 What arrives is a **bare ring**:
 
@@ -828,62 +829,47 @@ client reconnects and is answered by the credential it now holds. That is
 hygiene rather than the authorization boundary, which is the pull the ring
 provokes.
 
-#### Subscribing with a minted token
+#### Removed in 0.5.0 — the minted token
 
-The older lane, and still the only one an anonymous socket has.
+`POST /api/silo/v1/libraries/{id}/notify-token` and the `jwt_token` field in a
+subscribe entry are gone. The endpoint answers `404`, a `jwt_token` in a
+subscribe entry is ignored, and no `jwt-expired` frame is ever sent.
 
-Since 0.4.4 getting a subscribe token is one call on this lane:
+It was the original lane, added in 0.4.4: one call minted a per-library HS256
+token, `aud=silo:notif`, 72 hours, and the client carried it inside each
+subscribe entry. It existed because the socket could not ask a credential what
+it was allowed to watch. `middleware.PermFor` answers that question directly,
+so the token was minted from a permission check and then checked instead of
+the permission — a copy of an answer the server already had, with an expiry
+bolted on to bound how stale the copy could get.
 
-```
-POST /api/silo/v1/libraries/{id}/notify-token   Authorization: Bearer <jwt>
-  → {"jwt_token": "<jwt>", "expires_at": 1787312025}
-```
+Withdrawing it is the request that asked for it
+([`feature-req/notify-token-on-the-silo-lane.md`](feature-req/notify-token-on-the-silo-lane.md))
+taken one step further rather than reversed. What that request wanted was to
+stop speaking a second protocol to get a socket: one lane, one credential, one
+call. Removing the mint is the last call on that lane going away.
 
-72h, authorized with `share.CheckPerm` against the session user, and `404` —
-not `403` — when notifications are disabled, so a client can tell "no such
-feature" from "not your library". Note `expires_at` is a **number** in a family
-of responses that are otherwise strings.
+`notifications` keeps its name. The name means the socket exists and is served
+— which is what a client branches on, and it is still true. `notifications-credential`
+keeps its name too, and stays worth checking: it is what tells a client the
+tokenless subscribe will be understood, and a server old enough to lack it is
+a server that still wants a token.
 
-Then connect to `/notification`. The upgrade takes an **optional**
-`Authorization: Bearer <jwt>` — the same session token every other call uses:
-
-```
-GET /notification    Authorization: Bearer <jwt>      (optional)
-```
-
-Optional because the endpoint predates the header and existing clients dial it
-with nothing. What sending it buys is the right to hold a socket with nothing
-subscribed: a connection that authenticated may sit idle indefinitely, which is
-what a client that opens the socket at login and subscribes later needs. A
-connection that did **not** authenticate has 30 seconds to subscribe to
-something before the server closes it — a socket with no subscriptions receives
-nothing anyway, so an anonymous one that never subscribes is pure cost to the
-server and of no use to the client.
-
-A token that is sent and is bad is refused with `401` rather than treated as
-absent, in this lane as in every other.
-
-Send one frame per batch of libraries:
-
-```json
-{"type": "subscribe", "content": {"libraries": [{"id": "<library>", "jwt_token": "<jwt>"}]}}
-```
+**If you still mint tokens:** stop, and delete the code. Check
+`notifications-credential`, send `{"libraries": [{"id": …}]}` with no
+`jwt_token`, and set `Authorization` on the upgrade request itself — the
+handshake now requires it. `subscribe-denied` replaces `jwt-expired`, and it
+means re-check access, never re-mint.
 
 #### Frames
 
 Inbound frames are `{"type": "library-update", "content": {"library_id": …, "commit_id": …}}`,
-`{"type": "account-update", "content": {}}`,
-`{"type": "jwt-expired", "content": {"library_id": …}}` and
+`{"type": "account-update", "content": {}}` and
 `{"type": "subscribe-denied", "content": {"library_id": …}}` or
 `{… "content": {"account": true}}`; unknown types are ignored rather than
-closing the socket. `unsubscribe` takes the same frame shape as `subscribe`,
-and needs no token on either lane. The server pings every 30s and drops a
-client that has not ponged within 90s; most WebSocket libraries answer pings
-for you.
-
-The two lanes may be mixed on one socket, per library: a frame either presents
-a token or asks the server to use the credential it already has. What it must
-not do is present a token it expects to be ignored.
+closing the socket. `unsubscribe` takes the same frame shape as `subscribe`.
+The server pings every 30s and drops a client that has not ponged within 90s;
+most WebSocket libraries answer pings for you.
 
 An update that cannot be delivered because a client is behind is **deferred,
 not dropped**: the server remembers the latest commit id per library and sends
@@ -930,13 +916,14 @@ server that sends no list reads as "no features", which is the correct answer
 how the server was started rather than on which build it is; seeing it is how
 a client knows the socket exists at all.
 
-Check `notifications-credential` before omitting `jwt_token` from a subscribe.
+Check `notifications-credential` before subscribing without a `jwt_token`.
 This is the one place where guessing wrong is expensive rather than merely
-wrong: an older server reads a missing token as a bad one and answers
+wrong: a pre-0.5.0 server reads a missing token as a bad one and answers
 `jwt-expired`, which a client cannot tell from the token it did send having
 lapsed — so it mints a fresh one, sends it, and is told the same thing again.
 Seeing the name is what lets a client delete its notify-token code; not seeing
-it is what tells it to keep it. `notifications-account` is the same shape one
+it is what tells it to keep it, because that server still mints them.
+`notifications-account` is the same shape one
 step further: seeing it is what lets a client send `{"account": true}` and
 stop subscribing per library at all, and not seeing it is the difference
 between a server with no account mode and an account with nothing happening.
@@ -1578,12 +1565,13 @@ On the per-library lane, `commit_id` in a `library-update` is exactly the
 anchor `changes` wants, so the frame translates directly into
 `GET changes?since=<your last anchor>`. Do not treat the pushed `commit_id` as
 your new anchor without fetching — you may have missed events; push is a hint
-and the pull is the truth. A client still minting tokens should re-mint on
-`expires_at` rather than on `jwt-expired`, so a long-running mount never sees
-the disconnect. `expires_at` is a number where every other token response on
-this lane is strings; decode into a typed struct
-(`docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md`). A
-`404` from `notify-token` means fall back to polling, not an error.
+and the pull is the truth.
+
+There is no token on either lane since 0.5.0. Set `Authorization` on the
+upgrade request, subscribe with no `jwt_token`, and treat `subscribe-denied`
+as "re-check access" — a server that still wants a token does not advertise
+`notifications-credential`, which is the one thing to branch on. A server with
+no `notifications` at all means fall back to polling, not an error.
 
 ### If you are building a FUSE client
 

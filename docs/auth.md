@@ -22,8 +22,8 @@ hang off it as attributes, so none of them is the key.
 
 **Every secret a client presents is a row** in one table, resolved by one
 function. Revoking any of them is deleting a row. There is no second store and no
-lane that authenticates some other way. Two secrets sit outside that table, both
-listed below and both for reasons the table itself creates rather than for
+lane that authenticates some other way. One secret sits outside that table,
+listed below, and for a reason the table itself creates rather than for
 convenience.
 
 **A credential can only narrow.** Its `perm` and `scope` are a ceiling
@@ -34,11 +34,7 @@ intersected with what the account may do, never a grant of their own.
 | Account password | `AccountPassword.hash` — self-describing prefix, PBKDF2-SHA256 at 600k | — | n/a |
 | Session credential | `Credential`, kind `session`; `SHA-256(secret)` only | 24h, absolute | yes, next request |
 | Device credential | `Credential`, kind `device`; `SHA-256(secret)` only | 90d, absolute | yes, next request |
-| Notification token | not stored — HS256 over `option.JWTPrivateKey` | 72h, per library | no |
 | Setup token | `SetupToken.token`, one row, in the clear | until the first account exists | by claiming it, or `silo user add` |
-
-The notification token is the only unstored bearer token, and deliberately: it is
-verified in a process with no database.
 
 The setup token is the only secret held in the clear, and the only one that is
 not a `Credential`. Both follow from what it is for: it exists precisely while
@@ -319,7 +315,8 @@ the shape of a name.
 
 **A path scope is refused three surfaces, each deliberately:**
 
-- **Library-wide operations pass `""`** — `changes`, `commits`, `notify-token`.
+- **Library-wide operations pass `""`** — `changes`, `commits`, and a
+  notification subscribe.
   There is no way to answer "what changed in this library" partially without
   telling the holder about paths it may not reach.
 - **Chunks and objects are library-level**, from the other end: they are
@@ -884,27 +881,33 @@ that revocation, password change and deactivation all bump; until then, adding
 one trades the best property this design has for a saving nobody has measured a
 need for.
 
-## The one JWT
+## No JWT anywhere
 
-Statelessness is load-bearing in exactly one place: the notification token, which
-crosses to a process with no access to Silo's database.
+Silo issues no JWT and parses none. It did until 0.5.1: `POST
+/api/silo/v1/libraries/{id}/notify-token` minted a per-library HS256 token,
+`aud=silo:notif`, 72 hours, signed with `SILO_JWT_SECRET`, and a client presented
+it inside the subscribe frame on `WS /notification`. Statelessness was
+load-bearing there and nowhere else, because that token was checked in a process
+with no access to Silo's database.
 
-`POST /api/silo/v1/libraries/{id}/notify-token` mints one for a caller who can
-read the library, scoped to that library, HS256, `aud=silo:notif`, 72 hours. The
-audience is required by the validator, so a token of one kind cannot be replayed
-as another even though both are signed with the same key, and
-`jwt.WithValidMethods` means a token cannot select its own algorithm.
+That process no longer exists. The notification socket resolves an ordinary
+credential from the handshake's `Authorization` header and asks
+`middleware.PermFor` per library at subscribe time, which is the same question
+every other surface asks and answers it against the row rather than against a
+signature. Everything the token lane needed went with it: the endpoint, the
+parser, the signing key, the expiry sweep, and `golang-jwt` as a dependency.
 
-`SILO_JWT_SECRET` is generated randomly at startup when unset. Sessions are rows
-and survive a restart, so the only thing an ephemeral key invalidates is the
-notification tokens in flight, and a client re-mints one per subscription — a
-reconnect rather than a re-login. It should still become a keyfile; see
-[what is left](#what-is-left-in-order).
+The gain is not one fewer file. A JWT is valid until it expires, so a credential
+revoked at 10:00 kept its socket until the token ran out; now revocation reaches
+a live socket the same way it reaches a request. See
+[change notifications](protocol.md#change-notifications--ws-notification) in the protocol
+document for the wire.
 
-The notification socket uses `middleware.OptionalCredential`: a credential that
-is offered and bad is still refused, because a rejected credential must never be
-quietly downgraded to anonymous. The caller believes it is authenticated and
-would learn otherwise only from the permissions it silently stopped having.
+The notification socket requires a credential at the handshake, before the
+upgrade: a socket that offers none is `401`, and one that offers a bad
+credential is refused rather than quietly downgraded to anonymous — the caller
+believes it is authenticated and would learn otherwise only from the permissions
+it silently stopped having.
 
 ## What is not authenticated
 
@@ -1318,19 +1321,13 @@ Deferred rather than rejected — reconsider when a concrete consumer asks.
    account — `AccountPassword.hash` is a fast hash there, by the rule above —
    and still wanted for the accounts that have not crossed: enrolment, link
    redemption, and any account that has not yet been enrolled.
-3. **A persistent JWT signing key**, so a restart does not disconnect every
-   watching client. Nothing but notification tokens depends on it. The
-   `ServerSecret` table holds exactly this shape of value — a secret that is
-   the server's own and must outlive the process. A 0600 keyfile is the answer
-   if the key has to be readable by an operator or shared across processes; if
-   it does not, a row is one fewer file to get the permissions wrong on.
-4. **Setup credential** — built; see
+3. **Setup credential** — built; see
    [claiming a server](#claiming-a-server-that-has-no-accounts) in Part 1.
-5. **OIDC** — `/device/code`, the device grant against the IdP, ID-token
+4. **OIDC** — `/device/code`, the device grant against the IdP, ID-token
    verification, `AccountIdentity` binding with verified-address recovery, and
    backchannel logout. Adds no browser surface, and produces exactly the
    `Credential` row Part 1 describes.
-6. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
+5. **Master key and S3 derivation.** Only gates S3; defer until S3 is wanted.
 
 Outside that list: `role` can be set when an account is created but not
 afterwards, so an install that wants a second administrator creates one with

@@ -37,14 +37,13 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
 ## Features
 
 - Single-admin bootstrap via environment variables
-- JWT session tokens for the management API
+- Revocable credential rows for the management API — no JWT anywhere
 - Library create / list / delete
 - File operations: upload, download, mkdir, rename, move, delete
 - Directory listing via `/api/silo/v1/libraries/{id}/dir/`
 - Content-defined chunking, SHA-256 content addressing, per-library end-to-end encryption — see [`docs/storage.md`](docs/storage.md)
 - In-process notification server (WebSocket `/notification`) so a client gets push events on library updates instead of polling
 - Embedded SQLite backend (WAL mode, read/write connection split)
-- Auto-generated ephemeral JWT signing key if `SILO_JWT_SECRET` is unset
 
 ## Quick start
 
@@ -215,11 +214,10 @@ not reclaim unreferenced history inside a library that still exists.
 | `SILO_DATA_DIR` | Data directory | `~/.local/share/silo` |
 | `SILO_HOST` | Bind address | `127.0.0.1` (`0.0.0.0` in the Docker image) |
 | `SILO_PORT` | Listen port | `8082` |
-| `SILO_JWT_SECRET` | JWT signing key | auto-generated (ephemeral) |
 | `SILO_LOG_LEVEL` | Log level: debug, info, warn, error | — |
 | `SILO_SYNC_OBJECT_WRITES` | fsync objects before publishing them | `true` |
 | `SILO_VERIFY_FS_OBJECT_HASHES` | Check uploaded fs objects hash to their id (costs a decompress each; chunks and commits are always checked) | `true` |
-| `SILO_ENABLE_NOTIFICATIONS` | Serve the WebSocket notification endpoint. `false` turns it off, and `notify-token` then answers `404` | `true` |
+| `SILO_ENABLE_NOTIFICATIONS` | Serve the WebSocket notification endpoint. `false` turns it off, and `/notification` then answers `404` | `true` |
 | `SILO_GROUP_TABLE_NAME` | Name of the groups table, for a database inherited from a deployment that renamed it | `Group` |
 | `SILO_LOGIN_RATE_LIMIT` | Throttle failed logins per address and per account | `true` |
 | `SILO_TRUST_PROXY_HEADERS` | Believe `X-Forwarded-For` / `X-Real-Ip` — **set this behind a reverse proxy** | `false` |
@@ -376,7 +374,7 @@ Tested clients:
 - **Silo TUI** (`cmd/silo`) — full CRUD and browse
 - **silo-drive**, as a FUSE mount and as the macOS File Provider client —
   `server-info`, `auth/login`, `libraries`, `account/usage`, `entries`,
-  `changes`, the chunk surface, `notify-token` and the notification socket; see
+  `changes`, the chunk surface and the notification socket; see
   [`docs/protocol.md`](docs/protocol.md#writing-a-client) § Writing a client
 
 ## What's not implemented

@@ -23,10 +23,9 @@ import (
 // announcing, the socket fanning out, the client resubscribing — so it is worth
 // one test that owns none of them.
 func TestADeleteReachesAWatchingClient(t *testing.T) {
-	origEnabled, origKey := option.EnableNotification, option.JWTPrivateKey
-	t.Cleanup(func() { option.EnableNotification, option.JWTPrivateKey = origEnabled, origKey })
+	origEnabled := option.EnableNotification
+	t.Cleanup(func() { option.EnableNotification = origEnabled })
 	option.EnableNotification = true
-	option.JWTPrivateKey = "test-secret-key-for-wire-tests"
 	notif.Init()
 
 	base, _ := wire(t)
@@ -218,4 +217,106 @@ func libraryHead(t *testing.T, base, token, libraryID string) string {
 	}
 	t.Fatalf("library %s is not in the listing", libraryID)
 	return ""
+}
+
+// The token lane is gone, and the three things a client can observe about that
+// are pinned here.
+//
+// Each one is a sentence in the docs -- `protocol.md` § Removed in 0.5.0, and
+// `upgrading-to-0.5.0.md` -- and a client author will act on all three: delete
+// the minting call, move the credential onto the upgrade, and stop sending
+// `jwt_token`. A removal has no handler to test, so the assertion has to be
+// that the surface is absent in the exact shape the documentation claims,
+// rather than absent in some shape.
+func TestTheNotifyTokenLaneIsGone(t *testing.T) {
+	origEnabled := option.EnableNotification
+	t.Cleanup(func() { option.EnableNotification = origEnabled })
+	option.EnableNotification = true
+	notif.Init()
+
+	base, token := wire(t)
+	libraryID := makeLibrary(t, base, token)
+
+	// The mint answers 404 -- indistinguishable from notifications being
+	// switched off, which is why the docs send clients to the feature name
+	// instead of to a fallback on this status.
+	if code, body := call(t, "POST", base+"/api/silo/v1/libraries/"+libraryID+"/notify-token", token, ""); code != http.StatusNotFound {
+		t.Errorf("POST notify-token: status %d, want %d; body %s", code, http.StatusNotFound, body)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(base, "http") + "/notification"
+
+	// The handshake requires a credential now: no header, and a bad one, are
+	// both refused before the upgrade rather than downgraded to anonymous.
+	for _, tc := range []struct {
+		name   string
+		header http.Header
+	}{
+		{"no credential", nil},
+		{"a bad credential", http.Header{"Authorization": {"Bearer not-a-credential"}}},
+	} {
+		conn, resp, err := websocket.DefaultDialer.Dial(wsURL, tc.header)
+		if err == nil {
+			conn.Close()
+			t.Errorf("a socket with %s was upgraded; it must be refused", tc.name)
+			continue
+		}
+		if resp == nil {
+			t.Errorf("dial with %s failed without a response: %v", tc.name, err)
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("dial with %s: status %d, want %d", tc.name, resp.StatusCode, http.StatusUnauthorized)
+		}
+	}
+
+	// And a subscribe entry that still carries jwt_token is granted on the
+	// credential: the field is ignored, not refused, so a client mid-migration
+	// is not broken by the one line it forgot to delete.
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Authorization": {"Bearer " + token}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	frame := map[string]any{"type": "subscribe", "content": map[string]any{
+		"libraries": []map[string]any{{"id": libraryID, "jwt_token": "a token nothing issues any more"}},
+	}}
+	if err := conn.WriteJSON(frame); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	frames := make(chan notif.Message, 8)
+	go func() {
+		for {
+			var msg notif.Message
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			frames <- msg
+		}
+	}()
+
+	// Commit until an update comes back, since the subscribe lands on the
+	// server's read loop; a subscribe-denied at any point is the failure.
+	granted := false
+	for i := 0; i < 100 && !granted; i++ {
+		code, body := call(t, "PUT", base+"/api/silo/v1/libraries/"+libraryID+"/entries/probe"+strconv.Itoa(i)+"?type=dir", token, "")
+		if code != http.StatusOK && code != http.StatusCreated {
+			t.Fatalf("mkdir: status %d, body %s", code, body)
+		}
+		select {
+		case msg := <-frames:
+			if msg.Type == notif.EventTypeSubscribeDenied {
+				t.Fatalf("a subscribe carrying jwt_token was denied; the field must be ignored: %s", msg.Content)
+			}
+			if msg.Type == notif.EventTypeLibraryUpdate {
+				granted = true
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if !granted {
+		t.Error("a subscribe carrying a stale jwt_token never received an update")
+	}
 }

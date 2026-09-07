@@ -14,8 +14,11 @@ and on every call.
     /api/silo/v1/repos/{repoid}            ->  /api/silo/v1/libraries/{libraryid}
 
 and the same substitution on every sub-path: `/changes`, `/batch`,
-`/chunks/missing`, `/chunks/{id}`, `/objects/{id}`, `/head`, `/entries/{path}`,
-`/notify-token`.
+`/chunks/missing`, `/chunks/{id}`, `/objects/{id}`, `/head`, `/entries/{path}`.
+
+`/notify-token` is not on that list because it is not renamed, it is **gone** —
+under either spelling. See [the notification socket](#the-notification-socket)
+below.
 
 `/api/silo/v1/server-info`, `/api/silo/v1/auth/login` and the `/notification`
 WebSocket are unscoped and did not move.
@@ -25,9 +28,32 @@ WebSocket are unscoped and did not move.
     "repo_id"      ->  "library_id"     every payload that carries one
     "repos"        ->  "libraries"      the notification subscribe body's array
 
-Inside that array, `id` and `jwt_token` are **unchanged**. The chunk surface's
-bodies never named a library at all — `{"chunks":[…]}` out, `{"missing":[…]}`
-back — so they are covered entirely by the path change.
+Inside that array, `id` is **unchanged** and `jwt_token` is gone; see below.
+The chunk surface's bodies never named a library at all — `{"chunks":[…]}` out,
+`{"missing":[…]}` back — so they are covered entirely by the path change.
+
+## The notification socket
+
+`POST …/notify-token` is removed, the `jwt_token` field in a subscribe entry is
+ignored, and no `jwt-expired` frame is ever sent. A socket authorizes from the
+credential its handshake carried:
+
+1. Set `Authorization: Bearer <credential>` **on the upgrade request**. It was
+   optional before and is now required — a `/notification` upgrade with no
+   credential, or a bad one, is `401` before it becomes a socket.
+2. Send `{"type":"subscribe","content":{"libraries":[{"id":"<library>"}]}}`
+   with no `jwt_token`, or `{"type":"subscribe","content":{"account":true}}`
+   for one subscription covering everything the account can see.
+3. Handle `subscribe-denied` where you handled `jwt-expired`. It means
+   re-check access, never re-mint — there is nothing to mint.
+
+Delete the minting code rather than keeping a fallback: `notify-token` answers
+`404` now, and a `404` there is indistinguishable from notifications being
+switched off. Branch on `notifications-credential` in `server-info` instead,
+which is exactly what it is for. Full detail in
+[`protocol.md`](protocol.md#change-notifications--ws-notification), and the
+reasoning in
+[`plans/notifications-account.md`](plans/notifications-account.md) § Open.
 
 ## The notification frame type
 

@@ -4,6 +4,13 @@ Owns the build of [#54](https://git.booko.info/Silo/silo/issues/54). Built;
 the wire is normative in [`protocol.md`](../protocol.md) § Change notifications,
 and this file is where the shape was argued and what each step left behind.
 
+**The token lane it describes as still running is gone.** This plan was written
+against a server with two subscribe lanes, and the Open section below scheduled
+retiring the older one; that is now done, in 0.5.0, and the retirement is
+recorded there. Everything in the present tense about `notify-token`,
+`jwt-expired`, the token half of the sweep and the anonymous grace window is
+the state this plan was argued from, not the state of the server.
+
 ## The premise
 
 Everything about a library's *contents* pushes. Nothing about the **set of
@@ -437,11 +444,12 @@ advertise a distinction no caller can act on.
 
 ## What this does not do
 
-- **It does not replace the per-library lane.** `notify-token`, the
-  library-scoped JWT, its hourly sweep and `jwt-expired` all keep working
-  exactly as they do, for the clients already using them. Decision 6 means a
-  scoped credential no longer *needs* them, which is what makes retiring the
-  lane a later cleanup rather than a break — but nothing here retires it.
+- **It did not replace the per-library lane.** `notify-token`, the
+  library-scoped JWT, its hourly sweep and `jwt-expired` kept working exactly
+  as they did, for the clients already using them. Decision 6 meant a scoped
+  credential no longer *needed* them, which is what made retiring the lane a
+  later cleanup rather than a break — and that cleanup has since happened; see
+  Open.
 - **It does not push content.** A ring says the set moved; `GET /libraries` and
   `GET changes` remain the truth, exactly as `library-update` is a hint.
 - **It does not widen what an account can see.** Every ring is gated on the
@@ -465,24 +473,57 @@ pointing here.
   decision 3 for why it is not an authorization one. A compiled-in constant
   first; a `[notifications]` key in [`configuration.md`](../configuration.md)
   if a deployment ever wants it different.
-- **Retiring the token lane.** Its own issue, and decisions 5 and 6 are what
-  make it reachable: once the credential decides what may be subscribed,
-  `notify-token` answers a question nobody asks. What goes with it is larger
+- **Retiring the token lane — done, in 0.5.0.** Decisions 5 and 6 are what
+  made it reachable: once the credential decides what may be subscribed,
+  `notify-token` answers a question nobody asks. What went with it was larger
   than the endpoint — `parseNotifToken`, the token half of `sweepSubscriptions`,
-  `jwt-expired`, the per-subscription expiry map, `provisionalGrace` and `dropIfUnproven` (which
-  exist only because a socket can arrive anonymous and prove itself with a
-  token later), and then JWT itself: `AudNotif` is the audience on the one JWT
-  Silo still issues, `option.JWTPrivateKey` has two consumers, `golang-jwt` has
-  two non-test importers, and `SILO_JWT_SECRET` and `LoadJWTConfig` exist for
-  no other reason. It also retires a roadmap item rather than doing it — the
-  persistent JWT keyfile at mode 0600 is wanted only so a restart stops
-  invalidating notification tokens. Sequenced after both silo-drive clients
-  migrate, and it has to argue two things: that `notifications` may keep its
-  feature name while `notify-token` stops answering (`blocks` and
-  `blocks-fetch` are the only precedent, and that was a rename), and that
-  withdrawing an endpoint silo-drive asked for in 0.4.4
+  `jwt-expired`, the per-subscription expiry map, `provisionalGrace` and
+  `dropIfUnproven` (which existed only because a socket could arrive anonymous
+  and prove itself with a token later), and then JWT itself: `AudNotif`,
+  `option.JWTPrivateKey`, `LoadJWTConfig`, `SILO_JWT_SECRET`, and `golang-jwt`
+  as a dependency. It also retired a roadmap item rather than doing it — the
+  persistent JWT keyfile at mode 0600 was wanted only so a restart stopped
+  invalidating notification tokens, and there is now nothing to invalidate.
+  With no token to prove itself with later, an anonymous socket has nothing it
+  could ever subscribe to, so `/notification` refuses one at the handshake and
+  the grace window went with the lane rather than needing a replacement.
+
+  It was sequenced as planned, after all three silo-drive clients stopped
+  minting. The two arguments it had to make:
+
+  **`notifications` keeps its feature name while `notify-token` stops
+  answering.** The name is read by clients as "this server serves the socket",
+  which is what `option.EnableNotification` still gates and still decides; the
+  endpoint was one way to get onto the socket, not the thing the name asserts.
+  A feature name is never removed or reused (`protocol.md` § Start with
+  `features`), so the alternative — dropping `notifications` and adding a new
+  name for the same socket — would tell every client that push had gone away
+  in order to say that one of two doors had closed, and clients that had
+  already migrated would lose the socket for no reason. `notifications-credential`
+  is the name that carries the real information, and it was added in the same
+  release the credential lane was, precisely so that a client could tell the
+  two servers apart before this removal existed. The precedent is thinner than
+  it looks — `blocks` to `blocks-fetch` was a rename — but it points the same
+  way: the name tracks the capability, and the capability here is unchanged.
+
+  **Withdrawing an endpoint silo-drive asked for in 0.4.4
   ([`feature-req/notify-token-on-the-silo-lane.md`](../feature-req/notify-token-on-the-silo-lane.md))
-  is the same request taken further rather than a reversal.
+  is that request taken further, not reversed.** What that request wanted was
+  stated in it: to stop speaking a second protocol to hold a socket open —
+  one lane, one credential, one call, and the upstream `/repo/{id}/jwt-token`
+  route gone. It got that by moving the mint onto `/api/silo/v1`. The mint was
+  the compromise in it, not the point: a token minted from a permission check
+  and then checked in place of the permission is a copy of an answer the server
+  already had, with an expiry bolted on to bound how stale the copy may get.
+  Removing it is the same request's own logic applied one step further — one
+  lane, one credential, and now zero calls. The request argued for the mint on
+  exactly that ground: that authorizing "against the authenticated user,
+  instead of possession of a library token" is "strictly better under
+  `auth.md`'s model", because `CheckPerm` is where a credential's ceiling
+  intersects. Asking the credential at subscribe time is that sentence with the
+  intermediate token taken out. The client cost is negative: all three drives
+  had already deleted their minting code before the endpoint went.
+
 - **Whether `library-update` should become a doorbell too.** Distinct from the
   above: this is about the frame, not the token. The payload is already
   advisory — `protocol.md` § Push forbids using the pushed `commit_id` as an
@@ -495,3 +536,24 @@ pointing here.
 - **Whether per-library sockets get a credential re-check.** They are bounded
   at 72h today and they carry a payload that justifies a bound. Narrowing that
   is a change to a shipped lane.
+
+## Follow-ups from the simplify pass
+
+Found by an efficiency review of the six commits above, and left for after
+the token-lane retirement lands, because each one edits `client.go` while
+that work has it open:
+
+- **The hooks should cost no queries.** A rename, create or delete nudges an
+  early `resyncAccount`, which runs the four `visibleLibraries` queries per
+  socket to learn a fact the producer already had. A rename can `ring()`
+  directly; a delete can `unsubscribe` the one library and ring; a create can
+  pass the new library's id through `NotifyAccountUpdate` so the socket
+  subscribes it and rings. With that, `resyncNow` and the "resync failed, so
+  ring anyway" branch go, and the five-minute tick is the only resync.
+- **`visibleLibraries` should return the set.** Owned ids are unique by
+  primary key, so only the owned-and-granted overlap can repeat; the function
+  dedupes through a map and then flattens it, and `resyncAccount` builds the
+  same map again to diff. Return the map once.
+- **The resync ticker runs on every client.** Per-library-only sockets pay a
+  five-minute wake-up for a check they never need. A nil channel until the
+  account subscribe arrives makes the `select` case inert for them.

@@ -3,6 +3,16 @@
 **Landed** in 0.4.4, as proposed: `fileserver/api/notify.go` and one route.
 silo-drive's fallback path can go. See [What was done](#what-was-done) at the end.
 
+**Withdrawn** in 0.5.0. The endpoint, the token and `jwt-expired` are gone: a
+socket now authorizes each subscribe from the credential its handshake carried,
+which is this document's own argument — authorize "against the authenticated
+user, instead of possession of a library token" — with the intermediate token
+taken out. The reasoning is in
+[`plans/notifications-account.md`](../plans/notifications-account.md) § Open,
+and the lane that replaced it is normative in
+[`protocol.md`](../protocol.md#change-notifications--ws-notification). This
+file stays as the record of why the mint existed for one release.
+
 **Asked:** 18 Aug 2026, by silo-drive, against 0.4.3.
 **Size:** one handler and one route — 72 lines, prototyped and run end to end.
 **Blocks:** a client that speaks only the Silo lane. Today there is exactly one
