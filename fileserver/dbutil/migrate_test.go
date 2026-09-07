@@ -12,14 +12,14 @@ import (
 )
 
 // baselinePath is the oldest database this package promises to migrate: the
-// shape a fresh database had when the migration record landed, written by
-// that build. Every migration since is exercised on the way up from it, which
-// is why there is one fixture rather than one per change.
+// first shape Silo deployed, written by the build that deployed it. Every
+// migration since is exercised on the way up from it, which is why there is
+// one fixture rather than one per change.
 //
 // Regenerate it only when the promise changes -- when an install this old is
 // no longer worth migrating -- with SILO_WRITE_BASELINE=1 go test ./fileserver/dbutil
-// -run TestWriteBaseline. Regenerating it to make a failing test pass defeats
-// the test.
+// -run TestWriteBaseline, and empty the migrations list in the same commit.
+// Regenerating it to make a failing test pass defeats the test.
 const baselinePath = "testdata/baseline.db"
 
 func openTemp(t *testing.T) *DBPair {

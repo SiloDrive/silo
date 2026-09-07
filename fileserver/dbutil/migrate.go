@@ -60,19 +60,10 @@ func sqlMigration(name, statements string) Migration {
 // that recorded it would then hold a name this build does not know, which
 // reads as a newer build's work and refuses to start.
 var migrations = []Migration{
-	// Seven tables inherited from upstream that nothing wrote and, by the end,
-	// nothing read: three for groups, three for the share model LibraryGrant
-	// replaced, and one for per-token peer records on a lane that was
-	// deleted. See docs/plans/sharing.md § The grant model.
-	sqlMigration("drop-inherited-group-and-share-tables", `
-		DROP TABLE IF EXISTS GroupStructure;
-		DROP TABLE IF EXISTS GroupUser;
-		DROP TABLE IF EXISTS "Group";
-		DROP TABLE IF EXISTS LibraryGroup;
-		DROP TABLE IF EXISTS InnerPubLibrary;
-		DROP TABLE IF EXISTS SharedLibrary;
-		DROP TABLE IF EXISTS LibraryTokenPeerInfo;
-	`),
+	// Empty on purpose. The baseline fixture in testdata/ is the first shape
+	// Silo ever deployed, so there is no older database for a migration to
+	// bring forward. The first entry here is the first change made after
+	// that.
 }
 
 // migrationTable is the record. It is created by this package rather than by
