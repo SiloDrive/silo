@@ -23,6 +23,7 @@ import (
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/credential"
 	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/invite"
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
 	"github.com/dkam/silo/fileserver/notif"
@@ -412,6 +413,7 @@ func Run(args []string) error {
 	serversecret.Init(siloPair.Read, siloPair.Write)
 
 	setup.Init(siloPair.Read, siloPair.Write)
+	invite.Init(siloPair.Read, siloPair.Write)
 
 	// Mint the setup token, if this server has never had an account.
 	//
@@ -637,6 +639,11 @@ func newHTTPRouter() *mux.Router {
 	// hazards that keeps it from being an account-enumeration oracle.
 	r.HandleFunc("/api/silo/v1/auth/kdf", api.KDFParamsHandler).Methods("POST")
 	r.HandleFunc("/api/silo/v1/server-info", api.ServerInfoHandler).Methods("GET")
+	// Redeeming an invite. Unauthenticated for setup's reason -- there is
+	// nothing yet to authenticate as, because the account this request activates
+	// opens no lane until it does -- and guarded by the invite token instead.
+	// See api.RedeemInviteHandler.
+	r.HandleFunc("/api/silo/v1/auth/redeem", api.RedeemInviteHandler).Methods("POST")
 	// The administrative page. Unauthenticated because it carries no data: it
 	// is a form and two empty tables, and every number on it arrives from a
 	// fetch the browser makes with a credential the person typed in. Gating the
@@ -693,6 +700,13 @@ func newHTTPRouter() *mux.Router {
 	// already means -- and it is the view the server-level ceiling needs, since
 	// a refusal at that ceiling is otherwise a refusal with no way to see what
 	// filled it.
+	// Gated by users, because an invite is an account: minting one writes the
+	// row an address will belong to, and redeeming it is the only registration
+	// path there is. See api.CreateInviteHandler for why an invite naming the
+	// admin role is not an escalation past that gate.
+	adminRoute("/admin/invites", admin.CapUsers, api.ListInvitesHandler, "GET")
+	adminRoute("/admin/invites", admin.CapUsers, api.CreateInviteHandler, "POST")
+	adminRoute("/admin/invites/{id}", admin.CapUsers, api.RevokeInviteHandler, "DELETE")
 	adminRoute("/admin/libraries", admin.CapQuota, api.ListAdminLibrariesHandler, "GET")
 	adminRoute("/admin/storage", admin.CapRetention, adminStorageHandler, "GET")
 

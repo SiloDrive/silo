@@ -68,12 +68,31 @@ var kdfIPLimiter = ratelimit.New(60, time.Minute)
 // has exactly one legitimate user, once, ever.
 var setupIPLimiter = ratelimit.New(5, time.Minute)
 
+// Redemption gets its own bucket, per address, and it is setup's bucket
+// reasoned about twice rather than copied.
+//
+// The same argument holds for the token: an invite is a credential, so guessing
+// one is guessing a secret nobody has enough centuries for, and this limiter is
+// not what stands between an attacker and an account. What it bounds is the
+// cost of the endpoint and a client stuck in a retry loop.
+//
+// Bigger than setup's bucket, because the traffic is different in the other
+// direction: an install invites people continually, several of whom may be
+// behind one office address on the morning they were all sent one.
+//
+// Per address only, for setup's reason. There is an account to count against
+// here -- the invite names one -- and counting against it would be a bucket
+// keyed by a row an attacker can name without holding, which is a way to lock
+// an invited person out of their own invite by failing on their behalf.
+var redeemIPLimiter = ratelimit.New(20, time.Minute)
+
 // StartLoginLimiterCleanup drops idle buckets for the life of the process.
 func StartLoginLimiterCleanup() {
 	loginIPLimiter.StartCleanup()
 	loginAccountLimiter.StartCleanup()
 	kdfIPLimiter.StartCleanup()
 	setupIPLimiter.StartCleanup()
+	redeemIPLimiter.StartCleanup()
 }
 
 // resetRateLimiters refills every bucket this package keeps. Init calls it; see
@@ -83,6 +102,7 @@ func resetRateLimiters() {
 	loginAccountLimiter.ResetAll()
 	kdfIPLimiter.ResetAll()
 	setupIPLimiter.ResetAll()
+	redeemIPLimiter.ResetAll()
 }
 
 // allowSetupAttempt reports whether a setup attempt may proceed, writing a 429
@@ -107,6 +127,31 @@ func setupFailed(r *http.Request) {
 		return
 	}
 	setupIPLimiter.Penalize(utils.ClientIP(r, option.TrustProxyHeaders))
+}
+
+// allowRedeemAttempt reports whether an invite redemption may proceed, writing
+// a 429 itself when it may not. Only failures spend a token, matching setup and
+// login: the one success an invite ever sees must not leave its person
+// throttled on the request that follows it.
+func allowRedeemAttempt(w http.ResponseWriter, r *http.Request) bool {
+	if !option.LoginRateLimit {
+		return true
+	}
+	ip := utils.ClientIP(r, option.TrustProxyHeaders)
+	if ok, retry := redeemIPLimiter.Allowed(ip); !ok {
+		tooManyAttempts(w, "invite redemption", retry)
+		log.Warnf("Invite redemption rate limit reached for address %s", ip)
+		return false
+	}
+	return true
+}
+
+// redeemFailed charges a refused redemption against the address bucket.
+func redeemFailed(r *http.Request) {
+	if !option.LoginRateLimit {
+		return
+	}
+	redeemIPLimiter.Penalize(utils.ClientIP(r, option.TrustProxyHeaders))
 }
 
 // allowKDFRequest reports whether a pre-login parameter request may proceed,

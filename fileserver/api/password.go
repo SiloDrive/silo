@@ -15,6 +15,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/dkam/silo/fileserver/account"
@@ -75,8 +76,13 @@ func writeNewSecret(w http.ResponseWriter, ctx context.Context, acct *account.Ac
 		return true
 	}
 
+	// An account with no stored hash at all is not an error here, and there is
+	// exactly one way to be one: redemption, where this function writes the
+	// first secret an invited account ever has. It has not crossed over --
+	// nothing has been written for it to have crossed over with -- so the
+	// refusal below has nothing to refuse, and an empty hash says so.
 	_, stored, err := account.PasswordHash(ctx, acct.Email)
-	if err != nil {
+	if err != nil && !errors.Is(err, account.ErrNotFound) {
 		log.Errorf("Failed to read the stored hash for %s: %v", acct.Email, err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return false

@@ -16,6 +16,7 @@ import (
 	"github.com/dkam/silo/fileserver/api"
 	"github.com/dkam/silo/fileserver/authmgr"
 	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/dkam/silo/fileserver/invite"
 	"github.com/dkam/silo/fileserver/notif"
 	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/setup"
@@ -52,6 +53,7 @@ func serveTestAPI(t *testing.T) string {
 	authmgr.Init(siloPair.Read, siloPair.Write)
 	admin.Init(siloPair.Read, siloPair.Write)
 	setup.Init(siloPair.Read, siloPair.Write)
+	invite.Init(siloPair.Read, siloPair.Write)
 
 	// serveHandler rather than the bare router, so a wire test exercises the
 	// stack the server actually runs.

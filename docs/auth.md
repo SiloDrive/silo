@@ -154,8 +154,18 @@ primary key.
 |---|---|---|---|
 | `session` | the TUI, the CLI, any client that just logs in | 24h | built |
 | `device` | silo-drive (FUSE mount, File Provider extension) | 90d default | built |
+| `invite` | the person an invitation was sent to, once | 7d default | built |
 | `access` | a capability URL, if one is ever built | — | reserved; nothing mints it |
 | `s3` | an S3 frontend, if one is ever built | — | reserved; see [S3](#s3-needs-a-master-key-not-a-column) |
+
+`invite` is the one kind no `Authorization` header ever carries. It is presented
+in the body of `POST auth/redeem` and resolved by `credential.ResolveInvite`,
+which drops exactly one of `Resolve`'s checks — the account it names is inactive
+until that request activates it — and keeps every other. One route consumes it,
+and no lane accepts the kind at all, which is what keeps a leaked invite from
+being a session token for the address it names. `docs/plans/sharing.md` § Accounts
+is the owning document, and it is the enforcement site for the
+tombstone-inheritance warning below.
 
 There is no `legacy` kind. Every client can be changed, so a scheme Silo does not
 mint for is a client that has misread the model rather than one to accommodate.

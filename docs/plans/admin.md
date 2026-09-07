@@ -158,6 +158,9 @@ GET    /api/silo/v1/admin/accounts/{id}/quota   quota
 PUT    /api/silo/v1/admin/accounts/{id}/quota   quota
 PUT    /api/silo/v1/admin/accounts/{id}/role    grant
 PUT    /api/silo/v1/admin/accounts/{id}/caps    grant
+GET    /api/silo/v1/admin/invites               users
+POST   /api/silo/v1/admin/invites               users
+DELETE /api/silo/v1/admin/invites/{id}          users
 GET    /api/silo/v1/admin/libraries             users
 GET    /api/silo/v1/admin/storage               retention
 ```

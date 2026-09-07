@@ -93,10 +93,16 @@ type createAccountRequest struct {
 // CreateAdminAccountHandler handles POST /api/silo/v1/admin/accounts.
 //
 // The password arrives in the body, which is the one thing about this route
-// worth stating: there is no invite flow yet, so an administrator creating an
-// account chooses its first password and has to convey it. When invites land
-// (silo#14) this becomes the lane that mints one rather than the lane that
-// sets a secret somebody else knows.
+// worth stating: an administrator creating an account this way chooses its
+// first password and has to convey it, so they know a secret that is not
+// theirs until the person changes it.
+//
+// POST /admin/invites is the other door and the better one. It mints a
+// credential rather than a password, binds the address it was sent to, and
+// leaves the first secret to the person redeeming it -- which is also what
+// makes the E2EE bootstrap possible, since a wrapKey derived from a password
+// the server chose is a wrapKey the server could derive. This route stays for
+// the case invites cannot serve: an install with no working mail.
 func CreateAdminAccountHandler(w http.ResponseWriter, r *http.Request) {
 	var req createAccountRequest
 	if !decodeJSON(w, r, &req) {

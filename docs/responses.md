@@ -67,7 +67,7 @@ variable.
 | `415 Unsupported Media Type` | the body's framing was not declared — `POST chunks` without `Content-Type: application/vnd.silo.chunks` | set the header and retry. The framing is not guessable from the bytes, so an undeclared body is refused rather than parsed hopefully |
 | `416 Range Not Satisfiable` | the range is outside the entry | |
 | `424 Failed Dependency` | the write names chunks the server does not hold | `PUT entries/{path}?type=chunks` and a `create` inside `POST batch`. The body is `{"error":…,"missing":[sha256,…]}` — upload those, then send the *identical* request again. Not `400`, because nothing about the request is wrong |
-| `429 Too Many Requests` | rate limiting; carries `Retry-After` | wait the stated time. Three sources. Where a password is verified — the login endpoints, and `POST auth/password`, which spends the same buckets because a credential is not a throttle. And `POST auth/kdf`, which has its own per-address bucket at sixty a minute and spends a token on every request rather than only on failures, because it has no failures. And `POST auth/setup`, per address only at five a minute — there is no account to count against, since the address in the request is one the operator is inventing |
+| `429 Too Many Requests` | rate limiting; carries `Retry-After` | wait the stated time. Three sources. Where a password is verified — the login endpoints, and `POST auth/password`, which spends the same buckets because a credential is not a throttle. And `POST auth/kdf`, which has its own per-address bucket at sixty a minute and spends a token on every request rather than only on failures, because it has no failures. And `POST auth/setup`, per address only at five a minute — there is no account to count against, since the address in the request is one the operator is inventing. `POST auth/redeem` has the same shape at twenty a minute, and per address for a second reason: the invite names an account, and counting against it would let anybody holding the code lock the invited person out of their own invite |
 
 ### The server could not do it
 
@@ -108,6 +108,8 @@ a client written from the code alone.
 | `A library with that id already exists` | the `library_id` you minted for an encrypted library is taken | mint another and rebuild the wrap, which binds the id |
 | `This account has published no identity key…` | you asked for an encrypted library before `PUT account/keys` | publish key material, then retry |
 | `This server has already been set up` | you posted `auth/setup` to a server that already has an account | log in instead; the setup token is spent for good |
+| `This invite has already been redeemed` | you posted `auth/redeem` with an invite somebody has already used — including you | log in with the address it was sent to; the invite is spent for good. This is *not* the answer a withdrawn or lapsed invite gets, which is `401` |
+| `An active account already holds that address` | you asked for an invite to an address somebody is already using | nothing to do; that person already has an account |
 
 All five are "the state here is not what your request assumed", and all five
 want the same shape of handling: change something and send it again, rather

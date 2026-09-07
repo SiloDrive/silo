@@ -242,12 +242,13 @@ a scoped credential reaches its own library's key and no other.
 ### Native management API — `/api/silo/v1/*`
 
 JSON request/response bodies. Used by the silo TUI, the CLI in `client/`, and
-the sync clients. Protected by `RequireCredential`, except the four marked
+the sync clients. Protected by `RequireCredential`, except the five marked
 **No auth** below — they are registered above the authenticated subrouter
 (`NewServer` in `fileserver/server.go`) because they are what a client needs *before* it
 has a credential: one to learn what it is talking to, one to get the parameters
-that turn a password into what it sends, one to get a token, and one to create
-the first account on a server that has none. `auth/logout` and `auth/renew`
+that turn a password into what it sends, one to get a token, one to create
+the first account on a server that has none, and one to turn an invitation into
+an account. `auth/logout` and `auth/renew`
 are registered there too, but are authenticated: see the lane note above.
 
 | Method | Path | Purpose |
@@ -259,6 +260,7 @@ are registered there too, but are authenticated: see the lane note above.
 | POST | `/api/silo/v1/auth/logout/everywhere` | Discard every credential the account holds, including this one |
 | POST | `/api/silo/v1/auth/password` | `{"current_password":…,"new_password":…}` — change the password. Needs `rw` and the current password; revokes `session` credentials and leaves `device` ones mounted. With `"client_kdf_params":…` it is the split-derivation crossover instead: `new_password` carries an `authKey`, and hash and parameters are written together. Feature name `split-login` |
 | POST | `/api/silo/v1/auth/setup` | **No auth**, because it is the request that creates the first account — there is nothing to authenticate it against yet. `{"email":…,"password":…,"setup_token":…}` → `201 {"token":…}`, login's shape exactly. The address and password are the operator's choice; the setup token, printed at boot and by `silo setup-token`, is what proves they own the host. `401` for a wrong *or* malformed token, indistinguishably; `409` once any account exists. Guarded by `setup_required` above rather than by trying it |
+| POST | `/api/silo/v1/auth/redeem` | **No auth**, for setup's reason: the account this activates opens no lane until it does. `{"invite_token":…,"password":…}` → `201 {"token":…}`, login's shape. The invite binds the address — there is no `email` field, and delivery to that inbox is the verification — and the password is the redeemer's choice, or an `authKey` when `"client_kdf_params"` is sent alongside, exactly as on `auth/password`. `401` for a token that is malformed, unknown, withdrawn or lapsed, indistinguishably; `409` for one already redeemed. Publish key material next, with the session this hands back. Feature name `invites` |
 | POST | `/api/silo/v1/auth/kdf` | **No auth.** `{"email":…}` → the argon2id parameters that address's password is stretched under, client-side. Never `404`: an address with no account gets plausible, stable, per-address parameters, so this cannot be used to ask which addresses exist |
 | GET | `/api/silo/v1/account` | `{"account_id","email"}` — who this credential belongs to. Behind any credential; nothing here is a secret. It answers before enrolment, which `account/keys` does not, and that is what it is for: `store.WrapIdentity` binds the `account_id`, so a client cannot wrap an identity key until it knows one |
 | GET | `/api/silo/v1/account/keys` | The account's `account_id` — the holder its wraps are bound to — with its published X25519 public key, its wrapped identity private key, its recovery wraps and its `kdf_params`. `404` before anything is published. Readable with a `perm: "r"` credential |

@@ -158,6 +158,12 @@ func features() []string {
 		// talking to a server that creates its own admin account at boot, and
 		// should say so rather than read the 404 as a transient failure.
 		"setup", // POST auth/setup, and setup_required on this response
+		// Invitations, and the only registration path there is. A client that
+		// cannot see this name is talking to a server where an account is
+		// created by an administrator choosing somebody's first password, so
+		// it must not offer to redeem anything -- and a 404 on redemption
+		// reaches a person as a broken link rather than as an older server.
+		"invites", // POST auth/redeem, and the admin/invites routes behind it
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification
