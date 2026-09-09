@@ -32,6 +32,19 @@ var (
 	Port          uint32
 	MaxUploadSize uint64
 
+	// DefaultMaxUploadSize is the ceiling on one request's body when
+	// max_upload_size says nothing, which is what an install that has never
+	// read the config reference has.
+	//
+	// Nonzero, because the zero this used to be meant no limit: the shipped
+	// behaviour of an unconfigured server was that one request could be any
+	// size at all. It is a backstop and not the protection — a hundred
+	// gigabytes is past any file this lane is meant to carry and short of
+	// nothing an attacker wants, and what actually stops a body from taking
+	// the volume is the reserve being watched while it arrives. Set
+	// max_upload_size to mean it.
+	DefaultMaxUploadSize uint64 = 100 * GB
+
 	// notification server
 	EnableNotification bool
 

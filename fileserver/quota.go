@@ -159,7 +159,7 @@ func checkServerLimits(delta int64) *batchFailure {
 	}
 
 	if option.DiskReserve > 0 {
-		free, err := diskfree.Available(absDataDir)
+		free, err := availableSpace(absDataDir)
 		if err != nil {
 			log.Warnf("Cannot read free space, so only the configured ceiling applies: %v", err)
 			return nil
@@ -170,6 +170,10 @@ func checkServerLimits(delta int64) *batchFailure {
 	}
 	return nil
 }
+
+// availableSpace is diskfree.Available, replaced in tests. A test about what
+// happens when a volume fills cannot fill a volume.
+var availableSpace = diskfree.Available
 
 // refuseOverQuota writes the refusal, and reports whether the caller should
 // stop.
