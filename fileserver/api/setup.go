@@ -55,9 +55,11 @@ func SetupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !allowSetupAttempt(w, r) {
+	releaseAttempt, ok := allowSetupAttempt(w, r)
+	if !ok {
 		return
 	}
+	defer releaseAttempt()
 
 	ctx, cancel := option.WithDBTimeout(r.Context())
 	defer cancel()

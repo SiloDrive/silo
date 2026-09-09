@@ -309,9 +309,11 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !allowLoginAttempt(w, r, req.Email) {
+	releaseAttempt, ok := allowLoginAttempt(w, r, req.Email)
+	if !ok {
 		return
 	}
+	defer releaseAttempt()
 
 	acct, err := authmgr.ValidatePassword(req.Email, req.Password)
 	if err != nil {

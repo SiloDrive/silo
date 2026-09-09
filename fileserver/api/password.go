@@ -141,9 +141,11 @@ func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	// throttle: whoever holds one can guess the password here as fast as the
 	// server will hash, which is the attack the current-password requirement
 	// exists to stop and would not stop unbounded.
-	if !allowLoginAttempt(w, r, acct.Email) {
+	releaseAttempt, ok := allowLoginAttempt(w, r, acct.Email)
+	if !ok {
 		return
 	}
+	defer releaseAttempt()
 
 	// Against the account resolved from the credential, not an address in the
 	// body. There is no address in the body for exactly this reason -- a

@@ -19,3 +19,6 @@ __pycache__/
 # The one database that is committed on purpose: the oldest shape the
 # migrations promise to bring forward. See fileserver/dbutil/migrate_test.go.
 !fileserver/dbutil/testdata/baseline.db
+
+# Books, and anything else that wandered in
+*.epub
