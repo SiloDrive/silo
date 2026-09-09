@@ -222,6 +222,7 @@ not reclaim unreferenced history inside a library that still exists.
 | `SILO_ENABLE_NOTIFICATIONS` | Serve the WebSocket notification endpoint. `false` turns it off, and `/notification` then answers `404` | `true` |
 | `SILO_LOGIN_RATE_LIMIT` | Throttle failed logins per address and per account | `true` |
 | `SILO_TRUST_PROXY_HEADERS` | Believe `X-Forwarded-For` / `X-Real-Ip` — **set this behind a reverse proxy** | `false` |
+| `SILO_TRUSTED_PROXY_HOPS` | How many proxies stand in front, deciding which `X-Forwarded-For` entry is the client's. Raise it only if something sits in front of your proxy: too high reads an entry the client wrote | `1` |
 | `SILO_SENTRY_DSN` | Send errors, panics and request timings to Sentry, [Splat](https://github.com/dkam/splat) or GlitchTip (`SENTRY_DSN` also works) | — (send nothing) |
 | `SILO_SENTRY_ENVIRONMENT` | Environment name on reported events | `production` |
 | `SILO_SENTRY_RELEASE` | Release name on reported events | `silo@<version>` |
@@ -321,6 +322,10 @@ server {
     client_max_body_size 0;
     proxy_request_buffering off;
 
+    location /debug/pprof {
+        return 404;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8082;
         proxy_set_header Host $host;
@@ -331,10 +336,26 @@ server {
 ```
 
 Then set `SILO_TRUST_PROXY_HEADERS=true` so per-address rate limiting sees the
-real client rather than the proxy.
+real client rather than the proxy. Without it every client arrives as the
+proxy and shares one bucket, so ten failures from anywhere throttle everybody
+— and the warning that says so is attached to the TLS check, which is silent
+on the loopback bind that is the correct configuration. Nothing will remind
+you.
+
+If anything sits in front of your proxy — Cloudflare, say — set
+`SILO_TRUSTED_PROXY_HOPS` to the number of proxies. `X-Forwarded-For` is a
+path and Silo counts from the end of it; the entries at the front are the ones
+the client wrote.
 
 Setting `SILO_HOST` to a non-loopback address logs a warning on every start,
 since from there Silo cannot tell whether anything is terminating TLS for it.
+Under Docker, publish the port as `127.0.0.1:8082:8082` — a bare `8082:8082`
+puts Silo on every host interface, in front of whatever firewall rule you
+wrote.
+
+[`docs/deployment.md`](docs/deployment.md) is the full checklist for the day
+the port opens: a Caddyfile, blocking `/debug/pprof`, and claiming the setup
+token before any log shipping starts.
 
 ## Revoking access
 
