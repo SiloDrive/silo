@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dkam/silo/fileserver/utils"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/ini.v1"
 )
@@ -215,6 +216,26 @@ func envBool(def bool, names ...string) bool {
 	return def
 }
 
+// envHops reads a proxy-hop count. Anything unparseable or below one keeps the
+// default, because a bad value here is not a knob that fails to take effect --
+// too high reads an entry the client wrote, which is the bug this exists to
+// have fixed.
+func envHops(def int, names ...string) int {
+	for _, name := range names {
+		v := strings.TrimSpace(os.Getenv(name))
+		if v == "" {
+			continue
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			log.Warnf("Ignoring unparseable %s=%q, using %d", name, v, def)
+			return def
+		}
+		return n
+	}
+	return def
+}
+
 // LoadFileServerOptions loads silo.conf from the given path. An empty
 // path or a missing file is fine — Silo then runs entirely on compiled
 // defaults plus environment variable overrides.
@@ -254,6 +275,11 @@ func LoadFileServerOptions(configFile string) {
 	}
 
 	TrustProxyHeaders = envBool(TrustProxyHeaders, "SILO_TRUST_PROXY_HEADERS")
+	// Which X-Forwarded-For entry is the client's, and so which one the rate
+	// limiters count. It lives in utils because that is where the header is
+	// read and there is no second copy to drift; see utils.TrustedProxyHops
+	// for why the safe direction is downwards.
+	utils.TrustedProxyHops = envHops(utils.TrustedProxyHops, "SILO_TRUSTED_PROXY_HOPS")
 
 	VerifyFSObjectHashes = envBool(VerifyFSObjectHashes, "SILO_VERIFY_FS_OBJECT_HASHES")
 	if !VerifyFSObjectHashes {
