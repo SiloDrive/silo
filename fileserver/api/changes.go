@@ -8,6 +8,7 @@ import (
 
 	"github.com/dkam/silo/fileserver/libmgr"
 	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/dkam/silo/fileserver/objmgr"
 	"github.com/dkam/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -233,6 +234,15 @@ func libraryChanges(library *libmgr.Library, since, pinned string) (string, []ch
 func writeChangesErr(w http.ResponseWriter, err error, since, target, libraryID string) {
 	if errors.Is(err, errHistoryCut) {
 		http.Error(w, "since is no longer reachable; enumerate from scratch", http.StatusGone)
+		return
+	}
+	// A tree with more paths through it than objects in it has no listing that
+	// is both complete and finite. Refused as the client error it is, rather
+	// than truncated: a short answer presented as a complete one would have a
+	// client delete files it still holds.
+	var tooLarge *objmgr.TooLargeError
+	if errors.As(err, &tooLarge) {
+		http.Error(w, "that range spans more changes than can be listed", http.StatusRequestEntityTooLarge)
 		return
 	}
 	log.Errorf("Failed to diff %s..%s in library %s: %v", since, target, libraryID, err)

@@ -474,6 +474,13 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 
 	delta, err := st.MeasureDelta(oldRoot, commit.Root)
 	if err != nil {
+		// A tree that totals more than can be counted is the client's tree,
+		// and there is no head move that makes it chargeable. Refusing here is
+		// what keeps a wrapped total from being read as a negative delta.
+		if errors.Is(err, objmgr.ErrTotalTooLarge) {
+			http.Error(w, "That commit reaches more content than can be counted; it is not a tree this library can hold", http.StatusBadRequest)
+			return
+		}
 		log.WithContext(r.Context()).WithError(err).Errorf("failed to measure usage delta for library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return

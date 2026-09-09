@@ -37,18 +37,29 @@ func (e *MissingObject) Error() string {
 // It needs no key. Directory entries, manifest chunk lists and chunk ids are
 // public in both library types, which is the same fact the collector's mark
 // rests on.
+// A DAG bomb costs what its objects cost rather than what its paths do: see
+// [walk]. Verifying is idempotent, so a subtree already checked is skipped,
+// and the walk ends up bounded by the number of distinct objects the library
+// holds — which is the bound that belongs on it.
 func (s *Store) VerifyDelta(oldRoot, newRoot store.ID) error {
-	return s.mergeDirs(oldRoot, newRoot,
+	return s.verifyDeltaWalk(newVerifyWalk(), oldRoot, newRoot)
+}
+
+func (s *Store) verifyDeltaWalk(w *walk, oldRoot, newRoot store.ID) error {
+	if !w.enterPair(oldRoot, newRoot) {
+		return nil
+	}
+	return s.mergeDirs(w, oldRoot, newRoot,
 		func(store.DirEntry) error { return nil },
-		func(n store.DirEntry) error { return s.verifyEntry(n) },
+		func(n store.DirEntry) error { return s.verifyEntry(w, n) },
 		func(o, n store.DirEntry) error {
 			if o.ChildID == n.ChildID && o.Type == n.Type {
 				return nil
 			}
 			if o.Type == store.NodeDir && n.Type == store.NodeDir {
-				return s.verifyDelta(o.ChildID, n.ChildID)
+				return s.verifyDelta(w, o.ChildID, n.ChildID)
 			}
-			return s.verifyEntry(n)
+			return s.verifyEntry(w, n)
 		},
 	)
 }
@@ -56,8 +67,8 @@ func (s *Store) VerifyDelta(oldRoot, newRoot store.ID) error {
 // verifyDelta is VerifyDelta below the root, with the missing-directory case
 // attributed: mergeDirs reads both directories itself, and a new one that is
 // not there has to be reported as the new one.
-func (s *Store) verifyDelta(oldID, newID store.ID) error {
-	err := s.VerifyDelta(oldID, newID)
+func (s *Store) verifyDelta(w *walk, oldID, newID store.ID) error {
+	err := s.verifyDeltaWalk(w, oldID, newID)
 	if errors.Is(err, objstore.ErrNotFound) {
 		if ok, hErr := s.HasObject(newID); hErr == nil && !ok {
 			return &MissingObject{Kind: "directory", ID: newID}
@@ -67,7 +78,13 @@ func (s *Store) verifyDelta(oldID, newID store.ID) error {
 }
 
 // verifyEntry checks one entry and everything beneath it.
-func (s *Store) verifyEntry(e store.DirEntry) error {
+func (s *Store) verifyEntry(w *walk, e store.DirEntry) error {
+	// A subtree that is complete is complete however many names reach it, so
+	// the second visit has nothing to learn and the walk skips it. That is
+	// what turns a DAG bomb from 2^n paths into n objects.
+	if !w.enterNode(e.ChildID) {
+		return nil
+	}
 	if e.Type == store.NodeDir {
 		d, err := s.GetDirectoryPublic(e.ChildID)
 		if err != nil {
@@ -77,7 +94,7 @@ func (s *Store) verifyEntry(e store.DirEntry) error {
 			return fmt.Errorf("directory %s: %w", e.ChildID, err)
 		}
 		for _, child := range d.Entries {
-			if err := s.verifyEntry(child); err != nil {
+			if err := s.verifyEntry(w, child); err != nil {
 				return err
 			}
 		}

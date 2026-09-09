@@ -42,9 +42,12 @@ type Change struct {
 // bounded by the size of the diff rather than the size of the tree, which is
 // what makes it a different question from the listing sidecar — a listing pays
 // per entry shown, and this pays per entry that moved.
+// A DAG bomb is refused rather than answered: see [walk]. This is the walk
+// with nothing to dedupe, because every path it reaches is a separate line of
+// the answer, so the ceiling is the only bound available to it.
 func (s *Store) Diff(oldRoot, newRoot store.ID) ([]Change, error) {
 	var out []Change
-	if err := s.diffDir(oldRoot, newRoot, "", &out); err != nil {
+	if err := s.diffDir(newDiffWalk(), oldRoot, newRoot, "", &out); err != nil {
 		return nil, err
 	}
 	return detectMoves(out), nil
@@ -58,11 +61,11 @@ func (s *Store) renderName(name []byte) string {
 	return string(name)
 }
 
-func (s *Store) diffDir(oldID, newID store.ID, prefix string, out *[]Change) error {
-	return s.mergeDirs(oldID, newID,
-		func(o store.DirEntry) error { return s.emitSubtree(o, prefix, "delete", out) },
-		func(n store.DirEntry) error { return s.emitSubtree(n, prefix, "create", out) },
-		func(o, n store.DirEntry) error { return s.diffEntry(o, n, prefix, out) },
+func (s *Store) diffDir(w *walk, oldID, newID store.ID, prefix string, out *[]Change) error {
+	return s.mergeDirs(w, oldID, newID,
+		func(o store.DirEntry) error { return s.emitSubtree(w, o, prefix, "delete", out) },
+		func(n store.DirEntry) error { return s.emitSubtree(w, n, prefix, "create", out) },
+		func(o, n store.DirEntry) error { return s.diffEntry(w, o, n, prefix, out) },
 	)
 }
 
@@ -80,16 +83,19 @@ func (s *Store) diffDir(oldID, newID store.ID, prefix string, out *[]Change) err
 // disagree about the same pair of trees, with nothing to say which was right.
 // So the ordering assumption is written once, here, and the two callers supply
 // only what they do per entry.
-func (s *Store) mergeDirs(oldID, newID store.ID, onlyOld, onlyNew func(store.DirEntry) error, both func(o, n store.DirEntry) error) error {
+func (s *Store) mergeDirs(w *walk, oldID, newID store.ID, onlyOld, onlyNew func(store.DirEntry) error, both func(o, n store.DirEntry) error) error {
 	if oldID == newID {
 		return nil
 	}
+	if err := w.step(); err != nil {
+		return err
+	}
 
-	oldEntries, err := s.publicEntries(oldID)
+	oldEntries, err := w.listing(s, oldID)
 	if err != nil {
 		return err
 	}
-	newEntries, err := s.publicEntries(newID)
+	newEntries, err := w.listing(s, newID)
 	if err != nil {
 		return err
 	}
@@ -133,7 +139,7 @@ func (s *Store) mergeDirs(oldID, newID store.ID, onlyOld, onlyNew func(store.Dir
 }
 
 // diffEntry compares two entries that share a name.
-func (s *Store) diffEntry(o, n store.DirEntry, prefix string, out *[]Change) error {
+func (s *Store) diffEntry(w *walk, o, n store.DirEntry, prefix string, out *[]Change) error {
 	if o.ChildID == n.ChildID && o.Type == n.Type {
 		return nil
 	}
@@ -143,14 +149,14 @@ func (s *Store) diffEntry(o, n store.DirEntry, prefix string, out *[]Change) err
 	// as two operations because it is two: a client that treated it as a
 	// modification would try to write a directory's bytes over a file.
 	if o.Type != n.Type {
-		if err := s.emitSubtree(o, prefix, "delete", out); err != nil {
+		if err := s.emitSubtree(w, o, prefix, "delete", out); err != nil {
 			return err
 		}
-		return s.emitSubtree(n, prefix, "create", out)
+		return s.emitSubtree(w, n, prefix, "create", out)
 	}
 
 	if n.Type == store.NodeDir {
-		return s.diffDir(o.ChildID, n.ChildID, p, out)
+		return s.diffDir(w, o.ChildID, n.ChildID, p, out)
 	}
 
 	size, err := s.fileSize(n.ChildID)
@@ -168,11 +174,14 @@ func (s *Store) diffEntry(o, n store.DirEntry, prefix string, out *[]Change) err
 // inside it. A client applying the answer needs every path it must create or
 // remove, and telling it only about the directory would leave it to enumerate
 // the subtree itself — which is the round trip this endpoint exists to avoid.
-func (s *Store) emitSubtree(e store.DirEntry, prefix, op string, out *[]Change) error {
+func (s *Store) emitSubtree(w *walk, e store.DirEntry, prefix, op string, out *[]Change) error {
+	if err := w.step(); err != nil {
+		return err
+	}
 	p := path.Join(prefix, s.renderName(e.Name))
 	if e.Type == store.NodeDir {
 		*out = append(*out, Change{Op: op, Path: "/" + p, ID: e.ChildID, IsDir: true})
-		return s.walkPublic(e.ChildID, p, op, out)
+		return s.walkPublic(w, e.ChildID, p, op, out)
 	}
 	size, err := s.fileSize(e.ChildID)
 	if err != nil {
@@ -182,13 +191,13 @@ func (s *Store) emitSubtree(e store.DirEntry, prefix, op string, out *[]Change) 
 	return nil
 }
 
-func (s *Store) walkPublic(dirID store.ID, prefix, op string, out *[]Change) error {
-	entries, err := s.publicEntries(dirID)
+func (s *Store) walkPublic(w *walk, dirID store.ID, prefix, op string, out *[]Change) error {
+	entries, err := w.listing(s, dirID)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
-		if err := s.emitSubtree(e, prefix, op, out); err != nil {
+		if err := s.emitSubtree(w, e, prefix, op, out); err != nil {
 			return err
 		}
 	}
