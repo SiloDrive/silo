@@ -229,6 +229,15 @@ func SetAdminAccountPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := option.WithDBTimeout(r.Context())
 	defer cancel()
 
+	// A reset is impersonation, which is why this route is gated on passwords
+	// rather than users -- and impersonation is an authority transfer, so it
+	// answers to the same invariant Grant and Revoke do. Without this, holding
+	// passwords is holding everything the server has, two requests away.
+	if err := admin.MayTakeOver(ctx, middleware.GetAccount(r), target.ID); err != nil {
+		adminRefusal(w, err)
+		return
+	}
+
 	// Read before the write, because the write is what makes it untrue.
 	keys, keysErr := account.GetKeys(ctx, target.ID)
 
@@ -515,6 +524,7 @@ func adminRefusal(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, admin.ErrNeedsGrant),
 		errors.Is(err, admin.ErrNotHeld),
+		errors.Is(err, admin.ErrTargetOutranks),
 		errors.Is(err, admin.ErrLastGrant),
 		errors.Is(err, admin.ErrLastAdmin):
 		http.Error(w, err.Error(), http.StatusForbidden)

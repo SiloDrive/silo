@@ -105,6 +105,10 @@ var ErrNeedsGrant = errors.New("changing capabilities needs the grant capability
 // nobody hands on, or takes away, an authority they do not hold themselves.
 var ErrNotHeld = errors.New("that capability is not yours to give or take")
 
+// ErrTargetOutranks reports an action that would hand the actor an authority
+// they do not hold, by handing them the account that holds it.
+var ErrTargetOutranks = errors.New("that account holds a capability you do not")
+
 // ErrLastGrant reports the last holder of grant trying to drop it.
 var ErrLastGrant = errors.New("this is the only account holding the grant capability")
 
@@ -285,6 +289,43 @@ func Withdraw(ctx context.Context, target account.ID, caps ...Capability) error 
 // connection the outer transaction holds until the context times out.
 func AssignTx(ctx context.Context, tx *sql.Tx, target account.ID, caps ...Capability) error {
 	return insertCaps(ctx, tx, target, caps)
+}
+
+// MayTakeOver reports whether actor may do something that amounts to becoming
+// target.
+//
+// Resetting somebody's password is impersonation -- the route that does it says
+// so in its own doc comment, and gates itself on CapPasswords for exactly that
+// reason -- and impersonating an account is acquiring its capabilities. Set the
+// password, log in, and every row that account holds is yours. So it is an
+// authority transfer, and the invariant every other authority transfer is held
+// to applies: nobody acquires an authority they do not already hold.
+//
+// Without this the split is decorative. CapPasswords reaches CapGrant in two
+// requests -- reset, then log in -- and CapGrant reaches everything else. An
+// install that separated "may onboard staff" from "may become staff" got both
+// from the first one.
+//
+// It reads rows rather than authority, which is stricter than Can and
+// deliberately so. A demoted administrator's rows survive their demotion, and
+// an account holding a dormant grant row is one role change away from holding
+// grant: taking it over is taking that, and the refusal names the capability so
+// an operator can see what to clear first.
+func MayTakeOver(ctx context.Context, actor *account.Account, target account.ID) error {
+	held, err := Of(ctx, target)
+	if err != nil {
+		return err
+	}
+	for _, c := range held {
+		ok, err := Can(ctx, actor, c)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: %s", ErrTargetOutranks, c)
+		}
+	}
+	return nil
 }
 
 // mayChange is the actor half of both Grant and Revoke, in one place so the
