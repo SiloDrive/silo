@@ -67,12 +67,17 @@ func TestLockOwnerSerializesTheSameOwnerButNotADifferentOne(t *testing.T) {
 
 // setQuota gives an account a ceiling. Without one there is none: a server
 // nobody has configured a quota on does not refuse writes.
+//
+// It replaces rather than inserts, so a test can move the ceiling under an
+// account mid-way — which is what a test of the head-move charge has to do,
+// since the tree it publishes must be uploaded under a ceiling that admits it.
 func setQuota(t *testing.T, acct *account.Account, bytes int64) {
 	t.Helper()
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 	if _, err := siloPair.Write.ExecContext(ctx,
-		"INSERT INTO UserQuota (account_id, quota) VALUES (?, ?)", acct.ID, bytes); err != nil {
+		`INSERT INTO UserQuota (account_id, quota) VALUES (?, ?)
+		 ON CONFLICT(account_id) DO UPDATE SET quota = excluded.quota`, acct.ID, bytes); err != nil {
 		t.Fatalf("set quota: %v", err)
 	}
 }

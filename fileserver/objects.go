@@ -157,7 +157,7 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request) {
 // object was already there, which is the one bit of information the retry
 // might want and costs an Exists call to provide.
 func putObjectHandler(w http.ResponseWriter, r *http.Request) {
-	_, st, ok := idAddressedLibrary(w, r, true)
+	library, st, ok := idAddressedLibrary(w, r, true)
 	if !ok {
 		return
 	}
@@ -166,8 +166,23 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The same soft ceiling the chunk lanes apply, for the same reason and
+	// with the same limits -- see putChunkHandler, which reasons it out. This
+	// lane had none at all, which made it the way past every other one: an
+	// object is admitted before the head that names it moves, exactly like a
+	// chunk, and nothing here charged for it either way.
+	if refuseOverQuota(w, library, declaredLength(r)) {
+		return
+	}
+
 	data, ok := readObjectBody(w, r)
 	if !ok {
+		return
+	}
+	// Asked again on what actually arrived. A chunked request declares no
+	// length and a lying one declares whatever it likes, so the check above is
+	// the one that saves the transfer and this is the one that holds.
+	if refuseOverQuota(w, library, int64(len(data))) {
 		return
 	}
 	if err := decodesAsAnObject(data); err != nil {
