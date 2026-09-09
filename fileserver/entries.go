@@ -458,6 +458,22 @@ func serveFile(w http.ResponseWriter, r *http.Request, library *libmgr.Library, 
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
+	// A manifest is opened in one piece, so serving a file holds all of it --
+	// and a Range request pays that again, because each one re-reads it. This
+	// is the same budget the id-addressed lanes take from; see
+	// objectbudget.go. The size is a stat, so nothing is held to find out.
+	size, err := st.ObjectSize(id)
+	if err != nil {
+		log.Errorf("failed to stat manifest %s in library %s: %v", fileID, library.ID, err)
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+	release, ok := holdForObject(w, size)
+	if !ok {
+		return
+	}
+	defer release()
+
 	m, err := st.GetManifest(id)
 	if err != nil {
 		log.Errorf("failed to read manifest %s in library %s: %v", fileID, library.ID, err)

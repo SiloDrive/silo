@@ -140,6 +140,22 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Asked before the read, because the read is what spends it. ObjectSize is
+	// a stat rather than a read, so the size is known without holding anything
+	// yet -- which is the whole reason this can be a budget rather than a
+	// request count: an ordinary directory costs its kilobytes and a manifest
+	// costs what it actually is.
+	size, err := st.ObjectSize(id)
+	if err != nil {
+		objectReadError(w, r, err, "object", id)
+		return
+	}
+	release, ok := holdForObject(w, size)
+	if !ok {
+		return
+	}
+	defer release()
+
 	data, err := st.GetObject(id)
 	if err != nil {
 		objectReadError(w, r, err, "object", id)
@@ -174,6 +190,16 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request) {
 	if refuseOverQuota(w, library, declaredLength(r)) {
 		return
 	}
+
+	// The body is read into memory whole, so the memory is reserved before it
+	// is. A request that declares no length is charged the ceiling, because
+	// the ceiling is what it may turn out to be and the point of the budget is
+	// that nothing gets to find out afterwards.
+	release, ok := holdForObject(w, bodyWeight(r))
+	if !ok {
+		return
+	}
+	defer release()
 
 	data, ok := readObjectBody(w, r)
 	if !ok {
@@ -293,6 +319,19 @@ func putChunkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
+}
+
+// bodyWeight is what a request will cost in buffered memory: what it says it
+// is bringing, or the ceiling when it declines to say. Clamped, because a
+// declared length past the ceiling is refused by the read anyway and reserving
+// against a number a client invented would let one request empty the budget by
+// lying about a body it never sends.
+func bodyWeight(r *http.Request) int64 {
+	n := declaredLength(r)
+	if n <= 0 || n > maxObjectBody {
+		return maxObjectBody
+	}
+	return n
 }
 
 // readObjectBody reads a bounded request body.

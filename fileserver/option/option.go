@@ -18,6 +18,20 @@ const InfiniteQuota = -2
 // said otherwise. See DiskReserve for why it is not zero.
 const DefaultDiskReserve = 1 * GB
 
+// DefaultMaxBufferedObjectBytes is how much the object lanes may hold in
+// buffered whole objects at once, before they start refusing.
+//
+// An object is sealed and opened in one piece -- AES-GCM does not stream -- so
+// every lane that touches one holds all of it. This is the total across every
+// request in flight, which is the number that was missing: one request's
+// ceiling says nothing about what eight of them cost.
+//
+// 512 MB, against a per-object ceiling of 128 MB, so four of the largest
+// objects the server accepts fit at once and thousands of ordinary ones do.
+// Raise it on a machine with room; the failure it prevents is the process
+// being killed, which no request recovers from.
+const DefaultMaxBufferedObjectBytes = 512 * MB
+
 // Storage unit.
 const (
 	KB = 1000
@@ -31,6 +45,13 @@ var (
 	Host          string
 	Port          uint32
 	MaxUploadSize uint64
+
+	// MaxBufferedObjectBytes is how much memory the object lanes may hold in
+	// buffered whole objects at once, across every request in flight.
+	//
+	// Zero means the compiled default. See DefaultMaxBufferedObjectBytes for
+	// what the number is for.
+	MaxBufferedObjectBytes int64
 
 	// DefaultMaxUploadSize is the ceiling on one request's body when
 	// max_upload_size says nothing, which is what an install that has never
