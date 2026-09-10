@@ -165,6 +165,23 @@ var (
 	// on, or every client shares the proxy's bucket and one attacker
 	// throttles everyone.
 	TrustProxyHeaders bool
+
+	// AllowUserCreateLibrary says whether an account with the `user` role may
+	// create a library on this install. It is the argument to
+	// account.Role.MayCreateLibrary, and it is a statement about users only:
+	// an admin is never subject to it, and a guest is never released by it.
+	//
+	// On by default, which is what every install has done until now and what
+	// an ordinary deployment wants -- a user who cannot make a library has
+	// nowhere to put anything that was not handed to them. Turning it off is
+	// the curated shape docs/plans/sharing.md describes, where the admin owns
+	// the libraries and everybody else syncs what they are given.
+	//
+	// Initialised here as well as in initDefaultOptions, because the bool zero
+	// value is the restrictive answer: a caller that reaches the route without
+	// loading options at all would otherwise refuse every user on an install
+	// that never configured anything.
+	AllowUserCreateLibrary = true
 )
 
 func initDefaultOptions() {
@@ -186,6 +203,7 @@ func initDefaultOptions() {
 	LoginRateLimit = true
 	TrustProxyHeaders = false
 	EnableNotification = true
+	AllowUserCreateLibrary = true
 	initStorageDefaults()
 }
 
@@ -312,6 +330,20 @@ func LoadFileServerOptions(configFile string) {
 			Port = uint32(port)
 		}
 	}
+
+	// Who may create a library. The section is the install's policy about
+	// libraries rather than about the process, so it is not [fileserver].
+	if section, err := config.GetSection("libraries"); err == nil {
+		if key, err := section.GetKey("allow_user_create_library"); err == nil {
+			if allow, err := key.Bool(); err == nil {
+				AllowUserCreateLibrary = allow
+			} else {
+				log.Warnf("[libraries] allow_user_create_library = %q is not a boolean; leaving it %v",
+					key.String(), AllowUserCreateLibrary)
+			}
+		}
+	}
+	AllowUserCreateLibrary = envBool(AllowUserCreateLibrary, "SILO_ALLOW_USER_CREATE_LIBRARY")
 
 	if section, err := config.GetSection("history"); err == nil {
 		if key, err := section.GetKey("keep_days"); err == nil {

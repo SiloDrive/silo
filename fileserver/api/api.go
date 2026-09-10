@@ -761,6 +761,21 @@ func CreateLibraryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	acct := middleware.GetAccount(r)
 
+	// The second question, and a different one: the credential's ceiling says
+	// what this token may do, and the role says what the account may be. Both
+	// are asked here because neither is asked anywhere else -- creating a
+	// library is the one write with no library for share.CheckPerm to read a
+	// grant from, since the library is what is being made.
+	//
+	// Asked before the body is decoded, so the answer does not depend on what
+	// was sent, and so that both formats are behind it: an encrypted request
+	// that got past here would be refused further down for having no identity
+	// key, which is a 409 saying something else entirely.
+	if !acct.Role.MayCreateLibrary(option.AllowUserCreateLibrary) {
+		http.Error(w, "This account may not create libraries", http.StatusForbidden)
+		return
+	}
+
 	var req createLibraryRequest
 	if !decodeJSON(w, r, &req) {
 		return
