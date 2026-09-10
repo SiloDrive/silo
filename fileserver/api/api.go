@@ -169,6 +169,14 @@ func features() []string {
 		// it, which a client offering a share button has to know before it
 		// offers one.
 		"shares", // GET/POST libraries/{id}/shares, DELETE …/shares/{principal}
+		// The point-in-time surface, named late. commits and entries?at= were
+		// built, documented, and listed nowhere a client branches on -- twice
+		// a client following "start with features, not the version" read a
+		// 404 where a working endpoint stood. The per-path versions query is
+		// the first ask on that lane filed before the endpoint existed, so
+		// the name lands in the same change as the route and covers the pair
+		// that came before it.
+		"history", // GET commits, GET entries/{path}?at=, GET entries/{path}?type=history
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification

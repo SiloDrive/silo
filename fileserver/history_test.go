@@ -292,3 +292,217 @@ func linkTarget(t *testing.T, header string) string {
 	}
 	return ""
 }
+
+// versionList is the body of GET entries/{path}?type=history, named here so a
+// field cannot be renamed on the wire without a test noticing. ID is a pointer
+// because null is a value on this surface: it is how a deletion is spelled.
+type versionList struct {
+	Versions []struct {
+		Commit    string  `json:"commit"`
+		CreatedAt int64   `json:"created_at"`
+		ID        *string `json:"id"`
+		Type      string  `json:"type"`
+		Size      *int64  `json:"size"`
+		Author    string  `json:"author"`
+		Message   string  `json:"message"`
+	} `json:"versions"`
+}
+
+func listVersions(t *testing.T, libraryID string, acct *account.Account, path, query string) (*http.Response, versionList) {
+	t.Helper()
+	vars := map[string]string{"libraryid": libraryID, "path": path}
+	if query == "" {
+		query = "?type=history"
+	}
+	w := do(t, entriesHandler, acct, "GET", "/x"+query, vars, nil)
+	var got versionList
+	if w.Code == http.StatusOK {
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decoding %s: %v", w.Body.String(), err)
+		}
+	}
+	return w.Result(), got
+}
+
+// The whole point of the endpoint: a file's versions are the commits where its
+// id changed, and nothing else. A client could get here by reading the file at
+// every commit and discarding repeats; the server holds the trees and does it
+// in one pass.
+func TestEntryHistoryListsOnlyTheCommitsWhereTheFileChanged(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+
+	first := commitFile(t, libraryID, acct, "a.txt", "one")
+	commitFile(t, libraryID, acct, "b.txt", "unrelated")
+	second := commitFile(t, libraryID, acct, "a.txt", "two")
+	// Two more commits that carry a.txt unchanged. The id is the content
+	// hash, so at both of them the file is what it was, and neither is a
+	// version of it.
+	commitFile(t, libraryID, acct, "b.txt", "still unrelated")
+	commitFile(t, libraryID, acct, "c.txt", "and again")
+
+	resp, got := listVersions(t, libraryID, acct, "a.txt", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("history = %d, want 200", resp.StatusCode)
+	}
+	if len(got.Versions) != 2 {
+		t.Fatalf("got %d versions %+v, want 2: the two distinct contents", len(got.Versions), got.Versions)
+	}
+	for i, want := range []string{second, first} {
+		v := got.Versions[i]
+		if v.Commit != want {
+			t.Errorf("version %d is at commit %s, want %s", i, v.Commit, want)
+		}
+		if v.ID == nil || *v.ID == "" {
+			t.Errorf("version %d has no id, so a client cannot fetch it", i)
+		}
+		if v.Type != "file" {
+			t.Errorf("version %d type = %q, want file", i, v.Type)
+		}
+		if v.Size == nil || *v.Size != 3 {
+			t.Errorf("version %d size = %v, want 3", i, v.Size)
+		}
+		if v.CreatedAt == 0 {
+			t.Errorf("version %d has no created_at", i)
+		}
+		if v.Author == "" {
+			t.Errorf("version %d has no author on a plain library", i)
+		}
+	}
+	if *got.Versions[0].ID == *got.Versions[1].ID {
+		t.Error("two different contents share an id")
+	}
+}
+
+// A path deleted and recreated is two lives of one name. A row with a null id
+// says so; a version list that omitted the gap would read as one continuous
+// file, and a client restoring "the version before this one" would reach
+// across a deletion it was never shown.
+func TestEntryHistorySpellsADeletionAsANullID(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+
+	first := commitFile(t, libraryID, acct, "a.txt", "one")
+	vars := map[string]string{"libraryid": libraryID, "path": "a.txt"}
+	if w := do(t, entriesHandler, acct, "DELETE", "/x", vars, nil); w.Code != http.StatusOK {
+		t.Fatalf("DELETE = %d (%s), want 200", w.Code, w.Body.String())
+	}
+	deleted := libmgr.Get(libraryID).HeadCommitID
+	again := commitFile(t, libraryID, acct, "a.txt", "one")
+
+	_, got := listVersions(t, libraryID, acct, "a.txt", "")
+	if len(got.Versions) != 3 {
+		t.Fatalf("got %d versions %+v, want 3: created, deleted, recreated", len(got.Versions), got.Versions)
+	}
+	if got.Versions[0].Commit != again || got.Versions[0].ID == nil {
+		t.Errorf("newest = %+v, want the recreation at %s with an id", got.Versions[0], again)
+	}
+	if got.Versions[1].Commit != deleted || got.Versions[1].ID != nil {
+		t.Errorf("middle = %+v, want the deletion at %s with a null id", got.Versions[1], deleted)
+	}
+	if got.Versions[2].Commit != first || got.Versions[2].ID == nil {
+		t.Errorf("oldest = %+v, want the creation at %s with an id", got.Versions[2], first)
+	}
+	// The recreation carries the same bytes, so the same id: the id is
+	// absolute, and a client holding those chunks already has this version.
+	if *got.Versions[0].ID != *got.Versions[2].ID {
+		t.Error("the same content before and after a deletion has two ids")
+	}
+	// Before the first commit that had the file there was nothing, and nothing
+	// is not a version: the list does not end in a null row for the time
+	// before the file existed.
+	_, b := listVersions(t, libraryID, acct, "never.txt", "")
+	if len(b.Versions) != 0 {
+		t.Errorf("a path that never existed has versions: %+v", b.Versions)
+	}
+}
+
+// A file deleted at the head is a null row first, then its versions: the
+// answer to "what has this file been" includes "gone, currently".
+func TestEntryHistoryOfADeletedFileStartsWithTheDeletion(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+
+	first := commitFile(t, libraryID, acct, "a.txt", "one")
+	vars := map[string]string{"libraryid": libraryID, "path": "a.txt"}
+	if w := do(t, entriesHandler, acct, "DELETE", "/x", vars, nil); w.Code != http.StatusOK {
+		t.Fatalf("DELETE = %d (%s), want 200", w.Code, w.Body.String())
+	}
+	deleted := libmgr.Get(libraryID).HeadCommitID
+
+	_, got := listVersions(t, libraryID, acct, "a.txt", "")
+	if len(got.Versions) != 2 {
+		t.Fatalf("got %d versions %+v, want 2: deleted, created", len(got.Versions), got.Versions)
+	}
+	if got.Versions[0].Commit != deleted || got.Versions[0].ID != nil {
+		t.Errorf("newest = %+v, want the deletion at %s with a null id", got.Versions[0], deleted)
+	}
+	if got.Versions[1].Commit != first || got.Versions[1].ID == nil {
+		t.Errorf("oldest = %+v, want the creation at %s", got.Versions[1], first)
+	}
+}
+
+// limit bounds versions, not commits, and paging through them neither repeats
+// nor skips one. That is the number a client needs bounded: three versions in
+// forty thousand commits is three rows, however many pages the scan takes.
+func TestEntryHistoryPagesByVersion(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+	for _, body := range []string{"one", "two", "three", "four", "five"} {
+		commitFile(t, libraryID, acct, "a.txt", body)
+		commitFile(t, libraryID, acct, "b.txt", body+" noise")
+	}
+
+	_, whole := listVersions(t, libraryID, acct, "a.txt", "")
+	if len(whole.Versions) != 5 {
+		t.Fatalf("got %d versions, want 5", len(whole.Versions))
+	}
+
+	var paged []string
+	query := "?type=history&limit=2"
+	for range 10 {
+		resp, page := listVersions(t, libraryID, acct, "a.txt", query)
+		for _, v := range page.Versions {
+			paged = append(paged, v.Commit)
+		}
+		next := resp.Header.Get("Link")
+		if next == "" {
+			break
+		}
+		if len(page.Versions) > 2 {
+			t.Fatalf("a page held %d versions, above the limit of 2", len(page.Versions))
+		}
+		query = linkTarget(t, next)
+		if !strings.Contains(query, "type=history") {
+			t.Fatalf("the next link %q dropped type=history, so following it reads the file", query)
+		}
+	}
+	if len(paged) != 5 {
+		t.Fatalf("paging gave %d versions, the whole listing gave 5: %v", len(paged), paged)
+	}
+	for i := range paged {
+		if paged[i] != whole.Versions[i].Commit {
+			t.Errorf("paged version %d = %s, want %s", i, paged[i], whole.Versions[i].Commit)
+		}
+	}
+}
+
+// at names a point in time and history is a walk through all of them; the two
+// do not compose, and dropping one silently is how a client reads the wrong
+// answer with a 200 on it.
+func TestEntryHistoryRefusesAt(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+	head := commitFile(t, libraryID, acct, "a.txt", "one")
+	resp, _ := listVersions(t, libraryID, acct, "a.txt", "?type=history&at="+head)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("history with at = %d, want 400", resp.StatusCode)
+	}
+}
+
+// A credential scoped to a folder may see the history of what is inside it and
+// nothing else: the same rule as the read it is a history of.
+func TestEntryHistoryRefusesAnAccountWithNoPermission(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+	commitFile(t, libraryID, acct, "a.txt", "one")
+	_, other := testLibrary(t)
+	resp, _ := listVersions(t, libraryID, other, "a.txt", "")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("another account's history = %d, want 403", resp.StatusCode)
+	}
+}

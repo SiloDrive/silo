@@ -509,7 +509,8 @@ all. It is weighed against quota once, before the tree is touched.
 `conditional-writes`, `ranged-reads`, `changes`, `library-rename`, `chunks`,
 `objects`, `chunks-fetch`, `entries-manifest`, `chunks-upload`, `pagination`,
 `batch`, `usage`, `logout`, `password-change`, `account-keys`,
-`e2ee-libraries` and `setup` (plus `notifications` when built with it), so
+`e2ee-libraries`, `setup`, `invites`, `shares` and `history` (plus
+`notifications` when built with it), so
 clients feature-detect rather than version-sniff. The list is `features` in
 `fileserver/api/api.go`.
 

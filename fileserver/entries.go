@@ -80,6 +80,17 @@ func entriesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
+		// A file's versions are a different question from its bytes, and
+		// they live on this route rather than at entries/{path}/history
+		// because a path can end in a segment called history: the catch-all
+		// route would have to guess which was meant, and the modifiers this
+		// surface already carries -- type=manifest, type=dir, at= -- are all
+		// query parameters for the same reason.
+		if strings.EqualFold(r.URL.Query().Get("type"), "history") {
+			vars := mux.Vars(r)
+			api.EntryHistoryHandler(w, r, vars["libraryid"], entryPath(vars["path"]))
+			return
+		}
 		getEntry(w, r)
 	case http.MethodPut:
 		putEntry(w, r)
