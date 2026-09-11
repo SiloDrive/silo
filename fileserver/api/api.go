@@ -169,6 +169,14 @@ func features() []string {
 		// it, which a client offering a share button has to know before it
 		// offers one.
 		"shares", // GET/POST libraries/{id}/shares, DELETE …/shares/{principal}
+		// The point-in-time surface, named late. commits and entries?at= were
+		// built, documented, and listed nowhere a client branches on -- twice
+		// a client following "start with features, not the version" read a
+		// 404 where a working endpoint stood. The per-path versions query is
+		// the first ask on that lane filed before the endpoint existed, so
+		// the name lands in the same change as the route and covers the pair
+		// that came before it.
+		"history", // GET commits, GET entries/{path}?at=, GET entries/{path}?type=history
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification
@@ -309,9 +317,11 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !allowLoginAttempt(w, r, req.Email) {
+	releaseAttempt, ok := allowLoginAttempt(w, r, req.Email)
+	if !ok {
 		return
 	}
+	defer releaseAttempt()
 
 	acct, err := authmgr.ValidatePassword(req.Email, req.Password)
 	if err != nil {
@@ -758,6 +768,21 @@ func CreateLibraryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	acct := middleware.GetAccount(r)
+
+	// The second question, and a different one: the credential's ceiling says
+	// what this token may do, and the role says what the account may be. Both
+	// are asked here because neither is asked anywhere else -- creating a
+	// library is the one write with no library for share.CheckPerm to read a
+	// grant from, since the library is what is being made.
+	//
+	// Asked before the body is decoded, so the answer does not depend on what
+	// was sent, and so that both formats are behind it: an encrypted request
+	// that got past here would be refused further down for having no identity
+	// key, which is a 409 saying something else entirely.
+	if !acct.Role.MayCreateLibrary(option.AllowUserCreateLibrary) {
+		http.Error(w, "This account may not create libraries", http.StatusForbidden)
+		return
+	}
 
 	var req createLibraryRequest
 	if !decodeJSON(w, r, &req) {

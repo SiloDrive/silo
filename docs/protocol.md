@@ -276,7 +276,7 @@ are registered there too, but are authenticated: see the lane note above.
 | POST | `/api/silo/v1/libraries/{libraryid}/shares` | `{"email":…,"perm":"r"` or `"rw"}` → `201` with the grant. Owner only, and needs `rw` on the credential. Sharing again at a different `perm` replaces rather than adds — a correction is not a second fact. An address nobody has enrolled is held for them: the share mints the inactive account it will belong to, and redeeming an invite to that address inherits it. `400` for an unspellable `perm` or for sharing with yourself; `501` on an end-to-end encrypted library, where a grant with no key wrap beside it would hand somebody a library they cannot read |
 | DELETE | `/api/silo/v1/libraries/{libraryid}/shares/{principal}` | Take a grant away — `user:<account-id>`, as the listing spells it. `204`, and idempotent: the caller asked for a state. Owner only, needs `rw`. The library leaves the other account's listing and its reads stop on the next request |
 | POST | `/api/silo/v1/libraries/{libraryid}/batch` | `{"ops":[…]}` — many operations, one commit. See the batch surface below |
-| GET | `/api/silo/v1/libraries/{libraryid}/commits` | `{"commits":[{id, created_at, author?, message?},…]}`, newest first. Pages with `?limit=`. `author` and `message` are absent under E2EE. The list ends where history ends — a collected commit stops the walk rather than erroring. `CommitsHandler` in `fileserver/api/history.go` |
+| GET | `/api/silo/v1/libraries/{libraryid}/commits` | `{"commits":[{id, created_at, author?, message?},…]}`, newest first. Pages with `?limit=`. `author` and `message` are absent under E2EE. The list ends where history ends — a collected commit stops the walk rather than erroring. Feature name `history`. `CommitsHandler` in `fileserver/api/history.go` |
 
 #### The entries surface
 
@@ -289,7 +289,8 @@ clients speak, and what `client/` speaks; the traps are under
 |---|---|---|
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Read a file's bytes, or list a directory. Ranged; `ETag`/`304` |
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=manifest` | The file's manifest — the same object `objects/{id}` serves, reachable with a path-scoped credential. See the chunk surface below |
-| GET, HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}?at={commit}` | The same read, resolved against that commit's tree instead of the head's. `400` if `at` is not a commit id or is sent with `PUT`, `POST` or `DELETE` — history refuses writes rather than silently taking them; `410` if the commit is no longer reachable; `404` if the path is absent in that commit. `rootFor` in `fileserver/entries.go` |
+| GET, HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}?at={commit}` | The same read, resolved against that commit's tree instead of the head's. `400` if `at` is not a commit id or is sent with `PUT`, `POST` or `DELETE` — history refuses writes rather than silently taking them; `410` if the commit is no longer reachable; `404` if the path is absent in that commit. Feature name `history`. `rootFor` in `fileserver/entries.go` |
+| GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=history` | `{"versions":[{commit, created_at, id, type, size?, author?, message?},…]}`, newest first, and **only the commits where the entry's id changed** — three edits are three rows however long the history. `id` is `null` for a deletion between two versions; the commit is the one that wrote the version. `?limit=` bounds versions, not commits, and a page may come back short with a `Link` if the scan hit its cap. `400` with `at`; `403` on an E2EE library. Feature name `history`. `EntryHistoryHandler` in `fileserver/api/history.go` |
 | HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | The same headers as `GET`, no body. On a directory `Content-Length` is the size of the listing, not of its contents |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Store a file — body is the content |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=dir` | Create a directory (a trailing slash also works; prefer the parameter). `201` and `{id, name, type}`, the same shape every other create returns |
@@ -1395,6 +1396,54 @@ see how far back they can go. ETags work across time: an unchanged file has
 the same ETag at an old commit as at the head, and a `.history/` copy of a
 file you already hold revalidates to `304`.
 
+#### One file's versions — `GET entries/{path}?type=history`
+
+`.history/` answers *what did the library look like then*. The question a
+file manager asks is *what has this file been*, and from the client side the
+only route from one to the other is to read the path at every commit and drop
+the repeats — hundreds of requests to find three versions, because most
+commits did not touch the file. The server holds every tree, so it does the
+collapse in one pass:
+
+```
+{"versions":[
+  {"commit":"…","created_at":1788786009,"id":"…","type":"file","size":4784725402,
+   "author":"…","message":"…"},
+  {"commit":"…","created_at":1788700000,"id":null},
+  …
+]}
+```
+
+Newest first, and **only the commits where the id changed**. Each row names
+the commit that *wrote* the version — the oldest of the run of commits that
+carried it — so `created_at` and `message` are the ones a person wants beside
+it. `id` is the manifest's id, which is absolute: the hash of the encoded
+manifest, identical at every commit the file survived unchanged. Take it to
+`objects/{id}` and the chunk surface with no `?at=` — the id has already
+resolved the tree — and a chunk cache keyed on Silo's ids already holds
+whatever an old version shares with the current one. `type` says whether that
+id is a manifest or a directory, because you have to know before you decode
+it; `size` is present on files only.
+
+**`limit` bounds versions, not commits.** Ten versions may mean scanning the
+whole history to find them, so one request reads at most a thousand commits
+before it hands back a `Link: …; rel="next"` — a page may hold fewer rows
+than you asked for and still have more after it. Follow `Link` until it is
+absent, exactly as for any other paged listing; the cursor carries the walk
+position and nothing is repeated or skipped across the boundary.
+
+**A deletion is a row with `id: null`.** A path deleted and recreated is two
+lives of one name, and a list that omitted the gap would read as one
+continuous file; drop the null rows if you do not care. A file deleted at the
+head starts with one. The one absence that is *not* a row is the time before
+the file first existed, so a path that never existed is an empty list, not a
+`404`.
+
+`at` does not combine with `type=history` — `400`, never silently ignored —
+and an E2EE library is `403` for the reason `entries/{path}` itself is: the
+server cannot resolve a path through names it cannot read. Restoring a
+version needs nothing new: the ordinary write path, fed the old bytes.
+
 ### The E2EE client shape
 
 An end-to-end encrypted library splits the API, and the split is worth
@@ -1621,6 +1670,7 @@ Every row has been exercised against a running server.
 | `deleteItem` | `DELETE libraries/{id}/entries/{path}` |
 | list history | `GET libraries/{id}/commits` |
 | read at a past commit | `GET libraries/{id}/entries/{path}?at={commit}` |
+| the versions of one file | `GET libraries/{id}/entries/{path}?type=history` — only the commits where it changed |
 | push invalidation | `WS /notification` |
 
 Identifiers never cross the wire: every request is `(library_id, path)`,

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +32,16 @@ func resetLoginLimiters(t *testing.T, capacity int, refill time.Duration) {
 	option.TrustProxyHeaders = false
 }
 
+// loginAllowed runs one attempt through the limiter and releases its slot the
+// moment it has the answer, the way a handler does when its verification
+// returns. The tests below are about what accumulates across attempts; what one
+// attempt holds while it is running is the limiter package's own test.
+func loginAllowed(w http.ResponseWriter, r *http.Request, account string) bool {
+	release, ok := allowLoginAttempt(w, r, account)
+	release()
+	return ok
+}
+
 func newLoginReq(remoteAddr, forwardedFor string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/silo/v1/auth/login", nil)
 	req.RemoteAddr = remoteAddr
@@ -47,14 +59,14 @@ func TestLoginAttemptsAreThrottledAfterFailures(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		req := newLoginReq("192.0.2.10:5000", "")
-		if !allowLoginAttempt(httptest.NewRecorder(), req, "bob@example.com") {
+		if !loginAllowed(httptest.NewRecorder(), req, "bob@example.com") {
 			t.Fatalf("attempt %d was blocked, want the first 3 allowed", i+1)
 		}
 		loginFailed(req, "bob@example.com")
 	}
 
 	rr := httptest.NewRecorder()
-	if allowLoginAttempt(rr, newLoginReq("192.0.2.10:5000", ""), "bob@example.com") {
+	if loginAllowed(rr, newLoginReq("192.0.2.10:5000", ""), "bob@example.com") {
 		t.Fatal("a fourth attempt was allowed after three failures")
 	}
 	if rr.Code != http.StatusTooManyRequests {
@@ -81,7 +93,7 @@ func TestSuccessfulLoginClearsTheAccountBucket(t *testing.T) {
 	// attempt here would be refused.
 	laptop := newLoginReq("198.51.100.20:5000", "")
 	for i := 0; i < 3; i++ {
-		if !allowLoginAttempt(httptest.NewRecorder(), laptop, "bob@example.com") {
+		if !loginAllowed(httptest.NewRecorder(), laptop, "bob@example.com") {
 			t.Fatalf("attempt %d was blocked after a successful login", i+1)
 		}
 		loginFailed(laptop, "bob@example.com")
@@ -91,7 +103,7 @@ func TestSuccessfulLoginClearsTheAccountBucket(t *testing.T) {
 	// holding one valid credential would otherwise clear it at will. The two
 	// failures from that address plus the three just made against the account
 	// leave nothing.
-	if allowLoginAttempt(httptest.NewRecorder(), home, "bob@example.com") {
+	if loginAllowed(httptest.NewRecorder(), home, "bob@example.com") {
 		t.Error("the buckets were reset by a successful login")
 	}
 }
@@ -105,16 +117,16 @@ func TestThrottlingIsPerAddressAndPerAccount(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		loginFailed(attacker, "victim@example.com")
 	}
-	if allowLoginAttempt(httptest.NewRecorder(), attacker, "victim@example.com") {
+	if loginAllowed(httptest.NewRecorder(), attacker, "victim@example.com") {
 		t.Fatal("the attacker was not throttled")
 	}
 
 	// Same account, different address: the per-account bucket still holds.
-	if allowLoginAttempt(httptest.NewRecorder(), newLoginReq("198.51.100.5:5000", ""), "victim@example.com") {
+	if loginAllowed(httptest.NewRecorder(), newLoginReq("198.51.100.5:5000", ""), "victim@example.com") {
 		t.Error("a distributed attack on one account was not throttled")
 	}
 	// Different account, different address: unaffected.
-	if !allowLoginAttempt(httptest.NewRecorder(), newLoginReq("198.51.100.5:5000", ""), "someone@example.com") {
+	if !loginAllowed(httptest.NewRecorder(), newLoginReq("198.51.100.5:5000", ""), "someone@example.com") {
 		t.Error("an unrelated user was throttled")
 	}
 }
@@ -129,14 +141,14 @@ func TestForgedForwardedForDoesNotEvadeTheLimit(t *testing.T) {
 	}
 
 	req := newLoginReq("192.0.2.66:5000", "10.0.0.99")
-	if allowLoginAttempt(httptest.NewRecorder(), req, "someone-else@example.com") {
+	if loginAllowed(httptest.NewRecorder(), req, "someone-else@example.com") {
 		t.Error("a forged X-Forwarded-For evaded the per-address limit")
 	}
 
 	// With the headers trusted — the reverse-proxy deployment — the forwarded
 	// address is what counts, so a different one gets its own bucket.
 	option.TrustProxyHeaders = true
-	if !allowLoginAttempt(httptest.NewRecorder(), req, "someone-else@example.com") {
+	if !loginAllowed(httptest.NewRecorder(), req, "someone-else@example.com") {
 		t.Error("a distinct forwarded address shared a bucket when the headers are trusted")
 	}
 }
@@ -149,7 +161,7 @@ func TestAccountBucketFoldsCase(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		loginFailed(newLoginReq("192.0.2."+strconv.Itoa(i)+":5000", ""), "Bob@Example.com")
 	}
-	if allowLoginAttempt(httptest.NewRecorder(), newLoginReq("198.51.100.7:5000", ""), "bob@example.com") {
+	if loginAllowed(httptest.NewRecorder(), newLoginReq("198.51.100.7:5000", ""), "bob@example.com") {
 		t.Error("re-spelling the account with different case evaded the limit")
 	}
 }
@@ -161,8 +173,44 @@ func TestRateLimitCanBeDisabled(t *testing.T) {
 	req := newLoginReq("192.0.2.10:5000", "")
 	for i := 0; i < 50; i++ {
 		loginFailed(req, "bob@example.com")
-		if !allowLoginAttempt(httptest.NewRecorder(), req, "bob@example.com") {
+		if !loginAllowed(httptest.NewRecorder(), req, "bob@example.com") {
 			t.Fatalf("attempt %d was blocked with rate limiting disabled", i+1)
 		}
+	}
+}
+
+// The slot is held across the verification rather than let go the moment it is
+// granted. That is the whole point of reserving: ValidatePassword is 600k
+// PBKDF2 iterations, and a check that held nothing left all of it as a window
+// in which every other arrival read the same unspent bucket.
+func TestConcurrentLoginAttemptsCannotExceedCapacity(t *testing.T) {
+	const capacity = 3
+	const attempts = 200
+	resetLoginLimiters(t, capacity, time.Minute)
+
+	var reached atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req := newLoginReq("192.0.2.10:5000", "")
+			release, ok := allowLoginAttempt(httptest.NewRecorder(), req, "bob@example.com")
+			if !ok {
+				return
+			}
+			defer release()
+			reached.Add(1)
+			time.Sleep(20 * time.Millisecond) // the hash
+			loginFailed(req, "bob@example.com")
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if n := reached.Load(); n > capacity {
+		t.Errorf("%d of %d concurrent attempts reached the hash, against a capacity of %d", n, attempts, capacity)
 	}
 }

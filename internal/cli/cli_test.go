@@ -95,3 +95,33 @@ func TestAnUnknownNameSaysSo(t *testing.T) {
 		t.Errorf("the error does not repeat what was typed: %v", err)
 	}
 }
+
+// A mistyped verb is a mistyped verb, not a missing account.
+//
+// `silo service -d share02` -- serve, misspelt -- falls through cmd/silo's
+// dispatch to here, because everything that is not a daemon verb does. The
+// credential gate used to answer before the switch did, so the report was
+// "SILO_EMAIL and SILO_PASSWORD must be set": it sent somebody looking for an
+// account they did not need, for a command that does not exist. The name is
+// wrong whether or not credentials are present, so the name is checked first.
+func TestAnUnknownSubcommandIsNamedRatherThanBlamedOnCredentials(t *testing.T) {
+	err := Run("http://127.0.0.1:1", "", "", []string{"service", "-d", "share02"})
+	if err == nil {
+		t.Fatal("Run accepted a subcommand that does not exist")
+	}
+	if !strings.Contains(err.Error(), "service") {
+		t.Errorf("the error does not name what was typed: %v", err)
+	}
+	if strings.Contains(err.Error(), "SILO_EMAIL") {
+		t.Errorf("an unknown subcommand reported as a credential problem: %v", err)
+	}
+}
+
+// And the gate itself stays. A verb that exists and has no credentials to run
+// under is still the case the message was written for.
+func TestAKnownSubcommandStillAsksForCredentials(t *testing.T) {
+	err := Run("http://127.0.0.1:1", "", "", []string{"libraries"})
+	if err == nil || !strings.Contains(err.Error(), "SILO_EMAIL") {
+		t.Errorf("libraries with no credentials: %v, want the credential message", err)
+	}
+}

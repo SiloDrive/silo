@@ -140,6 +140,22 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Asked before the read, because the read is what spends it. ObjectSize is
+	// a stat rather than a read, so the size is known without holding anything
+	// yet -- which is the whole reason this can be a budget rather than a
+	// request count: an ordinary directory costs its kilobytes and a manifest
+	// costs what it actually is.
+	size, err := st.ObjectSize(id)
+	if err != nil {
+		objectReadError(w, r, err, "object", id)
+		return
+	}
+	release, ok := holdForObject(w, size)
+	if !ok {
+		return
+	}
+	defer release()
+
 	data, err := st.GetObject(id)
 	if err != nil {
 		objectReadError(w, r, err, "object", id)
@@ -157,7 +173,7 @@ func getObjectHandler(w http.ResponseWriter, r *http.Request) {
 // object was already there, which is the one bit of information the retry
 // might want and costs an Exists call to provide.
 func putObjectHandler(w http.ResponseWriter, r *http.Request) {
-	_, st, ok := idAddressedLibrary(w, r, true)
+	library, st, ok := idAddressedLibrary(w, r, true)
 	if !ok {
 		return
 	}
@@ -166,8 +182,33 @@ func putObjectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The same soft ceiling the chunk lanes apply, for the same reason and
+	// with the same limits -- see putChunkHandler, which reasons it out. This
+	// lane had none at all, which made it the way past every other one: an
+	// object is admitted before the head that names it moves, exactly like a
+	// chunk, and nothing here charged for it either way.
+	if refuseOverQuota(w, library, declaredLength(r)) {
+		return
+	}
+
+	// The body is read into memory whole, so the memory is reserved before it
+	// is. A request that declares no length is charged the ceiling, because
+	// the ceiling is what it may turn out to be and the point of the budget is
+	// that nothing gets to find out afterwards.
+	release, ok := holdForObject(w, bodyWeight(r))
+	if !ok {
+		return
+	}
+	defer release()
+
 	data, ok := readObjectBody(w, r)
 	if !ok {
+		return
+	}
+	// Asked again on what actually arrived. A chunked request declares no
+	// length and a lying one declares whatever it likes, so the check above is
+	// the one that saves the transfer and this is the one that holds.
+	if refuseOverQuota(w, library, int64(len(data))) {
 		return
 	}
 	if err := decodesAsAnObject(data); err != nil {
@@ -278,6 +319,19 @@ func putChunkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
+}
+
+// bodyWeight is what a request will cost in buffered memory: what it says it
+// is bringing, or the ceiling when it declines to say. Clamped, because a
+// declared length past the ceiling is refused by the read anyway and reserving
+// against a number a client invented would let one request empty the budget by
+// lying about a body it never sends.
+func bodyWeight(r *http.Request) int64 {
+	n := declaredLength(r)
+	if n <= 0 || n > maxObjectBody {
+		return maxObjectBody
+	}
+	return n
 }
 
 // readObjectBody reads a bounded request body.
@@ -474,6 +528,13 @@ func putHeadHandler(w http.ResponseWriter, r *http.Request) {
 
 	delta, err := st.MeasureDelta(oldRoot, commit.Root)
 	if err != nil {
+		// A tree that totals more than can be counted is the client's tree,
+		// and there is no head move that makes it chargeable. Refusing here is
+		// what keeps a wrapped total from being read as a negative delta.
+		if errors.Is(err, objmgr.ErrTotalTooLarge) {
+			http.Error(w, "That commit reaches more content than can be counted; it is not a tree this library can hold", http.StatusBadRequest)
+			return
+		}
 		log.WithContext(r.Context()).WithError(err).Errorf("failed to measure usage delta for library %s", library.ID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return

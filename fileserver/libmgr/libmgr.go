@@ -686,6 +686,16 @@ func DeleteLibrary(libraryID string) error {
 		// it to the origin's.
 		"DELETE FROM GCID WHERE library_id = ?",
 		"DELETE FROM LastGCID WHERE library_id = ?",
+		// The grants go with the library. A grant naming one nobody can reach
+		// does nothing on its own -- which is why these were left standing --
+		// but it is a row that outlives its subject, and it stops being
+		// harmless the moment an id is taken back: the old grants come back
+		// pointing at whatever claimed it. share.RemoveLibrary was written for
+		// this moment and never called, and it cannot be called from here --
+		// share imports libmgr, so the arrow only goes one way. It is one
+		// DELETE keyed on library_id like the twelve above it, so it goes with
+		// them rather than behind an inversion built to carry it.
+		"DELETE FROM LibraryGrant WHERE library_id = ?",
 	}
 
 	for _, sqlStr := range deletes {

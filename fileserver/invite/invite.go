@@ -41,6 +41,9 @@ var (
 	// shared to that address, and minting a second account beside it would
 	// recreate the double-mint the identity split made unrepresentable.
 	ErrActiveAccount = errors.New("an active account already holds that address")
+	// ErrEnrolledAccount reports an address whose person already arrived, even
+	// though the account is switched off. See the note in Mint.
+	ErrEnrolledAccount = errors.New("an account that has already been enrolled holds that address")
 	// ErrNotFound reports a token, or a credential id, that names no invite.
 	// A revoked one still names one: revocation expires the credential and
 	// leaves the row, so a withdrawn link is refused as expired rather than as
@@ -116,6 +119,27 @@ func Mint(ctx context.Context, o Options) (*Invite, string, error) {
 	case err == nil && existing.IsActive:
 		return nil, "", fmt.Errorf("%w: %s", ErrActiveAccount, email)
 	case err != nil && !errors.Is(err, account.ErrNotFound):
+		return nil, "", err
+	}
+
+	// And asked again with the lights off, because "active" was the wrong half
+	// of the question.
+	//
+	// An invite is for an address that has no account yet -- that is what makes
+	// delivery a verification rather than a handover. A deactivated account is
+	// not that. It is somebody's account switched off, with their password,
+	// their key material and every capability row they ever held still on it,
+	// and re-inviting the address is taking it rather than creating it.
+	//
+	// Which made a two-step takeover out of two ordinary administrative
+	// actions: deactivate the account, mint an invite for the address, redeem
+	// it with a password of your choosing. Nothing in that sequence needed the
+	// passwords capability, and what came back was the account entire.
+	//
+	// A password is the mark of arrival. A tombstone has none -- that is the
+	// whole of what makes it a placeholder -- so this refuses exactly the rows
+	// that belong to somebody and none of the ones that do not.
+	if err := refuseEnrolled(ctx, email); err != nil {
 		return nil, "", err
 	}
 
@@ -227,6 +251,14 @@ func Redeem(ctx context.Context, token string) (*Invite, error) {
 		// already using is dead whatever we do with the row.
 		return nil, fmt.Errorf("%w: %s", ErrActiveAccount, inv.Email)
 	}
+	// Asked here as well as at minting, and for the reason above it: an invite
+	// outstanding when its address's person enrols -- or an account switched
+	// off after the invite was minted -- would otherwise redeem into an account
+	// that is already somebody's. Mint is the check that stops the sequence
+	// being useful; this is the one that holds if the order is reversed.
+	if err := refuseEnrolled(ctx, inv.Email); err != nil {
+		return nil, err
+	}
 
 	if err := account.SetRole(ctx, inv.AccountID, inv.Role); err != nil {
 		return nil, err
@@ -249,6 +281,23 @@ func Redeem(ctx context.Context, token string) (*Invite, error) {
 	// still runs out underneath it.
 	inv.RedeemedAt = now
 	return inv, nil
+}
+
+// refuseEnrolled reports an address whose person has already arrived.
+//
+// A password row is the mark of arrival: a tombstone has none, which is the
+// whole of what makes it a placeholder rather than a way in. account.ErrNotFound
+// from this lookup means either no account or no password, and both are the
+// answer this wants -- the address is free.
+func refuseEnrolled(ctx context.Context, email string) error {
+	switch _, _, err := account.PasswordHash(ctx, email); {
+	case err == nil:
+		return fmt.Errorf("%w: %s", ErrEnrolledAccount, email)
+	case errors.Is(err, account.ErrNotFound):
+		return nil
+	default:
+		return err
+	}
 }
 
 // Revoke withdraws an outstanding invite.

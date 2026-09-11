@@ -41,7 +41,9 @@ libraries and sees only what is shared to them — the "consumer deployment"
 shape, where the admin curates the libraries and everybody else syncs what
 they have been given. A config key
 `allow_user_create_library` gates creation for `user` as well, for installs where
-the admin curates everything.
+the admin curates everything — built, in `[libraries]`, defaulting to on, and
+enforced at `POST /libraries`, which is the only place any client creates one.
+See [`auth.md`](../auth.md#the-one-write-with-no-library-to-ask-about).
 
 **Invites.** `POST /api/silo/v1/invites` (admin) mints a credential row:
 `kind=invite`, single-use, `expires_at` default 7 days, `label` = who it's

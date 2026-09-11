@@ -270,9 +270,14 @@ func buildInlineFileCommit(t *testing.T, acct *account.Account, libraryID, name 
 // moment that estimate is supposed to be replaced. This is that charge.
 func TestPutHeadRefusesAHeadMoveThatWouldExceedQuota(t *testing.T) {
 	libraryID, acct := testLibrary(t)
-	setQuota(t, acct, 1000)
 
+	// Uploaded under a ceiling that admits them, because the per-object checks
+	// are what this test is deliberately looking past: it is the head move
+	// that has to charge the exact number, and a tree that never got uploaded
+	// would never reach it.
+	setQuota(t, acct, 100_000)
 	oldHead, commitID := buildInlineFileCommit(t, acct, libraryID, "big.bin", bytes.Repeat([]byte("a"), 1500))
+	setQuota(t, acct, 1000)
 
 	vars := map[string]string{"libraryid": libraryID}
 	w := idReq(t, putHeadHandler, acct, http.MethodPut, "/head", vars,
@@ -368,4 +373,30 @@ func merge(base map[string]string, k, v string) map[string]string {
 	}
 	out[k] = v
 	return out
+}
+
+// Every other write lane asks refuseOverQuota before it stores anything —
+// the path lanes, both chunk lanes, the batch apply. This one asked nothing.
+// An account with a kilobyte of quota could PUT objects up to the body ceiling
+// as fast as the disk would take them, and since nothing counts an object no
+// head names, the collector is what has to take them back, with the server
+// stopped.
+func TestPutObjectRefusesAWriteTheOwnerCannotAfford(t *testing.T) {
+	libraryID, acct := testLibrary(t)
+	setQuota(t, acct, 1000)
+
+	content := bytes.Repeat([]byte("a"), 1500)
+	m := &store.Manifest{FileSize: int64(len(content)), Inline: content}
+	manifestBytes, err := m.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := store.ObjectID(manifestBytes)
+
+	vars := map[string]string{"libraryid": libraryID}
+	w := idReq(t, putObjectHandler, acct, http.MethodPut, "/objects/"+id.String(),
+		merge(vars, "id", id.String()), manifestBytes, nil)
+	if w.Code != http.StatusInsufficientStorage {
+		t.Fatalf("PUT object over quota = %d (%s), want %d", w.Code, w.Body.String(), http.StatusInsufficientStorage)
+	}
 }

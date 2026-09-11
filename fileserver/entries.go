@@ -80,6 +80,17 @@ func entriesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
+		// A file's versions are a different question from its bytes, and
+		// they live on this route rather than at entries/{path}/history
+		// because a path can end in a segment called history: the catch-all
+		// route would have to guess which was meant, and the modifiers this
+		// surface already carries -- type=manifest, type=dir, at= -- are all
+		// query parameters for the same reason.
+		if strings.EqualFold(r.URL.Query().Get("type"), "history") {
+			vars := mux.Vars(r)
+			api.EntryHistoryHandler(w, r, vars["libraryid"], entryPath(vars["path"]))
+			return
+		}
 		getEntry(w, r)
 	case http.MethodPut:
 		putEntry(w, r)
@@ -458,6 +469,22 @@ func serveFile(w http.ResponseWriter, r *http.Request, library *libmgr.Library, 
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
+	// A manifest is opened in one piece, so serving a file holds all of it --
+	// and a Range request pays that again, because each one re-reads it. This
+	// is the same budget the id-addressed lanes take from; see
+	// objectbudget.go. The size is a stat, so nothing is held to find out.
+	size, err := st.ObjectSize(id)
+	if err != nil {
+		log.Errorf("failed to stat manifest %s in library %s: %v", fileID, library.ID, err)
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+	release, ok := holdForObject(w, size)
+	if !ok {
+		return
+	}
+	defer release()
+
 	m, err := st.GetManifest(id)
 	if err != nil {
 		log.Errorf("failed to read manifest %s in library %s: %v", fileID, library.ID, err)
@@ -704,6 +731,13 @@ func putEntryFile(w http.ResponseWriter, r *http.Request, libraryID, path string
 		if errors.Is(err, context.Canceled) {
 			return // the client hung up; nothing was committed
 		}
+		if errors.Is(err, errDiskReserve) {
+			// Cut off mid-body. What arrived is chunks nothing names, which
+			// is the collector's business and not this request's -- no
+			// manifest was minted and no path changed.
+			http.Error(w, errServerFull, http.StatusInsufficientStorage)
+			return
+		}
 		if errors.Is(err, objmgr.ErrNoContentKey) {
 			http.Error(w, errE2EEWriteByID, http.StatusForbidden)
 			return
@@ -935,20 +969,83 @@ func putEntryFromChunks(w http.ResponseWriter, r *http.Request, libraryID, path 
 // nothing, it ends the stream, and an ended stream is indistinguishable from a
 // client that sent exactly that much.
 func boundedBody(w http.ResponseWriter, r *http.Request) (io.Reader, bool) {
-	if option.MaxUploadSize == 0 {
-		return r.Body, true
-	}
-	if r.ContentLength > 0 && uint64(r.ContentLength) > option.MaxUploadSize {
+	max := uploadCeiling()
+	if r.ContentLength > 0 && uint64(r.ContentLength) > max {
 		http.Error(w, "File is too large", http.StatusRequestEntityTooLarge)
 		return nil, false
 	}
-	return io.LimitReader(r.Body, int64(option.MaxUploadSize)+1), true
+	return &reserveReader{r: io.LimitReader(r.Body, int64(max)+1)}, true
+}
+
+// uploadCeiling is the configured limit, or the compiled one when nothing was
+// configured. It is never zero: zero used to mean no limit, so an install that
+// had not written max_upload_size shipped with none.
+func uploadCeiling() uint64 {
+	if option.MaxUploadSize > 0 {
+		return option.MaxUploadSize
+	}
+	return option.DefaultMaxUploadSize
 }
 
 // overBound reports whether a body read through boundedBody ran past the
 // limit. The extra byte boundedBody allows is what makes this answerable.
 func overBound(size int64) bool {
-	return option.MaxUploadSize > 0 && uint64(size) > option.MaxUploadSize
+	return size > 0 && uint64(size) > uploadCeiling()
+}
+
+// errDiskReserve is what a streaming body returns when the volume's reserve
+// went while the body was arriving.
+var errDiskReserve = errors.New("the server ran out of room while the body was arriving")
+
+// reserveCheckBytes is how often the reserve is re-read mid-stream. One statfs
+// per eight megabytes is nothing against the write it is watching, and it
+// bounds the overshoot to about that much per upload in flight.
+const reserveCheckBytes = 8 << 20
+
+// reserveReader stops a body that is filling the disk.
+//
+// The pre-check asks about the declared length, and a chunked request declares
+// nothing — so the delta is zero, every ceiling is asked about a write of no
+// bytes, and every one of them says yes. The check after the body has been read
+// does refuse the file, but by then the chunks are on the disk, and a refusal
+// does not unwrite them: the bytes land whatever the answer is, and only the
+// path is withheld. A client that never declares a length can therefore spend
+// the whole volume one request at a time and be told no each time.
+//
+// So the reserve is read again as the bytes go past. It is the same question
+// checkServerLimits asks, asked while the answer can still change the outcome.
+type reserveReader struct {
+	r     io.Reader
+	since int64
+}
+
+func (rr *reserveReader) Read(p []byte) (int, error) {
+	n, err := rr.r.Read(p)
+	rr.since += int64(n)
+	if rr.since >= reserveCheckBytes {
+		rr.since = 0
+		if !roomToKeepWriting() {
+			return n, errDiskReserve
+		}
+	}
+	return n, err
+}
+
+// roomToKeepWriting reports whether the reserve still stands.
+//
+// Free space that cannot be read is not a refusal, for the reason
+// checkServerLimits gives: an unreadable disk is a platform this build cannot
+// ask, and cutting off every upload on a machine whose free space Silo merely
+// cannot measure would take the server down rather than protect it.
+func roomToKeepWriting() bool {
+	if option.DiskReserve <= 0 {
+		return true
+	}
+	free, err := availableSpace(absDataDir)
+	if err != nil {
+		return true
+	}
+	return free >= option.DiskReserve
 }
 
 func writeEntryJSON(w http.ResponseWriter, status int, v any) {

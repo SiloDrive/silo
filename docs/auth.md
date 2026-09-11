@@ -344,6 +344,39 @@ re-encrypts the loser's names so an unchanged path acquires new ciphertext.
 Either way the scope matches nothing rather than failing loudly, so a credential
 can outlive the thing it was cut to reach.
 
+### The one write with no library to ask about
+
+Creating a library is the exception the formula above cannot cover. There is no
+library for `CheckPerm` to read a grant from — the library is what the request
+is making — so the credential's ceiling is asked directly
+(`middleware.CredentialCanWrite`, since a read-only token must not create one)
+and then a second question is asked that nothing else asks: what kind of account
+this is.
+
+```
+admin   always
+user    if the install allows it
+guest   never
+```
+
+`account.Role.MayCreateLibrary` is that rule, spelled once, and
+`POST /api/silo/v1/libraries` is its call site. The install's answer for `user`
+is `[libraries] allow_user_create_library` in `silo.conf`, or
+`SILO_ALLOW_USER_CREATE_LIBRARY`, and it defaults to on. An admin is not subject
+to it — an install whose administrator cannot create a library has locked itself
+out of the thing the setting exists to curate — and a guest is not released by
+it, because creating nothing is what the role means.
+
+The gate is asked before the request body is decoded, so it covers plain and
+E2EE libraries alike and its answer never depends on what was sent. That
+matters more than it looks: an encrypted request let through here is refused
+further down for having published no identity key, which is a `409` about key
+material and reads as a problem the caller could fix.
+
+Every client reaches this one route. `silo new`, the TUI's `n`, and a `mkdir` in
+the root of a silo-drive mount are the same `POST`, so there is no second
+spelling of the rule to disagree with this one.
+
 ## Enrolment: password login
 
 The password is an **enrolment** credential, not a request credential: presented

@@ -105,20 +105,27 @@ func resetRateLimiters() {
 	redeemIPLimiter.ResetAll()
 }
 
-// allowSetupAttempt reports whether a setup attempt may proceed, writing a 429
-// itself when it may not. Only failures spend a token, matching login: the one
-// success this endpoint ever sees should not leave the operator throttled.
-func allowSetupAttempt(w http.ResponseWriter, r *http.Request) bool {
+// unlimited is what the allow* calls hand back when they had nothing to hold —
+// rate limiting switched off, or the attempt refused. A caller defers the
+// release without asking which case it got.
+func unlimited() {}
+
+// allowSetupAttempt reserves a slot for a setup attempt, writing a 429 itself
+// when there is none. The caller releases when the attempt finishes. Only
+// failures spend a token, matching login: the one success this endpoint ever
+// sees should not leave the operator throttled.
+func allowSetupAttempt(w http.ResponseWriter, r *http.Request) (func(), bool) {
 	if !option.LoginRateLimit {
-		return true
+		return unlimited, true
 	}
 	ip := utils.ClientIP(r, option.TrustProxyHeaders)
-	if ok, retry := setupIPLimiter.Allowed(ip); !ok {
+	ok, retry, release := setupIPLimiter.Reserve(ip)
+	if !ok {
 		tooManyAttempts(w, "setup", retry)
 		log.Warnf("Setup rate limit reached for address %s", ip)
-		return false
+		return unlimited, false
 	}
-	return true
+	return release, true
 }
 
 // setupFailed charges a refused setup attempt against the address bucket.
@@ -129,21 +136,22 @@ func setupFailed(r *http.Request) {
 	setupIPLimiter.Penalize(utils.ClientIP(r, option.TrustProxyHeaders))
 }
 
-// allowRedeemAttempt reports whether an invite redemption may proceed, writing
-// a 429 itself when it may not. Only failures spend a token, matching setup and
+// allowRedeemAttempt reserves a slot for an invite redemption, writing a 429
+// itself when there is none. Only failures spend a token, matching setup and
 // login: the one success an invite ever sees must not leave its person
 // throttled on the request that follows it.
-func allowRedeemAttempt(w http.ResponseWriter, r *http.Request) bool {
+func allowRedeemAttempt(w http.ResponseWriter, r *http.Request) (func(), bool) {
 	if !option.LoginRateLimit {
-		return true
+		return unlimited, true
 	}
 	ip := utils.ClientIP(r, option.TrustProxyHeaders)
-	if ok, retry := redeemIPLimiter.Allowed(ip); !ok {
+	ok, retry, release := redeemIPLimiter.Reserve(ip)
+	if !ok {
 		tooManyAttempts(w, "invite redemption", retry)
 		log.Warnf("Invite redemption rate limit reached for address %s", ip)
-		return false
+		return unlimited, false
 	}
-	return true
+	return release, true
 }
 
 // redeemFailed charges a refused redemption against the address bucket.
@@ -161,35 +169,46 @@ func allowKDFRequest(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	ip := utils.ClientIP(r, option.TrustProxyHeaders)
-	if ok, retry := kdfIPLimiter.Allowed(ip); !ok {
+	// Spend rather than reserve: every request here costs a token, so there is
+	// no attempt to hold a slot for and nothing to release.
+	if ok, retry := kdfIPLimiter.Spend(ip); !ok {
 		tooManyAttempts(w, "pre-login parameter", retry)
 		log.Warnf("Pre-login parameter rate limit reached for address %s", ip)
 		return false
 	}
-	kdfIPLimiter.Penalize(ip)
 	return true
 }
 
-// allowLoginAttempt reports whether a login attempt may proceed, writing a 429
-// itself when it may not. Call it before validating the password: the point is
-// to keep the verification, and the answer it leaks, out of reach.
-func allowLoginAttempt(w http.ResponseWriter, r *http.Request, account string) bool {
+// allowLoginAttempt reserves a slot for a login attempt, writing a 429 itself
+// when there is none. Call it before validating the password, and release when
+// the validation is done: the point is to keep the verification, and the answer
+// it leaks, out of reach — which means the slot has to be held across the
+// verification rather than let go the instant it is granted.
+func allowLoginAttempt(w http.ResponseWriter, r *http.Request, account string) (func(), bool) {
 	if !option.LoginRateLimit {
-		return true
+		return unlimited, true
 	}
 
 	ip := utils.ClientIP(r, option.TrustProxyHeaders)
-	if ok, retry := loginIPLimiter.Allowed(ip); !ok {
+	ok, retry, releaseIP := loginIPLimiter.Reserve(ip)
+	if !ok {
 		tooManyAttempts(w, "login", retry)
 		log.Warnf("Login rate limit reached for address %s", ip)
-		return false
+		return unlimited, false
 	}
-	if ok, retry := loginAccountLimiter.Allowed(accountKey(account)); !ok {
+	ok, retry, releaseAccount := loginAccountLimiter.Reserve(accountKey(account))
+	if !ok {
+		// The address slot goes back: this attempt never happened, and holding
+		// it would let one throttled account throttle its address too.
+		releaseIP()
 		tooManyAttempts(w, "login", retry)
 		log.Warnf("Login rate limit reached for account %s", account)
-		return false
+		return unlimited, false
 	}
-	return true
+	return func() {
+		releaseAccount()
+		releaseIP()
+	}, true
 }
 
 // loginFailed charges a failed attempt against both buckets.

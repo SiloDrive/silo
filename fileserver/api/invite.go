@@ -230,9 +230,11 @@ func RedeemInviteHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invite_token and password are required", http.StatusBadRequest)
 		return
 	}
-	if !allowRedeemAttempt(w, r) {
+	releaseAttempt, ok := allowRedeemAttempt(w, r)
+	if !ok {
 		return
 	}
+	defer releaseAttempt()
 
 	ctx, cancel := option.WithDBTimeout(r.Context())
 	defer cancel()

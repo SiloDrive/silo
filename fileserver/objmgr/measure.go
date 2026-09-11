@@ -1,6 +1,11 @@
 package objmgr
 
-import "github.com/dkam/silo/store"
+import (
+	"errors"
+	"math"
+
+	"github.com/dkam/silo/store"
+)
 
 // Usage is what a tree holds: the logical size of the files it reaches, and
 // how many there are.
@@ -27,6 +32,41 @@ func (u Usage) Add(d Usage) Usage {
 	return Usage{Size: u.Size + d.Size, FileCount: u.FileCount + d.FileCount}
 }
 
+// ErrTotalTooLarge reports a tree whose total does not fit in the numbers that
+// carry it.
+//
+// Not caution about large libraries: 2^63 bytes is more than any of them, and
+// no honest tree gets near it. It is the DAG again. A file under a directory
+// reached 2^40 times IS reachable 2^40 times, so the total is arithmetically
+// right and does not fit — and the only wrong answer available at that point is
+// the one that wraps. A wrapped total is a negative delta, and a negative delta
+// walks through the quota check that a positive one would have stopped. Better
+// to refuse the tree than to be charged a lie.
+var ErrTotalTooLarge = errors.New("objmgr: the tree totals more than can be counted")
+
+// accumulate adds sign*d to u, or refuses. It is used wherever subtree totals
+// are summed; the ordinary small arithmetic — one manifest's size against
+// another's — is left alone.
+func accumulate(u *Usage, d Usage, sign int64) error {
+	size, sizeOK := addWithinRange(u.Size, sign*d.Size)
+	count, countOK := addWithinRange(u.FileCount, sign*d.FileCount)
+	if !sizeOK || !countOK {
+		return ErrTotalTooLarge
+	}
+	u.Size, u.FileCount = size, count
+	return nil
+}
+
+func addWithinRange(a, b int64) (int64, bool) {
+	if b > 0 && a > math.MaxInt64-b {
+		return 0, false
+	}
+	if b < 0 && a < math.MinInt64-b {
+		return 0, false
+	}
+	return a + b, true
+}
+
 // Measure totals a whole tree.
 //
 // This is the repair path and not the routine one: it reads every directory
@@ -34,19 +74,34 @@ func (u Usage) Add(d Usage) Usage {
 // of a change. Use it when there is nothing to measure against — a library
 // with no recorded total, or one whose recorded root is no longer in the store
 // because history was cut out from under it. MeasureDelta is the steady state.
+// A DAG bomb costs what its objects cost: see [walk]. A directory reached
+// twice is two copies and weighs twice — skipping the repeat would be the
+// wrong number — but what a subtree totals is a pure function of its id, so
+// the answer is remembered and added again rather than recomputed.
 func (s *Store) Measure(root store.ID) (Usage, error) {
+	return s.measure(newMeasureWalk(), root)
+}
+
+func (s *Store) measure(w *walk, root store.ID) (Usage, error) {
+	if u, ok := w.usage[root]; ok {
+		return u, nil
+	}
+
 	var u Usage
-	entries, err := s.publicEntries(root)
+	entries, err := w.listing(s, root)
 	if err != nil {
 		return Usage{}, err
 	}
 	for _, e := range entries {
-		d, err := s.measureEntry(e)
+		d, err := s.measureEntry(w, e)
 		if err != nil {
 			return Usage{}, err
 		}
-		u = u.Add(d)
+		if err := accumulate(&u, d, +1); err != nil {
+			return Usage{}, err
+		}
 	}
+	w.usage[root] = u
 	return u, nil
 }
 
@@ -63,23 +118,38 @@ func (s *Store) Measure(root store.ID) (Usage, error) {
 // from the trees. A total maintained by adding these deltas is the same number
 // Measure would produce, which is why Measure is only ever a repair.
 func (s *Store) MeasureDelta(oldRoot, newRoot store.ID) (Usage, error) {
-	var u Usage
-	if err := s.deltaDir(oldRoot, newRoot, &u); err != nil {
+	w := newMeasureWalk()
+	d, err := s.deltaDir(w, oldRoot, newRoot)
+	if err != nil {
 		return Usage{}, err
 	}
+	return d, nil
+}
+
+// deltaDir returns what one pair of directories contributes, memoised on the
+// pair for the same reason Measure memoises on the id: a pair reached twice
+// contributes twice, so the answer is remembered and added again.
+func (s *Store) deltaDir(w *walk, oldID, newID store.ID) (Usage, error) {
+	key := [2]store.ID{oldID, newID}
+	if d, ok := w.deltas[key]; ok {
+		return d, nil
+	}
+
+	var u Usage
+	err := s.mergeDirs(w, oldID, newID,
+		func(o store.DirEntry) error { return s.applyEntry(w, o, &u, -1) },
+		func(n store.DirEntry) error { return s.applyEntry(w, n, &u, +1) },
+		func(o, n store.DirEntry) error { return s.deltaEntry(w, o, n, &u) },
+	)
+	if err != nil {
+		return Usage{}, err
+	}
+	w.deltas[key] = u
 	return u, nil
 }
 
-func (s *Store) deltaDir(oldID, newID store.ID, u *Usage) error {
-	return s.mergeDirs(oldID, newID,
-		func(o store.DirEntry) error { return s.applyEntry(o, u, -1) },
-		func(n store.DirEntry) error { return s.applyEntry(n, u, +1) },
-		func(o, n store.DirEntry) error { return s.deltaEntry(o, n, u) },
-	)
-}
-
 // deltaEntry accounts for two entries that share a name.
-func (s *Store) deltaEntry(o, n store.DirEntry, u *Usage) error {
+func (s *Store) deltaEntry(w *walk, o, n store.DirEntry, u *Usage) error {
 	if o.ChildID == n.ChildID && o.Type == n.Type {
 		return nil
 	}
@@ -88,14 +158,18 @@ func (s *Store) deltaEntry(o, n store.DirEntry, u *Usage) error {
 	// accounted as both: the old thing's bytes stop being reachable whatever
 	// the new thing is.
 	if o.Type != n.Type {
-		if err := s.applyEntry(o, u, -1); err != nil {
+		if err := s.applyEntry(w, o, u, -1); err != nil {
 			return err
 		}
-		return s.applyEntry(n, u, +1)
+		return s.applyEntry(w, n, u, +1)
 	}
 
 	if n.Type == store.NodeDir {
-		return s.deltaDir(o.ChildID, n.ChildID, u)
+		d, err := s.deltaDir(w, o.ChildID, n.ChildID)
+		if err != nil {
+			return err
+		}
+		return accumulate(u, d, +1)
 	}
 
 	// A file whose content changed: its count is unchanged and only the
@@ -114,14 +188,12 @@ func (s *Store) deltaEntry(o, n store.DirEntry, u *Usage) error {
 }
 
 // applyEntry adds a whole entry to the running total, or takes it away.
-func (s *Store) applyEntry(e store.DirEntry, u *Usage, sign int64) error {
-	d, err := s.measureEntry(e)
+func (s *Store) applyEntry(w *walk, e store.DirEntry, u *Usage, sign int64) error {
+	d, err := s.measureEntry(w, e)
 	if err != nil {
 		return err
 	}
-	u.Size += sign * d.Size
-	u.FileCount += sign * d.FileCount
-	return nil
+	return accumulate(u, d, sign)
 }
 
 // measureEntry totals one entry, and everything beneath it when it is a
@@ -131,9 +203,9 @@ func (s *Store) applyEntry(e store.DirEntry, u *Usage, sign int64) error {
 // holds, and a directory holds none: charging for the object that records the
 // names would make an empty tree cost something and make the number depend on
 // how the client chose to arrange it.
-func (s *Store) measureEntry(e store.DirEntry) (Usage, error) {
+func (s *Store) measureEntry(w *walk, e store.DirEntry) (Usage, error) {
 	if e.Type == store.NodeDir {
-		return s.Measure(e.ChildID)
+		return s.measure(w, e.ChildID)
 	}
 	size, err := s.fileSize(e.ChildID)
 	if err != nil {

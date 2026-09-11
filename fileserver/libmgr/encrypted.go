@@ -161,7 +161,7 @@ func CreateEncryptedLibrary(name string, owner *account.Account, format Format, 
 	// Asked before anything is written. The id is the client's, so a collision
 	// is a thing that happens to a caller rather than an internal error, and
 	// it must not be answered by writing objects into another library's store.
-	taken, err := libraryExists(ctx, seed.LibraryID)
+	taken, err := idIsTaken(ctx, seed.LibraryID)
 	if err != nil {
 		return "", err
 	}
@@ -210,17 +210,34 @@ func CreateEncryptedLibrary(name string, owner *account.Account, format Format, 
 // It reads Library rather than Branch, because a library whose head row is
 // missing is still an id in use -- handing it to a second creator would put
 // two libraries in one object store.
-func libraryExists(ctx context.Context, libraryID string) (bool, error) {
-	var one int
-	err := readDB.QueryRowContext(ctx,
-		"SELECT 1 FROM Library WHERE library_id = ?", libraryID).Scan(&one)
-	if err == nil {
-		return true, nil
+// idIsTaken reports whether an id may still be built on.
+//
+// Two tables, because a live library is not the only thing an id can be. A
+// deleted one leaves its objects on disk -- reclaiming them is the collector's
+// job, and the collector runs when an operator says so -- and until that
+// happens the store the id opens is the dead library's, contents and all. So
+// an id in GarbageLibraries is taken in every sense that matters: creating on
+// top of it adopts somebody's data, and gc.go's unsafeToReclaim then refuses
+// to collect it, because the id is live again. The adoption is permanent.
+//
+// A UUID is not a secret. It is in every URL the library ever appeared in, in
+// each client's local state, and in the logs, so "who would know it" is not a
+// defence available here.
+func idIsTaken(ctx context.Context, libraryID string) (bool, error) {
+	for _, q := range []string{
+		"SELECT 1 FROM Library WHERE library_id = ?",
+		"SELECT 1 FROM GarbageLibraries WHERE library_id = ?",
+	} {
+		var one int
+		switch err := readDB.QueryRowContext(ctx, q, libraryID).Scan(&one); {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, sql.ErrNoRows):
+		default:
+			return false, fmt.Errorf("failed to look for library %s: %v", libraryID, err)
+		}
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return false, fmt.Errorf("failed to look for library %s: %v", libraryID, err)
+	return false, nil
 }
 
 // ContentKeyWrap returns the content key of an encrypted library, wrapped to

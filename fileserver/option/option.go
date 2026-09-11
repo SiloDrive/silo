@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dkam/silo/fileserver/utils"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/ini.v1"
 )
@@ -17,6 +18,20 @@ const InfiniteQuota = -2
 // DefaultDiskReserve is the free space a server keeps back when nobody has
 // said otherwise. See DiskReserve for why it is not zero.
 const DefaultDiskReserve = 1 * GB
+
+// DefaultMaxBufferedObjectBytes is how much the object lanes may hold in
+// buffered whole objects at once, before they start refusing.
+//
+// An object is sealed and opened in one piece -- AES-GCM does not stream -- so
+// every lane that touches one holds all of it. This is the total across every
+// request in flight, which is the number that was missing: one request's
+// ceiling says nothing about what eight of them cost.
+//
+// 512 MB, against a per-object ceiling of 128 MB, so four of the largest
+// objects the server accepts fit at once and thousands of ordinary ones do.
+// Raise it on a machine with room; the failure it prevents is the process
+// being killed, which no request recovers from.
+const DefaultMaxBufferedObjectBytes = 512 * MB
 
 // Storage unit.
 const (
@@ -31,6 +46,26 @@ var (
 	Host          string
 	Port          uint32
 	MaxUploadSize uint64
+
+	// MaxBufferedObjectBytes is how much memory the object lanes may hold in
+	// buffered whole objects at once, across every request in flight.
+	//
+	// Zero means the compiled default. See DefaultMaxBufferedObjectBytes for
+	// what the number is for.
+	MaxBufferedObjectBytes int64
+
+	// DefaultMaxUploadSize is the ceiling on one request's body when
+	// max_upload_size says nothing, which is what an install that has never
+	// read the config reference has.
+	//
+	// Nonzero, because the zero this used to be meant no limit: the shipped
+	// behaviour of an unconfigured server was that one request could be any
+	// size at all. It is a backstop and not the protection — a hundred
+	// gigabytes is past any file this lane is meant to carry and short of
+	// nothing an attacker wants, and what actually stops a body from taking
+	// the volume is the reserve being watched while it arrives. Set
+	// max_upload_size to mean it.
+	DefaultMaxUploadSize uint64 = 100 * GB
 
 	// notification server
 	EnableNotification bool
@@ -130,6 +165,23 @@ var (
 	// on, or every client shares the proxy's bucket and one attacker
 	// throttles everyone.
 	TrustProxyHeaders bool
+
+	// AllowUserCreateLibrary says whether an account with the `user` role may
+	// create a library on this install. It is the argument to
+	// account.Role.MayCreateLibrary, and it is a statement about users only:
+	// an admin is never subject to it, and a guest is never released by it.
+	//
+	// On by default, which is what every install has done until now and what
+	// an ordinary deployment wants -- a user who cannot make a library has
+	// nowhere to put anything that was not handed to them. Turning it off is
+	// the curated shape docs/plans/sharing.md describes, where the admin owns
+	// the libraries and everybody else syncs what they are given.
+	//
+	// Initialised here as well as in initDefaultOptions, because the bool zero
+	// value is the restrictive answer: a caller that reaches the route without
+	// loading options at all would otherwise refuse every user on an install
+	// that never configured anything.
+	AllowUserCreateLibrary = true
 )
 
 func initDefaultOptions() {
@@ -151,6 +203,7 @@ func initDefaultOptions() {
 	LoginRateLimit = true
 	TrustProxyHeaders = false
 	EnableNotification = true
+	AllowUserCreateLibrary = true
 	initStorageDefaults()
 }
 
@@ -177,6 +230,26 @@ func envBool(def bool, names ...string) bool {
 		}
 		log.Warnf("Ignoring unparseable %s=%q, using %v", name, v, def)
 		return def
+	}
+	return def
+}
+
+// envHops reads a proxy-hop count. Anything unparseable or below one keeps the
+// default, because a bad value here is not a knob that fails to take effect --
+// too high reads an entry the client wrote, which is the bug this exists to
+// have fixed.
+func envHops(def int, names ...string) int {
+	for _, name := range names {
+		v := strings.TrimSpace(os.Getenv(name))
+		if v == "" {
+			continue
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			log.Warnf("Ignoring unparseable %s=%q, using %d", name, v, def)
+			return def
+		}
+		return n
 	}
 	return def
 }
@@ -220,6 +293,11 @@ func LoadFileServerOptions(configFile string) {
 	}
 
 	TrustProxyHeaders = envBool(TrustProxyHeaders, "SILO_TRUST_PROXY_HEADERS")
+	// Which X-Forwarded-For entry is the client's, and so which one the rate
+	// limiters count. It lives in utils because that is where the header is
+	// read and there is no second copy to drift; see utils.TrustedProxyHops
+	// for why the safe direction is downwards.
+	utils.TrustedProxyHops = envHops(utils.TrustedProxyHops, "SILO_TRUSTED_PROXY_HOPS")
 
 	VerifyFSObjectHashes = envBool(VerifyFSObjectHashes, "SILO_VERIFY_FS_OBJECT_HASHES")
 	if !VerifyFSObjectHashes {
@@ -252,6 +330,20 @@ func LoadFileServerOptions(configFile string) {
 			Port = uint32(port)
 		}
 	}
+
+	// Who may create a library. The section is the install's policy about
+	// libraries rather than about the process, so it is not [fileserver].
+	if section, err := config.GetSection("libraries"); err == nil {
+		if key, err := section.GetKey("allow_user_create_library"); err == nil {
+			if allow, err := key.Bool(); err == nil {
+				AllowUserCreateLibrary = allow
+			} else {
+				log.Warnf("[libraries] allow_user_create_library = %q is not a boolean; leaving it %v",
+					key.String(), AllowUserCreateLibrary)
+			}
+		}
+	}
+	AllowUserCreateLibrary = envBool(AllowUserCreateLibrary, "SILO_ALLOW_USER_CREATE_LIBRARY")
 
 	if section, err := config.GetSection("history"); err == nil {
 		if key, err := section.GetKey("keep_days"); err == nil {
