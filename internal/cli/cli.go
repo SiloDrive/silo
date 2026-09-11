@@ -23,6 +23,24 @@ func newFlagSet(name string) *flag.FlagSet {
 	return fs
 }
 
+// commands is the client-side verb set. It is a table rather than a switch so
+// that a name can be checked before anything is done about it: the credential
+// gate below used to answer first, which reported `silo service` -- serve,
+// misspelt, arriving here because everything that is not a daemon verb does --
+// as a missing account rather than as a word that is not a command.
+var commands = map[string]func(*client.APIClient, []string) error{
+	"libraries": cmdLibraries,
+	"library":   cmdLibrary,
+	"ls":        cmdLs,
+	"get":       cmdGet,
+	"put":       cmdPut,
+	"mkdir":     cmdMkdir,
+	"rm":        cmdRm,
+	"mv":        cmdMv,
+	"rename":    cmdRename,
+	"changes":   cmdChanges,
+}
+
 // Run executes a single CLI subcommand. args[0] is the subcommand name; the
 // rest are its arguments and flags. It logs in using email+password before
 // each operation.
@@ -30,6 +48,13 @@ func Run(serverURL, email, password string, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("no subcommand given")
 	}
+
+	sub, rest := args[0], args[1:]
+	cmd, ok := commands[sub]
+	if !ok {
+		return fmt.Errorf("unknown subcommand: %s (run \"silo help\" for the list)", sub)
+	}
+
 	if email == "" || password == "" {
 		return fmt.Errorf("SILO_EMAIL and SILO_PASSWORD must be set")
 	}
@@ -39,31 +64,7 @@ func Run(serverURL, email, password string, args []string) error {
 		return fmt.Errorf("login: %w", err)
 	}
 
-	sub, rest := args[0], args[1:]
-	switch sub {
-	case "libraries":
-		return cmdLibraries(c, rest)
-	case "library":
-		return cmdLibrary(c, rest)
-	case "ls":
-		return cmdLs(c, rest)
-	case "get":
-		return cmdGet(c, rest)
-	case "put":
-		return cmdPut(c, rest)
-	case "mkdir":
-		return cmdMkdir(c, rest)
-	case "rm":
-		return cmdRm(c, rest)
-	case "mv":
-		return cmdMv(c, rest)
-	case "rename":
-		return cmdRename(c, rest)
-	case "changes":
-		return cmdChanges(c, rest)
-	default:
-		return fmt.Errorf("unknown subcommand: %s", sub)
-	}
+	return cmd(c, rest)
 }
 
 func cmdLibraries(c *client.APIClient, args []string) error {
