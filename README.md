@@ -251,7 +251,7 @@ The storage knobs above are the `[storage]` section of `silo.conf`; [docs/config
 | Flag | Purpose |
 |---|---|
 | `-d <dir>` | Data directory (default: `$SILO_DATA_DIR` or `~/.local/share/silo`) |
-| `-b <addr>` | Bind address, `serve` only (default: `$SILO_HOST` or `127.0.0.1`) |
+| `-b <addr>` | Bind address, `serve` only — a host (`0.0.0.0`) or a host and port (`0.0.0.0:8003`). Default: `$SILO_HOST:$SILO_PORT` or `127.0.0.1:8082` |
 | `-C <file>` | Path to `silo.conf` (optional; only needed to override compiled defaults) |
 | `-l <file>` | Log file path |
 | `-P <file>` | PID file path |
@@ -260,6 +260,17 @@ The storage knobs above are the `[storage]` section of `silo.conf`; [docs/config
 Flags beat environment variables, which beat `silo.conf`, which beats the
 compiled defaults. So `-b` overrides `SILO_HOST` for one invocation without
 disturbing whatever the service normally runs with.
+
+`-b` sets the port only when you give it one: `-b 0.0.0.0` moves the host and
+leaves `SILO_PORT` alone, `-b 0.0.0.0:8003` moves both. An IPv6 host needs
+brackets to carry a port — `-b [::1]:8082` — because a bare `::1` is all host.
+
+A bare `-b :8003` is refused rather than guessed at. Most Go servers read it as
+every interface, but silo binds loopback by default, so it reads just as
+naturally as "same host, new port" — and quietly picking the first meaning
+would put a server on the network nobody asked to put there. Say which you
+meant: `-b 127.0.0.1:8003` or `-b 0.0.0.0:8003`. To change only the port and
+leave the host wherever it was, use `SILO_PORT`.
 
 ## Backups
 

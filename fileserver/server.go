@@ -301,7 +301,7 @@ func removePidfile(pid_file_path string) error {
 // standalone binary.
 func Run(args []string) error {
 	fs := commandFlags("serve")
-	fs.StringVar(&bindAddr, "b", "", "bind address (default: $SILO_HOST or 127.0.0.1)")
+	fs.StringVar(&bindAddr, "b", "", "bind address as host or host:port (default: $SILO_HOST:$SILO_PORT or 127.0.0.1:8082)")
 	fs.StringVar(&logFile, "l", "", "log file path (default: stdout)")
 	fs.StringVar(&pidFilePath, "P", "", "pid file path")
 	fs.BoolVar(&debugLog, "debug", false, "log every HTTP request (method, path, status, duration)")
@@ -397,8 +397,19 @@ func Run(args []string) error {
 	// After the options, so the flag beats both SILO_HOST and the config file.
 	// Same precedence as -d over SILO_DATA_DIR: what you typed on this command
 	// line wins over what the environment happens to be carrying.
+	//
+	// The port moves only when -b carried one. "-b 0.0.0.0" is the form this
+	// flag has always taken, and an install using it keeps the port SILO_PORT
+	// or silo.conf gave it.
 	if bindAddr != "" {
-		option.Host = bindAddr
+		host, port, portSet, err := parseBindAddr(bindAddr)
+		if err != nil {
+			return err
+		}
+		option.Host = host
+		if portSet {
+			option.Port = port
+		}
 	}
 	// The lock above is what makes this safe; see migrateOnOpen.
 	migrateOnOpen = true
@@ -457,7 +468,7 @@ func Run(args []string) error {
 	router := newHTTPRouter()
 
 	httpServer = new(http.Server)
-	httpServer.Addr = fmt.Sprintf("%s:%d", option.Host, option.Port)
+	httpServer.Addr = listenAddr()
 	httpServer.Handler = serveHandler(router, debugLog)
 	httpServer.ReadHeaderTimeout = readHeaderTimeout
 	httpServer.IdleTimeout = idleTimeout
@@ -485,7 +496,7 @@ func Run(args []string) error {
 	// Reported as configured rather than as ln.Addr(), which renders a 0.0.0.0
 	// bind as "[::]" — accurate, since the wildcard listener is dual-stack,
 	// but not what anyone typed, and it would disagree with the warning below.
-	log.Printf("Silo server listening on http://%s:%d", option.Host, option.Port)
+	log.Printf("Silo server listening on http://%s", displayAddr())
 	warnIfExposedWithoutTLS()
 
 	go func() {
@@ -526,14 +537,13 @@ func logSetupToken(tok setup.Token) {
 // in front of it. It is a warning rather than a refusal because the server
 // cannot tell from here whether a proxy is there.
 func warnIfExposedWithoutTLS() {
-	ip := net.ParseIP(option.Host)
-	if ip != nil && ip.IsLoopback() {
+	if !exposedWithoutTLS() {
 		return
 	}
 	log.Warnf("Listening on %s without TLS. Passwords and tokens will cross the "+
 		"network in clear text — put a TLS reverse proxy in front, and set "+
 		"SILO_TRUST_PROXY_HEADERS=true so rate limiting sees the real client.",
-		option.Host)
+		displayAddr())
 }
 
 func handleSignals() {

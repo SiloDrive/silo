@@ -184,6 +184,10 @@ Server environment:
   SILO_DATA_DIR          Data directory (default: ~/.local/share/silo)
   SILO_HOST              Listen address (default: 127.0.0.1)
   SILO_PORT              Listen port (default: 8082)
+                         "silo serve -b" overrides both: -b takes a host
+                         ("-b 0.0.0.0") or a host and port ("-b 0.0.0.0:8003").
+                         A bare "-b :8003" is refused as ambiguous; name the
+                         host, or use SILO_PORT to move only the port.
   SILO_LOG_LEVEL         Log level: debug, info, warn, error
   SILO_SENTRY_DSN        Send errors, panics and request timings here
                          (SENTRY_DSN also works; unset means send nothing)
