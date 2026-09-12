@@ -411,7 +411,7 @@ func TestQueryEntryAnswersOverTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PUT: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("PUT = %d, want 201", resp.StatusCode)
 	}
@@ -426,7 +426,7 @@ func TestQueryEntryAnswersOverTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QUERY: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("QUERY = %d (%s), want 200", resp.StatusCode, body)
