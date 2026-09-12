@@ -773,6 +773,12 @@ func newHTTPRouter() *mux.Router {
 	// The entries surface. One route, all methods: entriesHandler answers a
 	// bad method with 405 and an Allow header, which mux would otherwise turn
 	// into a 404 that reads as "wrong path".
+	//
+	// "All methods" now includes QUERY, which is load-bearing rather than
+	// incidental: the range read is a QUERY on this route, and it works
+	// because nothing here filters on method. A .Methods() list added to this
+	// line would have to name it, and forgetting to would turn a working
+	// endpoint into a 404 — see entries_ranges.go.
 	apiRouter.HandleFunc("/libraries/{libraryid}/entries/{path:.*}", entriesHandler)
 
 	return r

@@ -177,6 +177,22 @@ func features() []string {
 		// the name lands in the same change as the route and covers the pair
 		// that came before it.
 		"history", // GET commits, GET entries/{path}?at=, GET entries/{path}?type=history
+		// A range read in one round trip: the manifest and the chunks covering
+		// the requested bytes, in one framed response.
+		//
+		// This name has to be discoverable rather than probed for, and a 404
+		// is not the fallback it looks like. The client that asked for it can
+		// already delete the same round trip without any server change, by
+		// issuing a ranged GET and GET objects/{id} concurrently and paying
+		// max() rather than sum() — so a client that cannot see this name has
+		// somewhere to go, and one that assumed the route and got a 404 would
+		// have spent a round trip finding out.
+		//
+		// Named for the ranges rather than for the verb. A later QUERY on this
+		// route with a different body would be a different capability, and a
+		// client checking for "entries-query" would have been told it was
+		// there.
+		"entries-ranges", // QUERY entries/{path} {"ranges":[[offset,length],…]}
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification

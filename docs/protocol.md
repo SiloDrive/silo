@@ -253,7 +253,7 @@ are registered there too, but are authenticated: see the lane note above.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.5.0","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. Carries `"setup_required": true` on a server that has no accounts yet, and omits the key entirely otherwise, so a claimed server's body is unchanged from before the field existed. No chunker parameters: they belong to the library, and the libraries listing carries them. The `libraries` name says this server serves `/libraries/…`; a client that does not find it is talking to a build that predates the word and should say so rather than read the 404 that follows as an empty account |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.5.1","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. Carries `"setup_required": true` on a server that has no accounts yet, and omits the key entirely otherwise, so a claimed server's body is unchanged from before the field existed. No chunker parameters: they belong to the library, and the libraries listing carries them. The `libraries` name says this server serves `/libraries/…`; a client that does not find it is talking to a build that predates the word and should say so rather than read the 404 that follows as an empty account |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → a `session` credential, or an enrolled one. Not a JWT: it names a row in `Credential` that can be revoked, labelled and narrowed |
 | POST | `/api/silo/v1/auth/renew` | Mint the presenting credential's successor: no body, a full fresh lifetime, every field inherited. `device` only — a `session` gets `403`. The old credential is untouched and expires when it always would have. A scoped credential may reach it. Feature name `credential-renew` |
 | POST | `/api/silo/v1/auth/logout` | Discard the credential that made the request. No write permission needed, and a scoped credential may reach it |
@@ -289,6 +289,7 @@ clients speak, and what `client/` speaks; the traps are under
 |---|---|---|
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Read a file's bytes, or list a directory. Ranged; `ETag`/`304` |
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=manifest` | The file's manifest — the same object `objects/{id}` serves, reachable with a path-scoped credential. See the chunk surface below |
+| QUERY | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"ranges":[[offset,length],…]}` → the manifest **and** the chunks covering those bytes, in one framed response. The round trip that `?type=manifest` followed by `chunks/fetch` cannot avoid, because the second cannot name its ids until the first lands. Feature name `entries-ranges`; see [The range read](#the-range-read-one-round-trip) |
 | GET, HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}?at={commit}` | The same read, resolved against that commit's tree instead of the head's. `400` if `at` is not a commit id or is sent with `PUT`, `POST` or `DELETE` — history refuses writes rather than silently taking them; `410` if the commit is no longer reachable; `404` if the path is absent in that commit. Feature name `history`. `rootFor` in `fileserver/entries.go` |
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=history` | `{"versions":[{commit, created_at, id, type, size?, author?, message?},…]}`, newest first, and **only the commits where the entry's id changed** — three edits are three rows however long the history. `id` is `null` for a deletion between two versions; the commit is the one that wrote the version. `?limit=` bounds versions, not commits, and a page may come back short with a `Link` if the scan hit its cap. `400` with `at`; `403` on an E2EE library. Feature name `history`. `EntryHistoryHandler` in `fileserver/api/history.go` |
 | HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | The same headers as `GET`, no body. On a directory `Content-Length` is the size of the listing, not of its contents |
@@ -305,6 +306,27 @@ clients speak, and what `client/` speaks; the traps are under
 `entries/` with nothing after it is the root. Every mutating method honours
 `If-Match` and `If-None-Match`; on a `move` or a `copy` the precondition is
 about the *source*, which is the thing the caller looked at before deciding.
+
+**`Range` is one range, and only on a plain library.** Feature name
+`ranged-reads`. A single `bytes=` range answers `206` with `Content-Range`;
+`bytes=N-`, `bytes=N-M` and the suffix form `bytes=-N` are all read, and a
+range past the end is clamped to it. A **multi-range** request — two or more
+ranges in one header — is `416`, not a `multipart/byteranges` response
+(`parseRange` in `fileserver/entries.go`): that response format has no consumer
+here, and half-implementing it is worse than not offering it. `Accept-Ranges:
+bytes` is on every file response. The ranged path is arithmetic rather than
+I/O planning — chunk sizes in a manifest are plaintext lengths, so the run of
+chunks a range touches is computable without reading any of them.
+
+**A read of an encrypted library through `entries/{path}` is `403`**, the
+mirror of the write refusal under the chunk surface below and with the same
+body shape (`errE2EEReadByID` in `fileserver/commit.go`, raised by the walk as
+`objmgr.ErrNoContentKey`). The server holds no content key, so it cannot
+resolve a path through names it cannot read, and what it could stream is
+ciphertext a client has no way to tell from the file. Such a library is read
+through [the id-addressed surface](#the-id-addressed-surface), where the client
+opens the chunks itself. `GET entries/{path}?type=manifest` is refused there
+for the same reason; `objects/{id}` is the route that answers.
 
 Copy is cheap in a way worth stating plainly: the destination dirent points at
 the object the source already names, so a copy costs one dirent and one commit
@@ -645,6 +667,110 @@ would be a claim about the library rather than about the request. Under 64 KiB
 the bytes *are* the manifest (`store.Inlined`), so the fetch that would have
 been a round trip of overhead is the read.
 
+#### The range read, one round trip
+
+**`QUERY entries/{path}` answers the manifest and the covering chunks
+together.** Feature name `entries-ranges`.
+
+```
+QUERY /api/silo/v1/libraries/{library}/entries/{path}
+Content-Type: application/json
+
+{"ranges": [[0, 4096], [5011283968, 4096]]}
+```
+
+```
+200 OK
+Content-Type: application/vnd.silo.ranges
+
+<manifest frame> <chunk frame> … <terminator>
+```
+
+The body is [the chunk stream](#the-chunk-stream--post-chunksfetch) exactly — the same
+framing `POST chunks/fetch` answers with, the same `store.DecodeChunkFrames`
+reading it, the same per-frame hash check — with **the manifest as the first
+frame**. That works without a new frame type because a manifest id is the same
+SHA-256 over the same kind of bytes a chunk id is, so the manifest arrives
+self-describing and verifiable like everything behind it. It is the one frame
+you cannot match by id, because its id is the thing you did not have; take it
+by position, then match the rest by id as usual.
+
+The media type is `application/vnd.silo.ranges` rather than
+`application/vnd.silo.chunks`, and the difference is the contract rather than
+the format: the chunks type promises chunks, and a client that read this
+response under that name would file the manifest away as one.
+
+**Why it exists.** Reading part of a file you do not hold takes two requests
+that cannot overlap: `GET entries/{path}?type=manifest` to learn which chunks
+cover the bytes, then `POST chunks/fetch` to get them. The second cannot name
+its ids until the first lands, and the first fetches nothing — it asks where to
+look. On the host that motivated this, that is 165/312/738 ms: about a third of
+a second of pure latency in front of every cold file, spent before anything
+appears on screen. A preview making three cold range reads goes from four round
+trips to three; a thumbnailer reading one header goes from two to one.
+
+**The rules.**
+
+- **Ranges are `[offset, length]`, half-open, and in bytes of the file** — not
+  the inclusive first/last pair a `Range` header carries. They may overlap and
+  need not be sorted; the answer is each covering chunk once, in the order the
+  manifest lists them.
+- **At most 256 ranges, touching at most 256 chunks.** Both are `400` rather
+  than a short answer, for the reason `chunks/fetch` caps rather than
+  truncating: a response that looks complete and is not is worse than one that
+  did not happen. The chunk cap is counted after the ranges resolve.
+- **An offset or length below zero, and a length of zero, are `400`.** A client
+  that computed one has a bug, and an empty answer is how that bug reaches
+  production.
+- **A range running past the end is clamped; one wholly past it is answered
+  with the manifest and no chunks, not `416`.** The manifest in the same
+  response is what says how long the file actually is, so the client learns the
+  answer rather than a status — which nothing else in the response could have
+  told it.
+- **A file small enough to inline answers in one frame.** Its bytes are in the
+  manifest, so a `QUERY` on it is the whole file in one round trip.
+- **A directory is `400`**, not `404`: it has no manifest, so this is the wrong
+  question rather than a missing path.
+- **`?at={commit}` works**, resolving against that commit's tree exactly as the
+  `GET` does.
+- **An E2EE library is `403`**, for the reason the `GET` beside it is —
+  the server cannot resolve a path through names it has no key to read.
+- **A manifest too large to frame is `501`.** A frame carries 64 MiB and a
+  manifest may legally reach 1 GiB, so at roughly 67 bytes per chunk the two
+  part company somewhere around a terabyte of file. Nothing is broken and a
+  retry will not help: read that file's manifest with `?type=manifest`, which
+  streams, and its chunks with `POST chunks/fetch`.
+
+**`QUERY`, not `POST`.** `POST entries/{path}` is taken and means mutate — it
+is the move and copy verb. A safe, idempotent read on that same route,
+distinguished only by its body, is what `QUERY` exists to avoid; the method
+went to RFC in June 2026. It is not a `Range` header either: that header is
+scoped to the representation being returned, so here it would have to mean
+*part of the manifest*. Asking for two representations of one resource is what
+makes this a method and a body.
+
+**It is path-addressed on purpose.** The obvious shape takes a manifest id, and
+would be unusable by the client that asked for this: `objects/{id}` is refused
+to a credential narrowed to a subtree, because an id says nothing about where
+it is linked. Same reasoning that put `entries/{path}?type=manifest` beside
+`objects/{id}`.
+
+**What it deliberately does not do** is bundle "the first chunk" with the
+manifest. That is a bet on the read being at offset 0 — fair for a header,
+wrong for a seek into the middle or for an MP4 whose `moov` atom sits at the
+tail, which are exactly the reads this exists for. The covering chunks are the
+answer; the first chunk is a guess.
+
+**If the server is too old to have it,** issue `GET entries/{path}` with a
+`Range` and `GET objects/{id}` **concurrently** and pay `max()` rather than
+`sum()`. `ranged-reads` has always worked. What that loses is not verification
+— it is reuse, since the ranged bytes arrive under no id and cannot be used for
+the next range. Check the feature name rather than calling and reading the
+`404`: probing costs the round trip you were trying to save.
+
+**On the second range of the same file you already hold the manifest**, so
+`POST chunks/fetch` is the call — this endpoint is for the cold read.
+
 #### The id-addressed surface
 
 Feature name `objects`. How a client reads and writes a library the server
@@ -921,6 +1047,45 @@ server that sends no list reads as "no features", which is the correct answer
 — absent means do not call it. `notifications` is the one name that depends on
 how the server was started rather than on which build it is; seeing it is how
 a client knows the socket exists at all.
+
+The whole vocabulary this build publishes, in the order `features()` emits it
+(`fileserver/api/api.go`). A name here is a promise; the endpoints it covers
+are documented above.
+
+| name | what it says this server has |
+|---|---|
+| `libraries` | `/libraries/…`, and `library_id` in every payload |
+| `entries` | the entries surface — one addressable noun, HTTP methods as its verbs |
+| `entries-copy` | `POST entries/{path}` `{"op":"copy","to":…}` |
+| `conditional-writes` | `If-Match` / `If-None-Match` on every mutating method |
+| `ranged-reads` | `Range` on `GET entries/{path}`, plain libraries only |
+| `changes` | `GET libraries/{id}/changes?since=` |
+| `library-rename` | `PATCH libraries/{id}` |
+| `chunks` | `chunks/missing`, `PUT chunks/{id}`, `PUT entries/{path}?type=chunks` |
+| `objects` | `GET`/`PUT objects/{id}`, `GET`/`HEAD chunks/{id}`, `PUT head` |
+| `chunks-fetch` | `POST chunks/fetch` — many chunks, one framed response |
+| `entries-manifest` | `GET entries/{path}?type=manifest` |
+| `chunks-upload` | `POST chunks` — many chunks, one framed request |
+| `pagination` | `?limit` on `changes` and directory listings, `Link: …; rel="next"` |
+| `batch` | `POST libraries/{id}/batch` — many operations, one commit |
+| `usage` | `GET account/usage`, and `size`/`file_count` on the libraries listing |
+| `logout` | `POST auth/logout`, `POST auth/logout/everywhere` |
+| `password-change` | `POST auth/password` |
+| `credential-renew` | `POST auth/renew` |
+| `account-keys` | `GET`/`PUT account/keys`, `DELETE …/recovery/{n}`, `POST auth/kdf` |
+| `split-login` | an `authKey` on `POST auth/login`, `kdf_params` on `POST auth/password` |
+| `e2ee-libraries` | `POST /libraries` with `"e2ee": true`, `GET libraries/{id}/key` |
+| `setup` | `POST auth/setup`, and `setup_required` on `server-info` |
+| `invites` | `POST auth/redeem`, and the admin invite routes behind it |
+| `shares` | `GET`/`POST libraries/{id}/shares`, `DELETE …/shares/{principal}` |
+| `history` | `GET commits`, `GET entries/{path}?at=`, `GET entries/{path}?type=history` |
+| `entries-ranges` | `QUERY entries/{path}` — the manifest and the chunks covering a byte range, one framed response |
+| `notifications` | `WS /notification` — **only when the server was started with it** |
+| `notifications-credential` | subscribe with no `jwt_token` |
+| `notifications-account` | subscribe with `{"account": true}`, and `account-update` |
+
+The last three are conditional on `option.EnableNotification`; every other name
+is a property of the build.
 
 Check `notifications-credential` before subscribing without a `jwt_token`.
 This is the one place where guessing wrong is expensive rather than merely
@@ -1283,9 +1448,15 @@ substitute defaults: chunking under the wrong parameters uploads *correctly*
 and dedups against nothing, and nothing detects it. It is the one failure on
 this surface with no error to see.
 
-**Already-present chunks answer `200` before reading the body.** Send
-`Expect: 100-continue` on `PUT chunks/{id}` and you skip the transfer entirely
-when a `chunks/missing` answer has gone stale under you.
+**Re-sending a chunk the server already holds costs the bytes.** `PUT
+chunks/{id}` answers `200` rather than `201` when the chunk was already there,
+but it answers it *after* reading the body: the existence check happens once
+the bytes are in hand, so `Expect: 100-continue` saves nothing here — the
+server sends the `100`, the client uploads, and the `200` arrives at the end.
+Ask `chunks/missing` first, which is the call that exists for this, and accept
+that its answer can go stale under a library more than one client writes.
+`POST chunks` reports that staleness rather than hiding it: `present` counts
+the frames the server already had, and those bytes were spent.
 
 **The manifest id is already in your hand.** A listing's file `id` *is* the
 manifest id, unprefixed, so `?type=manifest` is a fetch you make when you
@@ -1664,6 +1835,8 @@ Every row has been exercised against a running server.
 | duplicate an item | `POST libraries/{id}/entries/{path}` `{"op":"copy",…}` — no content transferred |
 | upload a large file | `POST chunks/missing`, then `POST chunks` with the ones it named (or `PUT chunks/{id}` each, without `chunks-upload`), then `PUT entries/{path}?type=chunks` |
 | download a large file you hold a version of | `GET entries/{path}?type=manifest`, then `POST chunks/fetch` for the ids your chunk cache lacks |
+| read a byte range of a file you hold nothing of | `QUERY entries/{path}` `{"ranges":[[off,len],…]}` — manifest and covering chunks, one request |
+| read another range of that same file | `POST chunks/fetch` — you have the manifest now, so this one is already a single request |
 | read a file once, nothing cached | `GET entries/{path}` — one request, the server assembles |
 | enumerate a huge directory | `GET entries/{path}?limit=1000`, then follow `Link: …; rel="next"` |
 | write many things at once | `POST libraries/{id}/batch` — one commit, all or nothing |

@@ -98,8 +98,13 @@ func entriesHandler(w http.ResponseWriter, r *http.Request) {
 		deleteEntry(w, r)
 	case http.MethodPost:
 		postEntry(w, r)
+	case methodQuery:
+		// A read with a body, which is what QUERY is for. It is spelled out
+		// rather than taken from net/http because there is no constant to take
+		// — the method went to RFC in June 2026 and Go has not named it yet.
+		queryEntry(w, r)
 	default:
-		w.Header().Set("Allow", "GET, HEAD, PUT, POST, DELETE")
+		w.Header().Set("Allow", "GET, HEAD, PUT, POST, DELETE, QUERY")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
