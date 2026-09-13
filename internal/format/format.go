@@ -1,7 +1,11 @@
 // Package format holds small formatting helpers shared between the CLI and TUI.
 package format
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // Bytes renders a byte count as a short human-readable string
 // (B / KB / MB / GB / TB / PB), scaling by 1024.
@@ -22,4 +26,24 @@ func Bytes(size int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(size)/float64(div), "KMGTP"[exp])
+}
+
+// Count renders a whole number with thousands separators, for the places a
+// count is read rather than computed with — "1,204 files" in a warning, where
+// "1204" invites a misread of the magnitude that is the whole point of saying
+// it.
+func Count(n int) string {
+	s := strconv.Itoa(n)
+	sign := ""
+	if strings.HasPrefix(s, "-") {
+		sign, s = "-", s[1:]
+	}
+	var out strings.Builder
+	for i, digit := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out.WriteByte(',')
+		}
+		out.WriteRune(digit)
+	}
+	return sign + out.String()
 }

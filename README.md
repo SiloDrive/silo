@@ -170,7 +170,9 @@ export SILO_PASSWORD=changeme
 
 With that loaded, `./silo serve -d /tmp/silo-data` and `./silo tui` both pick up the same host, port, and credentials — no flags needed. The account itself is made once, through the setup screen; these two variables only say who to log in as afterwards.
 
-From the TUI: `n` to create a library, `enter` to open it, `u` to upload a local file or directory, `v` to move, `r` to rename, `x` to delete, `q` to quit. Lists scroll: `j`/`k` or the arrow keys move the cursor, `g`/`G` jump to the top and bottom, and page up/down move a screen at a time.
+From the TUI: `n` to create a library, `enter` to open it, `d` to delete it, `u` to upload a local file or directory, `v` to move, `r` to rename, `x` to delete, `q` to quit. Lists scroll: `j`/`k` or the arrow keys move the cursor, `g`/`G` jump to the top and bottom, and page up/down move a screen at a time.
+
+Deleting a library asks differently depending on what is in it. An empty one is a `y`/`n`. One that holds anything says how much — "holds 1,204 files in 12 folders" — and asks for the library's name typed back, because `d` and `y` are one key apart under the same finger and the whole library is on the other side of them, with no undo behind it. The count is a walk of the tree that stops at 500 files or 100 requests, whichever comes first, and says "at least" when it stopped early; a library it could not read at all is treated as non-empty rather than as empty.
 
 `a` opens the account menu, which is where you change your password. It asks for the current one as well as the new one — the request is already authenticated, but a credential you handed to a device must not be able to turn itself into the account. Changing it signs your other sessions out and leaves mounted devices alone; the TUI you did it from signs itself back in. An operator who needs to reset a password nobody holds any more uses `silo user passwd <email>`, which revokes everything.
 

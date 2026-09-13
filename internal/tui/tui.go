@@ -70,6 +70,16 @@ type librariesLoadedMsg struct {
 }
 type libraryCreatedMsg struct{ err error }
 type libraryDeletedMsg struct{ err error }
+
+// libraryCountedMsg carries the answer to "how much is in here?", asked when
+// the delete confirmation opens. It names the library it counted: the walk
+// takes as many round trips as the library has directories, and an answer that
+// arrives after the user has backed out and picked a different library must
+// not be shown against that one.
+type libraryCountedMsg struct {
+	libraryID string
+	contents  libraryContents
+}
 type dirLoadedMsg struct {
 	entries []client.DirEntry
 	err     error
@@ -142,6 +152,20 @@ type model struct {
 
 	// New library
 	newLibraryInput textinput.Model
+
+	// Delete library. The id and name are copied out of the list on the way
+	// in rather than read back through the cursor, so that the screen keeps
+	// naming the library the count was asked about even if the list moves
+	// underneath it.
+	deleteLibraryID   string
+	deleteLibraryName string
+	// deleteContents is nil until the walk answers. A confirmation that does
+	// not yet know what it is about accepts nothing -- neither the y nor the
+	// typed name -- because the two shapes of confirmation are not
+	// interchangeable and guessing which one is on screen is the user's job
+	// only once the screen has settled.
+	deleteContents     *libraryContents
+	deleteConfirmInput textinput.Model
 
 	// Browse
 	browseLibraryID   string
@@ -274,6 +298,10 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 	renameIn.Placeholder = "new name"
 	renameIn.CharLimit = 255
 
+	deleteConfirm := textinput.New()
+	deleteConfirm.Placeholder = "library name"
+	deleteConfirm.CharLimit = 255
+
 	// Masked, unlike the setup token beside them. A password is typed from
 	// memory and confirmed against a second field; a token is copied off a log
 	// line and has nothing to check it against but the operator's own eyes.
@@ -302,6 +330,8 @@ func initialModel(serverURL, autoEmail, autoPassword string) model {
 		uploadInput:     upload,
 		mkdirInput:      mkdirIn,
 		renameInput:     renameIn,
+
+		deleteConfirmInput: deleteConfirm,
 
 		currentPasswordInput: currentPassword,
 		newPasswordInput:     newPassword,
@@ -626,8 +656,7 @@ func (m model) updateLibraries(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		case "d":
 			if len(m.libraries) > 0 {
-				m.view = viewConfirm
-				m.message = ""
+				return m.enterDeleteLibrary(m.libraries[m.cursor])
 			}
 		case "a":
 			m.view = viewAccount
@@ -749,44 +778,264 @@ func (m model) renderNewLibrary() string {
 
 // --- Confirm Delete View ---
 
+// How far the walk behind the delete confirmation will go before it answers
+// with a floor instead of a total.
+//
+// The question the screen has to answer is "is there anything here worth
+// stopping for", not "exactly how much"; once the answer is 500 files the
+// warning reads the same whether the true figure is 500 or 500,000. The
+// request cap covers the other shape of large library — a wide, shallow tree
+// of empty-ish directories, where the files run out long before the round
+// trips do.
+const (
+	countFileCap    = 500
+	countRequestCap = 100
+)
+
+// libraryContents is how much a library holds, as far as the walk got.
+type libraryContents struct {
+	files, dirs int
+	// partial says the walk stopped at one of its caps rather than at the end
+	// of the tree, so the counts are a floor and have to be reported as one.
+	partial bool
+	// err is a listing that failed. The counts are then unknown rather than
+	// zero, which is why empty() is false: an unreachable server is a reason
+	// to ask for more confirmation, not less.
+	err error
+}
+
+func (c libraryContents) empty() bool {
+	return c.err == nil && c.files == 0 && c.dirs == 0
+}
+
+// phrase reads "1,204 files in 12 folders" — the counts alone, for a sentence
+// to be built around.
+//
+// No byte total: a directory listing does not carry sizes (see DirEntry.Size),
+// so a total would mean a manifest read per file, and the walk is already the
+// slowest thing this screen does.
+func (c libraryContents) phrase() string {
+	var s string
+	switch {
+	case c.files == 0:
+		s = plural(c.dirs, "folder")
+	case c.dirs == 0:
+		s = plural(c.files, "file")
+	default:
+		s = plural(c.files, "file") + " in " + plural(c.dirs, "folder")
+	}
+	if c.partial {
+		return "at least " + s
+	}
+	return s
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return format.Count(n) + " " + noun + "s"
+}
+
+// countTree walks a library and counts what is in it, bounded by the caps
+// above.
+//
+// Breadth first rather than depth first, so that a library whose everything
+// sits one folder down is described from the top rather than from whichever
+// branch the walk fell into: the counts are a floor either way, and a floor
+// gathered from the shallow end is the one that matches what the user would
+// have seen had they gone looking themselves.
+//
+// list is passed in rather than taken from the client, so this is testable
+// against a tree rather than against a server.
+func countTree(list func(dir string) ([]client.DirEntry, error)) libraryContents {
+	var c libraryContents
+	queue := []string{"/"}
+	for requests := 0; len(queue) > 0; requests++ {
+		if requests >= countRequestCap || c.files >= countFileCap {
+			c.partial = true
+			return c
+		}
+		current := queue[0]
+		queue = queue[1:]
+
+		entries, err := list(current)
+		if err != nil {
+			c.err = err
+			return c
+		}
+		for _, e := range entries {
+			if e.Type == "dir" {
+				c.dirs++
+				queue = append(queue, path.Join(current, e.Name))
+				continue
+			}
+			c.files++
+		}
+	}
+	return c
+}
+
+// countLibrary is the walk as a command, tagged with the library it is about.
+func (m model) countLibrary(libraryID string) tea.Cmd {
+	api := m.api
+	return func() tea.Msg {
+		return libraryCountedMsg{
+			libraryID: libraryID,
+			contents: countTree(func(dir string) ([]client.DirEntry, error) {
+				return api.ListDir(libraryID, dir)
+			}),
+		}
+	}
+}
+
+// enterDeleteLibrary opens the confirmation and sends it to find out what it
+// is confirming.
+func (m model) enterDeleteLibrary(library client.Library) (model, tea.Cmd) {
+	m.view = viewConfirm
+	m.message = ""
+	m.deleteLibraryID = library.ID
+	m.deleteLibraryName = library.Name
+	m.deleteContents = nil
+	m.deleteConfirmInput.SetValue("")
+	m.deleteConfirmInput.Focus()
+	return m, tea.Batch(textinput.Blink, m.countLibrary(library.ID))
+}
+
+// leaveDeleteLibrary backs out, leaving nothing typed behind for the next
+// library the user lands on.
+func (m model) leaveDeleteLibrary() model {
+	m.view = viewLibraries
+	m.message = ""
+	m.deleteContents = nil
+	m.deleteConfirmInput.SetValue("")
+	m.deleteConfirmInput.Blur()
+	return m
+}
+
+// deletePhrase is what has to be typed back to delete a library that holds
+// something: its own name, which is what the user picked it by. A library with
+// no name has nothing to type back, so it asks for the word instead.
+func (m model) deletePhrase() string {
+	if name := strings.TrimSpace(m.deleteLibraryName); name != "" {
+		return name
+	}
+	return "delete"
+}
+
+func (m model) deleteLibraryCmd() tea.Cmd {
+	api, libraryID := m.api, m.deleteLibraryID
+	return func() tea.Msg {
+		return libraryDeletedMsg{err: api.DeleteLibrary(libraryID)}
+	}
+}
+
+// updateConfirm runs two confirmations behind one view, and which one is on
+// screen is decided by what the library holds rather than by the user.
+//
+// An empty library is a y/n, as it always was. One with anything in it asks for
+// its name typed back, because 'd' and 'y' are one key apart under the same
+// finger and the thing on the other side of them is not recoverable: the
+// deletion takes the whole library, and there is no undo behind it.
 func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "y", "Y":
-			library := m.libraries[m.cursor]
-			m.message = "Deleting..."
-			return m, func() tea.Msg {
-				err := m.api.DeleteLibrary(library.ID)
-				return libraryDeletedMsg{err: err}
-			}
-		case "n", "N", "esc":
-			m.view = viewLibraries
+	case libraryCountedMsg:
+		// An answer about a library this screen is no longer about is dropped
+		// rather than shown.
+		if msg.libraryID != m.deleteLibraryID {
 			return m, nil
+		}
+		contents := msg.contents
+		m.deleteContents = &contents
+		return m, nil
+
+	case tea.KeyMsg:
+		if msg.String() == "esc" {
+			return m.leaveDeleteLibrary(), nil
+		}
+		switch {
+		case m.deleteContents == nil:
+			// Still counting. Nothing is confirmable yet, and a keystroke
+			// meant for one shape of the prompt must not be taken by the
+			// other when it arrives.
+			return m, nil
+
+		case m.deleteContents.empty():
+			switch msg.String() {
+			case "y", "Y":
+				m.message = "Deleting..."
+				return m, m.deleteLibraryCmd()
+			case "n", "N":
+				return m.leaveDeleteLibrary(), nil
+			}
+			return m, nil
+
+		case msg.String() == "enter":
+			if strings.TrimSpace(m.deleteConfirmInput.Value()) != m.deletePhrase() {
+				m.message = errorStyle.Render("That is not the name. Nothing was deleted.")
+				return m, nil
+			}
+			m.message = "Deleting..."
+			return m, m.deleteLibraryCmd()
 		}
 
 	case libraryDeletedMsg:
 		if msg.err != nil {
-			m.view = viewLibraries
+			m = m.leaveDeleteLibrary()
 			m.message = errorStyle.Render(msg.err.Error())
 			return m, nil
 		}
-		m.view = viewLibraries
+		m = m.leaveDeleteLibrary()
 		m.result = successStyle.Render("Library deleted")
 		return m, m.loadLibraries
 	}
 
-	return m, nil
+	// Everything else is typing into the name field. Only reached with a
+	// non-empty library on screen: the two cases above return before here.
+	var cmd tea.Cmd
+	m.deleteConfirmInput, cmd = m.deleteConfirmInput.Update(msg)
+	return m, cmd
 }
 
 func (m model) renderConfirm() string {
-	name := "(unnamed)"
-	if m.cursor < len(m.libraries) && m.libraries[m.cursor].Name != "" {
-		name = m.libraries[m.cursor].Name
+	name := m.deleteLibraryName
+	if strings.TrimSpace(name) == "" {
+		name = "(unnamed)"
 	}
 	header := []string{titleStyle.Render("Delete Library"), ""}
-	body := []string{fmt.Sprintf("Are you sure you want to delete %q?", name)}
-	return m.frame(header, body, m.footer(headerRows, confirmHelp))
+
+	switch {
+	case m.deleteContents == nil:
+		body := []string{
+			fmt.Sprintf("Delete %q?", name),
+			"",
+			dimStyle.Render("Checking what it holds..."),
+		}
+		return m.frame(header, body, m.footer(headerRows, deleteWaitHelp))
+
+	case m.deleteContents.empty():
+		body := []string{
+			fmt.Sprintf("Are you sure you want to delete %q?", name),
+			"",
+			dimStyle.Render("It is empty."),
+		}
+		return m.frame(header, body, m.footer(headerRows, confirmHelp))
+	}
+
+	warning := fmt.Sprintf("%q holds %s.", name, m.deleteContents.phrase())
+	if m.deleteContents.err != nil {
+		warning = fmt.Sprintf("Could not check what %q holds: %v", name, m.deleteContents.err)
+	}
+
+	body := append([]string{}, wrapText(errorStyle.Render(warning), m.width)...)
+	body = append(body, "")
+	body = append(body, wrapText("Deleting the library deletes all of it, on the server and for everyone it is shared with. This cannot be undone.", m.width)...)
+	body = append(body,
+		"",
+		fmt.Sprintf("Type %q to confirm:", m.deletePhrase()),
+		m.deleteConfirmInput.View(),
+	)
+	return m.frame(header, body, m.footer(headerRows, deleteConfirmHelp))
 }
 
 // --- Browse View ---
@@ -1336,9 +1585,14 @@ var (
 	browseHelp    = []string{"j/k: navigate", "g/G: top/bottom", "enter: open/download", "u: upload", "m: mkdir", "r: rename", "v: move", "x: delete", "esc: back", "q: quit"}
 	moveHelp      = []string{"j/k: navigate", "enter: open dir", "space: move here", "backspace: up", "esc: cancel"}
 	confirmHelp   = []string{"y: yes", "n: no"}
-	createHelp    = []string{"enter: create", "esc: cancel"}
-	uploadHelp    = []string{"enter: upload", "esc: cancel"}
-	renameHelp    = []string{"enter: rename", "esc: cancel"}
+	// The two halves of the library-delete confirmation: nothing to press
+	// while it is still counting but escape, and no "y" once it knows there is
+	// something in there.
+	deleteWaitHelp    = []string{"esc: cancel"}
+	deleteConfirmHelp = []string{"enter: delete", "esc: cancel"}
+	createHelp        = []string{"enter: create", "esc: cancel"}
+	uploadHelp        = []string{"enter: upload", "esc: cancel"}
+	renameHelp        = []string{"enter: rename", "esc: cancel"}
 )
 
 // wrapWords packs items into lines no wider than width, joined by sep and
