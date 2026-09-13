@@ -84,6 +84,7 @@ type Credential struct {
 	Scope     Scope
 	Perm      string
 	ClientID  string
+	LastUA    string
 
 	Ctime     int64
 	ExpiresAt int64 // 0 = no expiry
@@ -207,7 +208,7 @@ func Resolve(r *http.Request, kinds ...Kind) (*Credential, error) {
 	// on the server while the request waited -- with a 60s timeout in front of
 	// it. The comment below always claimed it was out of the request's way;
 	// now it is.
-	stampLastUsed(cred)
+	stampLastUsed(cred, r.UserAgent())
 	return cred, nil
 }
 
@@ -294,7 +295,7 @@ func load(ctx context.Context, id string) (*Credential, error) {
 	// primary address is unresolvable here for the same reason it is
 	// unreadable there -- one rule, not two.
 	const q = `SELECT c.id, c.kind, c.secret_hash, c.public_key, c.account_id, c.label,
-	                  c.scope, c.perm, c.client_id, c.ctime, c.expires_at, c.last_used,
+	                  c.scope, c.perm, c.client_id, c.last_ua, c.ctime, c.expires_at, c.last_used,
 	                  a.is_active, a.role, e.email
 	           FROM Credential c
 	           JOIN Account a ON a.id = c.account_id
@@ -307,12 +308,13 @@ func load(ctx context.Context, id string) (*Credential, error) {
 		kind     string
 		scope    string
 		clientID sql.NullString
+		lastUA   sql.NullString
 		expires  sql.NullInt64
 		lastUsed sql.NullInt64
 	)
 	err := readDB.QueryRowContext(ctx, q, id).Scan(
 		&c.ID, &kind, &c.secretHash, &c.publicKey, &c.AccountID, &c.Label, &scope, &c.Perm,
-		&clientID, &c.Ctime, &expires, &lastUsed, &acct.IsActive, &acct.Role, &acct.Email)
+		&clientID, &lastUA, &c.Ctime, &expires, &lastUsed, &acct.IsActive, &acct.Role, &acct.Email)
 	if err == sql.ErrNoRows {
 		subtle.ConstantTimeCompare(zeroHash, zeroHash)
 		return nil, ErrInvalid
@@ -325,6 +327,7 @@ func load(ctx context.Context, id string) (*Credential, error) {
 	c.acct = &acct
 	c.Kind = Kind(kind)
 	c.ClientID = clientID.String
+	c.LastUA = lastUA.String
 	c.ExpiresAt = expires.Int64
 	c.LastUsed = lastUsed.Int64
 
@@ -367,10 +370,39 @@ func prove(c *Credential, tok Token) error {
 // per-request precision does.
 const lastUsedGranularity = 5 * time.Minute
 
-func stampLastUsed(c *Credential) {
+// maxLastUA bounds a header an untrusted client controls. A User-Agent is read
+// by a person deciding what to revoke, so a long one is truncated rather than
+// refused -- unlike client_id, where a shared prefix would silently merge two
+// devices, a shared prefix here just means two rows whose names start the same
+// way, which is what a listing of User-Agents looks like anyway.
+const maxLastUA = 160
+
+// stampLastUsed records that a credential was used, and what said so.
+//
+// The User-Agent rides this write rather than getting one of its own,
+// deliberately: it answers the half a label cannot. A label is frozen at
+// enrolment because renewal inherits it, so it names the build that enrolled
+// the device and goes on naming it a year and four upgrades later. This moves.
+//
+// It inherits the granularity as a consequence: a client that upgrades and
+// calls again within five minutes is still described by its old string until
+// the next stamp is due. That is the same trade last_used already makes, and
+// for the same reason -- a write in front of every read would serialise an
+// always-on mount's polling -- and being one interval stale is not a different
+// answer to "what is running", just a slightly older one.
+//
+// An empty ua is written as empty. The honest record of a request that named
+// nothing is nothing; keeping the previous client's string would report a
+// build that is no longer the one speaking.
+func stampLastUsed(c *Credential, ua string) {
 	now := time.Now().Unix()
 	if now-c.LastUsed < int64(lastUsedGranularity.Seconds()) {
 		return
+	}
+
+	ua = strings.TrimSpace(ua)
+	if len(ua) > maxLastUA {
+		ua = ua[:maxLastUA]
 	}
 
 	// Read on this goroutine, before the write is detached. option.DBOpTimeout
@@ -395,7 +427,7 @@ func stampLastUsed(c *Credential) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		_, _ = db.ExecContext(ctx,
-			"UPDATE Credential SET last_used = ? WHERE id = ?", now, id)
+			"UPDATE Credential SET last_used = ?, last_ua = ? WHERE id = ?", now, ua, id)
 	}()
 }
 

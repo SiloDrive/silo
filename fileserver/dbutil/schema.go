@@ -464,6 +464,13 @@ CREATE TABLE IF NOT EXISTS Credential (
   ctime       BIGINT NOT NULL,
   expires_at  BIGINT,
   last_used   BIGINT,
+  -- Last, because that is where ALTER TABLE ADD COLUMN puts it and a
+  -- migrated database has to end up in the shape a fresh one is created in.
+  -- TestTheBaselineMigratesToTheFreshShape compares the two column by
+  -- column, in order, and it is right to: a column that lands in a different
+  -- position depending on how the database got here is one that reads back
+  -- differently under a SELECT *.
+  last_ua     TEXT,
   CHECK (secret_hash IS NULL OR public_key IS NULL)
 );
 CREATE INDEX IF NOT EXISTS credential_account_idx ON Credential (account_id);

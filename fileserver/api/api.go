@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -278,6 +279,22 @@ type loginRequest struct {
 	PublicKey  string `json:"public_key"`
 	Perm       string `json:"perm"`
 	Scope      string `json:"scope"`
+
+	// ClientID is the device's own identity: minted once by the client and
+	// deliberately not derived from anything a person can change, so it
+	// survives a rename, a re-enrolment and a whole credential chain. It is
+	// what client_name cannot be -- a label answers *which machine* and is
+	// frozen at enrolment because renewal inherits it, which leaves no way to
+	// join two rows that are the same device.
+	//
+	// It is deliberately *not* in enrolling(): it modifies an enrolment
+	// rather than triggering one. A body carrying only client_id is still a
+	// plain login and still answers with "token", which is the property
+	// docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md
+	// is about -- a client that sends what it always sent gets what it always
+	// got, byte for byte, even if a future client teaches this field to a
+	// login it never meant to change.
+	ClientID string `json:"client_id"`
 }
 
 // enrolling reports whether the caller asked for the enrolment response.
@@ -441,6 +458,20 @@ func enrolmentOpts(w http.ResponseWriter, req loginRequest) (credential.IssueOpt
 	}
 	opts.Label = req.ClientName
 
+	// Refused rather than truncated, which is where this parts company with
+	// credentialLabel. A label is for a human reading a list, so a client
+	// sending a paragraph should not fail to log in and a short prefix still
+	// names the right machine. An identity is for joining rows, and a
+	// truncated one is not a shorter answer to *which device* -- it is a
+	// different device, and two long ids sharing a prefix would silently
+	// become the same one.
+	if len(req.ClientID) > maxClientID {
+		http.Error(w, fmt.Sprintf("client_id must be at most %d bytes", maxClientID),
+			http.StatusBadRequest)
+		return opts, false
+	}
+	opts.ClientID = req.ClientID
+
 	if req.Perm != "" {
 		// Checked because credential.Issue refuses an unrecognised perm, and
 		// because minPerm reads one as no access at all: a typo would
@@ -484,6 +515,12 @@ func credentialLabel(r *http.Request) string {
 }
 
 const maxLabel = 96
+
+// maxClientID is a bound on a column an untrusted client writes, not a shape
+// this end imposes on the value: a reverse-DNS name and a UUID -- what
+// silo-drive mints -- is about fifty bytes, and the LastGCID table has called a
+// client id 128 for as long as it has existed.
+const maxClientID = 128
 
 type libraryInfo struct {
 	ID         string `json:"id"`

@@ -125,6 +125,10 @@ func TestEnrolmentRefusals(t *testing.T) {
 		// reads anything it does not recognise.
 		{"a misspelled perm", `{` + wireLogin + `,"kind":"device","client_name":"x","perm":"read"}`, http.StatusBadRequest},
 		{"an unparseable scope", `{` + wireLogin + `,"kind":"device","client_name":"x","scope":"lib:"}`, http.StatusBadRequest},
+		// Refused rather than truncated, unlike the label: two long device
+		// ids sharing a 128-byte prefix would silently become one device.
+		{"an oversized client_id", `{` + wireLogin + `,"kind":"device","client_name":"x","client_id":"` +
+			strings.Repeat("d", 129) + `"}`, http.StatusBadRequest},
 		{"enrolment with no client_name", `{` + wireLogin + `,"kind":"device"}`, http.StatusBadRequest},
 		// Proof of possession is designed and not built. Minting a credential
 		// that Resolve refuses would hand a client something that can never work.

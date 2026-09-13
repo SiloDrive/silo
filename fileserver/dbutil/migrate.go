@@ -60,10 +60,16 @@ func sqlMigration(name, statements string) Migration {
 // that recorded it would then hold a name this build does not know, which
 // reads as a newer build's work and refuses to start.
 var migrations = []Migration{
-	// Empty on purpose. The baseline fixture in testdata/ is the first shape
-	// Silo ever deployed, so there is no older database for a migration to
-	// bring forward. The first entry here is the first change made after
-	// that.
+	// The baseline fixture in testdata/ is the first shape Silo ever
+	// deployed, so there was no older database for a migration to bring
+	// forward until this one: it is the first change made after that.
+	//
+	// A nullable column with no default, so it rewrites no existing row and
+	// an unmigrated credential reads as what it is -- a row that has not been
+	// seen since the column existed -- rather than as one whose client sent
+	// no User-Agent.
+	sqlMigration("credential-last-ua",
+		"ALTER TABLE Credential ADD COLUMN last_ua TEXT"),
 }
 
 // migrationTable is the record. It is created by this package rather than by

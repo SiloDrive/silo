@@ -2,6 +2,8 @@ package silod
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/dkam/silo/fileserver/account"
@@ -145,5 +147,80 @@ func TestListTokens(t *testing.T) {
 	}
 	if err := listTokens(acctFor(t, victim)); err != nil {
 		t.Errorf("listTokens returned %v", err)
+	}
+}
+
+// The label alone cannot say what is running, because renewal inherits it: a
+// device enrolled on one build still carries that build's name after every
+// upgrade. The listing has to show the two columns that answer the rest --
+// which device this is across its whole credential chain, and what was last
+// heard from it -- or an operator reads a frozen label as a live one.
+func TestListTokensShowsTheDeviceAndWhatWasLastSeen(t *testing.T) {
+	sqliteTestDB(t)
+	acct := mintAccount(t, victim)
+
+	const (
+		domainID = "com.nmilne.SiloDrive.7C9A1E4F-0B2D-4A11-9E6C-5F3D2A8B1C40"
+		ua       = "SiloDrive/0.1.0 (macOS 26.5; extension; build 126; 500d40c)"
+	)
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	c, _, err := credential.Issue(ctx, credential.IssueOpts{
+		Kind: credential.KindDevice, AccountID: acct.ID, Label: "dan's macbook",
+		Perm: "rw", ClientID: domainID,
+	})
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+	if _, err := siloPair.Write.Exec(
+		"UPDATE Credential SET last_ua = ? WHERE id = ?", ua, c.ID); err != nil {
+		t.Fatalf("stamping last_ua: %v", err)
+	}
+
+	var out string
+	captureAndCheck(t, &out, acctFor(t, victim))
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		lines = append(lines, strings.TrimSpace(l))
+	}
+	for _, want := range []string{"device " + domainID, "last seen " + ua} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("the listing does not show %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "dan's macbook") {
+		t.Errorf("the listing does not show the label:\n%s", out)
+	}
+}
+
+// A row with neither is the common case -- a CLI session, or a device that has
+// not been seen since the column existed -- and printing an empty "device" or
+// "last seen" line for it would pad every listing with facts nobody has.
+func TestListTokensOmitsWhatItDoesNotKnow(t *testing.T) {
+	tokenTestStore(t)
+
+	var out string
+	captureAndCheck(t, &out, acctFor(t, victim))
+	// Matched against whole trimmed lines rather than as substrings: "device"
+	// is also the kind column, so a Contains check here passes for the wrong
+	// reason on every device credential in the listing.
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		for _, unwanted := range []string{"device ", "last seen "} {
+			if strings.HasPrefix(line, unwanted) {
+				t.Errorf("the listing shows %q for a row that has none:\n%s", line, out)
+			}
+		}
+	}
+}
+
+// captureAndCheck runs the listing and fails the test if it errored, so each
+// caller reads as the assertion it is about rather than as plumbing.
+func captureAndCheck(t *testing.T, out *string, acct *account.Account) {
+	t.Helper()
+	var err error
+	*out = captureStdout(t, func() { err = listTokens(acct) })
+	if err != nil {
+		t.Fatalf("listTokens: %v", err)
 	}
 }

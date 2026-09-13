@@ -152,7 +152,7 @@ func nullBytes(b []byte) any {
 // precisely so a listing cannot leak them, and a caller listing credentials is
 // deciding which to revoke rather than verifying one.
 func ListByAccount(ctx context.Context, id account.ID) ([]*Credential, error) {
-	const q = `SELECT id, kind, label, scope, perm, client_id, ctime, expires_at, last_used
+	const q = `SELECT id, kind, label, scope, perm, client_id, last_ua, ctime, expires_at, last_used
 	           FROM Credential WHERE account_id = ? ORDER BY ctime DESC, id`
 
 	rows, err := readDB.QueryContext(ctx, q, id)
@@ -168,15 +168,17 @@ func ListByAccount(ctx context.Context, id account.ID) ([]*Credential, error) {
 			kind     string
 			scope    string
 			clientID sql.NullString
+			lastUA   sql.NullString
 			expires  sql.NullInt64
 			lastUsed sql.NullInt64
 		)
 		if err := rows.Scan(&c.ID, &kind, &c.Label, &scope, &c.Perm,
-			&clientID, &c.Ctime, &expires, &lastUsed); err != nil {
+			&clientID, &lastUA, &c.Ctime, &expires, &lastUsed); err != nil {
 			return nil, fmt.Errorf("reading a credential: %v", err)
 		}
 		c.Kind = Kind(kind)
 		c.ClientID = clientID.String
+		c.LastUA = lastUA.String
 		c.ExpiresAt = expires.Int64
 		c.LastUsed = lastUsed.Int64
 

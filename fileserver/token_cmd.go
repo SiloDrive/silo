@@ -100,6 +100,18 @@ func listTokens(acct *account.Account) error {
 		} else if c.Perm != "rw" {
 			fmt.Printf("  %s  every library, perm %s\n", blanks(len(c.ID)), c.Perm)
 		}
+		// The label was frozen at enrolment -- renewal inherits it -- so on
+		// its own it says which build enrolled this device and reads as if it
+		// said which build is running. These two lines are the rest of that
+		// sentence: client_id joins the chain back to one device across
+		// renewals and re-enrolments, and the last-seen User-Agent is the
+		// only part of the row that moves when the client upgrades.
+		if c.ClientID != "" {
+			fmt.Printf("  %s  device %s\n", blanks(len(c.ID)), c.ClientID)
+		}
+		if c.LastUA != "" {
+			fmt.Printf("  %s  last seen %s\n", blanks(len(c.ID)), c.LastUA)
+		}
 	}
 	return nil
 }

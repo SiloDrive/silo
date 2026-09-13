@@ -186,6 +186,7 @@ CREATE TABLE Credential (
   ctime       BIGINT  NOT NULL,
   expires_at  BIGINT,                -- absolute; NULL = no expiry
   last_used   BIGINT,
+  last_ua     TEXT,                  -- what said so, at the same granularity
   CHECK (secret_hash IS NULL OR public_key IS NULL)
 );
 ```
@@ -195,13 +196,33 @@ neither and derive its secret from a master key, which is why the `CHECK` permit
 both being NULL. `credential.Issue` writes `client_id` when the caller supplies
 one and NULL otherwise.
 
+**`label`, `client_id` and `last_ua` answer three different questions, and the
+row needs all three.** The label is the name a person gave the device, and it is
+frozen at enrolment because renewal inherits it: a Mac that enrolled on
+`SiloDrive 0.1.0` still says so a year and four upgrades later. That makes it a
+good answer to *which machine* and a misleading one to *what is running*.
+`client_id` is the device's own identity — minted once by the client, not derived
+from anything a person can rename — so it survives a rename, a re-enrolment and a
+whole credential chain, and it is what makes two rows joinable as one device.
+`last_ua` is the only part that moves: it is the `User-Agent` of the most recent
+request, so a listing reads *enrolled as X, last seen Y*.
+
+Do not default any of them from another. A `User-Agent` names the build speaking
+now; `client_name` names the device holding the credential; `client_id` names the
+device across every credential it will ever hold.
+
 **`label` and `last_used` turn revocation from a guess into a decision.**
 `credential.Issue` refuses a row with no label, so the column cannot quietly go
 back to being empty; login names a credential after the `User-Agent` when the
 client does not name itself. `last_used` is stamped at five-minute granularity,
 because a write transaction in front of every read would serialise an otherwise
 concurrent workload behind an always-on mount's polling, and five minutes answers
-"is anybody still using this?" exactly as well.
+"is anybody still using this?" exactly as well. `last_ua` rides that same write
+rather than adding one of its own, and so inherits the same granularity: a client
+that upgrades and calls again within five minutes is described by its old string
+until the next stamp falls due. A request that sends no `User-Agent` writes an
+empty one, because the honest record of a client that named nothing is nothing —
+keeping the previous string would report a build that is no longer speaking.
 
 **`expires_at` is absolute and does not slide.** A sliding expiry means a client
 that polls constantly never ages out, which makes the TTL unreachable in the one
@@ -390,6 +411,7 @@ POST /api/silo/v1/auth/login          (no auth)
 { "email": "…", "password": "…",
   "kind": "device",                    // optional; default "session"
   "client_name": "SiloDrive 1.2 (macOS)", // required when asking for a credential
+  "client_id": "com.nmilne.SiloDrive.<uuid>", // optional device identity
   "perm": "r",                         // optional, narrowing only
   "scope": "<library-id>" }            // optional, narrowing only
 ```
@@ -397,6 +419,13 @@ POST /api/silo/v1/auth/login          (no auth)
 **Two response shapes, and the request chooses.** Any of `kind`, `client_name`,
 `perm`, `scope` or `public_key` makes it an enrolment request; a client that
 sends what it always sent gets what it always got, byte for byte.
+
+`client_id` is deliberately **not** in that list. It modifies an enrolment rather
+than triggering one, so a body carrying only `client_id` is still a plain login
+and still answers `200 {"token": …}`. The alternative — a new field that silently
+changes the response shape of a request that did not ask for a credential — is
+the shape of the bug linked below, and this endpoint gets to add fields over time
+only if adding one cannot do that.
 
 ```
 200 { "token": "silo_session_…" }                                    plain login
@@ -417,12 +446,22 @@ would mint a credential that authenticates perfectly and permits nothing.
 A client asking for a durable credential that will not say what it is leaves an
 operator several indistinguishable rows.
 
+**`client_id` is optional, and refused rather than truncated when too long** (128
+bytes). This is where it parts company with the label: a label is for a human
+reading a list, so a client sending a paragraph is truncated rather than failed,
+and a short prefix still names the right machine. An identity is for joining
+rows, and a truncated identity is not a shorter answer to *which device* — it is
+a different one, and two long ids sharing a prefix would silently merge into a
+single device. Renewal propagates it unchanged, so a 90-day chain stays groupable
+and a Mac that re-enrols after a lapse is visibly the same Mac.
+
 | Request | Answer |
 |---|---|
 | `kind` outside `session`/`device` | `400` — the other kinds are not minted by a password |
 | `perm` that is not `r` or `rw` | `400` |
 | A scope that will not parse | `400`, describing the string sent and nothing else |
 | Enrolment with no `client_name` | `400` |
+| `client_id` longer than 128 bytes | `400` |
 | `public_key` | `501` — [proof of possession](#proof-of-possession) is designed, not built |
 | A wrong password | `401` |
 
