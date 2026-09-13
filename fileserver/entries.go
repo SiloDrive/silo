@@ -11,6 +11,7 @@ import (
 	upath "path"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/dkam/silo/fileserver/api"
@@ -514,7 +515,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, library *libmgr.Library, 
 			// The status is already written, so this cannot become a 500. Log
 			// it and let the body end short of Content-Length, which is what
 			// tells the client it is incomplete.
-			log.Errorf("failed to stream %s in library %s: %v", fileID, library.ID, err)
+			logStreamFailure(fileID, library.ID, err)
 		}
 		return
 	}
@@ -532,8 +533,23 @@ func serveFile(w http.ResponseWriter, r *http.Request, library *libmgr.Library, 
 		return
 	}
 	if err := st.ReadFileRange(m, int64(start), int64(end-start+1), w); err != nil {
-		log.Errorf("failed to stream range of %s in library %s: %v", fileID, library.ID, err)
+		logStreamFailure("range of "+fileID, library.ID, err)
 	}
+}
+
+// logStreamFailure records a body that did not finish being written.
+//
+// A reader that goes away mid-body is the ordinary end of a File Provider
+// read -- a preview closed, a fetch the daemon withdrew -- and the kernel says
+// so with EPIPE or ECONNRESET. That is a note about the client rather than a
+// fault for an operator to chase, and at ERROR it drowned out the writes that
+// failed for a reason on this side, which are still logged as such.
+func logStreamFailure(what, libraryID string, err error) {
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+		log.Debugf("client stopped reading %s in library %s: %v", what, libraryID, err)
+		return
+	}
+	log.Errorf("failed to stream %s in library %s: %v", what, libraryID, err)
 }
 
 // putEntry stores a file, or creates a directory with ?type=dir.
