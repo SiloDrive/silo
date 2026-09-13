@@ -229,6 +229,31 @@ func stillGood(cred *Credential) error {
 	return nil
 }
 
+// Describe names what a request presents, for a log line an operator reads.
+//
+// It proves nothing and looks nothing up, so it is safe on the refusal path:
+// the answer is what the caller *claimed*, which is exactly what an operator
+// tracing a client that keeps knocking needs to see.
+//
+// The secret never appears. Only the kind and the id, and the id is the public
+// half -- the primary key of the row, the thing `silo token list` prints, and
+// the one field that turns "some device is retrying" into "that one".
+func Describe(r *http.Request) string {
+	tok, err := tokenFromRequest(r)
+	switch {
+	case errors.Is(err, ErrMissing):
+		return "no credential"
+	case errors.Is(err, ErrSignatureNotImplemented):
+		return "signature credential"
+	case err != nil:
+		// Malformed: the string was not parseable, so there is no id to name
+		// and no lane to name it in. Saying which is more than the caller has
+		// proved it may know, and it is also all there is to say.
+		return "unreadable credential"
+	}
+	return string(tok.Kind) + " credential " + tok.ID
+}
+
 // tokenFromRequest pulls the credential out of the request without touching
 // the database.
 //

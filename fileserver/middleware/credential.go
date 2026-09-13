@@ -12,11 +12,14 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/dkam/silo/fileserver/account"
 	"github.com/dkam/silo/fileserver/credential"
+	"github.com/dkam/silo/fileserver/option"
 	"github.com/dkam/silo/fileserver/share"
+	"github.com/dkam/silo/fileserver/utils"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
@@ -123,7 +126,7 @@ func resolveCredential(next http.Handler, opts resolveOpts) http.Handler {
 		// does not. Path granularity and read-versus-write stay with the
 		// handler, which is what knows the path and what the operation does.
 		if !opts.skipDoorCheck && !scopeReachesRoute(cred, r) {
-			log.Debugf("Credential %s is scoped to %q and may not reach %s", cred.ID, cred.Scope, r.URL.Path)
+			log.Debugf("Credential %s is scoped to %q and may not reach %s, from %s", cred.ID, cred.Scope, r.URL.Path, caller(r))
 			http.Error(w, "Permission denied", http.StatusForbidden)
 			return
 		}
@@ -145,6 +148,11 @@ func resolveCredential(next http.Handler, opts resolveOpts) http.Handler {
 func credentialRefused(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, credential.ErrMissing):
+		// Logged, where it used to be silent. A client that has lost its
+		// credential and one that never sent one look identical from the
+		// outside, and both of them retry -- so the anonymous case is exactly
+		// as worth attributing as the others.
+		log.Debugf("No credential on %s, from %s", r.URL.Path, caller(r))
 		http.Error(w, "Authorization header required", http.StatusUnauthorized)
 
 	case errors.Is(err, credential.ErrSignatureNotImplemented):
@@ -152,7 +160,7 @@ func credentialRefused(w http.ResponseWriter, r *http.Request, err error) {
 		// the verifier is not built, so this is the server's gap rather than
 		// the caller's mistake, and it says so -- a 401 would send a correct
 		// client away to re-enrol against a lane that will fail identically.
-		log.Infof("Refused a proof-of-possession credential on %s: not implemented", r.URL.Path)
+		log.Infof("Refused a proof-of-possession credential on %s, from %s: not implemented", r.URL.Path, caller(r))
 		http.Error(w, "Signature authentication is not implemented", http.StatusNotImplemented)
 
 	case errors.Is(err, credential.ErrMalformed),
@@ -161,16 +169,38 @@ func credentialRefused(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, credential.ErrExpired),
 		errors.Is(err, credential.ErrInactive),
 		errors.Is(err, credential.ErrProofUnsupported):
-		log.Debugf("Credential refused on %s: %v", r.URL.Path, err)
+		log.Debugf("Credential refused on %s, from %s: %v", r.URL.Path, caller(r), err)
 		http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
 
 	default:
 		// The store is broken rather than the caller being wrong. Answering
 		// 401 here would tell every client at once that it had been signed
 		// out, and they would all re-enrol against a database that is down.
-		log.Errorf("Credential lookup failed on %s: %v", r.URL.Path, err)
+		log.Errorf("Credential lookup failed on %s, from %s: %v", r.URL.Path, caller(r), err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+// caller describes who knocked, for the refusal lines above.
+//
+// A refusal used to name the path and the reason and nothing else, which made
+// a client retrying on a timer an unattributable line repeating in the
+// journal: an operator could see that something was being refused every thirty
+// seconds and had no way to tell which device, from where, or with which
+// credential. All three are knowable at the door without proving anything.
+//
+// The address is read the way the rate limiter reads it, through
+// utils.ClientIP, so the two agree about who a request came from -- behind a
+// proxy that means the forwarded address when the deployment says the headers
+// may be believed, and the peer's when it does not. The credential is
+// Describe's secret-free rendering, and the user agent is the client's own
+// claim about what it is: worth printing, worth trusting no further than that.
+func caller(r *http.Request) string {
+	ua := r.UserAgent()
+	if ua == "" {
+		ua = "no user-agent"
+	}
+	return fmt.Sprintf("%s (%s, %q)", utils.ClientIP(r, option.TrustProxyHeaders), credential.Describe(r), ua)
 }
 
 // scopeReachesRoute reports whether a scoped credential may address this route
