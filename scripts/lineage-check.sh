@@ -63,14 +63,29 @@ normalise() {
 
 # Paths the line count cannot say anything useful about.
 #
+# Each of these was read line by line before it was listed here, and each is
+# exempt because the lines it shares have one correct spelling rather than
+# because they were hard to change. Rewriting them would mean writing a worse
+# file in order to word it differently, which is not what clearing the lineage
+# means. The exemption is the eyeballing, recorded.
+#
 # LICENSE.txt is the AGPL, and the AGPL is meant to be reproduced word for word
 # — a diff against upstream's copy of it will always be nearly empty and that is
 # correct. What matters in that file is the header above the licence text, where
 # upstream put a linking exception granted in its own name; the name check below
 # is what covers it.
+#
+# .github/workflows/golangci-lint.yml and .gitignore share only the lines the
+# tools dictate: `runs-on: ubuntu-latest`, `- uses: actions/checkout@v4`,
+# `.DS_Store`, `*.log`. There is no second way to write "run this on Ubuntu" or
+# "ignore the file macOS drops in every directory". Everything in either file
+# that involved a choice — the concurrency rule, the job names, the baseline
+# database negation — is already ours.
 exempt() {
 	case "$1" in
 	LICENSE.txt) return 0 ;;
+	.github/workflows/golangci-lint.yml) return 0 ;;
+	.gitignore) return 0 ;;
 	esac
 	return 1
 }
