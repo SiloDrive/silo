@@ -278,6 +278,16 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 	if entry.mtime > 0 {
 		w.Header().Set("Last-Modified", time.Unix(entry.mtime, 0).UTC().Format(http.TimeFormat))
 	}
+	// Said here rather than in either branch below, so it rides on the 304 as
+	// well as on the 200. A cache stores the policy it was last told, and a
+	// revalidation that answered 304 without one would teach it nothing — it
+	// would go on inventing a freshness lifetime for the copy it kept.
+	//
+	// no-cache rather than no-store: the ETag above is a content hash and
+	// matchesETag answers the 304 from one dirent lookup, reading no chunks at
+	// all, so a client that wants to cache this still can. It just has to ask
+	// first, which is exactly what the three stale days were missing.
+	w.Header().Set("Cache-Control", "private, no-cache")
 	// A paged request is answered on its merits: revalidating it against the
 	// whole directory's id would answer 304 to a client that is asking for the
 	// next window, not for the same one again.

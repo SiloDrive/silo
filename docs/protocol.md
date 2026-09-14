@@ -253,7 +253,7 @@ are registered there too, but are authenticated: see the lane note above.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.5.3","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. Carries `"setup_required": true` on a server that has no accounts yet, and omits the key entirely otherwise, so a claimed server's body is unchanged from before the field existed. No chunker parameters: they belong to the library, and the libraries listing carries them. The `libraries` name says this server serves `/libraries/…`; a client that does not find it is talking to a build that predates the word and should say so rather than read the 404 that follows as an empty account |
+| GET | `/api/silo/v1/server-info` | **No auth.** `{"version":"0.6.0","features":[…]}` — semver with no leading `v`, and the capability list a client should branch on instead of the version. Carries `"setup_required": true` on a server that has no accounts yet, and omits the key entirely otherwise, so a claimed server's body is unchanged from before the field existed. No chunker parameters: they belong to the library, and the libraries listing carries them. The `libraries` name says this server serves `/libraries/…`; a client that does not find it is talking to a build that predates the word and should say so rather than read the 404 that follows as an empty account |
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → a `session` credential, or an enrolled one. Not a JWT: it names a row in `Credential` that can be revoked, labelled and narrowed |
 | POST | `/api/silo/v1/auth/renew` | Mint the presenting credential's successor: no body, a full fresh lifetime, every field inherited. `device` only — a `session` gets `403`. The old credential is untouched and expires when it always would have. A scoped credential may reach it. Feature name `credential-renew` |
 | POST | `/api/silo/v1/auth/logout` | Discard the credential that made the request. No write permission needed, and a scoped credential may reach it |
@@ -287,7 +287,7 @@ clients speak, and what `client/` speaks; the traps are under
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Read a file's bytes, or list a directory. Ranged; `ETag`/`304` |
+| GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | Read a file's bytes, or list a directory. Ranged; `ETag`/`304`; `Cache-Control: private, no-cache`, because both are mutable and a validator with no expiry is a cache's licence to guess one |
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=manifest` | The file's manifest — the same object `objects/{id}` serves, reachable with a path-scoped credential. See the chunk surface below |
 | QUERY | `/api/silo/v1/libraries/{libraryid}/entries/{path}` | `{"ranges":[[offset,length],…]}` → the manifest **and** the chunks covering those bytes, in one framed response. The round trip that `?type=manifest` followed by `chunks/fetch` cannot avoid, because the second cannot name its ids until the first lands. Feature name `entries-ranges`; see [The range read](#the-range-read-one-round-trip) |
 | GET, HEAD | `/api/silo/v1/libraries/{libraryid}/entries/{path}?at={commit}` | The same read, resolved against that commit's tree instead of the head's. `400` if `at` is not a commit id or is sent with `PUT`, `POST` or `DELETE` — history refuses writes rather than silently taking them; `410` if the commit is no longer reachable; `404` if the path is absent in that commit. Feature name `history`. `rootFor` in `fileserver/entries.go` |
@@ -444,7 +444,7 @@ Feature name `chunks`. Three calls, and the shape of every resumable upload:
 | POST | `/api/silo/v1/libraries/{libraryid}/chunks/missing` | `{"chunks":[id,…]}` → `{"missing":[id,…]}` — which of these do you not already have? |
 | PUT | `/api/silo/v1/libraries/{libraryid}/chunks/{id}` | Upload one chunk. `201` when stored, `200` when it was already there — re-sending is what a resumed upload does, so it succeeds rather than conflicts. `400` if the bytes do not hash to the id |
 | PUT | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=chunks` | `{"chunks":[id,…]}` — create the file from them. `201` and an `ETag`, as any other write |
-| GET, HEAD | `/api/silo/v1/libraries/{libraryid}/chunks/{id}` | One chunk, as stored. `ETag` is the bare id and `Cache-Control` is a year and `immutable`, because the id *is* the content hash and this representation can never change |
+| GET, HEAD | `/api/silo/v1/libraries/{libraryid}/chunks/{id}` | One chunk, as stored. `ETag` is the bare id and `Cache-Control` is `private`, a year and `immutable`, because the id *is* the content hash and this representation can never change. `private` rather than `public` because the route is library-scoped: a shared cache that stored it could serve it to a requester who never passed that check |
 | POST | `/api/silo/v1/libraries/{libraryid}/chunks/fetch` | `{"chunks":[id,…]}` → a chunk stream: many chunks in one framed response. Feature name `chunks-fetch` |
 | POST | `/api/silo/v1/libraries/{libraryid}/chunks` | A chunk stream in, `{"stored":N,"present":M}` out: many chunks in one framed request. Feature name `chunks-upload` |
 | GET | `/api/silo/v1/libraries/{libraryid}/entries/{path}?type=manifest` | A file's chunk list, addressed by path. Feature name `entries-manifest` |
@@ -654,8 +654,15 @@ entries surface carries, and that is deliberate. The prefix versions the
 cached listing needs a tag that moves with it. A manifest cannot — the id is
 the hash of exactly these bytes, so a different encoding is a different id — and
 the same object at `objects/{id}` has to validate identically or a client
-caching both spellings holds two entries for one thing. `Cache-Control` is a
-year and `immutable` for the same reason.
+caching both spellings holds two entries for one thing.
+
+`Cache-Control` is `private, no-cache`, and the `immutable` the id-addressed
+spelling carries is deliberately withheld here. `immutable` is a claim about
+the URL, not about the bytes: replace the file and `entries/{path}?type=manifest`
+means something else, and RFC 8246 `immutable` tells a cache not to revalidate
+even on an explicit reload — so promising it on a path strands a stale manifest
+whose chunks GC may since have reclaimed. Revalidating costs one dirent lookup
+and reads no chunks, so `no-cache` buys the correctness for almost nothing.
 
 **The trap, stated because it is silent:** do not feed this tag back as
 `If-Match` on `entries/{path}`. That precondition compares against the `v1-`
@@ -798,8 +805,11 @@ describes a real file or that a commit says anything true. The decode check
 earns its place by refusing to store something that would break the server's
 own later walks — GC's mark and `changes?since=` both read public sections.
 
-`ETag` is the bare id and `Cache-Control` is a year and `immutable` on both
-`GET`s, for the reason given under the manifest above.
+`ETag` is the bare id and `Cache-Control` is `private`, a year and `immutable`
+on both `GET`s: the id is the content hash, so the representation under that URL
+can never change. `private` rather than `public` because reaching the route
+required library authorization, and `public` would license a shared cache to
+hand the stored response to anyone who asks.
 
 **Refused to a folder-scoped credential**, as every id-addressed call is. Such a
 client reads structure through `entries/{path}` and a chunk list through
@@ -1220,6 +1230,24 @@ it: the `v1-` prefix versions the representation, and it changes if the listing
 JSON ever changes shape, which is exactly what stops a client validating a
 cache entry against a body format that no longer exists. The id maps straight
 into `NSFileProviderItemVersion.contentVersion`.
+
+**Revalidate; do not assume.** Every authenticated response carries a
+`Cache-Control`, and unless the route says otherwise it is `private, no-cache`.
+That is not a request to stop caching — `no-cache` means store it and ask
+before reusing it, which with an `ETag` that is a content hash costs one dirent
+lookup and no body. It is stated explicitly because the alternative is not "no
+caching" but a cache inventing a freshness lifetime of its own: RFC 9111 §4.2.2
+licenses a heuristic whenever there is a validator and no explicit expiry, and
+the conventional one is a tenth of the document's age. A listing served that
+way once hid a newly added file for three days — the delta named it correctly,
+the client listed its parent to get an mtime, CFNetwork answered from a body
+stored days earlier, and the child was absent from it, so the change was
+dropped as a path the listing does not mention and the anchor advanced past the
+commit. Nothing asks for that delta twice.
+
+The exception is the id-addressed surface. `objects/{id}` and `chunks/{id}` are
+content-addressed, so they carry `private, max-age=31536000, immutable` and a
+client that holds those bytes need never ask again.
 
 ### What a write hands back, and how to check it
 

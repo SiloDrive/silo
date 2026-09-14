@@ -686,6 +686,10 @@ func newHTTPRouter() *mux.Router {
 		middleware.RequireOwnCredential(http.HandlerFunc(api.RenewHandler))).Methods("POST")
 	apiRouter := r.PathPrefix("/api/silo/v1").Subrouter()
 	apiRouter.Use(middleware.RequireCredential)
+	// Before the handlers, so the ones with a policy of their own overwrite it
+	// and the rest cannot be left to a cache's own arithmetic. See
+	// middleware.DefaultCachePolicy.
+	apiRouter.Use(middleware.DefaultCachePolicy)
 	// Both of these are account-wide, so both take the narrowing: a credential
 	// scoped to one library is refused them here rather than in the handler.
 	apiRouter.HandleFunc("/auth/logout/everywhere", api.LogoutEverywhereHandler).Methods("POST")
