@@ -362,8 +362,8 @@ func Run(args []string) error {
 		logFp = fp
 		log.SetOutput(fp)
 		logToStdout = false
-		if err := utils.Dup(int(logFp.Fd()), int(os.Stderr.Fd())); err != nil {
-			log.Warnf("Failed to dup stderr to log file: %v", err)
+		if err := utils.RedirectStderr(logFp); err != nil {
+			log.Warnf("Panics and runtime errors will not reach the log file: %v", err)
 		}
 	} else {
 		logToStdout = true
@@ -615,8 +615,8 @@ func logRotate() {
 		logFp = fp
 	}
 
-	if err := utils.Dup(int(logFp.Fd()), int(os.Stderr.Fd())); err != nil {
-		log.Warnf("Failed to dup stderr to log file: %v", err)
+	if err := utils.RedirectStderr(logFp); err != nil {
+		log.Warnf("Panics and runtime errors will not reach the reopened log file: %v", err)
 	}
 }
 
