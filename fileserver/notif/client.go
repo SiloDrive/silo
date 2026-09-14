@@ -241,7 +241,16 @@ func (c *Client) readLoop() {
 	for {
 		var msg Message
 		if err := c.conn.ReadJSON(&msg); err != nil {
-			log.Debugf("notif: client %d read error: %v", c.ID, err)
+			// A close code is the client saying it meant to go: 1001 is what
+			// the macOS container app sends when a File Provider domain is
+			// removed. Logged as a read error it was indistinguishable from a
+			// socket that broke, which is the one thing this line is read to
+			// find out.
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				log.Debugf("notif: client %d disconnected: %v", c.ID, err)
+			} else {
+				log.Debugf("notif: client %d read error: %v", c.ID, err)
+			}
 			return
 		}
 		if err := c.handleMessage(&msg); err != nil {

@@ -11,6 +11,7 @@ import (
 	upath "path"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/dkam/silo/fileserver/api"
@@ -277,6 +278,16 @@ func getEntry(w http.ResponseWriter, r *http.Request) {
 	if entry.mtime > 0 {
 		w.Header().Set("Last-Modified", time.Unix(entry.mtime, 0).UTC().Format(http.TimeFormat))
 	}
+	// Said here rather than in either branch below, so it rides on the 304 as
+	// well as on the 200. A cache stores the policy it was last told, and a
+	// revalidation that answered 304 without one would teach it nothing — it
+	// would go on inventing a freshness lifetime for the copy it kept.
+	//
+	// no-cache rather than no-store: the ETag above is a content hash and
+	// matchesETag answers the 304 from one dirent lookup, reading no chunks at
+	// all, so a client that wants to cache this still can. It just has to ask
+	// first, which is exactly what the three stale days were missing.
+	w.Header().Set("Cache-Control", "private, no-cache")
 	// A paged request is answered on its merits: revalidating it against the
 	// whole directory's id would answer 304 to a client that is asking for the
 	// next window, not for the same one again.
@@ -514,7 +525,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, library *libmgr.Library, 
 			// The status is already written, so this cannot become a 500. Log
 			// it and let the body end short of Content-Length, which is what
 			// tells the client it is incomplete.
-			log.Errorf("failed to stream %s in library %s: %v", fileID, library.ID, err)
+			logStreamFailure(fileID, library.ID, err)
 		}
 		return
 	}
@@ -532,8 +543,23 @@ func serveFile(w http.ResponseWriter, r *http.Request, library *libmgr.Library, 
 		return
 	}
 	if err := st.ReadFileRange(m, int64(start), int64(end-start+1), w); err != nil {
-		log.Errorf("failed to stream range of %s in library %s: %v", fileID, library.ID, err)
+		logStreamFailure("range of "+fileID, library.ID, err)
 	}
+}
+
+// logStreamFailure records a body that did not finish being written.
+//
+// A reader that goes away mid-body is the ordinary end of a File Provider
+// read -- a preview closed, a fetch the daemon withdrew -- and the kernel says
+// so with EPIPE or ECONNRESET. That is a note about the client rather than a
+// fault for an operator to chase, and at ERROR it drowned out the writes that
+// failed for a reason on this side, which are still logged as such.
+func logStreamFailure(what, libraryID string, err error) {
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+		log.Debugf("client stopped reading %s in library %s: %v", what, libraryID, err)
+		return
+	}
+	log.Errorf("failed to stream %s in library %s: %v", what, libraryID, err)
 }
 
 // putEntry stores a file, or creates a directory with ?type=dir.

@@ -106,11 +106,17 @@ func serveStoredBytes(w http.ResponseWriter, r *http.Request, etag, mediaType st
 	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("ETag", etag)
 	if immutable {
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		// private, not public: the route is libraries/{id}/objects/{id} and
+		// requires library authorization, and public tells a shared cache it
+		// may store the response and hand it to *any* later requester — which
+		// is that authorization, bypassed by something that never saw it. The
+		// max-age and the immutable are a claim about the URL rather than
+		// about who may read it, and the id is the content hash, so they stay.
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	} else {
 		// Cacheable, but only after asking. The ETag is a content hash, so the
 		// revalidation costs one dirent lookup and reads nothing.
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "private, no-cache")
 	}
 	if matchesETag(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
