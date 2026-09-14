@@ -20,7 +20,13 @@ import (
 // clients into one bucket than it should, and too high reads an entry the
 // client wrote and hands them a key they choose. So it never grows on its own,
 // and an install with two proxies has to say so.
-var TrustedProxyHops = 1
+var TrustedProxyHops = DefaultTrustedProxyHops
+
+// DefaultTrustedProxyHops is named rather than written twice because the option
+// loader has to be able to put TrustedProxyHops back where it started. A
+// default that only exists as the initialiser above cannot be restored by
+// anything that did not see it.
+const DefaultTrustedProxyHops = 1
 
 // ClientIP returns the address to attribute a request to.
 //

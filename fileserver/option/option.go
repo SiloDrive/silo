@@ -184,6 +184,18 @@ var (
 	AllowUserCreateLibrary = true
 )
 
+// initDefaultOptions puts every option back to its compiled default, so that
+// what a load produces depends on the config file and the environment and not
+// on whatever a previous load left behind.
+//
+// Every option, which it did not used to be: MaxUploadSize, DefaultKeepDays,
+// EnableProfiling, ProfilePassword, LogLevel and the hop count in utils were
+// all left where they were. Today nothing calls the loader twice with a
+// different config, so the leak is latent rather than live -- but it is the
+// kind that stops being latent quietly. The moment anything reloads config on
+// SIGHUP, a key deleted from the file goes on being obeyed, and the worst of
+// them is EnableProfiling: a password-gated pprof endpoint that stays open
+// after the lines that opened it are gone.
 func initDefaultOptions() {
 	// Loopback by default. Silo speaks plaintext unless given a certificate,
 	// and every credential it uses is a bearer token in a header, so a
@@ -194,9 +206,13 @@ func initDefaultOptions() {
 	// loopback cannot be reached through a published port at all.
 	Host = "127.0.0.1"
 	Port = 8082
+	// Zero rather than DefaultMaxUploadSize: zero is how entries.go knows
+	// nothing was configured, and it is the caller that supplies the fallback.
+	MaxUploadSize = 0
 	DefaultQuota = InfiniteQuota
 	ServerQuota = InfiniteQuota
 	DiskReserve = DefaultDiskReserve
+	DefaultKeepDays = 0
 	DBOpTimeout = 60 * time.Second
 	SyncObjectWrites = true
 	VerifyFSObjectHashes = true
@@ -204,6 +220,10 @@ func initDefaultOptions() {
 	TrustProxyHeaders = false
 	EnableNotification = true
 	AllowUserCreateLibrary = true
+	EnableProfiling = false
+	ProfilePassword = ""
+	LogLevel = ""
+	utils.TrustedProxyHops = utils.DefaultTrustedProxyHops
 	initStorageDefaults()
 }
 
