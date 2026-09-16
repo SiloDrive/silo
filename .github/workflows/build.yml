@@ -29,6 +29,13 @@ jobs:
         # with the same library ID, so parallel package execution races. Proper
         # fix is t.TempDir() in those tests.
         run: go test -p 1 ./...
+      # A release is the one build that must not ship a known-reachable
+      # advisory, whatever the weekly scan last said. See vuln.yml for the
+      # scan that runs without a commit to prompt it.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
 
   build:
     needs: test

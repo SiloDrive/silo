@@ -1,6 +1,6 @@
 module github.com/dkam/silo
 
-go 1.25.0
+go 1.26.0
 
 toolchain go1.26.2
 
@@ -10,11 +10,22 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/getsentry/sentry-go v0.48.0
 	github.com/google/uuid v1.6.0
+	// Pinned. 1.8.x changes what a method mismatch answers when a PathPrefix
+	// subrouter covers the same path: the subrouter matches the prefix, finds
+	// no child route, and its 404 overwrites the 405 the earlier route had
+	// already recorded. Seven routes here are registered on the root router
+	// under /api/silo/v1 -- the unauthenticated ones, which sit outside
+	// apiRouter precisely so RequireCredential does not apply -- and every one
+	// of them would answer a wrong-method request with 404 instead of 405.
+	// TestThePreLoginEndpointIsNotAGET catches it. A custom
+	// MethodNotAllowedHandler does not help; by then the mismatch is no longer
+	// reported at all. Bumping wants the route layout rethought, which is not
+	// a dependency bump. See Silo #86.
 	github.com/gorilla/mux v1.7.4
 	github.com/gorilla/websocket v1.5.3
 	github.com/sirupsen/logrus v1.9.3
-	golang.org/x/crypto v0.49.0
-	golang.org/x/term v0.41.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/term v0.46.0
 	gopkg.in/ini.v1 v1.55.0
 	modernc.org/sqlite v1.48.2
 )
@@ -43,8 +54,8 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/smartystreets/goconvey v1.8.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
