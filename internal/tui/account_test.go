@@ -142,10 +142,14 @@ func TestReopeningTheFormClearsWhatWasTyped(t *testing.T) {
 	}
 }
 
-// The server's count includes the session that asked, because it revokes every
-// session credential and grants no exemptions. Repeating that number at
-// somebody still looking at a working library list would be telling them they
-// are signed out of it.
+// The server's count includes the credential that asked, because it revokes
+// every credential the account holds and grants no exemptions. Repeating that
+// number at somebody still looking at a working library list would be telling
+// them they are signed out of it.
+//
+// "Places" rather than "sessions": what is signed out now includes mounted
+// devices, and a person who reads "sessions" will not connect the number to
+// their drive asking for a password an hour later.
 func TestPasswordChangedSummaryCountsThisSessionOut(t *testing.T) {
 	cases := []struct {
 		revoked int
@@ -153,8 +157,8 @@ func TestPasswordChangedSummaryCountsThisSessionOut(t *testing.T) {
 	}{
 		{0, "Password changed"},
 		{1, "Password changed"},
-		{2, "Password changed; 1 other session signed out"},
-		{4, "Password changed; 3 other sessions signed out"},
+		{2, "Password changed; signed out of 1 other place"},
+		{4, "Password changed; signed out of 3 other places"},
 	}
 	for _, c := range cases {
 		if got := passwordChangedSummary(c.revoked); got != c.want {

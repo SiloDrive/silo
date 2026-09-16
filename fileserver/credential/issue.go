@@ -273,12 +273,18 @@ func RevokeAll(ctx context.Context, owner account.ID) (int64, error) {
 // RevokeKind deletes every credential of one lane an account holds, and
 // returns how many.
 //
-// It exists for the self-service password change, which docs/auth.md says
-// must revoke session credentials and leave device ones mounted: unmounting
-// somebody's laptop as a side effect of routine hygiene teaches them to stop
-// doing hygiene. RevokeAll is the administrator's version of the same
-// decision, and the two are separate functions because the difference between
-// them is the whole point.
+// It has no caller today. It was written for the self-service password change,
+// which revoked sessions and left device credentials mounted so that routine
+// hygiene did not unmount somebody's laptop; that rule is gone -- see
+// api.ChangePasswordHandler for why -- and the password change now calls
+// RevokeAll like everything else that ends an account's access.
+//
+// It is kept because the distinction it draws is one docs/auth.md still wants
+// somewhere else: § Logout and revocation says a backchannel logout token
+// should revoke session credentials and leave device ones to explicit
+// revocation, since signing out of a web session on a phone should not unmount
+// a laptop. That lane is designed and not built, and this is the operation it
+// will need.
 //
 // The kind is validated rather than passed through: an unrecognised one
 // matches no row, so a typo would report a successful revocation that revoked

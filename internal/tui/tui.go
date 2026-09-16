@@ -421,8 +421,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// screen. Escaping the form does not cancel the request — the command is
 	// already in flight — so routing it by view meant that pressing esc while
 	// it ran dropped the result on the floor. The password had changed, every
-	// session had been revoked, and the user saw neither a confirmation nor an
-	// error.
+	// credential had been revoked, and the user saw neither a confirmation nor
+	// an error.
 	case passwordChangedMsg:
 		if msg.err != nil {
 			m.message = errorStyle.Render(msg.err.Error())
@@ -1957,21 +1957,25 @@ func (m model) updatePassword(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // passwordChangedSummary counts this session out of the number the server gave.
 //
-// The server revokes every session credential with no carve-out for the one
-// that asked, and its count says so. Reported as it stands, it would tell
-// somebody who is still looking at a working library list that they have been
-// signed out of it -- they have, and the client signed straight back in, which
-// is not a thing worth explaining on a status row. Device credentials are
-// untouched and go unmentioned for the same reason: nothing happened to them.
+// The server revokes every credential the account holds, with no carve-out for
+// the one that asked, and its count says so. Reported as it stands, it would
+// tell somebody who is still looking at a working library list that they have
+// been signed out of it -- they have, and the client signed straight back in,
+// which is not a thing worth explaining on a status row.
+//
+// "Places" rather than "sessions" for the rest of the number. What is signed
+// out now includes mounted devices, and somebody who reads "sessions" will not
+// connect the count to their drive asking for a password an hour later. See
+// docs/auth.md § Changing a password, and what it revokes.
 func passwordChangedSummary(revoked int) string {
 	others := revoked - 1
 	switch {
 	case others < 1:
 		return "Password changed"
 	case others == 1:
-		return "Password changed; 1 other session signed out"
+		return "Password changed; signed out of 1 other place"
 	default:
-		return fmt.Sprintf("Password changed; %d other sessions signed out", others)
+		return fmt.Sprintf("Password changed; signed out of %d other places", others)
 	}
 }
 
@@ -1984,7 +1988,8 @@ func (m model) renderPassword() string {
 		m.width)
 	body = append(body, "")
 	body = append(body, wrapText(
-		"Other sessions are signed out. A mounted device stays mounted.", m.width)...)
+		"Everything signed in with this account is signed out, mounted devices included. "+
+			"They will each ask for the new password.", m.width)...)
 
 	body = append(body,
 		"",

@@ -340,6 +340,81 @@ func TestAMissingAccountCostsWhatAPresentOneDoes(t *testing.T) {
 	}
 }
 
+// Finding 7, one level down: the dummy hash equalises a miss against a *PBKDF2*
+// hit, and that is not the only kind of hit there is.
+//
+// Four stored formats reach validatePasswd. One of them costs 600,000 PBKDF2
+// rounds; the other three cost a single hash and return in microseconds -- an
+// unsalted SHA1 or salted SHA256 inherited from the scheme this replaced, and
+// an AUTHKEY-SHA256 row, which is fast on purpose because the client already
+// did the memory-hard work. So the gap the dummy hash closed reopened for
+// every account that is not on today's format: a miss paid 80ms, an account on
+// a legacy hash paid nothing, and the difference answers which addresses exist
+// exactly as the original finding did. A crossed-over account is the case that
+// matters most, because crossing over is the direction everything is moving
+// in.
+//
+// The fix is that a stored hash cheaper than the dummy pays the dummy's cost
+// too, so one login is one derivation whatever it lands on. The cost is real
+// and is a deliberate trade -- see ValidatePassword -- and it is bounded by the
+// login rate limiter, which enumeration does not get past either.
+func TestEveryStoredFormatCostsWhatAMissCosts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("times several KDF derivations")
+	}
+	authTestDB(t)
+
+	// A password that opens none of these. Every measurement is of a refusal,
+	// which is the only path an enumerator can drive.
+	const guess = "not the password"
+
+	if _, err := CreateAccount(context.Background(), "current@example.com", "a password", account.RoleUser); err != nil {
+		t.Fatalf("creating the PBKDF2 account: %v", err)
+	}
+
+	seedUser(t, "sha1@example.com", hex.EncodeToString(sha1Sum("a password")))
+	seedUser(t, "sha256@example.com", hex.EncodeToString(sha256SaltedSum("a password")))
+
+	authKeyHash, err := HashAuthKey("6b1f0a3d8c92e457b0d3f7a1c5e920864b7d1f0e3a92c5847d0b3f6a1c8e5920")
+	if err != nil {
+		t.Fatalf("HashAuthKey returned %v", err)
+	}
+	seedUser(t, "crossed-timing@example.com", authKeyHash)
+
+	// A stale PBKDF2 hash counts too: the work factor is read out of the
+	// stored string, so an account created before the count was raised
+	// verifies sixty times faster than one created after it.
+	seedUser(t, "stale@example.com", makePBKDF2Hash("a password", 10000, []byte("0123456789abcdef")))
+
+	measure := func(addr string) time.Duration {
+		start := time.Now()
+		for i := 0; i < 3; i++ {
+			if _, err := ValidatePassword(addr, guess); err == nil {
+				t.Fatalf("%s: expected a refusal", addr)
+			}
+		}
+		return time.Since(start)
+	}
+
+	miss := measure("absent@example.com")
+	for _, addr := range []string{
+		"current@example.com",
+		"sha1@example.com",
+		"sha256@example.com",
+		"crossed-timing@example.com",
+		"stale@example.com",
+	} {
+		hit := measure(addr)
+		// Half, for the reason the test above gives: the two have to be the
+		// same order of magnitude rather than equal, or this measures
+		// scheduler noise. The gap being closed is three orders, not one.
+		if hit < miss/2 {
+			t.Errorf("%s refused in %s against %s for an address with no account: "+
+				"the gap answers which addresses exist", addr, hit, miss)
+		}
+	}
+}
+
 // A crossed-over account takes the authKey and not the password. This is the
 // plain statement of what split-derivation login buys: the password stops
 // being a wire credential, so `curl -u user:password` against such an account

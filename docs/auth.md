@@ -356,6 +356,20 @@ the shape of a name.
   tree, and a move names two paths, so "does this stay inside the scope?" is a
   question about the resulting tree rather than about each path in isolation.
   Refusing is the honest answer until that is worked out.
+- **Deleting a library, and managing its shares**, are library-level for the
+  plainest reason of all: the whole library is what they are about. These two
+  reach the scope by a different road from the rest, and got it wrong for a
+  while — their access rule is ownership rather than a grant, so they cannot
+  ask `Perm` (it folds in `CheckPerm`, and a grant is not what opens either
+  door). They asked `CredentialCanWrite` instead, which is the permission half
+  of the ceiling and knows nothing about scope, and the door check in the
+  middleware could not help because it compares library ids and a path-scoped
+  credential names the right library. So a credential cut to one folder could
+  delete the library that folder was in, and hand the whole of it to somebody
+  else. The narrowing half alone is now its own call —
+  `middleware.CredentialReachesLibrary` and `CredentialCanWriteLibrary` — for
+  the same reason `PermFor` is one function: the failure being prevented is a
+  caller that remembers one of the two.
 
 In an E2EE library a path scope compares ciphertext, exactly as the entries route
 already routes on names the server cannot read. Two things move a path out from
@@ -486,6 +500,21 @@ does not help, because enumeration needs one attempt per address rather than ten
 So a miss verifies against a fixed hash of a password nobody has, derived lazily
 at whatever work factor `HashPassword` currently uses — raising the iteration
 count raises this too, so the gap cannot quietly reopen.
+
+**And a hit against a cheap stored hash pays the same.** The dummy equalises a
+miss against a *PBKDF2* hit, which was the whole of the gap while that was the
+only format worth timing. Three others verify in microseconds — the inherited
+unsalted SHA1 and salted SHA256, an `AUTHKEY-SHA256` row, and a PBKDF2 row
+written before the work factor was raised — and against an 80ms miss each of
+those is the same oracle for a smaller set of addresses. A shrinking set is not
+a closed one: crossing over moves accounts *into* the fast lane. So a stored
+hash cheaper than the dummy pays the dummy's cost as well, before its own check,
+and one login is one derivation whatever it lands on. That taxes the
+crossed-over lane, which [Why tokens want a fast
+hash](#why-tokens-want-a-fast-hash-and-passwords-do-not) argues should be fast — but that argument is
+about not taxing a brute force over 256 bits, and this is the price of the
+*address* not being discoverable. It is paid once per login, on a lane where
+logins are rare because both kinds of credential are durable.
 
 ### Password hashing and bootstrap
 
@@ -658,25 +687,40 @@ answer. A renewal is logged with both ids for the same reason.
 
 ## Changing a password, and what it revokes
 
-The obvious answer — "everything" — is wrong for one of the two cases:
+Everything, in both cases:
 
-- **A user changing their own password** revokes `session` credentials and
-  leaves `device` credentials mounted. Unmounting somebody's laptop as a side
-  effect of routine hygiene teaches them to stop doing hygiene.
+- **A user changing their own password** revokes every credential the account
+  holds, `device` credentials and the one that made the request included. This
+  used to spare `device`, on the argument that unmounting somebody's laptop as
+  a side effect of routine hygiene teaches them to stop doing hygiene. That
+  cost is real and is still paid. What it was weighed against was not: changing
+  the password is the action a person already knows to reach for when they
+  think something has been taken, and sparing `device` left the credential most
+  worth worrying about untouched — ninety days, renewable from itself, so a
+  stolen one outlived the password it was minted under indefinitely. The
+  recovery was `auth/logout/everywhere`, a second endpoint the person has to
+  know about in the moment they are least likely to go looking for one. A
+  control that has to be discovered under stress is not one.
 - **An administrator resetting a password** revokes everything, and `silo user
   passwd` does. Reaching that command means shell access and an account that is
   not yours to log in to, and the reason an administrator resets a password is
   that the user has lost control of something — which something is not knowable
-  from here. The revocation runs *after* the password is set: one that ran and
-  then failed to change the password would sign every device out and leave the
-  old password working.
+  from here.
+
+In both cases the revocation runs *after* the password is set: one that ran and
+then failed to change the password would sign every device out and leave the
+old password working.
 
 ```
 POST /api/silo/v1/auth/password
 { "current_password": "…", "new_password": "…" }
 
-200 { "revoked": 2 }    how many session credentials were signed out
+200 { "revoked": 3 }    how many credentials were signed out
 ```
+
+The count is what a client shows: "signed out of 3 places" tells the person to
+expect their laptop to ask again, which is the whole of what the old rule was
+trying to spare them.
 
 **With `client_kdf_params`, the same request is the split-derivation
 crossover.** `new_password` then carries an `authKey` rather than a password,

@@ -27,9 +27,16 @@ import (
 type revokedResponse struct {
 	Revoked int64 `json:"revoked"`
 	// SessionsStillLive is set only in the one case that needs saying: the
-	// password changed and the revocation that follows it did not, so other
-	// sessions are still holding live credentials. Omitted everywhere else, so
+	// password changed and the revocation that follows it did not, so the
+	// account's other credentials are still live. Omitted everywhere else, so
 	// logout's two routes and a clean password change answer exactly as before.
+	//
+	// The wire name says sessions and now means every kind, because the
+	// password change stopped sparing device credentials. It is left alone
+	// deliberately: it is a field clients already decode -- client/enrol.go
+	// does, and silo-drive may -- and renaming it would turn a widened meaning
+	// into a broken decode. What a client does with it is unchanged either
+	// way: tell the person the sign-out did not finish.
 	//
 	// It names the exception rather than the norm because that is the shape
 	// omitempty rewards — a bool that is usually false and is worth reading

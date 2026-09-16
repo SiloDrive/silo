@@ -39,6 +39,14 @@ func narrowed(t *testing.T, perm string, scope credential.Scope) string {
 // the secret a client would present.
 func issueCredential(t *testing.T, o credential.IssueOpts) string {
 	t.Helper()
+	secret, _ := issueCredentialWithID(t, o)
+	return secret
+}
+
+// issueCredentialWithID is issueCredential for the callers that need the row
+// as well as the secret -- expiring it, revoking it, looking it up afterwards.
+func issueCredentialWithID(t *testing.T, o credential.IssueOpts) (secret, id string) {
+	t.Helper()
 	ctx, cancel := option.WithDBTimeout(context.Background())
 	defer cancel()
 
@@ -50,11 +58,11 @@ func issueCredential(t *testing.T, o credential.IssueOpts) string {
 	if o.Label == "" {
 		o.Label = "issued for a test"
 	}
-	_, secret, err := credential.Issue(ctx, o)
+	cred, secret, err := credential.Issue(ctx, o)
 	if err != nil {
 		t.Fatalf("issuing a %s credential with perm %q: %v", o.Kind, o.Perm, err)
 	}
-	return secret
+	return secret, cred.ID
 }
 
 // The case a backup tool or an untrusted mount actually wants: it may read
@@ -219,5 +227,66 @@ func TestMovingOutOfAReadOnlySubtreeIsRefused(t *testing.T) {
 		`{"op":"move","to":"/archive/x.txt"}`)
 	if code != http.StatusForbidden {
 		t.Errorf("moving out of a subtree the credential cannot reach: status %d, want 403, body %s", code, body)
+	}
+}
+
+// A path scope has to reach the library-level verbs too, and two of them did
+// not ask.
+//
+// DeleteLibraryHandler and the share surface's ownedLibrary both check
+// "is this credential rw?" and "does this account own the library?" and stop
+// there. Neither asks Perm, so neither learns about the path half of the
+// scope -- and the middleware's door check cannot help, because it compares
+// only the library id and a path-scoped credential names the right library.
+// So a credential cut to one folder, handed to a backup tool or a phone,
+// could delete the whole library it was cut out of, or hand the whole of it
+// to somebody else.
+//
+// Every other library-level handler gets this right by calling
+// entryLibrary(..., "", true), which asks Perm with an empty path -- and Perm
+// refuses a path scope for an empty path, because nothing is not inside
+// /photos. The two that were wrong were wrong by not asking at all.
+func TestAPathScopedCredentialCannotDeleteOrShareTheLibrary(t *testing.T) {
+	base, token := wire(t)
+	id := makeLibrary(t, base, token)
+	if code, body := call(t, "POST", base+"/api/silo/v1/libraries/"+id+"/batch", token,
+		`{"ops":[{"op":"mkdir","path":"/photos"}]}`); code != http.StatusOK {
+		t.Fatalf("seeding: status %d, body %s", code, body)
+	}
+	makeAccount(t, base, "outsider@example.com", "a password", account.RoleUser)
+
+	// rw, because a read-only credential is already refused by the check that
+	// is there. The hole is the credential that may write -- inside /photos.
+	scoped := narrowed(t, "rw", credential.Scope{LibraryID: id, Path: "/photos"})
+	lib := base + "/api/silo/v1/libraries/" + id
+
+	// Sharing first: it is the one that leaves no trace a person would notice,
+	// and running it before the delete means the delete is still measuring a
+	// library that exists.
+	for _, c := range []struct{ name, method, path, body string }{
+		{"handing the library to somebody else", "POST", lib + "/shares",
+			`{"email":"outsider@example.com","perm":"rw"}`},
+		{"reading who else holds the library", "GET", lib + "/shares", ""},
+		{"taking somebody else's grant away", "DELETE", lib + "/shares/user:0", ""},
+		{"deleting the library it was cut out of", "DELETE", lib, ""},
+	} {
+		if code, body := call(t, c.method, c.path, scoped, c.body); code != http.StatusForbidden {
+			t.Errorf("%s with a credential scoped to /photos: status %d, want 403, body %s",
+				c.name, code, body)
+		}
+	}
+
+	// The library is still here, and the account that owns it can still do all
+	// of this -- otherwise the refusals above would prove only that something
+	// is broken.
+	if code, body := call(t, "GET", lib+"/entries/photos/", scoped, ""); code != http.StatusOK {
+		t.Errorf("the scoped credential lost the folder it is for: status %d, body %s", code, body)
+	}
+	if code, body := call(t, "POST", lib+"/shares", token,
+		`{"email":"outsider@example.com","perm":"r"}`); code != http.StatusCreated {
+		t.Errorf("the owner sharing their own library: status %d, want 201, body %s", code, body)
+	}
+	if code, body := call(t, "DELETE", lib, token, ""); code != http.StatusOK {
+		t.Errorf("the owner deleting their own library: status %d, want 200, body %s", code, body)
 	}
 }

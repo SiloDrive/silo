@@ -302,10 +302,11 @@ func PermFor(cred *credential.Credential, libraryID, path string) string {
 // CredentialCanWrite reports whether the credential's own ceiling permits a
 // write, without asking about any library.
 //
-// It is for the handlers that have no library to ask share.CheckPerm about --
-// creating one, where it does not exist yet, and deleting one, which gates on
-// ownership instead. Everywhere else, ask Perm: it answers the whole question
-// rather than half of it.
+// It is for the one handler that has no library to ask about: creating one,
+// where it does not exist yet. Everywhere else, ask Perm -- it answers the
+// whole question rather than half of it -- or, for an operation about a whole
+// library that gates on ownership rather than on a grant, ask
+// CredentialCanWriteLibrary.
 //
 // No credential means no write, for the reason Perm gives.
 func CredentialCanWrite(r *http.Request) bool {
@@ -315,4 +316,51 @@ func CredentialCanWrite(r *http.Request) bool {
 		return false
 	}
 	return cred.Perm == "rw"
+}
+
+// CredentialReachesLibrary and CredentialCanWriteLibrary are the ceiling for an
+// operation about one whole library whose access rule is ownership: deleting
+// it, and deciding who else may have it.
+//
+// They exist because CredentialCanWrite is only half of that ceiling and the
+// two handlers that reached for it took it for the whole. A credential carries
+// a permission *and* a scope; asking only the permission let a credential cut
+// to one folder delete the library that folder was in, and hand the whole of
+// it to somebody else. The middleware's door check could not catch it either,
+// because it compares library ids and such a credential names the right
+// library -- see scopeReachesRoute, which says in its own comment that path
+// granularity stays with the handler.
+//
+// Every other library-level handler asks this question as Perm(r, libraryID,
+// "") and gets the right answer for free: nothing is not inside /photos, so an
+// empty path fails a path scope. These two cannot, because Perm folds in
+// share.CheckPerm and a grant is not what opens either of these doors --
+// ownership is, and the handler checks it for itself immediately after. So
+// this is Perm's narrowing half, alone, and it is one call rather than two at
+// each site for the reason PermFor gives: the failure being prevented is
+// exactly a caller that remembers one of the two.
+//
+// No credential means no access, for the reason Perm gives.
+func CredentialReachesLibrary(r *http.Request, libraryID string) bool {
+	return credentialCovers(r, libraryID, false)
+}
+
+// CredentialCanWriteLibrary is CredentialReachesLibrary for an operation that
+// changes something.
+func CredentialCanWriteLibrary(r *http.Request, libraryID string) bool {
+	return credentialCovers(r, libraryID, true)
+}
+
+func credentialCovers(r *http.Request, libraryID string, write bool) bool {
+	cred := GetCredential(r)
+	if cred == nil {
+		log.Errorf("Permission asked on %s with no credential in context; denying", r.URL.Path)
+		return false
+	}
+	if write && cred.Perm != "rw" {
+		return false
+	}
+	// The empty path is the whole library, which is what both callers are
+	// about. A scope cut to a folder does not cover it.
+	return cred.Scope.Covers(libraryID, "")
 }

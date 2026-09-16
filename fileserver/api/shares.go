@@ -59,12 +59,24 @@ type sharePayload struct {
 // meanings: a read-only credential cannot make this decision even though the
 // account could, a library that does not exist is `404`, and one somebody else
 // owns is `403`.
+//
+// The scope is asked on every method, including the listing. A grant is a fact
+// about the whole library -- who else holds it, and as what -- so a credential
+// cut to one folder has no business reading it either, and the write half is
+// what GET is exempt from rather than the narrowing. This used to ask
+// CredentialCanWrite, which is only the permission half of the ceiling, so a
+// path-scoped credential could hand the whole library to somebody else; see
+// middleware.CredentialCanWriteLibrary for the shape of that mistake.
 func ownedLibrary(w http.ResponseWriter, r *http.Request) (string, bool) {
-	if r.Method != http.MethodGet && !middleware.CredentialCanWrite(r) {
+	libraryID := mux.Vars(r)["libraryid"]
+	if !middleware.CredentialReachesLibrary(r, libraryID) {
 		http.Error(w, "Permission denied", http.StatusForbidden)
 		return "", false
 	}
-	libraryID := mux.Vars(r)["libraryid"]
+	if r.Method != http.MethodGet && !middleware.CredentialCanWriteLibrary(r, libraryID) {
+		http.Error(w, "Permission denied", http.StatusForbidden)
+		return "", false
+	}
 	owner, err := libmgr.GetLibraryOwner(libraryID)
 	if err != nil {
 		log.Errorf("Failed to get library owner: %v", err)

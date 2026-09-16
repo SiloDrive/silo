@@ -364,14 +364,14 @@ func (c *APIClient) Setup(email, password, setupToken string) error {
 }
 
 // ChangePassword sets a new password on the signed-in account and reports how
-// many session credentials the server signed out.
+// many credentials the server signed out.
 //
 // The current password is required even though the request is authenticated,
 // and the server is the one insisting: a credential handed to a device must not
 // be able to promote itself into the account. See api.ChangePasswordHandler.
 //
 // The two things after the request are not tidying. The server revokes every
-// session credential, and the TUI holds one, so by the time this returns the
+// credential the account holds, and the TUI holds one, so by the time this returns the
 // token that made the call is dead and the cached password it would replay on
 // the resulting 401 is the one that no longer works. Swapping the cache and
 // signing in again is what keeps a successful change from presenting as being
@@ -385,7 +385,7 @@ func (c *APIClient) Setup(email, password, setupToken string) error {
 // retries against it and succeeds. Swapping afterwards would strand the client
 // on a password the server has forgotten.
 // ChangePassword sets a new password on the signed-in account and reports how
-// many session credentials the server signed out.
+// many credentials the server signed out.
 //
 // The current password is required even though the request is authenticated,
 // and the server is the one insisting: a credential handed to a device must not
@@ -397,7 +397,7 @@ func (c *APIClient) Setup(email, password, setupToken string) error {
 // holding a blob nothing it knows can open.
 //
 // The two things after the request are not tidying. The server revokes every
-// session credential, and the TUI holds one, so by the time this returns the
+// credential the account holds, and the TUI holds one, so by the time this returns the
 // token that made the call is dead and the cached secret it would replay on the
 // resulting 401 is the one that no longer works. Swapping the cache and signing
 // in again is what keeps a successful change from presenting as being signed

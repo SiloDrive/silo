@@ -965,16 +965,22 @@ func LibraryKeyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func DeleteLibraryHandler(w http.ResponseWriter, r *http.Request) {
-	// Deleting is the most destructive write there is, and it was reachable
-	// with a read-only credential: this handler asks only whether the account
-	// owns the library. Ownership is still the rule; the ceiling narrows it.
-	if !middleware.CredentialCanWrite(r) {
-		http.Error(w, "Permission denied", http.StatusForbidden)
-		return
-	}
 	id := middleware.GetAccountID(r)
 	vars := mux.Vars(r)
 	libraryID := vars["libraryid"]
+
+	// Deleting is the most destructive write there is, and it was reachable
+	// with a read-only credential: this handler asked only whether the account
+	// owns the library. Ownership is still the rule; the ceiling narrows it.
+	//
+	// The whole ceiling, not the permission half. This asked
+	// CredentialCanWrite, which knows nothing about scope -- so a credential
+	// cut to one folder, of the kind a mount or a backup tool is handed, could
+	// delete the library that folder was in. See CredentialCanWriteLibrary.
+	if !middleware.CredentialCanWriteLibrary(r, libraryID) {
+		http.Error(w, "Permission denied", http.StatusForbidden)
+		return
+	}
 
 	owner, err := libmgr.GetLibraryOwner(libraryID)
 	if err != nil {

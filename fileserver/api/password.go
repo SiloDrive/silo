@@ -7,11 +7,21 @@ package api
 //     authenticated. Otherwise a stolen device credential upgrades itself into
 //     account takeover, and the point of a scoped, revocable credential is
 //     that it cannot become the account.
-//   - It revokes session credentials and leaves device ones mounted.
-//     Unmounting somebody's laptop as a side effect of routine hygiene teaches
-//     them to stop doing hygiene. `silo user passwd` is the other case -- an
-//     administrator resetting a password somebody has lost control of -- and
-//     that one revokes everything.
+//   - It revokes every credential the account holds, device credentials
+//     included, and the one that asked along with them. It used to revoke only
+//     sessions, on the argument that unmounting somebody's laptop as a side
+//     effect of routine hygiene teaches them to stop doing hygiene. That cost
+//     is real and is still paid; what it was weighed against was not. Changing
+//     the password is the action a person already knows to reach for when they
+//     think something has been taken, and under the old rule it left the
+//     credential most worth worrying about untouched -- a device credential is
+//     ninety days and renews from itself, so a stolen one outlived the
+//     password it was minted under indefinitely. The recovery was
+//     `auth/logout/everywhere`, which is a second endpoint the person has to
+//     know about in the moment they are least likely to go looking for one.
+//     `silo user passwd` -- an administrator resetting a password somebody has
+//     lost control of -- has always revoked everything, and this is the same
+//     act performed by the person themselves.
 
 import (
 	"context"
@@ -169,14 +179,14 @@ func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	// After the password is set, for the reason `silo user passwd` gives: a
 	// revocation that ran and then failed to change the password would sign
 	// the user out and leave the old password working, which is the worst of
-	// both. Failing here leaves the new password live and some sessions
+	// both. Failing here leaves the new password live and some credentials
 	// alive, so it is reported rather than swallowed.
 	//
-	// The session that asked is revoked along with the rest. It gets no
-	// exemption: the rule is about kinds, and a carve-out for "this one"
-	// would mean a client could not tell from the count whether it had been
-	// signed out.
-	n, err := credential.RevokeKind(ctx, acct.ID, credential.KindSession)
+	// Everything, not one kind -- see the note at the top of this file. The
+	// credential that asked is revoked along with the rest and gets no
+	// exemption: a carve-out for "this one" would mean a client could not tell
+	// from the count whether it had been signed out.
+	n, err := credential.RevokeAll(ctx, acct.ID)
 	if err != nil {
 		// 200, not 500, and the flag is why. The password IS changed by the
 		// time this runs, and a 500 said otherwise: there are two 500s on this
@@ -191,10 +201,10 @@ func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 		// So the operation the caller asked for is reported as what it is —
 		// done — and the part that failed is reported beside it rather than
 		// instead of it. The operator still sees the failure in the log.
-		log.Errorf("Password changed for %s, but revoking their sessions failed: %v", acct.Email, err)
+		log.Errorf("Password changed for %s, but revoking their credentials failed: %v", acct.Email, err)
 		writeJSON(w, http.StatusOK, revokedResponse{Revoked: 0, SessionsStillLive: true})
 		return
 	}
-	log.Infof("Password changed for %s; %d session credential(s) revoked", acct.Email, n)
+	log.Infof("Password changed for %s; %d credential(s) revoked", acct.Email, n)
 	writeJSON(w, http.StatusOK, revokedResponse{Revoked: n})
 }

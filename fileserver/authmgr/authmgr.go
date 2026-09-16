@@ -93,6 +93,36 @@ func ValidatePassword(email, password string) (*account.Account, error) {
 		return nil, fmt.Errorf("user not found")
 	}
 
+	// The address exists, and what it costs to find that out must not depend on
+	// which format its hash is in.
+	//
+	// The dummy above equalises a miss against a PBKDF2 hit, which was the
+	// whole of the gap when PBKDF2 was the only format that mattered. Three
+	// others reach validatePasswd and all three return in microseconds: an
+	// unsalted SHA1 or salted SHA256 inherited from the scheme this replaced,
+	// an AUTHKEY-SHA256 row, and a PBKDF2 row written before the work factor
+	// was raised. Against an 80ms miss each of those is the original finding
+	// again, for a smaller set of addresses -- and a shrinking set is not a
+	// closed one, since crossing over moves accounts *into* the fast lane.
+	//
+	// So a stored hash cheaper than the dummy pays the dummy's cost as well,
+	// before its own check rather than after: one login is one derivation,
+	// whatever it lands on and whether or not it succeeds.
+	//
+	// This is a real cost on the crossed-over lane, which auth.md § Why tokens
+	// want a fast hash argues should be fast, and the argument still holds for
+	// what it was about -- taxing a brute force over 256 bits buys nothing.
+	// This is not that tax. It is the price of the *address* not being
+	// discoverable, it is paid once per login on a lane where logins are rare
+	// because both kinds of credential are durable, and it is bounded by the
+	// login rate limiter besides.
+	if !costsAFullDerivation(storedPasswd) {
+		if validatePasswd(password, dummyHash()) {
+			// Unreachable, for the reason the miss path gives.
+			log.Errorf("A login matched the dummy password hash; refusing it")
+		}
+	}
+
 	if !validatePasswd(password, storedPasswd) {
 		return nil, fmt.Errorf("incorrect password")
 	}
@@ -258,6 +288,31 @@ func HashPassword(password string) (string, error) {
 	derived := pbkdf2.Key([]byte(password), salt, PBKDF2Iterations, sha256.Size, sha256.New)
 	return fmt.Sprintf("PBKDF2SHA256$%d$%s$%s",
 		PBKDF2Iterations, hex.EncodeToString(salt), hex.EncodeToString(derived)), nil
+}
+
+// costsAFullDerivation reports whether verifying this stored hash already costs
+// what the dummy hash costs, so that ValidatePassword knows whether it has to
+// make up the difference.
+//
+// It is deliberately not needsRehash, although the two nearly agree. needsRehash
+// answers "should this be rewritten?", and it says no for an AUTHKEY-SHA256 row
+// -- correctly, because rewriting one would break the crossover. This answers
+// "is this expensive?", and for an authKey hash the answer is no. Reusing the
+// other function would have made the one format most worth covering the one
+// format left out, which is the kind of agreement that holds until it matters.
+func costsAFullDerivation(storedPasswd string) bool {
+	if !strings.HasPrefix(storedPasswd, "PBKDF2SHA256$") {
+		return false
+	}
+	parts := strings.Split(storedPasswd, "$")
+	if len(parts) != 4 {
+		return false
+	}
+	// The work factor is read out of the stored string rather than assumed, so
+	// a row written before PBKDF2Iterations was raised is correctly counted as
+	// cheap: at the previous value it is sixty times faster than the dummy.
+	iter, err := strconv.Atoi(parts[1])
+	return err == nil && iter >= PBKDF2Iterations
 }
 
 // needsRehash reports whether a stored hash should be replaced now that the

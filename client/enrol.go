@@ -176,8 +176,9 @@ func (c *APIClient) crossOver(password string, creds store.Credentials, params s
 	if err != nil {
 		return fmt.Errorf("client: crossing over to derived login: %w", err)
 	}
-	// The change revoked every session credential, this one included, so the
-	// cached secret has to be the new one before anything triggers a re-login.
+	// The change revoked every credential the account holds, this one included,
+	// so the cached secret has to be the new one before anything triggers a
+	// re-login.
 	c.mu.Lock()
 	c.password = authKey
 	c.mu.Unlock()
@@ -252,9 +253,10 @@ func (c *APIClient) postPasswordChange(current, next, params string) (int, error
 	}
 	var result struct {
 		Revoked int `json:"revoked"`
-		// Set when the password changed but the sessions it should have signed
-		// out are still live. A success with a caveat, not a failure -- the
-		// server reports it as 200 for exactly that reason.
+		// Set when the password changed but the credentials it should have
+		// signed out are still live. A success with a caveat, not a failure --
+		// the server reports it as 200 for exactly that reason. The field name
+		// says sessions and means every kind; see api.revokedResponse.
 		SessionsStillLive bool `json:"sessions_still_live"`
 	}
 	if err := c.doRequest("POST", "/api/silo/v1/auth/password", body, &result); err != nil {
