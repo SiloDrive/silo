@@ -191,7 +191,7 @@ func TestAnInterruptedRewriteLeavesTheOldPackAuthoritative(t *testing.T) {
 	// A fresh store, as a restart would build. The debris must not be loaded
 	// as a pack, and above all must not be seen as a second open pack.
 	forgetPackStore(TypeDir(dataDir, TypeChunks))
-	restarted := New(confPath, dataDir, TypeChunks)
+	restarted := New(dataDir, TypeChunks)
 	t.Cleanup(func() { _ = restarted.packs.close() })
 	stats, err := restarted.PackStats(libraryID, reachAll(ReachedHead))
 	if err != nil {
@@ -253,7 +253,7 @@ func TestARedundantPackIsPrunedAndItsFramesStayReadable(t *testing.T) {
 	// process the registry is the authority on which packs exist, and nothing
 	// in production builds one behind its back.
 	forgetPackStore(objDir)
-	restarted := New(confPath, dataDir, TypeChunks)
+	restarted := New(dataDir, TypeChunks)
 	t.Cleanup(func() { _ = restarted.packs.close() })
 	if n := packFileCount(t, dataDir); n != 2 {
 		t.Fatalf("%d packs on disk, want 2", n)
@@ -300,7 +300,7 @@ func TestTwoIdenticalPacksLeaveOneStanding(t *testing.T) {
 	}
 
 	forgetPackStore(objDir)
-	restarted := New(confPath, dataDir, TypeChunks)
+	restarted := New(dataDir, TypeChunks)
 	t.Cleanup(func() { _ = restarted.packs.close() })
 	pruned, err := restarted.PruneRedundantPacks(libraryID)
 	if err != nil {
@@ -363,7 +363,7 @@ func TestCompactionNeedsNoStorageKey(t *testing.T) {
 	packID := p.id
 	forgetPackStore(objDir)
 
-	keyless := New(confPath, dataDir, TypeChunks)
+	keyless := New(dataDir, TypeChunks)
 	t.Cleanup(func() { _ = keyless.packs.close() })
 	if keyless.keyErr == nil {
 		t.Fatal("the store found a key it should not have — this test is not testing what it claims")

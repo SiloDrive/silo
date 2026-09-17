@@ -82,7 +82,7 @@ func testWrite(t *testing.T) {
 	}
 	defer func() { _ = inputFile.Close() }()
 
-	bend := New(confPath, dataDir, "commit")
+	bend := New(dataDir, "commit")
 	_ = bend.Write(libraryID, objID, inputFile, true)
 }
 
@@ -93,7 +93,7 @@ func testRead(t *testing.T) {
 	}
 	defer func() { _ = outputFile.Close() }()
 
-	bend := New(confPath, dataDir, "commit")
+	bend := New(dataDir, "commit")
 	err = bend.Read(libraryID, objID, outputFile)
 	if err != nil {
 		t.Errorf("Failed to read backend : %s\n", err)
@@ -101,7 +101,7 @@ func testRead(t *testing.T) {
 }
 
 func testExists(t *testing.T) {
-	bend := New(confPath, dataDir, "commit")
+	bend := New(dataDir, "commit")
 	ret, _ := bend.Exists(libraryID, objID)
 	if !ret {
 		t.Errorf("File is not exist\n")
@@ -143,7 +143,7 @@ func TestObjStore(t *testing.T) {
 // never sent again, which is what turns a lost write into permanent damage.
 func TestObjStoreZeroLengthObjectIsAbsent(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	bend := New(confPath, dataDir, "chunks")
+	bend := New(dataDir, "chunks")
 
 	if err := bend.Write(libraryID, objID, strings.NewReader(""), true); err != nil {
 		t.Fatalf("Write() returned %v", err)
@@ -162,7 +162,7 @@ func TestObjStoreZeroLengthObjectIsAbsent(t *testing.T) {
 // not an error, and no failure reports the object as present.
 func TestObjStoreExistsOnMissingObject(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	bend := New(confPath, dataDir, "chunks")
+	bend := New(dataDir, "chunks")
 
 	exists, err := bend.Exists(libraryID, objID)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestObjStoreSyncWriteIntoNewLibraryDir(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 
 	for _, objType := range []string{"chunks", "commit", "fs"} {
-		bend := New(confPath, dataDir, objType)
+		bend := New(dataDir, objType)
 		// Loose, because what this asserts is the loose lane's publish-by-rename:
 		// a pack is appended to rather than renamed into place, and has no temp
 		// file to leave behind.
@@ -232,7 +232,7 @@ func TestObjStoreRejectsInvalidObjectID(t *testing.T) {
 		"g" + objID[1:],        // non-hex
 	}
 
-	bend := New(confPath, dataDir, "commit")
+	bend := New(dataDir, "commit")
 	for _, id := range bad {
 		// Each of these would panic rather than return if the guard were gone.
 		if err := bend.Read(libraryID, id, io.Discard); err == nil {
@@ -283,7 +283,7 @@ func writeLooseObject(t *testing.T, s *ObjectStore, id, content string) {
 }
 
 func TestObjectsRoundTripUnderTheirOwnIDs(t *testing.T) {
-	s := New(confPath, dataDir, "widths")
+	s := New(dataDir, "widths")
 	for _, id := range []string{objID, otherObjID} {
 		writeTestObject(t, s, id, "content for "+id)
 		var got strings.Builder
@@ -299,7 +299,7 @@ func TestObjectsRoundTripUnderTheirOwnIDs(t *testing.T) {
 // The ranged read is the whole reason the seam changed shape: a chunk read
 // becomes a read of one byte range out of the pack holding it.
 func TestReadAtReturnsOneRange(t *testing.T) {
-	s := New(confPath, dataDir, "readat")
+	s := New(dataDir, "readat")
 	writeTestObject(t, s, objID, "0123456789abcdef")
 
 	for _, tc := range []struct {
@@ -327,7 +327,7 @@ func TestReadAtReturnsOneRange(t *testing.T) {
 // known offset and length has to be able to tell "the pack is shorter than
 // the index says" from "the read happened to be short".
 func TestReadAtPastTheEndReportsEOF(t *testing.T) {
-	s := New(confPath, dataDir, "readat-eof")
+	s := New(dataDir, "readat-eof")
 	writeTestObject(t, s, objID, "0123456789")
 
 	p := make([]byte, 8)
@@ -347,7 +347,7 @@ func TestReadAtPastTheEndReportsEOF(t *testing.T) {
 // One sentinel for absence, whichever backend answered. The tiering logic
 // above this asks "is it here" once rather than once per backend.
 func TestAMissingObjectIsErrNotFound(t *testing.T) {
-	s := New(confPath, dataDir, "notfound")
+	s := New(dataDir, "notfound")
 	missing := strings.Repeat("1", 2*sha256.Size)
 
 	if _, err := s.Stat(libraryID, missing); !errors.Is(err, ErrNotFound) {
@@ -367,7 +367,7 @@ func TestAMissingObjectIsErrNotFound(t *testing.T) {
 }
 
 func TestListYieldsEveryObjectWithItsSize(t *testing.T) {
-	s := New(confPath, dataDir, "list")
+	s := New(dataDir, "list")
 	want := map[string]int64{
 		objID:           4,
 		otherObjID:      11,
@@ -397,7 +397,7 @@ func TestListYieldsEveryObjectWithItsSize(t *testing.T) {
 // A library with no objects and a library that never existed are the same answer,
 // and neither is an error.
 func TestListOfAnEmptyLibraryIsEmptyNotAnError(t *testing.T) {
-	s := New(confPath, dataDir, "list-empty")
+	s := New(dataDir, "list-empty")
 	n := 0
 	if err := s.List("00000000-0000-0000-0000-000000000000", func(ObjectInfo) error {
 		n++
@@ -414,7 +414,7 @@ func TestListOfAnEmptyLibraryIsEmptyNotAnError(t *testing.T) {
 // objects. It is not a pack: nothing references it, and reporting it as one
 // would have the caller asking a pack index about an id it never held.
 func TestListSkipsTheDebrisOfAnInterruptedWrite(t *testing.T) {
-	s := New(confPath, dataDir, "list-debris")
+	s := New(dataDir, "list-debris")
 	writeLooseObject(t, s, objID, "good")
 
 	fanout := filepath.Join(TypeDir(dataDir, "list-debris"), libraryID, objID[:2])
@@ -435,7 +435,7 @@ func TestListSkipsTheDebrisOfAnInterruptedWrite(t *testing.T) {
 }
 
 func TestListStopsOnTheCallbacksError(t *testing.T) {
-	s := New(confPath, dataDir, "list-stop")
+	s := New(dataDir, "list-stop")
 	writeTestObject(t, s, objID, "one")
 	writeTestObject(t, s, otherObjID, "two")
 
@@ -460,7 +460,7 @@ func TestListStopsOnTheCallbacksError(t *testing.T) {
 // says so with ErrReclaimDeferred, and that is a different property with a test
 // of its own.
 func TestRemoveIsIdempotent(t *testing.T) {
-	s := New(confPath, dataDir, "remove")
+	s := New(dataDir, "remove")
 	writeLooseObject(t, s, objID, "doomed")
 
 	for i := range 2 {
@@ -477,7 +477,7 @@ func TestRemoveIsIdempotent(t *testing.T) {
 }
 
 func TestRemoveLibraryTakesEverythingAndIsIdempotent(t *testing.T) {
-	s := New(confPath, dataDir, "remove-library")
+	s := New(dataDir, "remove-library")
 	writeTestObject(t, s, objID, "one")
 	writeTestObject(t, s, otherObjID, "two")
 
@@ -503,7 +503,7 @@ func TestAStoreWithNoBackendReportsWhy(t *testing.T) {
 	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := New(confPath, blocked, "commits")
+	s := New(blocked, "commits")
 
 	if err := s.Read(libraryID, objID, io.Discard); err == nil {
 		t.Error("Read on a store with no backend returned nil")
@@ -539,7 +539,7 @@ func TestAStoreWithNoBackendReportsWhy(t *testing.T) {
 func TestOnlyTheSHA256WidthIsStorable(t *testing.T) {
 	const sha1ObjID = "0401fc662e3bc87a41f299a907c056aaf8322a27"
 
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 	if err := s.Write(libraryID, sha1ObjID, strings.NewReader("legacy"), false); err == nil {
 		t.Errorf("Write(%s) accepted a 40-character id", sha1ObjID)
 	}

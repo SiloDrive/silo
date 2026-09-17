@@ -194,7 +194,7 @@ type storageBackend interface {
 // to return an error to, so the failure is carried until something asks it a
 // question — which fixes the nil dereference an ignored error used to produce,
 // and says what happened.
-func New(confPath string, dataDir string, objType string) *ObjectStore {
+func New(dataDir string, objType string) *ObjectStore {
 	obj := &ObjectStore{ObjType: objType}
 
 	// The key is loaded after the backend because generating one refuses over

@@ -107,8 +107,8 @@ func New(cfg Config) (*Store, error) {
 		e2ee:    cfg.E2EE,
 		ck:      cfg.CK,
 		params:  cfg.Params,
-		chunks:  objstore.New("", cfg.DataDir, objstore.TypeChunks),
-		objects: objstore.New("", cfg.DataDir, objstore.TypeObjects),
+		chunks:  objstore.New(cfg.DataDir, objstore.TypeChunks),
+		objects: objstore.New(cfg.DataDir, objstore.TypeObjects),
 	}
 	return s, nil
 }

@@ -61,7 +61,7 @@ func flipAByteOfTheFrame(t *testing.T, s *ObjectStore, id string) {
 // The assertion the whole issue exists for. Everything else here checks that
 // framing is invisible; this one checks that it happened.
 func TestStoredObjectIsCiphertextOnDisk(t *testing.T) {
-	s := New(confPath, dataDir, "sealed-disk")
+	s := New(dataDir, "sealed-disk")
 	plain := []byte("the needle in this haystack is CONFIDENTIAL-MARKER and it must not be on disk")
 	id := idOf(plain)
 
@@ -104,7 +104,7 @@ func TestStoredObjectIsCiphertextOnDisk(t *testing.T) {
 // a Content-Length on the wire rather than a visible failure: ChunkStoredSize
 // and ObjectSize are both this number.
 func TestStatAndListReportPlaintextLength(t *testing.T) {
-	s := New(confPath, dataDir, "sealed-size")
+	s := New(dataDir, "sealed-size")
 	plain := strings.Repeat("s", 5000)
 	id := idOf([]byte(plain))
 	if err := s.WriteVerified(libraryID, id, strings.NewReader(plain), false); err != nil {
@@ -141,7 +141,7 @@ func TestStatAndListReportPlaintextLength(t *testing.T) {
 // nothing shorter than a frame can be one. The pre-fsync torn write is the
 // case both rules exist for.
 func TestShorterThanAFrameIsAbsent(t *testing.T) {
-	s := New(confPath, dataDir, "sealed-short")
+	s := New(dataDir, "sealed-short")
 	id := strings.Repeat("c", 2*sha256.Size)
 	putObjectFile(t, dataDir, "sealed-short", libraryID, id, []byte(frameMagic+"trunc"))
 	exists, err := s.Exists(libraryID, id)
@@ -157,7 +157,7 @@ func TestShorterThanAFrameIsAbsent(t *testing.T) {
 // framing those differ, and getting it backwards would verify nothing anyone
 // asked about — while still passing, because the frame is self-consistent.
 func TestWriteVerifiedHashesThePlaintext(t *testing.T) {
-	s := New(confPath, dataDir, "sealed-verify")
+	s := New(dataDir, "sealed-verify")
 	plain := []byte("verified content")
 	id := idOf(plain)
 
@@ -182,7 +182,7 @@ func TestWriteVerifiedHashesThePlaintext(t *testing.T) {
 // than handing back plausible rubbish. This is what the AEAD buys over
 // storing plaintext.
 func TestCorruptedFrameIsAnError(t *testing.T) {
-	s := New(confPath, dataDir, "sealed-corrupt")
+	s := New(dataDir, "sealed-corrupt")
 	plain := []byte("bit rot happens")
 	id := idOf(plain)
 	if err := s.WriteVerified(libraryID, id, bytes.NewReader(plain), false); err != nil {
@@ -202,7 +202,7 @@ func TestCorruptedFrameIsAnError(t *testing.T) {
 // A frame cannot be moved to another object's path, because its header names
 // the id it was sealed under and the header is authenticated.
 func TestAFrameCannotBeMovedToAnotherPath(t *testing.T) {
-	s := New(confPath, dataDir, "sealed-move")
+	s := New(dataDir, "sealed-move")
 	plain := []byte("mine, at my own id")
 	id := idOf(plain)
 	if err := s.WriteVerified(libraryID, id, bytes.NewReader(plain), false); err != nil {
@@ -225,7 +225,7 @@ func TestAFrameCannotBeMovedToAnotherPath(t *testing.T) {
 // corruption and are reported as such. There is no reading of plaintext from
 // the store: a store holding any is one the server refuses to start on.
 func TestUnsealedBytesAreCorruption(t *testing.T) {
-	s := New(confPath, dataDir, "sealed-unsealed")
+	s := New(dataDir, "sealed-unsealed")
 	plain := "written by something that is not this store"
 	id := idOf([]byte(plain))
 	putObjectFile(t, dataDir, "sealed-unsealed", libraryID, id, []byte(plain))
@@ -242,7 +242,7 @@ func TestUnsealedBytesAreCorruption(t *testing.T) {
 // a chunk it is not sure landed — and the fresh nonce means the bytes differ
 // each time. The object must still read back, and the id must not change.
 func TestRewritingAnObjectIsFine(t *testing.T) {
-	s := New(confPath, dataDir, "sealed-rewrite")
+	s := New(dataDir, "sealed-rewrite")
 	plain := []byte("written twice, one id")
 	id := idOf(plain)
 
@@ -274,7 +274,7 @@ func TestAStoreWithNoKeyReportsWhy(t *testing.T) {
 	if err := os.WriteFile(KeyPath(dir), []byte("too short"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := New(confPath, dir, "sealed-nokey")
+	s := New(dir, "sealed-nokey")
 	if err := s.ready(); err == nil {
 		t.Fatal("a store with an unusable key reported itself ready")
 	}

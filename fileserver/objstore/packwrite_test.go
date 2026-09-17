@@ -17,7 +17,7 @@ import (
 func writeStore(t *testing.T) (*ObjectStore, string) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 	if err := s.ready(); err != nil {
 		t.Fatalf("opening a store: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestAPackSealsOnAgeWithNoFurtherWrites(t *testing.T) {
 // Seal at shutdown, so a clean stop leaves nothing half-open.
 func TestShutdownSealsTheOpenPack(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 
 	body := "written just before the server stopped"
 	id := idOf([]byte(body))
@@ -247,7 +247,7 @@ func TestShutdownSealsTheOpenPack(t *testing.T) {
 // listing walks, permanently, for a pack that held nothing.
 func TestShutdownDiscardsAnEmptyPack(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 
 	set, err := s.packs.set(libraryID)
 	if err != nil {
@@ -277,7 +277,7 @@ func TestAPackInheritedFromAPreviousRunIsSealedRatherThanReused(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 	objDir := TypeDir(dataDir, TypeChunks)
 
-	first := New(confPath, dataDir, TypeChunks)
+	first := New(dataDir, TypeChunks)
 	oldBody := "written by the previous run"
 	oldID := idOf([]byte(oldBody))
 	if err := first.WriteVerified(libraryID, oldID, strings.NewReader(oldBody), true); err != nil {
@@ -298,7 +298,7 @@ func TestAPackInheritedFromAPreviousRunIsSealedRatherThanReused(t *testing.T) {
 		t.Fatal("the killed run left no open pack")
 	}
 
-	second := New(confPath, dataDir, TypeChunks)
+	second := New(dataDir, TypeChunks)
 	t.Cleanup(func() { _ = second.packs.close() })
 	newBody := "written by the run that came after"
 	newID := idOf([]byte(newBody))
@@ -328,7 +328,7 @@ func TestAPackInheritedFromAPreviousRunIsSealedRatherThanReused(t *testing.T) {
 // packs.md § 5 settled on instead of an ingest.
 func TestALooseObjectStillReadsAndNewOnesArePacked(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 	if err := s.ready(); err != nil {
 		t.Fatalf("opening a store: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestNoLookupMissesDuringASeal(t *testing.T) {
 func TestASealFailureKeepsAcknowledgedObjectsReadable(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 	objDir := TypeDir(dataDir, TypeChunks)
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 
 	var ids []string
 	for i := 0; i < 3; i++ {
@@ -575,7 +575,7 @@ func TestASealFailureKeepsAcknowledgedObjectsReadable(t *testing.T) {
 	}
 	forgetPackStore(objDir)
 
-	again := New(confPath, dataDir, TypeChunks)
+	again := New(dataDir, TypeChunks)
 	t.Cleanup(func() { _ = again.packs.close() })
 	for _, id := range append(ids, lateID) {
 		if _, err := again.ReadInto(libraryID, id, nil); err != nil {
@@ -596,7 +596,7 @@ func TestARecoveredPackIsSealedByTheSweeper(t *testing.T) {
 
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
 
-	first := New(confPath, dataDir, TypeChunks)
+	first := New(dataDir, TypeChunks)
 	body := "left open by a kill"
 	id := idOf([]byte(body))
 	if err := first.WriteVerified(libraryID, id, strings.NewReader(body), true); err != nil {
@@ -608,7 +608,7 @@ func TestARecoveredPackIsSealedByTheSweeper(t *testing.T) {
 	first.packs.discard()
 	forgetPackStore(TypeDir(dataDir, TypeChunks))
 
-	second := New(confPath, dataDir, TypeChunks)
+	second := New(dataDir, TypeChunks)
 	t.Cleanup(func() { _ = second.packs.close() })
 	// A read, and only a read: it loads the library's packs and never writes.
 	if _, err := second.ReadInto(libraryID, id, nil); err != nil {

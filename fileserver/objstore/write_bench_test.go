@@ -22,7 +22,7 @@ func benchWrite(b *testing.B, verify bool) {
 	id := hex.EncodeToString(sum[:])
 
 	dataDir := filepath.Join(b.TempDir(), "storage-data")
-	s := New(confPath, dataDir, "chunks")
+	s := New(dataDir, "chunks")
 	b.Cleanup(func() { _ = Close() })
 
 	b.SetBytes(int64(len(data)))
