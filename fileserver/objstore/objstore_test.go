@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,121 +17,81 @@ const (
 	objID     = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 )
 
-// Set from os.MkdirTemp in TestMain (t.TempDir needs a *testing.T, which
-// TestMain has no access to) so this package's object store is its own and
-// does not collide with the other packages' tests when they run in parallel.
-// testFile lives under it too, rather than being written into the package dir.
-var confPath string
+// Set from os.MkdirTemp in TestMain, because t.TempDir needs a *testing.T and
+// TestMain has none. The tests in this package that do not build a store of
+// their own share this directory, each under its own object type, so that the
+// package's stores are its own and do not collide with the other packages'
+// tests when they run in parallel.
 var dataDir string
-var testFile string
-
-func createFile() error {
-	outputFile, err := os.OpenFile(testFile, os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = outputFile.Close() }()
-
-	outputString := "hello world!\n"
-	for i := 0; i < 10; i++ {
-		_, _ = outputFile.WriteString(outputString)
-	}
-
-	return nil
-}
-
-func delFile() error {
-	// testFile lives under confPath, so one RemoveAll covers both.
-	err := os.RemoveAll(confPath)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
 
 func TestMain(m *testing.M) {
-	var err error
-	confPath, err = os.MkdirTemp("", "silo-objstore-test")
+	root, err := os.MkdirTemp("", "silo-objstore-test")
 	if err != nil {
-		fmt.Printf("Failed to create test dir : %v\n", err)
+		fmt.Printf("no temp directory for the test store: %v\n", err)
 		os.Exit(1)
 	}
-	dataDir = filepath.Join(confPath, "storage-data")
-	testFile = filepath.Join(confPath, "output.data")
+	dataDir = filepath.Join(root, "storage-data")
 
-	err = createFile()
-	if err != nil {
-		fmt.Printf("Failed to create test file : %v\n", err)
-		os.Exit(1)
-	}
 	code := m.Run()
-	err = delFile()
-	if err != nil {
-		fmt.Printf("Failed to remove test file : %v\n", err)
-		os.Exit(1)
+
+	// Cleaned up here rather than in a defer, because os.Exit does not run
+	// them -- and reported rather than exited on, since a directory left in
+	// /tmp is not a reason to throw away the result of the run.
+	if err := os.RemoveAll(root); err != nil {
+		fmt.Printf("leaving %s behind: %v\n", root, err)
 	}
 	os.Exit(code)
 }
 
-func testWrite(t *testing.T) {
-	inputFile, err := os.Open(testFile)
-	if err != nil {
-		t.Errorf("Failed to open test file : %v\n", err)
-	}
-	defer func() { _ = inputFile.Close() }()
+// One object, written and then asked about every way this store can be asked.
+//
+// It replaces three functions that ran in sequence out of a fourth and shared a
+// file on disk between them. Neither of the two that mattered could fail on
+// what it was named for: the write discarded the error Write returned, and the
+// read opened that same input file for writing and copied the object over it,
+// comparing nothing. So a store that wrote nothing and read nothing back passed
+// all three. What is asserted here is the round trip -- the bytes back, the
+// size, and where on the disk they actually ended up.
+func TestAnObjectIsWrittenReadAndFoundAgain(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "storage-data")
+	s := New(dataDir, "commit")
 
-	bend := New(dataDir, "commit")
-	_ = bend.Write(libraryID, objID, inputFile, true)
-}
-
-func testRead(t *testing.T) {
-	outputFile, err := os.OpenFile(testFile, os.O_WRONLY, 0666)
-	if err != nil {
-		t.Errorf("Failed to open test file:%v\n", err)
-	}
-	defer func() { _ = outputFile.Close() }()
-
-	bend := New(dataDir, "commit")
-	err = bend.Read(libraryID, objID, outputFile)
-	if err != nil {
-		t.Errorf("Failed to read backend : %s\n", err)
-	}
-}
-
-func testExists(t *testing.T) {
-	bend := New(dataDir, "commit")
-	ret, _ := bend.Exists(libraryID, objID)
-	if !ret {
-		t.Errorf("File is not exist\n")
+	content := strings.Repeat("hello world!\n", 10)
+	if err := s.Write(libraryID, objID, strings.NewReader(content), true); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
 
-	// The object is 130 bytes; what holds it is a sealed frame around them.
-	// Both halves are asserted, because the pair is the invariant: the store
-	// answers about the object, and the disk holds the frame.
-	const objectSize = 130
-	if size, err := bend.Stat(libraryID, objID); err != nil || size != objectSize {
-		t.Errorf("Stat = (%d, %v), want (%d, nil)", size, err, objectSize)
+	var got strings.Builder
+	if err := s.Read(libraryID, objID, &got); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got.String() != content {
+		t.Errorf("Read gave %q, want the %d bytes written", got.String(), len(content))
 	}
 
-	// Since the cutover the frame is inside a pack rather than in a file of its
-	// own, so the disk is read through the pack. The loose path is asserted
-	// absent: a store that wrote both would be storing everything twice.
-	loose := path.Join(dataDir, "storage", "commit", libraryID, objID[:2], objID[2:])
+	exists, err := s.Exists(libraryID, objID)
+	if err != nil || !exists {
+		t.Errorf("Exists = (%v, %v), want (true, nil)", exists, err)
+	}
+	if size, err := s.Stat(libraryID, objID); err != nil || size != int64(len(content)) {
+		t.Errorf("Stat = (%d, %v), want (%d, nil)", size, err, len(content))
+	}
+
+	// The store answers about the object; the disk holds a sealed frame around
+	// it. Both halves are asserted, because the pair is the invariant.
+	//
+	// Since the cutover that frame lives inside a pack rather than in a file of
+	// its own, so the loose path is asserted absent: a store that wrote both
+	// would be storing everything twice.
+	loose := filepath.Join(LibraryDir(dataDir, "commit", libraryID), objID[:2], objID[2:])
 	if _, err := os.Stat(loose); !os.IsNotExist(err) {
 		t.Errorf("the object is also in a file of its own at %s", loose)
 	}
-	if _, e, ok, err := bend.packs.find(libraryID, objID); err != nil || !ok {
+	if _, e, ok, err := s.packs.find(libraryID, objID); err != nil || !ok {
 		t.Fatalf("the pack lookup does not hold the object: ok=%v err=%v", ok, err)
-	} else if e.Length != int64(objectSize+frameOverhead) {
-		t.Errorf("the frame in the pack is %d bytes, want %d", e.Length, objectSize+frameOverhead)
+	} else if e.Length != int64(len(content)+frameOverhead) {
+		t.Errorf("the frame in the pack is %d bytes, want %d", e.Length, len(content)+frameOverhead)
 	}
-}
-
-func TestObjStore(t *testing.T) {
-	testWrite(t)
-	testRead(t)
-	testExists(t)
 }
 
 // A zero-length object is the signature of a write that was published but
