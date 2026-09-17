@@ -629,7 +629,7 @@ func TestTheLooseWalkDoesNotSeePacks(t *testing.T) {
 	}
 
 	// And a pack beside it.
-	p, err := createPack(b.objDir, lib)
+	p, err := createPack(b.root, lib)
 	if err != nil {
 		t.Fatal(err)
 	}

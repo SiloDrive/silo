@@ -16,22 +16,23 @@ import (
 	"path/filepath"
 )
 
+// fsBackend holds one thing: the directory this object type's libraries sit
+// under. Every path it builds starts there, so it is derived once at open
+// rather than recomputed per call.
+//
+// It used to carry the object type as well, written at open and read by
+// nothing. TypeDir has already folded the type into root by the time the struct
+// exists, so the second copy could only ever disagree with the first.
 type fsBackend struct {
-	// Path of the object directory
-	objDir  string
-	objType string
+	root string
 }
 
 func newFSBackend(dataDir string, objType string) (*fsBackend, error) {
-	objDir := TypeDir(dataDir, objType)
-	err := os.MkdirAll(objDir, os.ModePerm)
-	if err != nil {
+	root := TypeDir(dataDir, objType)
+	if err := os.MkdirAll(root, os.ModePerm); err != nil {
 		return nil, err
 	}
-	backend := new(fsBackend)
-	backend.objDir = objDir
-	backend.objType = objType
-	return backend, nil
+	return &fsBackend{root: root}, nil
 }
 
 // packPath builds the on-disk path for a pack. Ids are fanned out as
@@ -41,11 +42,11 @@ func (b *fsBackend) packPath(libraryID string, packID string) (string, error) {
 	if !validPackID(packID) {
 		return "", fmt.Errorf("invalid object id %q", packID)
 	}
-	return path.Join(b.objDir, libraryID, packID[:2], packID[2:]), nil
+	return path.Join(b.root, libraryID, packID[:2], packID[2:]), nil
 }
 
 func (b *fsBackend) libraryPath(libraryID string) string {
-	return path.Join(b.objDir, libraryID)
+	return path.Join(b.root, libraryID)
 }
 
 // notFound maps the filesystem's absence to the seam's, leaving every other
@@ -69,8 +70,10 @@ func (b *fsBackend) read(libraryID string, packID string, w io.Writer) error {
 	}
 	defer func() { _ = fd.Close() }()
 
-	_, err = io.Copy(w, fd)
-	return err
+	if _, err := io.Copy(w, fd); err != nil {
+		return err
+	}
+	return nil
 }
 
 // readAt reads one byte range out of a pack.
@@ -138,15 +141,24 @@ func (b *fsBackend) write(libraryID string, packID string, r io.Reader, sync boo
 	if err != nil {
 		return err
 	}
-	success := false
+	// Cleaned up unless the rename below has published it, which is tracked by
+	// clearing the name rather than by a "did it work" flag.
+	//
+	// The difference matters, and is not only about spelling. The flag was set
+	// after the directory sync, so a sync failure ran the cleanup — but by then
+	// the rename had already happened and the temp name was free, and CreateTemp
+	// is entitled to hand that same name to the next writer. The cleanup would
+	// then have deleted a file belonging to somebody else's in-flight write. It
+	// is a narrow race and not one that can be provoked on demand, which is why
+	// it is described here rather than pinned by a test.
+	tmpName := tFile.Name()
 	defer func() {
-		if !success {
-			_ = os.Remove(tFile.Name())
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
 		}
 	}()
 
-	_, err = io.Copy(tFile, r)
-	if err != nil {
+	if _, err := io.Copy(tFile, r); err != nil {
 		_ = tFile.Close()
 		return err
 	}
@@ -158,15 +170,13 @@ func (b *fsBackend) write(libraryID string, packID string, r io.Reader, sync boo
 		}
 	}
 
-	err = tFile.Close()
-	if err != nil {
+	if err := tFile.Close(); err != nil {
 		return err
 	}
-
-	err = os.Rename(tFile.Name(), p)
-	if err != nil {
+	if err := os.Rename(tmpName, p); err != nil {
 		return err
 	}
+	tmpName = ""
 
 	if sync {
 		// Until the directory itself is synced the rename can be lost, which
@@ -176,8 +186,6 @@ func (b *fsBackend) write(libraryID string, packID string, r io.Reader, sync boo
 			return err
 		}
 	}
-
-	success = true
 	return nil
 }
 
@@ -202,7 +210,7 @@ func (b *fsBackend) mkObjDirs(parentDir string, sync bool) error {
 		return err
 	}
 	if newLibraryDir {
-		if err := syncDir(b.objDir); err != nil {
+		if err := syncDir(b.root); err != nil {
 			return err
 		}
 	}
