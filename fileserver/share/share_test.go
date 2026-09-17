@@ -103,8 +103,8 @@ func TestGetDirPermWalksUpToTheNearestAncestor(t *testing.T) {
 		{"/elsewhere/x", ""},               // no shared ancestor at all
 	}
 	for _, c := range cases {
-		if got := getDirPerm(perms, c.path); got != c.want {
-			t.Errorf("getDirPerm(%q) = %q, want %q", c.path, got, c.want)
+		if got := nearestGrant(perms, c.path); got != c.want {
+			t.Errorf("nearestGrant(%q) = %q, want %q", c.path, got, c.want)
 		}
 	}
 }

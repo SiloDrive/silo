@@ -26,39 +26,41 @@ func Init(readDB, siloWriteDB *sql.DB) {
 	writeDB = siloWriteDB
 }
 
-// CheckPerm get user's library permission
+// CheckPerm answers what a user may do in a library: "rw", "r", or "" for
+// nothing at all.
+//
+// A virtual library -- the entity a shared subfolder gets its own id from -- is
+// answered against the library it was cut out of, since that is where both the
+// ownership and the grants actually live. A lookup that fails leaves vInfo nil
+// and the library is treated as an ordinary one, which is the conservative
+// reading: it asks about grants on the id in hand rather than inheriting an
+// origin's.
 func CheckPerm(libraryID string, user account.ID) string {
-	var perm string
 	vInfo, err := libmgr.GetVirtualLibraryInfo(libraryID)
 	if err != nil {
 		log.Errorf("Failed to get virtual library info by library id %s: %v", libraryID, err)
 	}
 	if vInfo != nil {
-		perm = checkVirtualLibraryPerm(libraryID, vInfo.OriginLibraryID, user, vInfo.Path)
-		return perm
+		return checkVirtualLibraryPerm(vInfo.OriginLibraryID, user, vInfo.Path)
 	}
-
-	perm = checkLibrarySharePerm(libraryID, user)
-
-	return perm
+	return checkLibrarySharePerm(libraryID, user)
 }
 
-func checkVirtualLibraryPerm(libraryID, originLibraryID string, user account.ID, vPath string) string {
+// checkVirtualLibraryPerm answers for a subfolder share, in the order the
+// answers get weaker: the origin's owner may do anything, then a grant on a
+// folder at or above this one, then a grant on the origin library as a whole.
+func checkVirtualLibraryPerm(originLibraryID string, user account.ID, vPath string) string {
 	owner, err := libmgr.GetLibraryOwner(originLibraryID)
 	if err != nil {
 		log.Errorf("Failed to get library owner: %v", err)
 	}
-	var perm string
 	if !owner.IsZero() && owner == user {
-		perm = "rw"
+		return "rw"
+	}
+	if perm := checkPermOnParentLibrary(originLibraryID, user, vPath); perm != "" {
 		return perm
 	}
-	perm = checkPermOnParentLibrary(originLibraryID, user, vPath)
-	if perm != "" {
-		return perm
-	}
-	perm = checkLibrarySharePerm(originLibraryID, user)
-	return perm
+	return checkLibrarySharePerm(originLibraryID, user)
 }
 
 func checkLibrarySharePerm(libraryID string, user account.ID) string {
@@ -133,31 +135,35 @@ func grantedDirs(ctx context.Context, originLibraryID string, principals []Princ
 	return dirs, nil
 }
 
-// checkPermOnParentLibrary answers for a path inside a library, by finding the
-// nearest shared folder above it.
+// nearestGrant walks up from a path to the closest folder that was shared,
+// because a share on a folder reaches everything beneath it. It answers "" when
+// no folder on the way up was shared.
 //
-// The precedence is the same one permFor applies to a whole library, and for
-// the same reason: a grant naming you is a decision about you, and one naming a
-// group you belong to is not. Kept as two lookups rather than one because the
-// answer is a nearest-ancestor walk per principal kind, not a strongest-wins
-// over a set -- a folder shared to you directly must answer even when a
-// shallower folder was shared to a group you are in.
-// getDirPerm walks up from a path to the nearest folder that was shared,
-// because a share on a folder reaches everything under it.
+// The three values it stops on are the fixed points filepath.Dir converges to:
+// "/" from an absolute path, "." from a relative one, and "" only if it is
+// handed "" to begin with. Reaching one of them means the walk is at the top
+// with nothing found -- and the library root is deliberately not consulted
+// here, because a grant on the whole library is permFor's question and is asked
+// separately.
 //
-// If the path is empty, filepath.Dir returns "."; if it is all separators, it
-// returns a single separator. Both terminate the loop.
-func getDirPerm(perms map[string]string, path string) string {
-	tmp := path
-	for tmp != "/" && tmp != "." && tmp != "" {
-		if perm, exists := perms[tmp]; exists {
+// The map may hold a folder shared to any of the principals asked about, so the
+// answer is the nearest ancestor's permission and not the strongest one found
+// on the way. That is the right reading while a principal stands for exactly
+// one account: a folder shared to you more specifically is a later decision
+// than one shared further up. It is worth revisiting if a principal ever stands
+// for a set of accounts, since "shared to a group above" and "shared to you
+// below" would then be two different kinds of claim on the same path.
+func nearestGrant(perms map[string]string, path string) string {
+	for dir := path; dir != "/" && dir != "." && dir != ""; dir = filepath.Dir(dir) {
+		if perm, ok := perms[dir]; ok {
 			return perm
 		}
-		tmp = filepath.Dir(tmp)
 	}
 	return ""
 }
 
+// checkPermOnParentLibrary answers for a path inside a library by finding the
+// nearest shared folder at or above it.
 func checkPermOnParentLibrary(originLibraryID string, user account.ID, vPath string) string {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
@@ -167,5 +173,5 @@ func checkPermOnParentLibrary(originLibraryID string, user account.ID, vPath str
 		log.Errorf("Failed to get shared folders in %.8s for user %s: %v", originLibraryID, user, err)
 		return ""
 	}
-	return getDirPerm(dirs, vPath)
+	return nearestGrant(dirs, vPath)
 }
