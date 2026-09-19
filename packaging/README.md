@@ -1,0 +1,142 @@
+# Packaging
+
+The `.deb` and `.rpm`, the systemd unit, and what an installed Silo looks like.
+
+Everything here is built from the release binaries `.github/workflows/build.yml`
+already produces. There is no second compile: `nfpm` takes a finished
+`silo` binary and wraps it, so a packaging change cannot change the program.
+
+Other distribution channels live elsewhere — Homebrew in `dkam/homebrew-silo`,
+the AUR in its own repository. This directory owns the Debian and RPM side and
+the service definition; `install.sh` at the repository root owns the
+binary-only install.
+
+## What the package installs
+
+| Path | What it is |
+|---|---|
+| `/usr/bin/silo` | the binary |
+| `/usr/lib/systemd/system/silo.service` | the unit, **disabled by default** |
+| `/etc/silo/silo.conf` | every setting, commented out at its default |
+| `/etc/silo/silo.env` | environment overrides and secrets, mode `0600` |
+| `/var/lib/silo` | the data directory, created by systemd at first start |
+| `/usr/share/doc/silo/` | `LICENSE.txt`, `README.md`, `NOTICE` |
+
+Both files under `/etc/silo` are `config|noreplace`, so an upgrade never
+overwrites an edited one: dpkg prompts, rpm writes the new version alongside as
+`.rpmnew`.
+
+The package creates a `silo` system user and group before the files land. It
+does **not** remove them on uninstall, and does not touch `/var/lib/silo` —
+removing a package must not remove the data it was serving, and recycling the
+uid would hand those files to whoever gets the number next.
+
+## Why it is not enabled on install
+
+A fresh Silo has no accounts. It is claimed with a setup token generated on the
+host, and `docs/deployment.md` asks that the token be claimed *before* the port
+opens. A package that started the service on install would invert that order on
+every machine it touched.
+
+So installing prints the three steps instead:
+
+```sh
+sudo systemctl enable --now silo
+sudo -u silo silo -d /var/lib/silo setup-token
+```
+
+`try-restart` on upgrade, not `restart`: an operator who deliberately stopped
+the service gets it left stopped.
+
+## The unit
+
+`packaging/systemd/silo.service`, and three parts of it are load-bearing rather
+than decorative.
+
+**`TimeoutStopSec=120`.** `SIGTERM` drains the HTTP server for up to 30
+seconds, *then* seals any open packs, *then* checkpoints the SQLite WAL
+(`fileserver/server.go`, `handleSignals`). Sealing writes files the store must
+be able to describe afterwards. systemd's default 90-second `SIGKILL` can land
+in the middle of that; 120 leaves room for the drain plus a large seal.
+
+**`Environment=SILO_DATA_DIR=/var/lib/silo`, not `ExecStart=… -d …`.** Silo's
+own precedence is flags → environment → `silo.conf` → compiled defaults, and
+the unit reproduces it. `-d` is a flag and would beat anything the operator
+wrote in `silo.env`, so the data directory is set as an environment variable
+that appears *before* `EnvironmentFile=` — systemd applies the two in file
+order, so the env file still wins. Overriding it means granting the new path
+too, because `ProtectSystem=strict` makes everything outside `StateDirectory=`
+read-only:
+
+```sh
+sudo systemctl edit silo
+```
+```ini
+[Service]
+ReadWritePaths=/srv/silo
+```
+
+**`-C /etc/silo/silo.conf` is safe when the file is absent.** The loader stats
+the path and falls through to the compiled defaults if it is missing. A file
+that exists and cannot be *parsed* is fatal, and the service will not start —
+so validate a change against a copy before restarting:
+
+```sh
+silo serve -C /tmp/silo.conf.new -d /tmp/throwaway
+```
+
+The unit does not ship a logrotate config. Logs go to the journal, and Silo's
+`SIGUSR1` rotation only applies to `-l` file logging, which the unit does not
+use.
+
+## Building locally
+
+Needs [nfpm](https://nfpm.goreleaser.com/) — `go install
+github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0`, the version CI pins.
+
+```sh
+mkdir -p packaging/.staged
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o packaging/.staged/silo ./cmd/silo
+chmod 0755 packaging/.staged/silo
+
+ARCH=amd64 VERSION=0.0.0-dev nfpm pkg -f packaging/nfpm.yaml -p deb -t /tmp/
+ARCH=amd64 VERSION=0.0.0-dev nfpm pkg -f packaging/nfpm.yaml -p rpm -t /tmp/
+```
+
+**The binary is staged, not passed in.** nfpm expands `${...}` in most fields
+but treats `contents[].src` as a glob and leaves it alone, so a `${BIN}` there
+fails with `Glob failed: ${BIN}` rather than with anything that points at the
+cause. `packaging/.staged/silo` is the fixed path `nfpm.yaml` names; it is
+gitignored, and the caller puts the right architecture there before each run.
+
+`VERSION` must not carry a leading `v`; neither dpkg nor rpm accepts one. CI
+strips it from the tag. nfpm also rewrites a prerelease the Debian way, so
+`0.0.0-dev` comes out as `0.0.0~dev` in the filename — a plain `0.5.1` is
+untouched.
+
+Inspect what you built without installing it:
+
+```sh
+dpkg -c /tmp/silo_0.0.0~dev_amd64.deb
+rpm -qlp /tmp/silo-0.0.0~dev-1.x86_64.rpm
+```
+
+On a machine with no `dpkg`, the deb is an `ar` archive:
+
+```sh
+ar x silo_0.0.0~dev_amd64.deb && zstd -dc data.tar.zst | tar -tv
+```
+
+## In CI
+
+The `packages` job in `build.yml` runs after `build`, downloads the two Linux
+tarballs, and produces four packages (deb and rpm × amd64 and arm64) plus a
+`.sha256` for each. It runs on manual dispatch as well as on a tag, so a
+packaging mistake surfaces before the tag rather than during the release.
+
+It also installs the `.deb` on the runner and removes it again. That is the
+only thing that proves the maintainer scripts actually parse, the paths are
+right and `/etc/silo/silo.env` really landed at `0600`. The runner has no
+systemd, so every `systemctl` call falls through the `-d /run/systemd/system`
+guard — which is worth exercising too, since that is the path a container
+install takes.

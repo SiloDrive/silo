@@ -1,0 +1,91 @@
+# nfpm config for the silo .deb and .rpm. Templated by the environment:
+#   ARCH     nfpm arch (amd64 | arm64); maps to deb amd64/arm64 and
+#            rpm x86_64/aarch64 on its own
+#   VERSION  package version with no leading v, e.g. 0.5.1
+#
+# The binary is NOT passed by variable. nfpm expands ${...} in most fields but
+# treats contents[].src as a glob and leaves it alone, so a ${BIN} there fails
+# with "Glob failed: ${BIN}". Stage the binary for the target arch at the fixed
+# path below instead:
+#
+#   install -Dm0755 ./dist/silo-linux-amd64 packaging/.staged/silo
+#   ARCH=amd64 VERSION=0.5.1 nfpm pkg -f packaging/nfpm.yaml -p deb -t dist/
+#
+# Both packages are built from the release binaries the build workflow already
+# produces, so there is no second compile and no toolchain in the packaging
+# path. Signing happens after the fact, so this file stays usable locally with
+# no keys.
+name: silo
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Dan Milne <d@nmilne.com>
+description: |
+  A single-binary Go file sync server.
+  Silo speaks HTTP directly and talks directly to its own embedded SQLite
+  database -- no daemon to supervise, no web application beside it. Content
+  defined chunking, SHA-256 content addressing, and per-library end-to-end
+  encryption.
+vendor: Silo
+homepage: https://github.com/dkam/silo
+license: AGPL-3.0
+
+contents:
+  # Staged by the caller; see the header. One path, whatever the arch.
+  - src: ./packaging/.staged/silo
+    dst: /usr/bin/silo
+    file_info:
+      mode: 0755
+
+  # /usr/lib, not /lib: on a usr-merged RPM distro /lib is a symlink owned by
+  # the filesystem package, and shipping a real file underneath it is a
+  # conflict. /usr/lib/systemd/system has always been in systemd's unit search
+  # path, so this is also correct on a pre-merge Debian.
+  - src: ./packaging/systemd/silo.service
+    dst: /usr/lib/systemd/system/silo.service
+    file_info:
+      mode: 0644
+
+  # noreplace on both: an upgrade must never overwrite an edited config. dpkg
+  # prompts, rpm writes the new one alongside as .rpmnew.
+  - src: ./packaging/silo.conf
+    dst: /etc/silo/silo.conf
+    type: "config|noreplace"
+    file_info:
+      mode: 0644
+
+  # 0600 because this is where the Sentry DSN and any other secret goes.
+  # systemd reads it as root before dropping to the silo user, so the service
+  # does not need to be able to read it itself.
+  - src: ./packaging/silo.env.example
+    dst: /etc/silo/silo.env
+    type: "config|noreplace"
+    file_info:
+      mode: 0600
+
+  - src: ./LICENSE.txt
+    dst: /usr/share/doc/silo/LICENSE.txt
+    file_info:
+      mode: 0644
+  - src: ./README.md
+    dst: /usr/share/doc/silo/README.md
+    file_info:
+      mode: 0644
+  - src: ./NOTICE
+    dst: /usr/share/doc/silo/NOTICE
+    file_info:
+      mode: 0644
+
+scripts:
+  preinstall: ./packaging/scripts/preinstall.sh
+  postinstall: ./packaging/scripts/postinstall.sh
+  preremove: ./packaging/scripts/preremove.sh
+  postremove: ./packaging/scripts/postremove.sh
+
+deb:
+  compression: zstd
+
+rpm:
+  compression: zstd
