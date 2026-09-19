@@ -69,11 +69,12 @@ normalise() {
 # file in order to word it differently, which is not what clearing the lineage
 # means. The exemption is the eyeballing, recorded.
 #
-# LICENSE.txt is the AGPL, and the AGPL is meant to be reproduced word for word
-# — a diff against upstream's copy of it will always be nearly empty and that is
-# correct. What matters in that file is the header above the licence text, where
-# upstream put a linking exception granted in its own name; the name check below
-# is what covers it.
+# LICENSE.txt is the AGPL, and the AGPL is meant to be reproduced word for word,
+# so a line it shares with upstream is the Free Software Foundation's sentence
+# rather than anybody's code. What used to matter in that file was the header
+# above the licence text, where upstream granted a linking exception in its own
+# name; that header is now a statement of Silo's copyright, and the text below it
+# was fetched from gnu.org rather than inherited.
 #
 # .github/workflows/golangci-lint.yml and .gitignore share only the lines the
 # tools dictate: `runs-on: ubuntu-latest`, `- uses: actions/checkout@v4`,

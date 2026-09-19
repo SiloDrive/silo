@@ -1,17 +1,55 @@
 Silo
-Copyright 2026 Dan Milne and contributors
-Licensed under AGPLv3 (see LICENSE.txt)
+Copyright (C) 2026 Dan Milne and contributors
+Licensed under the GNU Affero General Public License, version 3
+(see LICENSE.txt)
 
-This project began as a fork of Seafile Server
+
+Origin
+------
+
+Silo began on 11 April 2026 as a fork of Seafile Server
 (https://github.com/haiwen/seafile-server), originally developed by
-Seafile Ltd., and parts of the Go server descend from it. The AGPL
-requires that attribution be preserved, which is why this paragraph and
-the additional permission in LICENSE.txt are kept verbatim.
+Seafile Ltd. and licensed under the AGPL.
 
-Nothing else of the upstream project survives. The C daemon, the Python
-web layer, the sync protocol and the on-disk object format have all been
-replaced; Silo is a single Go binary speaking its own HTTP API over its
-own store format, and no upstream client can talk to it.
+Nothing of that codebase remains in a form its authors would recognise.
+The C daemon, the Python web layer, the sync protocol and the on-disk
+object format have all been replaced. Silo is a single Go binary speaking
+its own HTTP API over its own store format, and no upstream client can
+talk to it.
+
+That claim is measured rather than asserted. scripts/lineage-check.sh
+reports every line still shared with the fork point, and each one is a
+line with a single correct spelling -- `package objstore`, `import (`,
+`if err != nil {` -- dictated by Go or by a library's API. As of
+September 2026 it finds ninety such lines across seven files. Run the
+script to see the number for the commit in front of you.
+
+This notice is a courtesy, not an obligation. Silo is under the AGPL
+because that is the licence it was forked under and the licence its
+author chose to keep -- not because upstream code survives to require it.
+
+
+What was removed from the inherited licence
+-------------------------------------------
+
+Seafile's LICENSE file carried an additional permission, granted in
+Seafile Ltd.'s name, to link the covered work with OpenSSL. Silo cannot
+make a grant on Seafile Ltd.'s behalf, and has no use for one: it is pure
+Go, links no OpenSSL, and reaches TLS through crypto/tls. Section 7 of
+the AGPL expressly allows an additional permission to be removed from a
+copy when that copy is conveyed, so it has been. Anyone who wants that
+permission for upstream's code can take it from upstream's copy, where it
+still stands.
+
+The same file placed a python directory under Apache License 2.0. Silo
+has no python directory.
+
+LICENSE.txt is now the Free Software Foundation's text, unmodified, under
+a statement of Silo's own copyright.
+
+
+Trademark
+---------
 
 The Seafile name and logo are trademarks of Seafile Ltd. Silo does not
 use them and is not affiliated with or endorsed by Seafile Ltd.

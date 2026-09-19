@@ -462,6 +462,8 @@ both have since been replaced by Silo's own (see
 [`docs/target.md`](docs/target.md)), and the database schema diverged early and
 was never part of that promise.
 
-Licensed under **AGPLv3**, inherited from the upstream project. [`NOTICE`](NOTICE)
-names it, as the licence requires; [`LICENSE.txt`](LICENSE.txt) has the full
-text and the additional permission that travels with it.
+Licensed under **AGPLv3** — the licence it was forked under, and the one it
+keeps. [`LICENSE.txt`](LICENSE.txt) is the FSF's text unmodified, with no
+additional permissions and no exceptions; the upstream project's OpenSSL
+exception was removed once no code needing it remained. [`NOTICE`](NOTICE) names
+the origin as a courtesy and says what `scripts/lineage-check.sh` measures.
