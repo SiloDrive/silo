@@ -29,13 +29,12 @@ jobs:
         # with the same library ID, so parallel package execution races. Proper
         # fix is t.TempDir() in those tests.
         run: go test -p 1 ./...
-      # A release is the one build that must not ship a known-reachable
-      # advisory, whatever the weekly scan last said. See vuln.yml for the
-      # scan that runs without a commit to prompt it.
       - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          "$(go env GOPATH)/bin/govulncheck" ./...
+        # The pinned tool dependency, not a separate install: `make vuln` runs
+        # the same thing locally. This job only fires on a tag push or a manual
+        # dispatch, so it is the gate on a release rather than the one on a
+        # commit -- `make check` is that. See silo#74.
+        run: go tool govulncheck ./...
 
   build:
     needs: test
@@ -70,9 +69,14 @@ jobs:
         run: |
           mkdir -p dist
           out="dist/silo-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}"
-          go build -trimpath \
-            -ldflags "-s -w -X main.Version=${{ steps.version.outputs.version }}" \
-            -o "$out" ./cmd/silo
+          # The flags live in the Makefile, not here: `make build` is what a
+          # developer runs to produce a deployable binary, and a release that
+          # built it differently would not be testing the same thing.
+          make build \
+            GOOS=${{ matrix.goos }} \
+            GOARCH=${{ matrix.goarch }} \
+            VERSION=${{ steps.version.outputs.version }} \
+            OUT="$out"
           # Run the binary only on matching host
           if [ "${{ matrix.goos }}" = "linux" ] && [ "${{ matrix.goarch }}" = "amd64" ]; then
             "$out" version
