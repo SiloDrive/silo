@@ -6,7 +6,9 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/dkam/silo/fileserver" // package silod
 	"github.com/dkam/silo/fileserver/option"
@@ -109,11 +111,12 @@ func main() {
 			os.Exit(1)
 		}
 	case "tui":
-		url := serverURL()
-		if len(rest) > 0 && rest[0] != "" {
-			url = rest[0]
+		target, err := tuiURL(rest, serverURL())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
 		}
-		if err := tui.Run(url, email(), password()); err != nil {
+		if err := tui.Run(target, email(), password()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -127,6 +130,60 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// tuiURL resolves the server `silo tui` will talk to, from its one optional
+// positional and the environment behind it.
+//
+// It refuses anything that is not an http or https URL, because the mistake it
+// is answering is not a typo. `silo tui` is the only subcommand that names a
+// deployment by URL; every other one names it by data directory, with -d. So
+// `silo tui -d share02` is a reasonable thing to type, and it used to be taken
+// as a request to connect to a host called "-d" — which failed later, in the
+// network layer, describing a server that was never contacted. A path, a bare
+// host and a scheme the client cannot speak all fail the same way.
+//
+// The URL is returned as written rather than as url.String() renders it: a
+// redirect or a certificate can turn on a trailing slash, and the operator's
+// spelling is the one they can reason about.
+func tuiURL(rest []string, fallback string) (string, error) {
+	// An unset positional and an empty one mean the same thing, which is that
+	// the environment or the default decides.
+	if len(rest) == 0 || (len(rest) == 1 && rest[0] == "") {
+		return fallback, nil
+	}
+	// The flag check runs before the arity check, and over every argument
+	// rather than the first. `silo tui -d share02` is two arguments, so an
+	// arity complaint is what it would earn, and "takes one server URL" is the
+	// least useful of the three things that could be said to somebody who has
+	// just typed the flag every other subcommand takes.
+	for _, arg := range rest {
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return "", fmt.Errorf("silo tui takes no flags, and %q is one.\n"+
+			"It is a client, so it names the server by URL rather than the data directory by path:\n"+
+			"    silo tui https://silo.example.com\n"+
+			"-d is how the host-side subcommands name a data directory, as in:\n"+
+			"    silo user -d <dir> passwd <email>", arg)
+	}
+
+	if len(rest) > 1 {
+		return "", fmt.Errorf("silo tui takes one server URL, and got %d arguments: %s",
+			len(rest), strings.Join(rest, " "))
+	}
+	arg := rest[0]
+
+	// url.Parse accepts almost anything, so the scheme and the host are what
+	// get checked. Parse lowercases the scheme, which is what RFC 3986 says it
+	// means, so HTTPS:// is the same request as https://.
+	u, err := url.Parse(arg)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("silo tui needs a server URL beginning with http:// or https://, and got %q.\n"+
+			"If that is a data directory, the command that reads one is the host-side CLI, as in:\n"+
+			"    silo user -d %s list", arg, arg)
+	}
+	return arg, nil
 }
 
 func serverURL() string {
