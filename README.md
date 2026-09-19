@@ -93,6 +93,22 @@ sudo -u silo silo -d /var/lib/silo setup-token
 
 Details, and what the unit is doing: [packaging/README.md](packaging/README.md).
 
+### Arch Linux
+
+[`silo-bin`](https://aur.archlinux.org/packages/silo-bin) is in the AUR, built
+from the published release tarball rather than from source:
+
+```bash
+yay -S silo-bin
+```
+
+It installs a **user** unit rather than a system one, so it runs as you and
+reads `~/.config/silo/env` — the single-user case the deb and rpm do not cover:
+
+```bash
+systemctl --user enable --now silo
+```
+
 ### Install script
 
 For a binary and nothing else, on macOS or Linux:
