@@ -1,0 +1,90 @@
+[Unit]
+Description=Silo file sync server
+Documentation=https://github.com/dkam/silo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=silo
+Group=silo
+
+# The data directory. systemd creates /var/lib/silo, owns it as the service
+# user, and keeps it writable under ProtectSystem=strict below. It holds
+# silo.db, storage/ and silo.lock, so 0700: nothing outside the service has
+# business reading it.
+StateDirectory=silo
+StateDirectoryMode=0700
+
+# Silo's own precedence is flags > environment > silo.conf > compiled defaults,
+# and this reproduces it. SILO_DATA_DIR is set here rather than passed as -d so
+# that silo.env below can still override it -- systemd applies Environment= and
+# EnvironmentFile= in the order they appear, so a later file wins. Passing -d
+# would make the env file silently ineffective, which is the confusing way
+# round.
+Environment=SILO_DATA_DIR=/var/lib/silo
+
+# Secrets and any other SILO_* overrides (SILO_SENTRY_DSN,
+# SILO_TRUST_PROXY_HEADERS, ...). systemd reads this as root before dropping
+# privileges, so the file stays root-only (installed mode 0600). Leading '-':
+# every variable Silo reads has a default, so a missing file is not an error.
+EnvironmentFile=-/etc/silo/silo.env
+
+# A missing -C file is ignored and the compiled defaults stand, so this is safe
+# even if the config is deleted. An unparseable one is fatal by design -- see
+# packaging/README.md.
+ExecStart=/usr/bin/silo serve -C /etc/silo/silo.conf
+
+Restart=on-failure
+RestartSec=5s
+
+# SIGTERM drains the HTTP server for up to 30s, then seals any open packs, then
+# checkpoints the SQLite WAL (fileserver/server.go handleSignals). Sealing
+# writes files the store must be able to describe afterwards, so the default
+# 90s SIGKILL can land in the middle of it. 120s leaves room for the drain plus
+# a large seal.
+TimeoutStopSec=120
+
+# Silo binds 127.0.0.1:8082 by default and expects a TLS reverse proxy in front
+# (docs/deployment.md). This only matters if you move it below port 1024.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Go raises RLIMIT_NOFILE to the hard limit on its own, but WebSocket
+# notification clients hold a descriptor each for as long as they are
+# connected, so say the number rather than inherit whatever the distro set.
+LimitNOFILE=65536
+
+# Hardening. ProtectSystem=strict makes the whole filesystem read-only except
+# StateDirectory above. If you point SILO_DATA_DIR somewhere else, grant it
+# with a drop-in -- `systemctl edit silo` -- containing:
+#   [Service]
+#   ReadWritePaths=/your/path
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# AF_UNIX is needed for journald, not by Silo itself.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Logs go to the journal. Silo's SIGUSR1 log rotation is for -l file logging
+# and is not wanted here; use journald's own retention instead.
+
+[Install]
+WantedBy=multi-user.target

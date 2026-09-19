@@ -22,3 +22,6 @@ __pycache__/
 
 # Books, and anything else that wandered in
 *.epub
+
+# Staging directory for nfpm; see packaging/README.md.
+packaging/.staged/
