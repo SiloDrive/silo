@@ -317,3 +317,33 @@ func TestTheObjectBufferCeilingIsNotActuallyConfigurable(t *testing.T) {
 		t.Errorf("MaxBufferedObjectBytes = %d; if this is now settable, the comment and the docs need to say how", MaxBufferedObjectBytes)
 	}
 }
+
+// An empty host is not "listen everywhere", but that is what it did.
+//
+// `host =` with nothing after it is a line somebody wrote and then emptied, or
+// a template that interpolated to nothing. It set Host to "", which makes the
+// listen address ":8082", which is every interface on the machine -- so the
+// least deliberate thing an operator can type produced the least conservative
+// binding, and did it silently. A key that is present and empty says nothing
+// about where to listen, so the compiled default stands.
+func TestAnEmptyHostDoesNotPublishTheServerToEveryInterface(t *testing.T) {
+	LoadFileServerOptions(writeConfig(t, "[fileserver]\nhost =\n"))
+
+	if Host != "127.0.0.1" {
+		t.Errorf("host = %q for an empty [fileserver] host, want the loopback default kept", Host)
+	}
+}
+
+// A port that does not fit the field is refused, not truncated.
+//
+// Port is a uint32 and the value was read as a platform uint, so on a 64-bit
+// build `port = 4294967297` parsed happily and then narrowed to 1 -- a
+// privileged port, arrived at by arithmetic, from a line that said nothing of
+// the sort. Anything that cannot be a port keeps the default.
+func TestAPortTooLargeForTheFieldIsRefusedRatherThanTruncated(t *testing.T) {
+	LoadFileServerOptions(writeConfig(t, "[fileserver]\nport = 4294967297\n"))
+
+	if Port != 8082 {
+		t.Errorf("port = 4294967297 gave Port = %d, want the 8082 default kept", Port)
+	}
+}

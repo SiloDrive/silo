@@ -333,7 +333,7 @@ func rowExists(ctx context.Context, query, arg string) (bool, error) {
 func stores() []*objstore.ObjectStore {
 	out := make([]*objstore.ObjectStore, 0, len(objstore.Types))
 	for _, objType := range objstore.Types {
-		out = append(out, objstore.New("", absDataDir, objType))
+		out = append(out, objstore.New(absDataDir, objType))
 	}
 	return out
 }

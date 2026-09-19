@@ -161,7 +161,11 @@ func fromSection[T any](section *ini.Section, name string, def T, parse func(str
 	}
 	v, err := parse(key.String())
 	if err != nil {
-		log.Warnf("[storage] %s = %q: %v; keeping %v", name, key.String(), err, def)
+		// The section names itself, rather than this saying "[storage]": the
+		// same helper now reads [fileserver] and [httpserver], and a warning
+		// that named the wrong section would send an operator to edit a part of
+		// the file that has nothing in it.
+		log.Warnf("[%s] %s = %q: %v; keeping %v", section.Name(), name, key.String(), err, def)
 		return def
 	}
 	return v

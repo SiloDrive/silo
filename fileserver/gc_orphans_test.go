@@ -258,7 +258,7 @@ func TestSweepBumpsTheGCGenerationBeforeMarking(t *testing.T) {
 // the question Exists answers either way.
 func objectOnDisk(t *testing.T, objType, libraryID, objID string) bool {
 	t.Helper()
-	exists, err := objstore.New("", absDataDir, objType).Exists(libraryID, objID)
+	exists, err := objstore.New(absDataDir, objType).Exists(libraryID, objID)
 	if err != nil {
 		t.Fatalf("asking the %s store about %s: %v", objType, objID, err)
 	}

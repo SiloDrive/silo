@@ -397,7 +397,7 @@ func TestExpireDoesNotReportCommitsItCouldNotRemove(t *testing.T) {
 	// And they really are still readable, which is why claiming otherwise
 	// matters: this is live data, not a bookkeeping detail.
 	for _, id := range ids[:2] {
-		if _, err := objstore.New("", absDataDir, objstore.TypeObjects).
+		if _, err := objstore.New(absDataDir, objstore.TypeObjects).
 			ReadInto(libraryID, id, nil); err != nil {
 			t.Errorf("commit %s is not readable after a supposedly failed expiry: %v", id, err)
 		}

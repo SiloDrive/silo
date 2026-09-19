@@ -19,7 +19,7 @@ import (
 func packedStore(t *testing.T, objType string, bodies []string, seal bool) (store *ObjectStore, ids []string, dataDir string) {
 	t.Helper()
 	dataDir = filepath.Join(t.TempDir(), "storage-data")
-	first := New(confPath, dataDir, objType)
+	first := New(dataDir, objType)
 	if err := first.ready(); err != nil {
 		t.Fatalf("opening a store: %v", err)
 	}
@@ -41,7 +41,7 @@ func packedStore(t *testing.T, objType string, bodies []string, seal bool) (stor
 		}
 	}
 
-	return New(confPath, dataDir, objType), ids, dataDir
+	return New(dataDir, objType), ids, dataDir
 }
 
 // The assertion step 3 exists for: every read verb answers out of a pack, with
@@ -115,7 +115,7 @@ func TestEveryReadVerbIsServedFromAPack(t *testing.T) {
 // rather than pass by luck.
 func TestAPackIsAskedBeforeTheLooseStore(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	first := New(confPath, dataDir, TypeChunks)
+	first := New(dataDir, TypeChunks)
 	body := "this object exists in both places at once"
 
 	id := idOf([]byte(body))
@@ -144,7 +144,7 @@ func TestAPackIsAskedBeforeTheLooseStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 	got, err := s.ReadInto(libraryID, id, nil)
 	if err != nil {
 		t.Fatalf("reading an object that is in a pack and loose: %v", err)
@@ -159,7 +159,7 @@ func TestAPackIsAskedBeforeTheLooseStore(t *testing.T) {
 // beside a working store rather than in place of one.
 func TestALooseStoreIsUnaffectedByThePackLayer(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 	body := "no pack has ever been written here"
 	id := idOf([]byte(body))
 
@@ -364,7 +364,7 @@ func TestListReportsPackedObjects(t *testing.T) {
 // deciding to reclaim.
 func TestListReportsAnObjectInBothPlacesOnce(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	first := New(confPath, dataDir, TypeChunks)
+	first := New(dataDir, TypeChunks)
 	body := "mid-ingest: in a pack and still loose"
 	id := idOf([]byte(body))
 
@@ -386,7 +386,7 @@ func TestListReportsAnObjectInBothPlacesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 	seen := 0
 	var size int64
 	if err := s.List(libraryID, func(o ObjectInfo) error {
@@ -436,7 +436,7 @@ func TestRemovingAPackedObjectIsRefusedRatherThanFaked(t *testing.T) {
 // is still success — deletion has to stay idempotent for compaction's sake.
 func TestRemovingALooseObjectIsUnchanged(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 	body := "loose, and removable"
 	id := idOf([]byte(body))
 
@@ -478,7 +478,7 @@ func TestAStoreWithNoKeyCanStillBeMeasuredAndReclaimed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	keyless := New(confPath, dataDir, TypeChunks)
+	keyless := New(dataDir, TypeChunks)
 	if keyless.keyErr == nil {
 		t.Fatal("the store found a key it should not have — this test is not testing what it claims")
 	}
@@ -527,7 +527,7 @@ func TestAStoreWithNoKeyCanStillBeMeasuredAndReclaimed(t *testing.T) {
 // as an inequality, since the footer's size is the store's business.
 func TestLibraryUsageCountsTheFramingThatListDoesNot(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "storage-data")
-	s := New(confPath, dataDir, TypeChunks)
+	s := New(dataDir, TypeChunks)
 	bodies := []string{"one", "two", "three"}
 	for _, b := range bodies {
 		writeLooseObject(t, s, idOf([]byte(b)), b)

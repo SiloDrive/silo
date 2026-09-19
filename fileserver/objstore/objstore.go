@@ -96,7 +96,9 @@ func LibraryDir(dataDir, objType, storeID string) string {
 	return filepath.Join(TypeDir(dataDir, objType), storeID)
 }
 
-// ObjectStore is a container to access storage backend
+// ObjectStore is the per-object API over the pack seam: one object, addressed
+// by its id, sealed under this store's key. Everything above this package holds
+// object ids and nothing else, which is what this adapter is for.
 type ObjectStore struct {
 	// TypeChunks or TypeObjects
 	ObjType string
@@ -194,7 +196,7 @@ type storageBackend interface {
 // to return an error to, so the failure is carried until something asks it a
 // question — which fixes the nil dereference an ignored error used to produce,
 // and says what happened.
-func New(confPath string, dataDir string, objType string) *ObjectStore {
+func New(dataDir string, objType string) *ObjectStore {
 	obj := &ObjectStore{ObjType: objType}
 
 	// The key is loaded after the backend because generating one refuses over
@@ -235,7 +237,11 @@ func (s *ObjectStore) ready() error {
 // whose key is gone.
 func (s *ObjectStore) present() error { return s.backendErr }
 
-// Read data from storage backends.
+// Read writes one whole object to w, unsealed.
+//
+// Whole, not streamed: a frame is sealed as one AES-GCM message, so nothing can
+// be handed out until the tag over all of it has verified. ReadAt is the one to
+// reach for when only a byte range is wanted.
 func (s *ObjectStore) Read(libraryID string, objID string, w io.Writer) error {
 	if err := s.ready(); err != nil {
 		return err

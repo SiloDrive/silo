@@ -113,7 +113,7 @@ func TestGetWithReasonMissingCommitIsCorruptedNotNotFound(t *testing.T) {
 	// behind the store's back leaves it answering out of a file nothing can
 	// reach -- which is the store not having noticed, not the store having its
 	// objects back.
-	if err := objstore.New("", dataDir, objstore.TypeObjects).RemoveLibrary(libraryID); err != nil {
+	if err := objstore.New(dataDir, objstore.TypeObjects).RemoveLibrary(libraryID); err != nil {
 		t.Fatalf("remove object store: %v", err)
 	}
 	t.Cleanup(func() { clearFaults(libraryID) })

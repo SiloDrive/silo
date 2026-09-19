@@ -2,6 +2,7 @@ package option
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -12,7 +13,13 @@ import (
 	"gopkg.in/ini.v1"
 )
 
-// InfiniteQuota indicates that the quota is unlimited.
+// InfiniteQuota is the ceiling that is not one: no limit at all.
+//
+// It is negative because zero is a real quota — an account allowed nothing —
+// and it is -2 rather than -1 because it is stored rather than merely computed.
+// It is what libmgr.AccountQuota returns, what the admin API serialises, and
+// what sits in the quota column of every install that has ever run. Changing
+// the number would re-read all of those rows as something else, silently.
 const InfiniteQuota = -2
 
 // DefaultDiskReserve is the free space a server keeps back when nobody has
@@ -33,18 +40,30 @@ const DefaultDiskReserve = 1 * GB
 // being killed, which no request recovers from.
 const DefaultMaxBufferedObjectBytes = 512 * MB
 
-// Storage unit.
+// Sizes here are decimal: a gigabyte is a thousand million bytes, not 1<<30.
+//
+// That is the unit a disk is sold in and the one an operator writing a quota is
+// thinking in, so "100gb" in silo.conf means what it means on the invoice.
+// Written as multiples of each other rather than as rows of zeroes, because the
+// decimal choice is the whole point of the block and a literal 1000000000 does
+// not show it.
 const (
 	KB = 1000
-	MB = 1000000
-	GB = 1000000000
-	TB = 1000000000000
+	MB = 1000 * KB
+	GB = 1000 * MB
+	TB = 1000 * GB
 )
 
 var (
-	// fileserver options
-	Host          string
-	Port          uint32
+	// Host and Port are the address the server listens on. Both are set from
+	// [fileserver] and then from the environment, which wins; see
+	// resetToDefaults for why the compiled Host is loopback.
+	Host string
+	Port uint32
+
+	// MaxUploadSize is the ceiling on one request body, in bytes, or zero when
+	// nothing configured one. Zero is not "no limit" — it is the signal that
+	// sends the caller to DefaultMaxUploadSize instead.
 	MaxUploadSize uint64
 
 	// MaxBufferedObjectBytes is how much memory the object lanes may hold in
@@ -67,10 +86,12 @@ var (
 	// max_upload_size to mean it.
 	DefaultMaxUploadSize uint64 = 100 * GB
 
-	// notification server
+	// EnableNotification serves /notification in-process. On by default;
+	// SILO_ENABLE_NOTIFICATIONS=false closes it.
 	EnableNotification bool
 
-	// quota options
+	// DefaultQuota is the ceiling an account gets when nothing gave it one of
+	// its own, in bytes. InfiniteQuota is no ceiling, and is the default.
 	DefaultQuota int64
 
 	// ServerQuota bounds what every account together may hold, in the same
@@ -102,14 +123,20 @@ var (
 	// Build version (set by main)
 	Version string
 
-	// Profile password
-	ProfilePassword string
+	// EnableProfiling publishes net/http/pprof, and ProfilePassword is what
+	// gates it. Both are off and empty by default, and the server checks the
+	// password is non-empty before it serves the routes at all — so the two
+	// together are the switch, not EnableProfiling alone.
 	EnableProfiling bool
+	ProfilePassword string
 
-	// Go log level
+	// LogLevel is a logrus level name, carried through as written. It is
+	// validated where it is applied rather than here, so there is one place
+	// that decides what an unreadable level falls back to.
 	LogLevel string
 
-	// DB default timeout
+	// DBOpTimeout bounds a single database call. See WithDBTimeout, which is
+	// how it is meant to be reached.
 	DBOpTimeout time.Duration
 
 	// SyncObjectWrites fsyncs every commit, fs and block object before it is
@@ -184,9 +211,9 @@ var (
 	AllowUserCreateLibrary = true
 )
 
-// initDefaultOptions puts every option back to its compiled default, so that
-// what a load produces depends on the config file and the environment and not
-// on whatever a previous load left behind.
+// resetToDefaults puts every option back to its compiled default, so that what
+// a load produces depends on the config file and the environment and not on
+// whatever a previous load left behind.
 //
 // Every option, which it did not used to be: MaxUploadSize, DefaultKeepDays,
 // EnableProfiling, ProfilePassword, LogLevel and the hop count in utils were
@@ -196,7 +223,10 @@ var (
 // SIGHUP, a key deleted from the file goes on being obeyed, and the worst of
 // them is EnableProfiling: a password-gated pprof endpoint that stays open
 // after the lines that opened it are gone.
-func initDefaultOptions() {
+//
+// Anything added to the var block above belongs here too. A default that
+// exists only as an initialiser is one a second load cannot restore.
+func resetToDefaults() {
 	// Loopback by default. Silo speaks plaintext unless given a certificate,
 	// and every credential it uses is a bearer token in a header, so a
 	// default that publishes the port to the whole network is a default that
@@ -242,14 +272,12 @@ func envBool(def bool, names ...string) bool {
 		if v == "" {
 			continue
 		}
-		switch strings.ToLower(v) {
-		case "true", "1", "yes", "on":
-			return true
-		case "false", "0", "no", "off":
-			return false
+		b, err := parseBool(v)
+		if err != nil {
+			log.Warnf("Ignoring unparseable %s=%q, using %v", name, v, def)
+			return def
 		}
-		log.Warnf("Ignoring unparseable %s=%q, using %v", name, v, def)
-		return def
+		return b
 	}
 	return def
 }
@@ -278,10 +306,12 @@ func envHops(def int, names ...string) int {
 // path or a missing file is fine — Silo then runs entirely on compiled
 // defaults plus environment variable overrides.
 func LoadFileServerOptions(configFile string) {
-	initDefaultOptions()
+	resetToDefaults()
 
-	opts := ini.LoadOptions{}
-	opts.SpaceBeforeInlineComment = true
+	// SpaceBeforeInlineComment so that a value may contain a '#' or a ';' and
+	// only a preceding space starts a comment. Passwords and paths do contain
+	// them, and truncating one at the character would be silent.
+	opts := ini.LoadOptions{SpaceBeforeInlineComment: true}
 
 	var config *ini.File
 	if configFile != "" {
@@ -334,45 +364,32 @@ func LoadFileServerOptions(configFile string) {
 			"so a crash or power loss can leave repositories permanently corrupt.")
 	}
 
-	if section, err := config.GetSection("httpserver"); err == nil {
-		parseFileServerSection(section)
-	}
-	if section, err := config.GetSection("fileserver"); err == nil {
-		parseFileServerSection(section)
-	}
-
-	// Environment overrides for bind address.
-	if envHost := os.Getenv("SILO_HOST"); envHost != "" {
-		Host = envHost
-	}
-	if envPort := os.Getenv("SILO_PORT"); envPort != "" {
-		if port, err := strconv.ParseUint(envPort, 10, 32); err == nil {
-			Port = uint32(port)
+	// [httpserver] first and [fileserver] second, so that an install carrying
+	// both has the current spelling win key by key rather than wholesale: a
+	// [fileserver] that sets only the port leaves an [httpserver] host in
+	// force, which is what a half-migrated config file means.
+	for _, name := range []string{"httpserver", "fileserver"} {
+		if section := sectionOf(config, name); section != nil {
+			loadServerSection(section)
 		}
 	}
+
+	// The environment beats the file for the listen address, and goes through
+	// the same two parsers, so that SILO_PORT and `port =` agree on what a port
+	// is. They did not: the variable was range-checked and the key was not.
+	Host = fromEnv("SILO_HOST", Host, parseHost)
+	Port = fromEnv("SILO_PORT", Port, parsePort)
 
 	// Who may create a library. The section is the install's policy about
 	// libraries rather than about the process, so it is not [fileserver].
-	if section, err := config.GetSection("libraries"); err == nil {
-		if key, err := section.GetKey("allow_user_create_library"); err == nil {
-			if allow, err := key.Bool(); err == nil {
-				AllowUserCreateLibrary = allow
-			} else {
-				log.Warnf("[libraries] allow_user_create_library = %q is not a boolean; leaving it %v",
-					key.String(), AllowUserCreateLibrary)
-			}
-		}
+	if section := sectionOf(config, "libraries"); section != nil {
+		AllowUserCreateLibrary = fromSection(section, "allow_user_create_library",
+			AllowUserCreateLibrary, parseBool)
 	}
 	AllowUserCreateLibrary = envBool(AllowUserCreateLibrary, "SILO_ALLOW_USER_CREATE_LIBRARY")
 
-	if section, err := config.GetSection("history"); err == nil {
-		if key, err := section.GetKey("keep_days"); err == nil {
-			if days, err := key.Int(); err == nil && days >= 0 {
-				DefaultKeepDays = days
-			} else {
-				log.Warnf("[history] keep_days = %q is not a whole number of days; keeping all history", key.String())
-			}
-		}
+	if section := sectionOf(config, "history"); section != nil {
+		DefaultKeepDays = fromSection(section, "keep_days", DefaultKeepDays, parseDays)
 	}
 
 	// Storage is loaded whether or not the section exists, because the
@@ -381,68 +398,177 @@ func LoadFileServerOptions(configFile string) {
 	storageSection, _ := config.GetSection("storage")
 	loadStorageOptions(storageSection)
 
-	if section, err := config.GetSection("quota"); err == nil {
-		// Both of these say so when a value was given and could not be read.
-		// The parser can only answer InfiniteQuota, which is indistinguishable
-		// from "nobody configured one" -- so the difference is reported here,
-		// where the configured string is still in hand, rather than lost.
-		if key, err := section.GetKey("default"); err == nil {
-			DefaultQuota = parseQuota(key.String())
-			warnIfUnreadable("default", key.String(), DefaultQuota)
-		}
-		if key, err := section.GetKey("server"); err == nil {
-			ServerQuota = parseQuota(key.String())
-			warnIfUnreadable("server", key.String(), ServerQuota)
-		}
-		// A reserve that failed to parse falls back to the default rather than
-		// to none. parseQuota answers InfiniteQuota for anything it cannot
-		// read, which is the right answer for a ceiling -- no limit -- and the
-		// wrong one here, where it would mean "keep -2 bytes free" and quietly
-		// disable the protection because of a typo.
-		if key, err := section.GetKey("reserve"); err == nil {
-			if n := parseQuota(key.String()); n >= 0 {
-				DiskReserve = n
-			} else {
-				log.Warnf("[quota] reserve = %q is not a size; keeping the default reserve", key.String())
-			}
-		}
+	// All three quota keys take the same route as everything else, which is
+	// what makes their answer to a bad value the same answer: keep the default
+	// and say so. They did not used to agree -- two of them set InfiniteQuota
+	// and warned separately, and the reserve had its own sign test, because
+	// "keep -2 bytes free" would have disabled the protection over a typo.
+	// Going through quotaSize gives the reserve that guard for nothing, since a
+	// value it cannot read is an error rather than a negative number.
+	if section := sectionOf(config, "quota"); section != nil {
+		DefaultQuota = fromSection(section, "default", DefaultQuota, quotaSize)
+		ServerQuota = fromSection(section, "server", ServerQuota, quotaSize)
+		DiskReserve = fromSection(section, "reserve", DiskReserve, quotaSize)
 	}
 
-	if lvl := os.Getenv("SILO_LOG_LEVEL"); lvl != "" {
-		LogLevel = lvl
-	}
-
+	LogLevel = fromEnv("SILO_LOG_LEVEL", LogLevel, parseText)
 }
 
-func parseFileServerSection(section *ini.Section) {
-	if key, err := section.GetKey("host"); err == nil {
-		Host = key.String()
+// sectionOf returns a section, or nil when the file has no such section.
+//
+// ini reports an absent section as an error, which reads as though something
+// went wrong; nothing did, and a config file without a [quota] section is the
+// ordinary case. Turning it into a nil says that, and says it the same way
+// everywhere rather than four `err == nil` blocks whose meaning has to be
+// reconstructed each time.
+func sectionOf(config *ini.File, name string) *ini.Section {
+	section, err := config.GetSection(name)
+	if err != nil {
+		return nil
 	}
-	if key, err := section.GetKey("port"); err == nil {
-		port, err := key.Uint()
-		if err == nil {
-			Port = uint32(port)
-		}
+	return section
+}
+
+// loadServerSection reads the keys that describe the process itself: where it
+// listens, how much of a request body it will take, and whether the profiler is
+// open. Its caller applies it to [httpserver] and then [fileserver].
+//
+// Every value goes through fromSection and a parser, which is the same route
+// the [storage] keys take. The point is not brevity: it is that a key which is
+// present and unreadable keeps its default and says so out loud. Read one at a
+// time, each key had its own answer to a bad value -- some kept the default
+// silently, one narrowed it to a different number -- and none of them told
+// anybody.
+func loadServerSection(section *ini.Section) {
+	Host = fromSection(section, "host", Host, parseHost)
+	Port = fromSection(section, "port", Port, parsePort)
+	MaxUploadSize = fromSection(section, "max_upload_size", MaxUploadSize, parseMegabytes)
+	EnableProfiling = fromSection(section, "enable_profiling", EnableProfiling, parseBool)
+	LogLevel = fromSection(section, "go_log_level", LogLevel, parseText)
+
+	// Read only when profiling is on, so that a password left in the file does
+	// not open the endpoint by itself.
+	//
+	// Refusing to start is the right end of the trade here, and the only place
+	// in this file that takes it. An operator who asked for the profiler and
+	// gave it no password gets a server that will not run; the alternative is a
+	// server that runs with pprof reachable, which hands out heap contents and
+	// goroutine stacks to anyone who finds the path. A missing password is not
+	// a value to fall back from -- there is no safe default for it.
+	//
+	// The test is the key's absence, not its emptiness, which is deliberately
+	// unchanged: `profile_password =` still starts, and the server then declines
+	// to mount the routes at all because the password is empty. Two answers to
+	// one mistake is not ideal, but tightening it here means a fatal that no
+	// test can watch fail -- it takes the test binary down with the server --
+	// so it stays as it was until it can be moved somewhere testable.
+	if !EnableProfiling {
+		return
 	}
-	if key, err := section.GetKey("max_upload_size"); err == nil {
-		size, err := key.Uint()
-		if err == nil {
-			MaxUploadSize = uint64(size) * 1000000
-		}
+	key, err := section.GetKey("profile_password")
+	if err != nil {
+		log.Fatalf("[%s] enable_profiling is on with no profile_password: "+
+			"pprof would be served to anyone who asks.", section.Name())
 	}
-	if key, err := section.GetKey("enable_profiling"); err == nil {
-		EnableProfiling, _ = key.Bool()
+	ProfilePassword = key.String()
+}
+
+// parseHost reads a listen address. Anything non-empty is taken as written --
+// a name, a v4 address, a bracketed v6 one -- because what can be bound is the
+// resolver's question and not this file's, and a host that does not resolve is
+// reported by the listener with the error that says so.
+//
+// Empty is refused, and that is the whole reason this is a parser rather than a
+// passthrough. "" makes the listen address ":8082", which is every interface,
+// so `host =` -- a line emptied out, or a template that interpolated to nothing
+// -- silently published a plaintext bearer-token API to the network. The least
+// deliberate thing an operator can type should not produce the least
+// conservative binding.
+func parseHost(s string) (string, error) {
+	host := strings.TrimSpace(s)
+	if host == "" {
+		return "", fmt.Errorf("is empty, which would listen on every interface; write an address like 127.0.0.1 or 0.0.0.0")
 	}
-	if EnableProfiling {
-		if key, err := section.GetKey("profile_password"); err == nil {
-			ProfilePassword = key.String()
-		} else {
-			log.Fatal("password of profiling must be specified.")
-		}
+	return host, nil
+}
+
+// parsePort reads a TCP port into the uint32 the field actually is.
+//
+// The width is the point. Read as a platform uint and then narrowed, a value
+// past 2^32 did not fail -- it wrapped, so `port = 4294967297` became port 1 on
+// a 64-bit build, a privileged port arrived at by arithmetic from a line that
+// said nothing of the sort. Asking for 32 bits up front turns that into a
+// refusal.
+//
+// Zero is allowed, because it is what a caller asking the kernel for any free
+// port writes, and refusing it here would be a new rule rather than a fix.
+func parsePort(s string) (uint32, error) {
+	n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 32)
+	if err != nil || n > 65535 {
+		return 0, fmt.Errorf("%q is not a port; write a whole number from 0 to 65535", s)
 	}
-	if key, err := section.GetKey("go_log_level"); err == nil {
-		LogLevel = key.String()
+	return uint32(n), nil
+}
+
+// parseMegabytes reads max_upload_size, which is written as a whole number of
+// megabytes and stored in bytes.
+//
+// Decimal megabytes, the same MB the quota units use, so that two sizes in one
+// config file do not mean two things. The overflow check answers the case the
+// multiply used to wrap on: a ceiling that came out smaller than the number
+// asked for is worse than one that was refused.
+func parseMegabytes(s string) (uint64, error) {
+	n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64)
+	if err != nil || n > ^uint64(0)/MB {
+		return 0, fmt.Errorf("%q is not a whole number of megabytes, like 100", s)
 	}
+	return n * MB, nil
+}
+
+// parseBool reads the spellings of yes and no that a config file or an
+// environment variable might reasonably use. One list, shared with envBool, so
+// that a value accepted in silo.conf is accepted in SILO_* as well.
+func parseBool(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "t", "1", "yes", "y", "on":
+		return true, nil
+	case "false", "f", "0", "no", "n", "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("%q is not a yes or a no; write true or false", s)
+}
+
+// parseText carries a value through with only its surrounding space removed,
+// for the keys whose meaning is settled somewhere else. It never fails, which
+// is the honest shape for them: rejecting a value here would be a second
+// opinion about something this file does not decide.
+func parseText(s string) (string, error) { return strings.TrimSpace(s), nil }
+
+// parseDays reads a history retention in whole days. Negative is refused rather
+// than read as a sentinel: zero already means "keep everything", so a minus
+// sign is a typo and not a second way to say it.
+func parseDays(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%q is not a whole number of days; write 0 to keep everything", s)
+	}
+	return n, nil
+}
+
+// quotaSize is parseQuota in the shape fromSection and fromEnv need.
+//
+// parseQuota can only answer InfiniteQuota for a value it could not read, and
+// that answer is indistinguishable from the one it gives for a value that
+// genuinely means "no ceiling" -- so on its own it cannot tell a caller whether
+// a limit was configured and lost. This turns the unreadable case into an
+// error, which is what lets the helper keep the default and name the key in the
+// warning. silo#49 tracks parseQuota and ParseBytes becoming one parser, which
+// is the change that would remove this.
+func quotaSize(s string) (int64, error) {
+	if n := parseQuota(s); n != InfiniteQuota {
+		return n, nil
+	}
+	return 0, fmt.Errorf("%q is not a size; write a whole number with kb, mb, gb or tb, like 100gb", s)
 }
 
 // parseQuota turns a configured size into bytes, and answers InfiniteQuota for
@@ -458,24 +584,14 @@ func parseFileServerSection(section *ini.Section) {
 // A bare number is gigabytes, which is what the multiplier defaults to and is
 // kept for the installs that rely on it.
 //
-// InfiniteQuota for an unreadable value is still the only answer a parser can
-// give -- it cannot invent the number the operator meant -- so the callers
-// that would silently lose a limit say so instead. See LoadFileServerOptions.
-// warnIfUnreadable reports a ceiling that was configured and could not be
-// read, which is the one case where InfiniteQuota is not what the operator
-// asked for.
-//
-// A warning rather than a refusal: a server that would not start because of a
-// typo in a quota is worse than one that starts and says the quota is not in
-// force, and the second is what an operator can act on at three in the morning.
-func warnIfUnreadable(key, given string, parsed int64) {
-	if parsed == InfiniteQuota && strings.TrimSpace(given) != "" {
-		log.Warnf("[quota] %s = %q is not a size, so no %s ceiling is in force", key, given, key)
-	}
-}
-
-func parseQuota(quotaStr string) int64 {
-	s := strings.ToLower(strings.TrimSpace(quotaStr))
+// InfiniteQuota for an unreadable value is still the only answer this can give
+// -- it cannot invent the number the operator meant -- so quotaSize turns that
+// answer into an error and the loader warns with the key still in hand. A
+// warning rather than a refusal: a server that will not start because of a typo
+// in a quota is worse than one that starts and says the quota is not in force,
+// and the second is what an operator can act on at three in the morning.
+func parseQuota(configured string) int64 {
+	s := strings.ToLower(strings.TrimSpace(configured))
 
 	for _, unit := range []struct {
 		suffix string
