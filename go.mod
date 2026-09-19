@@ -2,7 +2,7 @@ module github.com/dkam/silo
 
 go 1.26.0
 
-toolchain go1.26.2
+toolchain go1.26.8
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
