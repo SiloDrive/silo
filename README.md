@@ -58,9 +58,47 @@ brew install dkam/silo/silo
 
 Homebrew auto-taps `dkam/homebrew-silo` on first install, so no separate `brew tap` step is needed.
 
+### Debian, Ubuntu, Fedora, RHEL
+
+`.deb` and `.rpm` packages for amd64 and arm64 are attached to each
+[release](https://github.com/dkam/silo/releases). They install the binary, a
+hardened systemd unit, a `silo` system user and a commented
+`/etc/silo/silo.conf`:
+
+```bash
+sudo dpkg -i silo_0.5.1_amd64.deb     # or: sudo rpm -i silo-0.5.1-1.x86_64.rpm
+```
+
+The service is **not** enabled on install, because a fresh server has to be
+claimed before its port opens:
+
+```bash
+sudo systemctl enable --now silo
+sudo -u silo silo -d /var/lib/silo setup-token
+```
+
+Details, and what the unit is doing: [packaging/README.md](packaging/README.md).
+
+### Install script
+
+For a binary and nothing else, on macOS or Linux:
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/dkam/silo/main/install.sh | sh
+```
+
+It resolves the latest release, verifies the published SHA-256, and installs to
+`/usr/local/bin` — or `~/.local/bin` when that is not writable. `VERSION` pins a
+release and `INSTALL_DIR` moves the destination:
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/dkam/silo/main/install.sh \
+  | VERSION=v0.5.1 INSTALL_DIR=$HOME/.local/bin sh
+```
+
 ### Download a release
 
-Prebuilt binaries for macOS and Linux are published on the [releases page](https://github.com/dkam/silo/releases).
+Prebuilt binaries for macOS and Linux are published on the [releases page](https://github.com/dkam/silo/releases), each with a `.sha256` beside it.
 
 ### Build from source
 

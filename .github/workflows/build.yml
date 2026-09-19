@@ -90,6 +90,8 @@ jobs:
           name: silo-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
             dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
             dist/*.sha256
           if-no-files-found: error
 
@@ -136,8 +138,100 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  release:
+  # The .deb and .rpm are repackaged from the binaries `build` already made --
+  # no second compile, no toolchain in the packaging path. Runs on manual
+  # dispatch too, so a packaging mistake is caught before the tag rather than
+  # during the release.
+  packages:
     needs: build
+    runs-on: ubuntu-latest
+    env:
+      NFPM_VERSION: v2.47.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@${{ env.NFPM_VERSION }}
+
+      - name: Compute version
+        id: version
+        run: |
+          v="$(git describe --tags --always --dirty)"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          # nfpm wants no leading v, and neither dpkg nor rpm accepts one.
+          echo "pkgversion=${v#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch Linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: silo-linux-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Build .deb and .rpm
+        env:
+          VERSION: ${{ steps.version.outputs.pkgversion }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist packaging/.staged
+          for arch in amd64 arm64; do
+            tarball="artifacts/silo-${{ steps.version.outputs.version }}-linux-${arch}.tar.gz"
+            # nfpm does not expand ${...} inside contents[].src, so the binary
+            # is staged at the fixed path nfpm.yaml names rather than passed in
+            # as a variable. One arch at a time, overwriting the last.
+            tar -xzf "$tarball" -C packaging/.staged silo
+            chmod 0755 packaging/.staged/silo
+            for format in deb rpm; do
+              ARCH="$arch" nfpm pkg -f packaging/nfpm.yaml -p "$format" -t dist/
+            done
+          done
+          rm -rf packaging/.staged
+          (cd dist && for f in *.deb *.rpm; do sha256sum "$f" > "$f.sha256"; done)
+          ls -lh dist/
+
+      # A package that installs is the only thing that proves the maintainer
+      # scripts parse and the paths are right. The container has no systemd, so
+      # every systemctl call falls through the `-d /run/systemd/system` guard --
+      # which is itself worth exercising.
+      - name: Smoke-test the .deb
+        run: |
+          set -euo pipefail
+          deb="$(ls dist/silo_*_amd64.deb)"
+          sudo dpkg -i "$deb"
+          test -x /usr/bin/silo
+          test -f /usr/lib/systemd/system/silo.service
+          test -f /etc/silo/silo.conf
+          [ "$(stat -c '%a' /etc/silo/silo.env)" = "600" ]
+          getent passwd silo >/dev/null
+          silo version
+          # Static analysis of the unit, with the silo user now present so
+          # User=/Group= resolve. Advisory rather than gating: a future systemd
+          # tightening a directive into an error would otherwise block a
+          # release over a warning. Read the output when this job is touched.
+          systemd-analyze verify /usr/lib/systemd/system/silo.service || true
+          sudo dpkg -r silo
+          # The account survives removal on purpose: /var/lib/silo may still be
+          # owned by that uid. See packaging/scripts/postremove.sh.
+          getent passwd silo >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: silo-packages
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    needs: [build, packages]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -153,6 +247,91 @@ jobs:
         with:
           files: |
             dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
             dist/*.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  # Update the Homebrew tap from the release that just published.
+  #
+  # This runs from silo rather than from the tap because the checksums are
+  # already here: the tap's own generate-formula.sh has to wait for the release
+  # to become visible and then fetch the sidecars back over HTTP, which is a
+  # race and a network round trip for data this job already has on disk.
+  #
+  # Needs a HOMEBREW_TAP_TOKEN secret with contents:write on dkam/homebrew-silo.
+  # Without it the job reports what to run by hand and succeeds, because a
+  # missing tap token must not turn a good release red.
+  homebrew:
+    needs: [build, release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for the tap token
+        id: gate
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Tap not updated::HOMEBREW_TAP_TOKEN is not set. Update the tap with: packaging/homebrew/generate-formula.sh ${{ github.ref_name }} -o Formula/silo.rb"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.ok == 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        if: steps.gate.outputs.ok == 'true'
+        id: version
+        # The same expression the build job used, so the asset filenames this
+        # job looks for are the ones that were actually published.
+        run: echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tap
+        if: steps.gate.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: dkam/homebrew-silo
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Fetch release artifacts
+        if: steps.gate.outputs.ok == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          # Two dashes: this is silo-<goos>-<goarch>, the four platform
+          # tarballs and their sidecars. It deliberately does not match
+          # silo-packages, which holds the debs and rpms this job has no use
+          # for.
+          pattern: silo-*-*
+          path: dist
+          merge-multiple: true
+
+      - name: Regenerate the formula
+        if: steps.gate.outputs.ok == 'true'
+        run: |
+          ./packaging/homebrew/generate-formula.sh \
+            "${{ steps.version.outputs.version }}" \
+            --dist dist \
+            -o tap/Formula/silo.rb
+          git -C tap diff --stat
+
+      - name: Commit and push the tap
+        if: steps.gate.outputs.ok == 'true'
+        working-directory: tap
+        run: |
+          if git diff --quiet -- Formula/silo.rb; then
+            echo "Formula already at ${{ steps.version.outputs.version }}; nothing to push."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/silo.rb
+          git commit -m "silo ${{ steps.version.outputs.version }}"
+          git push
+
