@@ -252,3 +252,86 @@ jobs:
             dist/*.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  # Update the Homebrew tap from the release that just published.
+  #
+  # This runs from silo rather than from the tap because the checksums are
+  # already here: the tap's own generate-formula.sh has to wait for the release
+  # to become visible and then fetch the sidecars back over HTTP, which is a
+  # race and a network round trip for data this job already has on disk.
+  #
+  # Needs a HOMEBREW_TAP_TOKEN secret with contents:write on dkam/homebrew-silo.
+  # Without it the job reports what to run by hand and succeeds, because a
+  # missing tap token must not turn a good release red.
+  homebrew:
+    needs: [build, release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for the tap token
+        id: gate
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Tap not updated::HOMEBREW_TAP_TOKEN is not set. Update the tap with: packaging/homebrew/generate-formula.sh ${{ github.ref_name }} -o Formula/silo.rb"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.ok == 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        if: steps.gate.outputs.ok == 'true'
+        id: version
+        # The same expression the build job used, so the asset filenames this
+        # job looks for are the ones that were actually published.
+        run: echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tap
+        if: steps.gate.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: dkam/homebrew-silo
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Fetch release artifacts
+        if: steps.gate.outputs.ok == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          # Two dashes: this is silo-<goos>-<goarch>, the four platform
+          # tarballs and their sidecars. It deliberately does not match
+          # silo-packages, which holds the debs and rpms this job has no use
+          # for.
+          pattern: silo-*-*
+          path: dist
+          merge-multiple: true
+
+      - name: Regenerate the formula
+        if: steps.gate.outputs.ok == 'true'
+        run: |
+          ./packaging/homebrew/generate-formula.sh \
+            "${{ steps.version.outputs.version }}" \
+            --dist dist \
+            -o tap/Formula/silo.rb
+          git -C tap diff --stat
+
+      - name: Commit and push the tap
+        if: steps.gate.outputs.ok == 'true'
+        working-directory: tap
+        run: |
+          if git diff --quiet -- Formula/silo.rb; then
+            echo "Formula already at ${{ steps.version.outputs.version }}; nothing to push."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/silo.rb
+          git commit -m "silo ${{ steps.version.outputs.version }}"
+          git push
+

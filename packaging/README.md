@@ -6,10 +6,10 @@ Everything here is built from the release binaries `.github/workflows/build.yml`
 already produces. There is no second compile: `nfpm` takes a finished
 `silo` binary and wraps it, so a packaging change cannot change the program.
 
-Other distribution channels live elsewhere — Homebrew in `dkam/homebrew-silo`,
-the AUR in its own repository. This directory owns the Debian and RPM side and
-the service definition; `install.sh` at the repository root owns the
-binary-only install.
+This directory owns the Debian and RPM side, the service definition, and the
+Homebrew formula that the `dkam/homebrew-silo` tap serves. `install.sh` at the
+repository root owns the binary-only install. The AUR lives in its own
+repository.
 
 ## What the package installs
 
@@ -89,6 +89,67 @@ The unit does not ship a logrotate config. Logs go to the journal, and Silo's
 `SIGUSR1` rotation only applies to `-l` file logging, which the unit does not
 use.
 
+## Homebrew
+
+`homebrew/generate-formula.sh` writes the `Formula/silo.rb` that the
+`dkam/homebrew-silo` tap serves. The formula itself lives in the tap; what
+lives here is the thing that produces it, because the inputs are here.
+
+```sh
+# From a local release directory -- what CI does.
+packaging/homebrew/generate-formula.sh v0.5.1 --dist dist
+
+# From a published release -- the by-hand path.
+packaging/homebrew/generate-formula.sh v0.5.1 -o ../homebrew-silo/Formula/silo.rb
+```
+
+With no `-o` it writes to stdout, so it can be diffed against what the tap
+already has without touching it. `SILO_RELEASE_BASE` moves the download host,
+the same variable `install.sh` takes.
+
+**Why it generates from `--dist` in CI.** The tap's own generator waits for the
+release to be visible and then fetches every `.sha256` back over HTTP. The
+`homebrew` job in `build.yml` runs after `release` in the same workflow, where
+those sidecars are already on disk — so it reads them locally instead. No race,
+no round trip, and the checksums are provably the ones that were published
+rather than whatever the URL answers with.
+
+The job needs a `HOMEBREW_TAP_TOKEN` secret with `contents:write` on
+`dkam/homebrew-silo`. **Without it the job succeeds and prints the command to
+run by hand** — a missing tap token should not turn a good release red. It also
+skips the push when the formula is already at that version, so a re-run is
+harmless.
+
+### Two things the generated formula fixes
+
+**The test block was asserting something that cannot be true.** The formula in
+the tap has:
+
+```ruby
+assert_match "v#{version}", shell_output("#{bin}/silo version")
+```
+
+`normalizeVersion` in `cmd/silo/main.go` strips the leading `v`, so
+`silo version` prints `0.5.1` and never `v0.5.1`. That assertion fails for
+every release. The generated formula compares against the bare string:
+
+```ruby
+assert_equal version.to_s, shell_output("#{bin}/silo version").strip
+```
+
+**The description was inherited from a server Silo no longer is.** It read
+"Seafile-compatible server and client in one binary"; that compatibility was
+dropped on purpose, and `brew info` was still advertising it. It now reads
+"Single-binary file sync server with per-library end-to-end encryption" — 69
+characters, no article, no formula name, which is what `brew audit` wants.
+
+### The tap still has its own copy
+
+`dkam/homebrew-silo` has `bin/generate-formula.sh`, which is where this script
+came from. Two generators for one formula is one too many, and the tap's copy
+carries both bugs above. Replacing it with a line pointing here is the tidy-up;
+it is a change to the other repository, so it is not made from this one.
+
 ## Building locally
 
 Needs [nfpm](https://nfpm.goreleaser.com/) — `go install
@@ -140,3 +201,7 @@ right and `/etc/silo/silo.env` really landed at `0600`. The runner has no
 systemd, so every `systemctl` call falls through the `-d /run/systemd/system`
 guard — which is worth exercising too, since that is the path a container
 install takes.
+
+The `homebrew` job runs after `release`, on tags only, and updates the tap. It
+is the one job here that writes to another repository, which is why it is
+gated on a secret and why it is the last thing in the file.
