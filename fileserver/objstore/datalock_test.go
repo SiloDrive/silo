@@ -37,7 +37,7 @@ func TestSecondProcessCannotAdoptALiveOpenPack(t *testing.T) {
 	}
 	id, frame := framed(t, key, "acknowledged to a client before the second server started")
 	live := filledPack(t, objDir, lib, [][]byte{frame}, []string{id})
-	defer live.close()
+	defer func() { _ = live.close() }()
 
 	// The second server, on the same directory.
 	if _, err := LockDataDir(dataDir); err == nil {

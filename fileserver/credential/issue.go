@@ -159,7 +159,7 @@ func ListByAccount(ctx context.Context, id account.ID) ([]*Credential, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing credentials: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Credential
 	for rows.Next() {

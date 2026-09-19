@@ -19,7 +19,7 @@ func enrol(t *testing.T, base, body string) (int, map[string]any) {
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

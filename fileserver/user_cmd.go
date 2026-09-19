@@ -190,13 +190,13 @@ func listUsers(asJSON bool) error {
 	// an operator has to read with a ruler is one they will read wrong, and
 	// hand-computed widths only ever measure the column somebody remembered.
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "EMAIL\tSTATUS\tROLE\tPASSWORD\tCREATED\tCAPABILITIES")
+	_, _ = fmt.Fprintln(tw, "EMAIL\tSTATUS\tROLE\tPASSWORD\tCREATED\tCAPABILITIES")
 	for _, u := range users {
 		status := "active"
 		if !u.IsActive {
 			status = "DISABLED"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			displayEmail(u), status, string(u.Role), yesNo(u.HasPassword),
 			formatTime(u.Ctime), admin.Join(caps[u.ID]))
 	}

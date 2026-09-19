@@ -20,8 +20,8 @@ func callCC(t *testing.T, url, token string) (int, string) {
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode, resp.Header.Get("Cache-Control")
 }
 
@@ -83,7 +83,7 @@ func TestARouteWithItsOwnPolicyKeepsIt(t *testing.T) {
 		t.Fatalf("PUT: %v", err)
 	}
 	etag := resp.Header.Get("ETag")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("PUT = %d, want 201", resp.StatusCode)
 	}

@@ -40,7 +40,7 @@ func putFile(t *testing.T, base, token, library, path string, content []byte) st
 	if err != nil {
 		t.Fatalf("PUT %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT %s: status %d, body %s", path, resp.StatusCode, body)

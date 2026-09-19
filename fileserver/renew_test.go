@@ -190,7 +190,7 @@ func TestRenewalRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renew with no credential: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("renew with no credential: status %d, want 401", resp.StatusCode)
 	}
@@ -207,7 +207,7 @@ func TestServerInfoNamesCredentialRenew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server-info: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var out struct {
 		Features []string `json:"features"`

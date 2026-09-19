@@ -6,7 +6,6 @@ import (
 	"crypto/subtle"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -786,10 +785,6 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/libraries/{libraryid}/entries/{path:.*}", entriesHandler)
 
 	return r
-}
-
-func handleProtocolVersion(rsp http.ResponseWriter, r *http.Request) {
-	_, _ = io.WriteString(rsp, "{\"version\": 2}")
 }
 
 func RecoverWrapper(f func()) {

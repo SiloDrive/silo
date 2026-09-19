@@ -261,13 +261,13 @@ func cmdPut(c *client.APIClient, args []string) error {
 // this is not a loop over single-file uploads.
 func printTreeUpload(w io.Writer, up *client.TreeUpload) {
 	for _, path := range up.Skipped {
-		fmt.Fprintf(w, "skipped %s: not a regular file\n", path)
+		_, _ = fmt.Fprintf(w, "skipped %s: not a regular file\n", path)
 	}
-	fmt.Fprintf(w, "%s in %s, %s across %s\n",
+	_, _ = fmt.Fprintf(w, "%s in %s, %s across %s\n",
 		plural(up.Files, "file"), plural(up.Dirs, "directory", "directories"),
 		plural(up.ChunksSent, "chunk"), plural(up.Commits, "commit"))
 	if up.ChunksHeld > 0 {
-		fmt.Fprintf(w, "%s already on the server, not sent\n", plural(up.ChunksHeld, "chunk"))
+		_, _ = fmt.Fprintf(w, "%s already on the server, not sent\n", plural(up.ChunksHeld, "chunk"))
 	}
 }
 

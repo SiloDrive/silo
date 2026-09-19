@@ -305,7 +305,7 @@ func TestAnOpenPackIsNotASealedOne(t *testing.T) {
 	objDir, lib := packScratch(t)
 	ids, frames := someFrames(t, packKey(t), 4)
 	p := filledPack(t, objDir, lib, frames, ids)
-	defer p.close()
+	defer func() { _ = p.close() }()
 
 	_, err := openSealedPack(objDir, lib, p.id)
 	if !errors.Is(err, ErrPackCorrupt) {
@@ -668,7 +668,7 @@ func readAt(t *testing.T, path string, off int64, n int) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	b := make([]byte, n)
 	if _, err := f.ReadAt(b, off); err != nil {
 		t.Fatal(err)
@@ -682,7 +682,7 @@ func writeAt(t *testing.T, path string, off int64, b []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.WriteAt(b, off); err != nil {
 		t.Fatal(err)
 	}

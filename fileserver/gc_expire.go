@@ -150,14 +150,11 @@ func commitsBehindTheWindow(st *objmgr.Store, head storefmt.ID, cutoff time.Time
 	seen := map[storefmt.ID]bool{}
 
 	id, cutting := head, false
-	for {
-		if seen[id] {
-			// Impossible in a Merkle DAG, since a commit's id covers its
-			// parents. Bounded anyway: this walk decides what to delete, and
-			// an unbounded loop here is not a hung request, it is a list of
-			// things to remove that never stops growing.
-			break
-		}
+	// Revisiting an id is impossible in a Merkle DAG, since a commit's id
+	// covers its parents. Bounded anyway: this walk decides what to delete, and
+	// an unbounded loop here is not a hung request, it is a list of things to
+	// remove that never stops growing.
+	for !seen[id] {
 		seen[id] = true
 
 		c, err := st.GetCommitPublic(id)
