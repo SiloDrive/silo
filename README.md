@@ -4,6 +4,16 @@ A single-binary Go file sync server.
 
 Status: pre-1.0 and young, but no longer reckless with your data. Object writes are fsynced before they are published, and every uploaded object is verified against its content hash on the way in, so a crash or a bad client can no longer silently corrupt a library. That said, it has not yet seen wide real-world use — run it, but keep an independent backup of anything you care about.
 
+## Contents
+
+[What is Silo?](#what-is-silo) · [Architecture](#architecture) · [Features](#features) ·
+[Quick start](#quick-start) · [Configuration](#configuration) ·
+[Administration](#administration) · [Backups](#backups) ·
+[Error reporting](#error-reporting) · [Exposing the server](#exposing-the-server) ·
+[Revoking access](#revoking-access) · [Client compatibility](#client-compatibility) ·
+[What's not implemented](#whats-not-implemented) ·
+[Directory layout](#directory-layout) · [Origin and license](#origin-and-license)
+
 ## What is Silo?
 
 Silo is one Go binary. It speaks HTTP directly and talks directly to its database — no daemon to supervise, no web application beside it, no process manager tying the two together.
@@ -15,7 +25,7 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
 ## Architecture
 
 ```
-  Client (TUI / silo-drive / …)
+  Clients (TUI / silo-drive daemon / …)
               │
               │ HTTP :8082
               ▼
@@ -30,21 +40,25 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
                  chunks / objects)
 ```
 
-- One process. No RPC, no Python, no controller.
+- One process. No RPC layer, no second runtime, no process manager holding two halves together.
 - One embedded SQLite database, `silo.db`, in the data directory: users, groups, libraries, shares and tokens together.
 - Content-addressable object store under `{data-dir}/storage/` with two trees: `chunks/` for content and `objects/` for the manifests, directories and commits that describe it.
 - One writer per data directory, enforced: the server takes an `flock` on `{data-dir}/silo.lock` for its lifetime, and a second server — or a `gc -delete` — refuses to start and names the pid holding it.
 
 ## Features
 
-- Single-admin bootstrap via environment variables
-- Revocable credential rows for the management API — no JWT anywhere
-- Library create / list / delete
-- File operations: upload, download, mkdir, rename, move, delete
-- Directory listing via `/api/silo/v1/libraries/{id}/dir/`
-- Content-defined chunking, SHA-256 content addressing, per-library end-to-end encryption — see [`docs/storage.md`](docs/storage.md)
-- In-process notification server (WebSocket `/notification`) so a client gets push events on library updates instead of polling
-- Embedded SQLite backend (WAL mode, read/write connection split)
+- **Setup-token bootstrap** — the first account is claimed from a terminal, so no password passes through a config file, a log line or an environment variable
+- **Revocable credential rows** for every lane — no JWT anywhere, so revoking is a row delete that takes effect on the next request
+- **Roles and named capabilities** — `admin` / `user` / `guest`, plus `users`, `passwords`, `quota`, `tokens`, `retention` and `grant` granted per account, rather than one admin bit that means everything
+- **Libraries** — create, list, delete, share to another account, and a per-account storage quota
+- **Files** — upload, download, mkdir, rename, move, copy and delete, all on one path-addressed surface: `/api/silo/v1/libraries/{id}/entries/{path}`
+- **History** — read a path as of a past commit (`?at=`), list the commits where it changed (`?type=history`), with a per-library retention window
+- **Range reads in one round trip** — `QUERY entries/{path}` answers with the manifest *and* the chunks covering the requested bytes, which is what makes a cold FUSE mount usable
+- **Content-defined chunking**, SHA-256 content addressing, per-library end-to-end encryption — see [`docs/storage.md`](docs/storage.md)
+- **Packed object storage** with an offline compactor, so deleted history returns disk instead of stranding it — see [`docs/configuration.md`](docs/configuration.md)
+- **Push notifications** — an in-process WebSocket at `/notification`, so clients stop polling
+- **An operator page** at `/admin` — storage, libraries and accounts, served from the binary with no build step and no data baked into it
+- **Embedded SQLite** (WAL mode, read/write connection split), migrated on start or ahead of time with `silo migrate`
 
 ## Quick start
 
@@ -78,6 +92,22 @@ sudo -u silo silo -d /var/lib/silo setup-token
 ```
 
 Details, and what the unit is doing: [packaging/README.md](packaging/README.md).
+
+### Arch Linux
+
+[`silo-bin`](https://aur.archlinux.org/packages/silo-bin) is in the AUR, built
+from the published release tarball rather than from source:
+
+```bash
+yay -S silo-bin
+```
+
+It installs a **user** unit rather than a system one, so it runs as you and
+reads `~/.config/silo/env` — the single-user case the deb and rpm do not cover:
+
+```bash
+systemctl --user enable --now silo
+```
 
 ### Install script
 
@@ -233,19 +263,35 @@ silo library rm <library-id>
 silo changes <library-id> <since-commit>   # what changed since a commit
 ```
 
-And two that run against the data directory rather than the API:
+And a second set that runs against the data directory rather than the API —
+these need the files, not a login, so they take `-d` and are run on the host:
 
 ```bash
+silo df [library-id]                # where the disk went: head, history, unreferenced
+silo retention [library-id [days]]  # show or set how long a library keeps history
 silo gc                             # report what deleted libraries left on disk
 silo gc -delete                     # reclaim it — refuses while a server holds the data dir
+silo gc -orphans                    # also consider objects no commit reaches
+silo gc -compact                    # rewrite sealed packs without their dead frames
 silo backup-db <dir>                # snapshot the database; see Backups below
 silo migrate [-n]                   # bring the database to this build's schema; -n only lists what would run
 ```
 
-`silo gc` only ever touches libraries that have already been deleted; it does
-not reclaim unreferenced history inside a library that still exists.
+`silo gc` on its own only ever touches libraries that have already been
+deleted. Reclaiming space *inside* a library that still exists takes the other
+flags, and a full pass is one run in one order:
 
-`silo help` prints the full subcommand list.
+```bash
+silo gc -expire-history -orphans -compact -delete
+```
+
+`-compact -delete` must be offline, and that is a rule rather than advice: a
+running server holds its pack set in memory and opens a sealed pack by path, so
+a rewrite from a second process moves frames the server still believes it can
+find.
+
+`silo help` prints the full subcommand list; `silo user -h` and `silo serve -h`
+print their own.
 
 ## Configuration
 
@@ -311,6 +357,81 @@ naturally as "same host, new port" — and quietly picking the first meaning
 would put a server on the network nobody asked to put there. Say which you
 meant: `-b 127.0.0.1:8003` or `-b 0.0.0.0:8003`. To change only the port and
 leave the host wherever it was, use `SILO_PORT`.
+
+## Administration
+
+### Accounts
+
+There are three ways an account comes into being, and none of them is open
+sign-up:
+
+```sh
+silo setup-token                      # the first one, claimed from the TUI
+silo user add alice@example.com       # on the host; -generate invents the password
+silo user -role guest add bob@x.com   # roles: admin, user, guest
+```
+
+The third is an invite, minted over the API (`POST /api/silo/v1/admin/invites`)
+and redeemed by the person it was sent to at `POST /api/silo/v1/auth/redeem`,
+who chooses their own password. Passwords are never taken as a flag — a
+terminal is prompted with echo off, a pipe is read from stdin.
+
+A role says what an account may do on its own. `admin` curates the install;
+`user` is ordinary; `guest` sees only what has been shared to it and creates
+nothing. `SILO_ALLOW_USER_CREATE_LIBRARY=false` narrows `user` to the same
+shape without demoting anyone.
+
+```sh
+silo user list                        # every account, -json for scripts
+silo user disable alice@example.com   # stop every credential; the tokens survive
+silo user enable alice@example.com    # and work again
+silo user quota alice@example.com 100gb   # or "none"
+```
+
+### Administrative capabilities
+
+"Administrator" is not one permission here, so it is not one bit. Six named
+capabilities are granted per account, and each administrative route names the
+one that opens it:
+
+| capability | what it opens |
+|---|---|
+| `users` | create, list, disable and enable accounts; mint and revoke invites |
+| `passwords` | set another account's password |
+| `quota` | read and set quotas, and list every library with its owner and size |
+| `tokens` | list and revoke another account's credentials |
+| `retention` | history retention, GC and the storage view |
+| `grant` | change another account's role and capabilities |
+
+```sh
+silo user grant alice@example.com users,passwords
+silo user revoke alice@example.com passwords
+```
+
+`passwords` is split from `users` on purpose: a password reset reaches any
+account in two steps — reset, then log in — so handing it out is handing out
+everything that account can reach. Granting `grant` is handing out the ability
+to hand out the rest.
+
+### The operator page
+
+`GET /admin` serves a single embedded page — storage, libraries and accounts —
+with no build step and no data baked into the HTML: it is a form and two empty
+tables, and every number on it arrives from a fetch the browser makes with a
+credential the person typed in. It can show nothing the admin API does not
+already say, which is what keeps it honest. It is **not** a file browser; see
+[What's not implemented](#whats-not-implemented).
+
+### Disk and history
+
+```sh
+silo df                               # per library: head, history, unreferenced
+silo retention                        # how long each library keeps history
+silo retention <library-id> 30        # …or days, "keep-all", "default"
+```
+
+[`docs/quota.md`](docs/quota.md) covers what a quota counts and when the things
+it counts stop counting.
 
 ## Backups
 
@@ -445,42 +566,80 @@ clients were deleted in 0.5.0, and every route they used now answers 404 — see
 
 Tested clients:
 
-- **Silo TUI** (`cmd/silo`) — full CRUD and browse
-- **silo-drive**, as a FUSE mount and as the macOS File Provider client —
-  `server-info`, `auth/login`, `libraries`, `account/usage`, `entries`,
-  `changes`, the chunk surface and the notification socket; see
-  [`docs/protocol.md`](docs/protocol.md#writing-a-client) § Writing a client
+- **Silo TUI and CLI** (`cmd/silo`) — full CRUD and browse, in this repo
+- **silo-drive (Linux)** — a FUSE client that mounts an account as a
+  filesystem. It is a daemon rather than a command: it stays up holding the
+  mount, keeps the notification socket connected, and answers a control socket
+  of its own in `$XDG_RUNTIME_DIR/silo-drive/`. Every library is a directory,
+  the tree is browsable without downloading anything, and a file's bytes arrive
+  the first time something reads them. Takes writes; `-read-only` refuses them
+  at `open(2)`
+- **silo-drive (macOS)** — a File Provider extension, the same files-on-demand
+  model in the Finder. Read-only for now
+
+The drive clients are separate projects from this server and are not yet
+published; a beta will be at **beta.silodrive.io**.
+
+Between them they exercise `server-info`, `auth/login`, `libraries`,
+`account/usage`, `entries` (including the range read), `changes`, the chunk
+surface and the notification socket. See
+[`docs/protocol.md`](docs/protocol.md#writing-a-client) § Writing a client for
+what a new client needs that the endpoint table does not say.
+
+Neither drive client keeps an object store: both speak the Silo lane and ask
+the server the questions a sync client would otherwise answer for itself. That
+is the load-bearing reason the endpoint surface looks the way it does —
+`entries/{path}` listing a directory, `?type=history`, and the one-round-trip
+range read all exist so a client does not have to walk trees locally.
 
 ## What's not implemented
 
-Silo is a lean rewrite focused on the sync path and a minimal management API. The following are **not** available:
+Silo is a lean rewrite focused on the sync path and a management API to match.
+The following are **not** available:
 
-- No user management API — the first account is created by claiming the setup token, and any further account needs `silo user add` on the host
-- No groups — a library is shared to one account at a time, through
-  `POST /api/silo/v1/libraries/{id}/shares`
-- No `is_staff` / admin privilege check in the API layer — all authenticated users have equal permissions
-- No web UI — use the TUI
-- No trash / restore or history / revision endpoints
-- Encrypted libraries are new and thin: a client can create one and fetch its
-  wrapped content key, but sharing one, rotating its key and recovering it are
-  not built. See [`docs/encryption.md`](docs/encryption.md) for the scheme and
-  [`docs/storage.md`](docs/storage.md) for what is left
+- **No groups.** A library is shared to one account at a time, through
+  `POST /api/silo/v1/libraries/{id}/shares`. There is no group principal, so
+  nothing is shared to a set of people at once
+- **No sub-library sharing.** A grant covers a whole library, not a folder
+  inside one
+- **No web file browser.** `/admin` is an operator page; browsing, uploading
+  and downloading happen in the TUI, the CLI, or a sync client
+- **No self-registration.** Every account arrives by the setup token,
+  `silo user add`, or an invite an administrator minted
+- **No trash or restore.** History is readable — `?at=` and `?type=history` —
+  but nothing undeletes a path, and `silo gc` has no undo behind it
+- **No built-in TLS.** Terminating it is the reverse proxy's job; see
+  [Exposing the server](#exposing-the-server)
+- **Encrypted libraries are new and thin.** A client can create one and fetch
+  its wrapped content key, but sharing one, rotating its key and recovering it
+  are not built. See [`docs/encryption.md`](docs/encryption.md) for the scheme
+  and [`docs/storage.md`](docs/storage.md) for what is left
 
-See [`docs/roadmap.md`](docs/roadmap.md) for the rough roadmap.
+See [`docs/roadmap.md`](docs/roadmap.md) for the rough roadmap, and
+[`docs/protocol-gaps.md`](docs/protocol-gaps.md) for what the wire still lacks
+for a Dropbox-shaped client.
 
 ## Directory layout
 
 ```
-fileserver/        Active Go server
+fileserver/        The server: routing, handlers, the subcommands that need the files
   ├── api/         Management API handlers (/api/silo/v1/*)
-  ├── account/     Accounts, addresses and external identities
+  ├── account/     Accounts, addresses, roles and external identities
+  ├── admin/       Administrative capabilities: who may do what to whom
+  ├── adminui/     The embedded operator page served at /admin
   ├── credential/  The one credential store: mint, resolve, scope, revoke
   ├── authmgr/     Password validation and hashing
+  ├── invite/      Invites: minting, redeeming, expiry
   ├── middleware/  Credential resolution and the permission ceiling
-  ├── dbutil/      SQLite connection management and query helpers
+  ├── libmgr/      Libraries: creation, deletion, heads, retention
+  ├── objmgr/      The object lanes — what a handler calls to read or write one
+  ├── objstore/    Objects on disk: loose files, packs, compaction
+  ├── notif/       The WebSocket notification server
+  ├── dbutil/      SQLite connection management, migrations, query helpers
   ├── share/       Permission checking
   └── ...
-cmd/silo/          Bubble Tea TUI client
+store/             The object format itself: chunking, manifests, commits, crypto
+cmd/silo/          The one binary — server, TUI and CLI behind one dispatch
 client/            HTTP client for the management API
 internal/          TUI, CLI plumbing, observability, XDG paths
 docs/              Architecture, protocol, backups, and the plans (docs/README.md)

@@ -6,10 +6,10 @@ Everything here is built from the release binaries `.github/workflows/build.yml`
 already produces. There is no second compile: `nfpm` takes a finished
 `silo` binary and wraps it, so a packaging change cannot change the program.
 
-This directory owns the Debian and RPM side, the service definition, and the
-Homebrew formula that the `dkam/homebrew-silo` tap serves. `install.sh` at the
-repository root owns the binary-only install. The AUR lives in its own
-repository.
+This directory owns the Debian and RPM side, the service definition, the AUR
+recipe in `aur/`, and the Homebrew formula generator in `homebrew/`. The
+tap those formulae are served from lives elsewhere, in `dkam/homebrew-silo`;
+`install.sh` at the repository root owns the binary-only install.
 
 ## What the package installs
 
@@ -205,3 +205,46 @@ install takes.
 The `homebrew` job runs after `release`, on tags only, and updates the tap. It
 is the one job here that writes to another repository, which is why it is
 gated on a secret and why it is the last thing in the file.
+
+## The AUR package
+
+`aur/` holds the three files the `silo-bin` AUR package is made of: `PKGBUILD`,
+the `.SRCINFO` that mirrors it, and a systemd unit. Like the deb and the rpm it
+is a `-bin` package — it downloads the release tarball and checks it against a
+recorded SHA-256 rather than compiling anything, so it cannot produce a binary
+that differs from the published one.
+
+Two things about it are easy to get wrong.
+
+**Its unit is a user unit, and the one in `systemd/` is a system unit.** They
+are not two copies of the same file and neither should be made to match the
+other. The deb and rpm install a service for a machine that exists to run Silo:
+a dedicated `silo` account, state under `/var/lib/silo`, config at
+`/etc/silo/silo.conf`, and the hardening that goes with running as root long
+enough to drop privileges. The AUR unit installs to
+`/usr/lib/systemd/user/silo.service` and runs as whoever enabled it, reading
+`~/.config/silo/env`, because the Arch user installing this is usually running
+Silo for themselves on a machine they already sit in front of. `WantedBy`
+differs accordingly — `default.target` rather than `multi-user.target`.
+
+**This is a copy, not the source of truth.** The AUR takes packages by git
+push, to `ssh://aur@aur.archlinux.org/silo-bin.git`, and that repository is
+what the AUR actually serves. Editing the files here changes nothing on the AUR
+until someone copies them across and pushes. They can therefore drift, and the
+only thing that catches it is looking.
+
+Publishing a new version means bumping `pkgver`, replacing the three
+`sha256sums` with the ones for the new release's tarballs and LICENSE, and
+regenerating `.SRCINFO` — the AUR reads metadata from that file, not from the
+`PKGBUILD`, so a `PKGBUILD` edit that skips it is invisible:
+
+```sh
+cd packaging/aur
+updpkgsums                 # rewrites sha256sums from the sources
+makepkg --printsrcinfo > .SRCINFO
+makepkg -si                # build and install it locally before pushing
+```
+
+No `provides`/`conflicts` on `silo` is deliberate and the `PKGBUILD` says why:
+that AUR name belongs to LLNL's unrelated scientific data format library, and
+claiming it would make the two falsely exclusive.
