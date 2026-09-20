@@ -2,7 +2,7 @@
 
 A single-binary Go file sync server.
 
-Status: pre-1.0 and young, but no longer reckless with your data. Object writes are fsynced before they are published, and every uploaded object is verified against its content hash on the way in, so a crash or a bad client can no longer silently corrupt a library. That said, it has not yet seen wide real-world use — run it, but keep an independent backup of anything you care about.
+Status: **alpha** — which is a statement about evidence rather than about care. Object writes are fsynced before they are published, every uploaded object is verified against its content hash on the way in, and the suite covering that is large. What has not happened is use: nobody has yet run Silo against data they would be upset to lose, for long enough for the quiet failures to surface. Those are the ones that matter for a sync server — the file that did not sync, the chunk that did not land — found weeks later, once the backup that would have covered it has rotated. Tests do not find those; running it does. Note also that there is no trash and no undo behind `silo gc`. Run it, and keep an independent backup of anything you care about.
 
 ## Contents
 
@@ -578,7 +578,7 @@ Tested clients:
   model in the Finder. Read-only for now
 
 The drive clients are separate projects from this server and are not yet
-published; a beta will be at **beta.silodrive.io**.
+published; a beta will be at **silodrive.io/beta**.
 
 Between them they exercise `server-info`, `auth/login`, `libraries`,
 `account/usage`, `entries` (including the range read), `changes`, the chunk
