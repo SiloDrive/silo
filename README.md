@@ -663,4 +663,5 @@ Licensed under **AGPLv3** — the licence it was forked under, and the one it
 keeps. [`LICENSE.txt`](LICENSE.txt) is the FSF's text unmodified, with no
 additional permissions and no exceptions; the upstream project's OpenSSL
 exception was removed once no code needing it remained. [`NOTICE`](NOTICE) names
-the origin as a courtesy and says what `scripts/lineage-check.sh` measures.
+the origin as a courtesy, says how little of it survives, and sets out the
+measurement so the claim can be checked rather than taken.

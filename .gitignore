@@ -25,3 +25,6 @@ __pycache__/
 
 # Staging directory for nfpm; see packaging/README.md.
 packaging/.staged/
+
+# Lineage tooling, kept locally rather than shipped
+scripts/lineage-check.sh

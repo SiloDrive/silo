@@ -137,11 +137,12 @@ every release. The generated formula compares against the bare string:
 assert_equal version.to_s, shell_output("#{bin}/silo version").strip
 ```
 
-**The description was inherited from a server Silo no longer is.** It read
-"Seafile-compatible server and client in one binary"; that compatibility was
-dropped on purpose, and `brew info` was still advertising it. It now reads
-"Single-binary file sync server with per-library end-to-end encryption" — 69
-characters, no article, no formula name, which is what `brew audit` wants.
+**The description was inherited from a server Silo no longer is.** It
+advertised compatibility with the upstream project Silo was forked from;
+that compatibility was dropped on purpose, and `brew info` was still
+selling it. It now reads "Single-binary file sync server with per-library
+end-to-end encryption" — 69 characters, no article, no formula name, which
+is what `brew audit` wants.
 
 ### The tap still has its own copy
 

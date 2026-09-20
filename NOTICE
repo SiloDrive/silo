@@ -17,12 +17,21 @@ object format have all been replaced. Silo is a single Go binary speaking
 its own HTTP API over its own store format, and no upstream client can
 talk to it.
 
-That claim is measured rather than asserted. scripts/lineage-check.sh
-reports every line still shared with the fork point, and each one is a
-line with a single correct spelling -- `package objstore`, `import (`,
-`if err != nil {` -- dictated by Go or by a library's API. As of
-September 2026 it finds ninety such lines across seven files. Run the
-script to see the number for the commit in front of you.
+That claim is measured rather than asserted, and the measurement is
+one anybody can repeat. Take the fork point, commit 9cf6605 of the
+upstream tree; for every path that existed there and still exists here,
+strip the whitespace from both versions and count the distinct
+non-trivial lines that appear in both. As of September 2026 that is
+ninety lines across seven files, and each one is a line with a single
+correct spelling -- `package objstore`, `import (`, `if err != nil {` --
+dictated by Go or by a library's API.
+
+Read that number as a tripwire rather than as proof. It over-counts,
+because `if err != nil {` is shared by every Go program ever written and
+says nothing about descent. It under-counts more seriously, because a
+file that was renamed, or reformatted, or whose logic was carried across
+in different words does not appear in it at all. It is evidence of what
+plainly has not been cleared, never evidence that something was.
 
 This notice is a courtesy, not an obligation. Silo is under the AGPL
 because that is the licence it was forked under and the licence its
