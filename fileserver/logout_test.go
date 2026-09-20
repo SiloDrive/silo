@@ -136,3 +136,71 @@ func TestAReadOnlyCredentialMayLogOut(t *testing.T) {
 		t.Errorf("logout with a read-only credential: status %d, body %s", code, body)
 	}
 }
+
+// "The others" is the verb that was missing.
+//
+// logout signs this credential out and logout/everywhere signs all of them out
+// including this one; neither could express what a person actually wants when
+// they think a laptop has gone missing and are sitting at their desktop. Before
+// this, doing it meant signing the desktop out too, or revoking ids one at a
+// time.
+//
+// It is also what makes the password change's new default defensible: that
+// default only stops being a silent under-revocation because this operation is
+// available by name.
+func TestLoggingOutOfTheOthersKeepsTheOneThatAsked(t *testing.T) {
+	base, token := wire(t)
+	device := issueCredential(t, credential.IssueOpts{Kind: credential.KindDevice, Perm: "rw"})
+	session := issueCredential(t, credential.IssueOpts{Kind: credential.KindSession, Perm: "rw"})
+
+	code, body := call(t, "POST", base+"/api/silo/v1/auth/logout/others", token, "")
+	if code != http.StatusOK {
+		t.Fatalf("logout/others: status %d, body %s", code, body)
+	}
+	if n := revokedCount(t, body); n != 2 {
+		t.Errorf("revoked = %d, want 2 -- the device and the other session", n)
+	}
+
+	if alive(t, base, device) {
+		t.Error("a device credential survived logout/others")
+	}
+	if alive(t, base, session) {
+		t.Error("a session credential survived logout/others")
+	}
+	if !alive(t, base, token) {
+		t.Error("logout/others signed out the credential that asked, which is logout/everywhere")
+	}
+}
+
+// An account with nothing else signed in gets zero rather than an error: the
+// state the caller asked for is the state they are already in.
+func TestLoggingOutOfTheOthersWithNoOthers(t *testing.T) {
+	base, token := wire(t)
+
+	code, body := call(t, "POST", base+"/api/silo/v1/auth/logout/others", token, "")
+	if code != http.StatusOK {
+		t.Fatalf("logout/others: status %d, body %s", code, body)
+	}
+	if n := revokedCount(t, body); n != 0 {
+		t.Errorf("revoked = %d, want 0", n)
+	}
+	if !alive(t, base, token) {
+		t.Error("logout/others signed out the only credential there was")
+	}
+}
+
+// Account-wide, so a credential cut to one library is refused -- exactly as it
+// is refused logout/everywhere, and unlike plain logout.
+func TestALibraryScopedCredentialCannotLogOutTheOthers(t *testing.T) {
+	base, token := wire(t)
+	id := makeLibrary(t, base, token)
+	scoped := narrowed(t, "rw", credential.Scope{LibraryID: id})
+
+	code, body := call(t, "POST", base+"/api/silo/v1/auth/logout/others", scoped, "")
+	if code != http.StatusForbidden {
+		t.Errorf("logout/others with a scoped credential: status %d, body %s; want 403", code, body)
+	}
+	if !alive(t, base, token) {
+		t.Error("a refused logout/others revoked something anyway")
+	}
+}

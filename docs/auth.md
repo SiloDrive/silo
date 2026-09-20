@@ -587,10 +587,19 @@ support request for an operator holding `silo token revoke`.
 
 ```
 POST /api/silo/v1/auth/logout             this credential
+POST /api/silo/v1/auth/logout/others      every other credential, keeping this one
 POST /api/silo/v1/auth/logout/everywhere  every credential the account holds
 
 200 { "revoked": 1 }
 ```
+
+Three verbs, each saying what it does. `others` is the one that was missing for
+a long time, and its absence is why the password change grew a blanket revoke:
+a person who thought a laptop had gone missing, sitting at a desktop they
+intended to keep using, could not express that without signing the desktop out
+too. It is `credential.RevokeOthers`, which is `RevokeAll` with one
+`AND id != ?`, and `"revoke_others": true` on a password change calls the same
+function rather than reimplementing it.
 
 Both answer the same body, and the count is worth returning: *"signed out of
 four places"* is a sentence a client can show and cannot derive from a `204`.
@@ -730,25 +739,35 @@ answer. A renewal is logged with both ids for the same reason.
 
 ## Changing a password, and what it revokes
 
-Everything, in both cases:
+The two cases have different answers, and the difference is who is asking:
 
-- **A user changing their own password** revokes every credential the account
-  holds, `device` credentials and the one that made the request included. This
-  used to spare `device`, on the argument that unmounting somebody's laptop as
-  a side effect of routine hygiene teaches them to stop doing hygiene. That
-  cost is real and is still paid. What it was weighed against was not: changing
-  the password is the action a person already knows to reach for when they
-  think something has been taken, and sparing `device` left the credential most
-  worth worrying about untouched — ninety days, renewable from itself, so a
-  stolen one outlived the password it was minted under indefinitely. The
-  recovery was `auth/logout/everywhere`, a second endpoint the person has to
-  know about in the moment they are least likely to go looking for one. A
-  control that has to be discovered under stress is not one.
+- **A user changing their own password** revokes **nothing**, unless they send
+  `"revoke_others": true`, and never the credential that made the request.
+
+  This has now been all three things, which is worth knowing before changing it
+  a fourth time. It began sparing `device` and revoking sessions — the worst of
+  the three, because it spared precisely the long-lived, self-renewing
+  credential worth worrying about while still unmounting things. It was
+  replaced by revoking everything, on the argument that changing a password is
+  what a person reaches for when they think something has been taken, and that
+  a blanket revoke was the only thing pointed at a stolen `device` credential.
+  That argument was correct and is now spent: `auth/logout/others` says the
+  same thing by name, so the password change does not have to carry it as a
+  side effect, and everybody rotating a password has stopped paying for the
+  rare case.
+
+  What the default costs is real and is accepted knowingly: somebody who
+  changes their password *because* they are worried, and stops there, is no
+  longer covered by something they did not know was happening. That is answered
+  by telling them — the count comes back `0` and the CLI names
+  `silo credential revoke --others` — rather than by revoking hosts nobody
+  asked about. See
+  [`plans/credential-management.md`](plans/credential-management.md) § Step 3.
 - **An administrator resetting a password** revokes everything, and `silo user
-  passwd` does. Reaching that command means shell access and an account that is
-  not yours to log in to, and the reason an administrator resets a password is
-  that the user has lost control of something — which something is not knowable
-  from here.
+  passwd` does. The asymmetry is deliberate: reaching that command means shell
+  access and an account that is not yours to log in to, and the reason an
+  administrator resets a password is that the user has lost control of
+  something — which something is not knowable from here.
 
 In both cases the revocation runs *after* the password is set: one that ran and
 then failed to change the password would sign every device out and leave the
@@ -756,14 +775,15 @@ old password working.
 
 ```
 POST /api/silo/v1/auth/password
-{ "current_password": "…", "new_password": "…" }
+{ "current_password": "…", "new_password": "…", "revoke_others": false }
 
-200 { "revoked": 3 }    how many credentials were signed out
+200 { "revoked": 0 }    how many OTHER credentials were signed out
 ```
 
-The count is what a client shows: "signed out of 3 places" tells the person to
-expect their laptop to ask again, which is the whole of what the old rule was
-trying to spare them.
+The count never includes the caller's own row, in either mode. A client
+branches on the `logout-others` capability rather than the version: without
+that name it is talking to a server where this request still signs everything
+out, and it should say so rather than let somebody find out.
 
 **With `client_kdf_params`, the same request is the split-derivation
 crossover.** `new_password` then carries an `authKey` rather than a password,
@@ -777,9 +797,11 @@ cannot become the account. It is checked against the account the credential
 resolved to; there is no address in the body, so nothing here can name somebody
 else's.
 
-**The session that asks is revoked with the rest.** The rule is about kinds, and
-a carve-out for "this one" would mean a client could not read the count as what
-it says.
+**The session that asks is never revoked.** It demonstrably holds the password
+— it just sent it — so signing it out proves nothing, and it was the part of
+the old behaviour that most read as a bug. The count is therefore always about
+other hosts, which is what makes it readable without knowing whether the client
+was counted.
 
 | Request | Answer |
 |---|---|

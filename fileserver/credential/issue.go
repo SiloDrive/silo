@@ -286,6 +286,30 @@ func RevokeAll(ctx context.Context, owner account.ID) (int64, error) {
 	return dbutil.RowsAffected(res), nil
 }
 
+// RevokeOthers deletes every credential an account holds except one, and
+// returns how many went.
+//
+// The exception is the row that asked, which is what separates this from
+// RevokeAll: signing every other host out is a thing a person wants to do from
+// a host they intend to keep using, and RevokeAll made that impossible to
+// express -- the only way to reach the other rows was to take your own with
+// them.
+//
+// It is also what the password change calls when it is asked to revoke, so
+// "everything but me" is one operation with one implementation rather than a
+// special case living inside a handler that is mostly about something else.
+//
+// The invite kind is excluded for the reason Revoke gives.
+func RevokeOthers(ctx context.Context, owner account.ID, keep string) (int64, error) {
+	res, err := writeDB.ExecContext(ctx,
+		"DELETE FROM Credential WHERE account_id = ? AND id != ? AND kind != ?",
+		owner, keep, KindInvite)
+	if err != nil {
+		return 0, fmt.Errorf("revoking other credentials: %v", err)
+	}
+	return dbutil.RowsAffected(res), nil
+}
+
 // RevokeKind deletes every credential of one lane an account holds, and
 // returns how many.
 //

@@ -135,13 +135,33 @@ ask is the device.
 
 ```
 POST /api/silo/v1/auth/logout             → 200 {"revoked": 1}   this credential
+POST /api/silo/v1/auth/logout/others      → 200 {"revoked": n}   all but this one
 POST /api/silo/v1/auth/logout/everywhere  → 200 {"revoked": n}   all of them
 POST /api/silo/v1/auth/password           → 200 {"revoked": n}   n credentials signed out
-{"current_password": "…", "new_password": "…"}
+{"current_password": "…", "new_password": "…", "revoke_others": false}
 
 GET    /api/silo/v1/account/credentials       → 200 {"credentials": [...]}
 DELETE /api/silo/v1/account/credentials/{id}  → 200 {"revoked": 1}
 ```
+
+**A password change revokes nothing by default, and never the credential that
+asked.** `revoke_others` defaults to `false`: rotating a password is not
+evidence that anything was stolen, and a client should not have to warn people
+that improving a password will unmount their laptop. `true` signs the other
+hosts out and keeps the caller's own row, which is the same operation
+`auth/logout/others` performs.
+
+This changed. Older servers revoked **every** credential the account held, the
+caller's included, and a client that needs to know which behaviour it is
+talking to should check for the `logout-others` capability rather than the
+version. A client that does not see that name is talking to a server where
+changing a password still signs everything out, and should say so rather than
+let somebody find out.
+
+The three logout verbs each say what they do: `logout` is this credential,
+`logout/others` is the rest, `logout/everywhere` is all of them including this
+one. `others` is the one a person wants after losing a laptop while sitting at
+a desktop they intend to keep using.
 
 The listing is what makes the revoke aimable: one object per credential, with
 `id`, `kind`, `label`, `scope`, `perm`, `client_id`, `created`, `expires_at`,
@@ -285,8 +305,9 @@ are registered there too, but are authenticated: see the lane note above.
 | POST | `/api/silo/v1/auth/login` | **No auth.** Email + password → a `session` credential, or an enrolled one. Not a JWT: it names a row in `Credential` that can be revoked, labelled and narrowed |
 | POST | `/api/silo/v1/auth/renew` | Mint the presenting credential's successor: no body, a full fresh lifetime, every field inherited. `device` only — a `session` gets `403`. The old credential is untouched and expires when it always would have. A scoped credential may reach it. Feature name `credential-renew` |
 | POST | `/api/silo/v1/auth/logout` | Discard the credential that made the request. No write permission needed, and a scoped credential may reach it |
+| POST | `/api/silo/v1/auth/logout/others` | Discard every credential the account holds **except** the one that asked. Account-wide, so a scoped credential is refused. No write permission needed. Feature name `logout-others` |
 | POST | `/api/silo/v1/auth/logout/everywhere` | Discard every credential the account holds, including this one |
-| POST | `/api/silo/v1/auth/password` | `{"current_password":…,"new_password":…}` — change the password. Needs `rw` and the current password; revokes **every** credential the account holds, `device` ones and the one that asked included, so a mounted client will ask for the new password. It used to spare `device`; see docs/auth.md § Changing a password, and what it revokes for why that changed. With `"client_kdf_params":…` it is the split-derivation crossover instead: `new_password` carries an `authKey`, and hash and parameters are written together. Feature name `split-login` |
+| POST | `/api/silo/v1/auth/password` | `{"current_password":…,"new_password":…}` — change the password. Needs `rw` and the current password. Revokes **nothing** by default, and never the credential that asked; `"revoke_others": true` signs the account's other hosts out, which is `auth/logout/others` by another name. It has meant all three things — sessions only, then everything, now nothing-unless-asked — so branch on the `logout-others` capability rather than assuming. With `"client_kdf_params":…` it is the split-derivation crossover instead: `new_password` carries an `authKey`, and hash and parameters are written together. Feature name `split-login` |
 | GET | `/api/silo/v1/account/credentials` | Every credential the account holds, newest first, with `"current": true` on the one that asked. `expires_at` and `last_used` are absent rather than zero when they do not apply. Omits `kind: invite`. No write permission needed; a library-scoped credential is refused, because the subject is the account rather than the row presenting it. Feature name `credentials` |
 | DELETE | `/api/silo/v1/account/credentials/{id}` | Revoke one of them → `200 {"revoked": 1}`, with `"current": true` when it was the caller's own, which is allowed. `404` — not `403` — for an id that is unknown, another account's, or the spent invite; the three are deliberately indistinguishable. No write permission needed |
 | POST | `/api/silo/v1/auth/setup` | **No auth**, because it is the request that creates the first account — there is nothing to authenticate it against yet. `{"email":…,"password":…,"setup_token":…}` → `201 {"token":…}`, login's shape exactly. The address and password are the operator's choice; the setup token, printed at boot and by `silo setup-token`, is what proves they own the host. `401` for a wrong *or* malformed token, indistinguishably; `409` once any account exists. Guarded by `setup_required` above rather than by trying it |
@@ -1111,6 +1132,7 @@ are documented above.
 | `logout` | `POST auth/logout`, `POST auth/logout/everywhere` |
 | `password-change` | `POST auth/password` |
 | `credentials` | `GET account/credentials`, `DELETE account/credentials/{id}` |
+| `logout-others` | `POST auth/logout/others`, and `revoke_others` on `auth/password` — its absence means a password change still signs everything out |
 | `credential-renew` | `POST auth/renew` |
 | `account-keys` | `GET`/`PUT account/keys`, `DELETE …/recovery/{n}`, `POST auth/kdf` |
 | `split-login` | an `authKey` on `POST auth/login`, `kdf_params` on `POST auth/password` |

@@ -1,7 +1,6 @@
 # Plan: self-service credential management
 
-**Status: steps 0, 1 and 2 are built. Next is reconsidering the password
-change, then the drive clients.** A person can see the
+**Status: steps 0-3 are built. Next are the drive clients.** A person can see the
 credentials their account holds, and revoke one of them, without an
 administrator and without signing everything out.
 
@@ -240,23 +239,79 @@ person sees it and does not wonder, and calls `auth/logout` on exit — on the
 error path too. `revoke` does the same, and if the id it was given is its own,
 that is the logout and it says so rather than calling it twice.
 
-## Then reconsider the password change
+## Step 3: a password change stops signing other hosts out
 
-With a targeted revoke available, the blanket one has options it does not have
-today:
+**The password change revokes nothing by default, and the caller's credential
+never.** Rotating a password is not evidence that anything was stolen, and
+unmounting somebody's NAS, laptop and phone because they improved a password is
+how people learn not to improve passwords. The note on
+`api.ChangePasswordHandler` conceded exactly this — *"that cost is real and is
+still paid"* — and overruled it because the blanket revoke was the only thing
+pointed at a stolen device credential. It is not any more.
 
-- **Exempt the calling credential.** The person changing their password
-  demonstrably holds it; signing them out proves nothing and is the part of the
-  current behaviour that most feels like a bug.
-- **Or make it explicit** — a `revoke_others` field on the request, defaulting
-  to true, so the safe thing happens by default and a client that knows better
-  can say so.
+```
+POST /api/silo/v1/auth/password
+{"current_password": "…", "new_password": "…", "revoke_others": false}
 
-Either way the reasoning in the `api.ChangePasswordHandler` note should be
-updated rather than deleted: it is still right about why the old
-sessions-only rule was wrong, and the fix is a third option that was not
-available when it was written. This step is **blocked on step 2**, and that is
-the whole point of the ordering.
+POST /api/silo/v1/auth/logout/others   → 200 {"revoked": n}
+```
+
+`revoke_others` **defaults to false**. That is a deliberate choice against the
+safer default, and the reasoning should be recorded rather than discovered:
+the common case is hygiene, the rare case now has a verb of its own, and a
+person who believes something has been taken is served by
+`logout/others` and `logout/everywhere` — both of which say what they do in
+their names, which a side effect of a password change never did.
+
+What it costs: somebody who changes their password *because* they think they
+have been compromised, and who does not go on to revoke anything, is no longer
+protected by a side effect they did not know they were relying on. That is the
+risk this default accepts. It is mitigated by saying so at the point of use
+rather than by changing the default back — see the CLI note below.
+
+**The caller's own credential is never revoked, in either mode.** The person
+changing a password demonstrably holds it; signing them out proves nothing and
+is the part of the old behaviour that most read as a bug. `RevokeAll` is no
+longer what this handler calls.
+
+### `logout/others` is the verb that makes the default safe
+
+```
+POST /api/silo/v1/auth/logout/others
+```
+
+Everything the account holds except the row that asked. It is
+`credential.RevokeOthers` — `RevokeAll` with one `AND id != ?` — and it is what
+`revoke_others: true` calls, so the two are one operation rather than a special
+case inside the password handler.
+
+It stands alone because the complaint runs both ways: a person who wants to
+sign other hosts out should not have to rotate a password they were happy with,
+any more than a person rotating a password should have to sign other hosts out.
+Three verbs, each saying what it does: `logout` (this one), `logout/others`
+(the rest), `logout/everywhere` (all of it, this one included).
+
+### What the CLI must say
+
+The default is the quiet one, so the *interface* is where this stops being a
+silent under-revocation. A password change reports what it did and did not do —
+"your other 4 sessions are still signed in" — and names `silo credential revoke
+--others` as the next step. A person who came to the command because they were
+worried is then one line away from the thing they actually wanted, rather than
+believing it already happened.
+
+`silo credential revoke --others` is the CLI half of the new lane;
+`--everywhere` is not added, because `logout/everywhere` already exists and a
+flag that signs the running command out reads as a bug in the command.
+
+### What this does not change
+
+The reasoning on `api.ChangePasswordHandler` is updated, not deleted. It is
+still right that the old *sessions-only* rule was wrong — sparing device
+credentials while revoking sessions is the worst of the three, because it
+spares exactly the long-lived renewing credential worth worrying about. The
+three options are revoke nothing, revoke others, revoke everything; this picks
+the first as the default and makes the second reachable by name.
 
 ## What not to build
 

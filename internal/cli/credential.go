@@ -128,11 +128,30 @@ func deref(p *int64) int64 {
 
 func credentialRevoke(c *client.APIClient, args []string) error {
 	fs := newFlagSet("credential revoke")
+	// --others rather than an id, because "sign every other host out" is the
+	// thing people come here for after losing a laptop and it should not
+	// require reading ids off a list first. There is no --everywhere: that is
+	// auth/logout/everywhere, and a flag that signs the running command out
+	// reads as a bug in the command.
+	others := fs.Bool("others", false, "revoke every other credential, keeping this command's own session")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *others {
+		if fs.NArg() != 0 {
+			return fmt.Errorf("silo credential revoke --others takes no id")
+		}
+		return withLogout(c, func() error {
+			n, err := c.LogoutOthers()
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Revoked %s.\n", plural(n, "other credential"))
+			return nil
+		})
+	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: silo credential revoke <credential-id>")
+		return fmt.Errorf("usage: silo credential revoke <credential-id>, or --others")
 	}
 	id := fs.Arg(0)
 

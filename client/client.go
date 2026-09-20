@@ -379,20 +379,22 @@ func (c *APIClient) Setup(email, password, setupToken string) error {
 // and the server is the one insisting: a credential handed to a device must not
 // be able to promote itself into the account. See api.ChangePasswordHandler.
 //
-// The two things after the request are not tidying. The server revokes every
-// credential the account holds, and the TUI holds one, so by the time this returns the
-// token that made the call is dead and the cached password it would replay on
-// the resulting 401 is the one that no longer works. Swapping the cache and
-// signing in again is what keeps a successful change from presenting as being
-// signed out with a complaint about a password the caller just proved they
-// knew.
+// Swapping the cached password is not tidying: doRequest replays it on a 401,
+// so a cache left holding the old one turns the next expiry into a re-login
+// that cannot succeed.
 //
-// The order matters on the failure paths. The cache is swapped before the
-// re-login rather than after, so that a re-login which fails for its own
-// reasons -- the server restarting in the gap, a network that dropped -- still
-// leaves the client holding the password that is now true; the next request
-// retries against it and succeeds. Swapping afterwards would strand the client
-// on a password the server has forgotten.
+// What this no longer does is sign in again afterwards. It used to have to: the
+// server revoked every credential the account held, the caller's own included,
+// so by the time the call returned the token that made it was dead. That is
+// not the behaviour any more -- the caller keeps its credential in both modes,
+// and revoking the others is something the caller asks for by name -- so an
+// unconditional re-login would mint a second credential and abandon the first,
+// which is precisely the litter the credential list exists to show people.
+//
+// Against a server old enough to still revoke everything, the credential is
+// dead and the next request gets a 401; doRequest re-logs in with the password
+// swapped above and the recovery happens on its own. So the old case is handled
+// by machinery that already existed, rather than by paying for it every time.
 // ChangePassword sets a new password on the signed-in account and reports how
 // many credentials the server signed out.
 //
@@ -425,11 +427,7 @@ func (c *APIClient) ChangePassword(current, next string) (int, error) {
 	}
 	c.mu.Lock()
 	c.password = secret
-	email := c.email
 	c.mu.Unlock()
-	if err := c.Login(email, secret); err != nil {
-		return revoked, fmt.Errorf("password changed, but signing back in failed: %w", err)
-	}
 	return revoked, nil
 }
 
@@ -806,4 +804,16 @@ func (c *APIClient) Logout() error {
 		return fmt.Errorf("logout: %s", resp.Status)
 	}
 	return nil
+}
+
+// LogoutOthers discards every credential the account holds except this one,
+// and reports how many went.
+func (c *APIClient) LogoutOthers() (int, error) {
+	var out struct {
+		Revoked int `json:"revoked"`
+	}
+	if err := c.doRequest("POST", "/api/silo/v1/auth/logout/others", nil, &out); err != nil {
+		return 0, err
+	}
+	return out.Revoked, nil
 }

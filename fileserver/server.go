@@ -692,6 +692,8 @@ func newHTTPRouter() *mux.Router {
 	// Both of these are account-wide, so both take the narrowing: a credential
 	// scoped to one library is refused them here rather than in the handler.
 	apiRouter.HandleFunc("/auth/logout/everywhere", api.LogoutEverywhereHandler).Methods("POST")
+	// "The others" -- account-wide like everywhere, and mounted beside it.
+	apiRouter.HandleFunc("/auth/logout/others", api.LogoutOthersHandler).Methods("POST")
 	apiRouter.HandleFunc("/auth/password", api.ChangePasswordHandler).Methods("POST")
 	apiRouter.HandleFunc("/account", api.AccountHandler).Methods("GET")
 	apiRouter.HandleFunc("/account/keys", api.GetAccountKeysHandler).Methods("GET")

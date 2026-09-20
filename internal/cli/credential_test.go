@@ -22,6 +22,9 @@ type credentialServer struct {
 	// own session.
 	revokeCurrent bool
 	creds         []client.Credential
+	// othersRevoked counts hits on auth/logout/others, which is a different
+	// request from a DELETE naming an id and must not be satisfied by one.
+	othersRevoked int
 }
 
 func newCredentialServer(t *testing.T, s *credentialServer) *client.APIClient {
@@ -43,6 +46,9 @@ func newCredentialServer(t *testing.T, s *credentialServer) *client.APIClient {
 		switch {
 		case r.URL.Path == "/api/silo/v1/auth/login":
 			_ = json.NewEncoder(w).Encode(map[string]string{"token": "session-token"})
+		case r.URL.Path == "/api/silo/v1/auth/logout/others":
+			s.othersRevoked++
+			_ = json.NewEncoder(w).Encode(map[string]int{"revoked": 2})
 		case r.URL.Path == "/api/silo/v1/auth/logout":
 			s.loggedOut++
 			_ = json.NewEncoder(w).Encode(map[string]int{"revoked": 1})
@@ -189,5 +195,48 @@ func TestAClientDoesNotSignBackInAfterLoggingOut(t *testing.T) {
 	defer s.mu.Unlock()
 	if s.loggedOut != 1 {
 		t.Errorf("logged out %d times, want 1", s.loggedOut)
+	}
+}
+
+// --others revokes the rest and still signs this command's own session out.
+//
+// The two are easy to conflate and must not be: "every other credential" is
+// about the account's hosts, and the logout afterwards is about this
+// invocation's throwaway row. Doing only the first would leave the command's
+// own session behind in a list it just tidied.
+func TestRevokingOthersAlsoSignsThisCommandOut(t *testing.T) {
+	s := &credentialServer{}
+	c := newCredentialServer(t, s)
+
+	if err := cmdCredential(c, []string{"revoke", "--others"}); err != nil {
+		t.Fatalf("credential revoke --others: %v", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.othersRevoked != 1 {
+		t.Errorf("hit logout/others %d times, want 1", s.othersRevoked)
+	}
+	if s.loggedOut != 1 {
+		t.Errorf("logged out %d times, want 1", s.loggedOut)
+	}
+	if len(s.revoked) != 0 {
+		t.Errorf("--others revoked ids %v; it should name none", s.revoked)
+	}
+}
+
+// --others and an id are different requests and cannot both be meant.
+func TestRevokingOthersRefusesAnIdAsWell(t *testing.T) {
+	s := &credentialServer{}
+	c := newCredentialServer(t, s)
+
+	if err := cmdCredential(c, []string{"revoke", "--others", "some-id"}); err == nil {
+		t.Error("--others with an id was accepted; the two name different requests")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.othersRevoked != 0 || len(s.revoked) != 0 {
+		t.Errorf("a refused command revoked something anyway: others=%d ids=%v", s.othersRevoked, s.revoked)
 	}
 }

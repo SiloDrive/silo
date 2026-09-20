@@ -315,6 +315,7 @@ Usage:
   silo token revoke <email> [tok] Revoke every token a user holds, or just one
   silo credential list [--json]   Show the credentials your own account holds
   silo credential revoke <id>     Revoke one of them
+  silo credential revoke --others Revoke every other one, keeping this session
   silo tui [url]                  Launch the interactive terminal UI
   silo libraries [--json]         List libraries
   silo library create <name>      Create a library (prints ID)
@@ -384,6 +385,13 @@ laptop is stolen -- the machine you want to revoke is the one you cannot revoke
 it from, and this works from any machine with the binary and the password.
 It signs its own session out when it finishes, so listing credentials does not
 add one.
+
+"--others" is what to reach for after losing a laptop: it signs every other
+host out and leaves the machine you are typing on alone. Changing a password
+does NOT do this any more -- rotating a password is not evidence anything was
+stolen, and unmounting somebody's laptop, NAS and phone because they improved a
+password is how people learn not to improve passwords. If you changed your
+password because you were worried about something, run this as well.
 
 "silo backup-db" writes a consistent snapshot of silo.db, safely while the
 server runs — copying it with cp loses everything since the last WAL

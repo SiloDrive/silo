@@ -128,6 +128,13 @@ func features() []string {
 		// of things it cannot act on, and one that can revoke without listing
 		// has no id to name.
 		"credentials", // GET account/credentials, DELETE account/credentials/{id}
+		// "The others", and the password change that no longer implies it. One
+		// name, because they are one decision: a client that sees it knows the
+		// password change leaves other hosts alone unless asked, and knows
+		// where the operation went. A client that does not see it is talking
+		// to a server where changing a password still signs everything out,
+		// and should say so rather than let somebody discover it.
+		"logout-others", // POST auth/logout/others, revoke_others on auth/password
 		// A live device credential minting its successor. This one has to be
 		// discoverable rather than learned from a 404, because the fallback is
 		// not "try again later" but an architecture: a client that cannot renew
