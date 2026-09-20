@@ -27,4 +27,12 @@ package() {
 	install -Dm755 "$srcdir/$_pkgname" "$pkgdir/usr/bin/$_pkgname"
 	install -Dm644 "$srcdir/$_pkgname.service" "$pkgdir/usr/lib/systemd/user/$_pkgname.service"
 	install -Dm644 "$srcdir/$_pkgname-$pkgver-LICENSE.txt" "$pkgdir/usr/share/licenses/$pkgname/LICENSE.txt"
+
+	# Which package manager owns /usr/bin/silo. The binary here is the one the
+	# release tarball ships, so its built-in stamp says "tarball" and `silo
+	# upgrade` would otherwise hand a pacman user the install.sh pipe -- which
+	# writes a second silo to /usr/local/bin and shadows this one.
+	install -dm755 "$pkgdir/usr/share/$_pkgname"
+	printf 'aur\n' > "$pkgdir/usr/share/$_pkgname/install-method"
+
 }

@@ -193,6 +193,10 @@ jobs:
             tar -xzf "$tarball" -C packaging/.staged silo
             chmod 0755 packaging/.staged/silo
             for format in deb rpm; do
+              # Staged per format for the same reason as the binary: nfpm does
+              # not expand ${...} in contents[].src. This is what `silo upgrade`
+              # reads to know dpkg owns the file rather than install.sh.
+              printf '%s\n' "$format" > packaging/.staged/install-method
               ARCH="$arch" nfpm pkg -f packaging/nfpm.yaml -p "$format" -t dist/
             done
           done
@@ -212,6 +216,7 @@ jobs:
           test -x /usr/bin/silo
           test -f /usr/lib/systemd/system/silo.service
           test -f /etc/silo/silo.conf
+          [ "$(cat /usr/share/silo/install-method)" = "deb" ]
           [ "$(stat -c '%a' /etc/silo/silo.env)" = "600" ]
           getent passwd silo >/dev/null
           silo version

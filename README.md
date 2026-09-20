@@ -126,6 +126,35 @@ curl -sSfL https://raw.githubusercontent.com/dkam/silo/main/install.sh \
   | VERSION=v0.5.1 INSTALL_DIR=$HOME/.local/bin sh
 ```
 
+On a machine that has a package manager, it says so before installing, because
+a bare binary is the lesser option there — the `.deb`, `.rpm` and AUR packages
+also bring the systemd unit, a `silo` service account and `/etc/silo`:
+
+```console
+Recommended: this machine has a package manager, and the .deb installs
+more than this script does — the systemd unit, a silo service account and
+/etc/silo — and leaves the upgrade path to deb.
+
+  curl -sSfLO https://github.com/dkam/silo/releases/download/v0.9.0/silo_0.9.0_amd64.deb
+  sudo dpkg -i silo_0.9.0_amd64.deb
+
+Install the binary anyway? [y/N]
+```
+
+The question goes to the terminal rather than stdin, since in a pipe stdin is
+the script itself. Where there is no terminal to ask at — a Dockerfile, CI — it
+prints the same notice and continues rather than hanging. Flags pass through the
+pipe after `-s --`:
+
+```bash
+curl -sSfL .../install.sh | sh -s -- --force   # install, skip the notice
+curl -sSfL .../install.sh | sh -s -- --print   # say what it would do, write nothing
+```
+
+It also refuses outright to install over a silo that a package manager owns,
+since that would leave a second binary in `/usr/local/bin` shadowing the one
+your service runs. `SILO_ALLOW_SHADOW=1` overrides that.
+
 ### Download a release
 
 Prebuilt binaries for macOS and Linux are published on the [releases page](https://github.com/dkam/silo/releases), each with a `.sha256` beside it.
@@ -139,6 +168,38 @@ go build ./cmd/silo
 ```
 
 This produces a `silo` executable (~20 MB) that contains the file server daemon, the interactive TUI, and the scripting CLI.
+
+### Upgrading
+
+`silo upgrade` prints the command that upgrades *this* install, and nothing
+else — it never replaces its own binary:
+
+```console
+$ silo upgrade
+0.7.0 → 0.9.0  (installed from a .deb)
+
+  curl -sSfLO https://github.com/dkam/silo/releases/download/v0.9.0/silo_0.9.0_amd64.deb
+  sudo dpkg -i silo_0.9.0_amd64.deb
+  sudo systemctl restart silo
+```
+
+It refuses to self-update on purpose. Where a package owns `/usr/bin/silo`,
+overwriting that file leaves dpkg, rpm or pacman describing something that is no
+longer there, and the next package operation either reverts the upgrade or fails
+a checksum. So the command belongs to whichever package manager installed it,
+and each package records which one that was in
+`/usr/share/silo/install-method`. A binary with no such marker gets the
+install-script line instead; one that cannot tell gets a link to the release
+page rather than a guess.
+
+`--check` prints the same thing and exits 1 when a newer release exists, for
+cron and monitoring. `SILO_LATEST_URL` points it at a mirror or a Gitea
+instance, exactly as it does for `install.sh`.
+
+For the same reason, `install.sh` refuses to install over a package-managed
+silo — it would put a second binary in `/usr/local/bin`, which precedes
+`/usr/bin` on most paths, leaving your shell and your service on different
+versions with nothing reporting a problem. `SILO_ALLOW_SHADOW=1` overrides it.
 
 ### Docker
 

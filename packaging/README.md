@@ -248,3 +248,26 @@ makepkg -si                # build and install it locally before pushing
 No `provides`/`conflicts` on `silo` is deliberate and the `PKGBUILD` says why:
 that AUR name belongs to LLNL's unrelated scientific data format library, and
 claiming it would make the two falsely exclusive.
+
+## How `silo upgrade` knows what installed it
+
+`silo upgrade` prints a command rather than replacing the binary, so it has to
+name the right package manager. It cannot work that out from the binary alone:
+the `.deb`, the `.rpm` and `silo-bin` all ship the binary the tarball build
+produced, so the `-X main.InstallMethod=` stamp in every one of them says
+`tarball` — true of how it was compiled, wrong about how it arrived.
+
+So each package writes its own name to `<prefix>/share/silo/install-method`,
+and owns that file the way it owns the binary beside it:
+
+| Package | Written by | Value |
+| --- | --- | --- |
+| deb, rpm | the `packages` job stages it per format; `nfpm.yaml` installs it | `deb`, `rpm` |
+| AUR | `package()` in `aur/PKGBUILD` | `aur` |
+| Homebrew | the formula's ldflags, no marker needed — it builds from source | `homebrew` |
+
+The path is derived from the binary's own location, not hard-coded, which is
+what keeps a loose `/usr/local/bin/silo` from reading the marker a `.deb` left
+in `/usr/share` and reporting that dpkg owns it. `internal/upgrade` holds the
+rule and the tests for it; the `.deb` smoke test in `build.yml` checks the file
+is actually in the package.

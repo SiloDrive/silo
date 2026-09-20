@@ -39,6 +39,16 @@ contents:
     file_info:
       mode: 0755
 
+  # Which package manager owns /usr/bin/silo. `silo upgrade` reads this to
+  # decide what command to print, because the binary itself is the one the
+  # tarball build produced and its own stamp says "tarball". Written by the
+  # caller into the staging directory, per format, for the reason in the header:
+  # ${...} does not expand in src.
+  - src: ./packaging/.staged/install-method
+    dst: /usr/share/silo/install-method
+    file_info:
+      mode: 0644
+
   # /usr/lib, not /lib: on a usr-merged RPM distro /lib is a symlink owned by
   # the filesystem package, and shipping a real file underneath it is a
   # conflict. /usr/lib/systemd/system has always been in systemd's unit search
