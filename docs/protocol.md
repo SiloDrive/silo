@@ -138,7 +138,35 @@ POST /api/silo/v1/auth/logout             → 200 {"revoked": 1}   this credenti
 POST /api/silo/v1/auth/logout/everywhere  → 200 {"revoked": n}   all of them
 POST /api/silo/v1/auth/password           → 200 {"revoked": n}   n credentials signed out
 {"current_password": "…", "new_password": "…"}
+
+GET    /api/silo/v1/account/credentials       → 200 {"credentials": [...]}
+DELETE /api/silo/v1/account/credentials/{id}  → 200 {"revoked": 1}
 ```
+
+The listing is what makes the revoke aimable: one object per credential, with
+`id`, `kind`, `label`, `scope`, `perm`, `client_id`, `created`, `expires_at`,
+`last_used`, `last_ua`, and `"current": true` on the row the request
+authenticated with. A client renders "this device" from that flag; without it
+the person is one misread row away from signing themselves out.
+
+`expires_at` and `last_used` are **absent** rather than zero when they do not
+apply — a credential that never expires, and one never yet used. Zero is a real
+instant and a client rendering it says 1970. The absence of `last_used` is
+worth showing: a device credential minted and never seen again is the
+interesting row on the page.
+
+The listing omits `kind: invite`. The only invite row a self-service caller can
+hold is their own spent one, kept because the `Invite` table references it as
+the record of an arrival; it opens nothing, and the `DELETE` answers `404` for
+it. `silo token list` still shows it, because an operator is reading the record.
+
+The `DELETE` answers `{"revoked": 1}`, plus `"current": true` when the row was
+the caller's own — which is allowed, and is `auth/logout` reached by another
+name. An id that is unknown, belongs to another account, or is the spent invite
+is `404`, indistinguishably: the delete is owner-scoped in SQL and cannot tell
+them apart, and telling them apart would answer "does this id exist on another
+account". Neither route needs write permission, for the reason logout does not.
+Feature name `credentials`.
 
 Logging out needs no write permission — revocation only ever takes access away.
 Changing a password needs `rw`, needs the **current** password even though the
@@ -259,6 +287,8 @@ are registered there too, but are authenticated: see the lane note above.
 | POST | `/api/silo/v1/auth/logout` | Discard the credential that made the request. No write permission needed, and a scoped credential may reach it |
 | POST | `/api/silo/v1/auth/logout/everywhere` | Discard every credential the account holds, including this one |
 | POST | `/api/silo/v1/auth/password` | `{"current_password":…,"new_password":…}` — change the password. Needs `rw` and the current password; revokes **every** credential the account holds, `device` ones and the one that asked included, so a mounted client will ask for the new password. It used to spare `device`; see docs/auth.md § Changing a password, and what it revokes for why that changed. With `"client_kdf_params":…` it is the split-derivation crossover instead: `new_password` carries an `authKey`, and hash and parameters are written together. Feature name `split-login` |
+| GET | `/api/silo/v1/account/credentials` | Every credential the account holds, newest first, with `"current": true` on the one that asked. `expires_at` and `last_used` are absent rather than zero when they do not apply. Omits `kind: invite`. No write permission needed; a library-scoped credential is refused, because the subject is the account rather than the row presenting it. Feature name `credentials` |
+| DELETE | `/api/silo/v1/account/credentials/{id}` | Revoke one of them → `200 {"revoked": 1}`, with `"current": true` when it was the caller's own, which is allowed. `404` — not `403` — for an id that is unknown, another account's, or the spent invite; the three are deliberately indistinguishable. No write permission needed |
 | POST | `/api/silo/v1/auth/setup` | **No auth**, because it is the request that creates the first account — there is nothing to authenticate it against yet. `{"email":…,"password":…,"setup_token":…}` → `201 {"token":…}`, login's shape exactly. The address and password are the operator's choice; the setup token, printed at boot and by `silo setup-token`, is what proves they own the host. `401` for a wrong *or* malformed token, indistinguishably; `409` once any account exists. Guarded by `setup_required` above rather than by trying it |
 | POST | `/api/silo/v1/auth/redeem` | **No auth**, for setup's reason: the account this activates opens no lane until it does. `{"invite_token":…,"password":…}` → `201 {"token":…}`, login's shape. The invite binds the address — there is no `email` field, and delivery to that inbox is the verification — and the password is the redeemer's choice, or an `authKey` when `"client_kdf_params"` is sent alongside, exactly as on `auth/password`. `401` for a token that is malformed, unknown, withdrawn or lapsed, indistinguishably; `409` for one already redeemed. Publish key material next, with the session this hands back. Feature name `invites` |
 | POST | `/api/silo/v1/auth/kdf` | **No auth.** `{"email":…}` → the argon2id parameters that address's password is stretched under, client-side. Never `404`: an address with no account gets plausible, stable, per-address parameters, so this cannot be used to ask which addresses exist |
@@ -1080,6 +1110,7 @@ are documented above.
 | `usage` | `GET account/usage`, and `size`/`file_count` on the libraries listing |
 | `logout` | `POST auth/logout`, `POST auth/logout/everywhere` |
 | `password-change` | `POST auth/password` |
+| `credentials` | `GET account/credentials`, `DELETE account/credentials/{id}` |
 | `credential-renew` | `POST auth/renew` |
 | `account-keys` | `GET`/`PUT account/keys`, `DELETE …/recovery/{n}`, `POST auth/kdf` |
 | `split-login` | an `authKey` on `POST auth/login`, `kdf_params` on `POST auth/password` |

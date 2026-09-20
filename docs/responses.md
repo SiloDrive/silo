@@ -147,6 +147,26 @@ answers `503`, both meaning *nothing was deleted, do not act on it*. Before
 client its libraries had been deleted. See
 `docs/bugs/fixed/missing-object-reports-library-not-found.md`.
 
+### `404` for a sub-resource of your own account, not `403`
+
+A sub-resource addressed by id under `account/` — `account/credentials/{id}`,
+`account/keys/recovery/{n}` — answers `404` when the id does not resolve,
+whether it never existed or belongs to somebody else. The two are deliberately
+one answer.
+
+The `403` in the table above covers *a resource you cannot see*, and its
+reasoning is the one that decides this: a library you cannot see and a library
+that does not exist answer alike so the pair cannot be used to probe for valid
+ids. Under `account/`, `404` is what satisfies that same rule — the delete is
+owner-scoped in SQL and cannot distinguish the cases, and a `403` for
+another account's id would answer the question the `403` rule exists to refuse:
+*does this id exist on another account?*
+
+So the split is by *whose* resource it is rather than by which code sounds
+stricter. A cross-account subject is `403`; a subject inside your own account
+that did not resolve is `404`. Decide the next one by that, rather than
+relitigating it per route.
+
 ### `500` — broken, or damaged
 
 `500` normally means "unexpected, may be partly applied, stop". It is also the

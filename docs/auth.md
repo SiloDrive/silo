@@ -597,10 +597,15 @@ four places"* is a sentence a client can show and cannot derive from a `204`.
 `logout` answers `{"revoked": 0}` if something else revoked the row first,
 which is the outcome the caller asked for either way.
 
-**Neither route asks for write permission.** Revocation only ever takes access
-away, so a `perm: "r"` credential may do it — refusing would mean the client
-narrowed to the point of harmlessness is also the one that cannot slam the
-door.
+**No revocation route asks for write permission.** Revocation only ever takes
+access away, so a `perm: "r"` credential may do it — refusing would mean the
+client narrowed to the point of harmlessness is also the one that cannot slam
+the door. The rule is stated over every route that revokes rather than over the
+two logout ones, because `DELETE account/credentials/{id}` joined them and
+holding it to a stricter standard would be incoherent: a read-only credential
+may already fire `logout/everywhere`, which takes the laptop's credential along
+with everything else. `auth/password` is the exception because it *sets*
+something.
 
 **The two routes differ in what the request is about, and the narrowing follows
 that.** `logout` is about the row presenting it, which is not wider than that
@@ -615,6 +620,44 @@ That is also why "everywhere" is a second route rather than a field in the body:
 a flag inside the body would put the answer somewhere the middleware cannot see,
 and the scope check would have to move into the handler, where the failure it
 prevents is a handler that forgets it.
+
+### Revoking one credential rather than all of them
+
+```
+GET    /api/silo/v1/account/credentials       what the account holds
+DELETE /api/silo/v1/account/credentials/{id}  one row of it
+
+200 { "revoked": 1, "current": true }
+```
+
+The two routes above are all-or-nothing, and for a long time that was the whole
+vocabulary: a person who wanted to unmount one stolen laptop and leave their
+phone signed in had no way to say so. That gap is why the password change grew
+a blanket revoke — it was the only thing pointed at a stolen device credential,
+which is ninety days and renews from itself. See
+[`plans/credential-management.md`](plans/credential-management.md) for the whole
+argument, including why the blunt revoke is reconsidered only after this lands.
+
+Both are account-wide, so both take the narrowing that `logout/everywhere`
+takes and `logout` does not. The listing carries `"current": true` on the row
+that asked, which is what lets a client render "this device"; the `DELETE`
+repeats it when the revoked row was the caller's own, so signing yourself out
+this way is reported rather than discovered on the next request.
+
+**An id that is not revocable is `404`, never `403`.** Unknown, another
+account's, and the caller's own spent invite are one answer, because
+`credential.Revoke` is owner-scoped in SQL and cannot distinguish them — and
+distinguishing them is what would be wrong, since a `403` for the second case
+answers "does this id exist on another account". `responses.md` holds the rule
+this follows.
+
+**The invite row is not offered.** It is kept — the `Invite` table references
+it as the record of who arrived and when, which is why `credential.Expire`
+exists — but it opens nothing and cannot be revoked, so listing it would be a
+menu item that does nothing. Until this landed it was worse than that: the
+foreign key made `DELETE FROM Credential` fail for the whole account, so
+`logout/everywhere` and `auth/password` answered `500` for everybody who
+arrived by invite rather than by `silo user add`.
 
 ## Renewing a credential
 
@@ -756,6 +799,70 @@ gives.
 Rate limiting is the login endpoint's, on the same buckets. A credential is not
 a throttle: whoever holds one could otherwise guess the password here as fast as
 the server will hash.
+
+## Account states, and what each transition revokes
+
+An account is in one of three states, and every way of moving between them
+either revokes credentials, leaves them dormant, or leaves them alone. The
+rules are spread across the packages that own each transition, and the one
+bug that has come from that — redemption leaving a row that revocation
+cannot delete, see [`plans/credential-management.md`](plans/credential-management.md)
+§ Step 0 — was on the seam between two of them. This table is the seam,
+written down. A new transition adds a row here before it adds a handler.
+
+**The states.** A **tombstone** is an account row with no password and
+`is_active = 0`: the placeholder an address gets when it is named by a share
+or an invite before its person has arrived. It opens no lane, because
+`Resolve` refuses inactive and there is no password to log in with. An
+**active** account is one somebody has arrived at. A **disabled** account is
+an active one an administrator has switched off: `is_active = 0` again, but
+with its password, keys and credentials all still in the row. The difference
+between tombstone and disabled is whether a password is stored, and it is the
+mark that separates *never arrived* from *sent away* — `invite.Redeem` reads
+it to refuse claiming an account that is live.
+
+There is **no deleted state.** `Credential` references `Account` and the
+schema refuses to delete an account that holds one, so `Resolve` has a
+disabled case and no deleted case to answer. Removing an account is not
+built; the lifecycle ends at disabled.
+
+| Transition | Who | Credentials | Where it is decided |
+|---|---|---|---|
+| Create by hand → *active* | admin: `silo user add`, `POST admin/accounts` | none exist yet | `account.Create` |
+| Mint invite → *tombstone* (or reuse one) | admin with `users`: `POST admin/invites` | issues one `invite` row, 7d, on the tombstone. Idempotent on the address | `invite.Mint` |
+| Revoke invite | admin with `users`: `DELETE admin/invites/{id}` | the invite row is **expired**, not deleted: the `Invite` record keeps its reference. Refused once spent. The tombstone stays | `invite.Revoke` → `credential.Expire` |
+| Redeem → *active* | whoever holds the token: `POST auth/redeem` | the invite row is **expired**; a password and keys are written. A tombstone holds nothing else to revoke, and claiming an active account is refused | `invite.Redeem` |
+| Log in | the person | issues one `session` or `device` row | `POST auth/login` |
+| Renew | the credential itself | issues a **second** row and leaves the old one to die on its own `expires_at` — one-in-one-out would lock out a client whose response was lost. No other row is touched | `POST auth/renew` |
+| Log out | the credential itself, any perm, any scope | deletes its own row | `POST auth/logout` |
+| Log out everywhere | the person, any perm, unscoped | deletes every row **except `invite`** | `POST auth/logout/everywhere` → `credential.RevokeAll` |
+| Change own password | the person, write perm, unscoped, holding the current password | deletes every row except `invite`, the caller's included — see [above](#changing-a-password-and-what-it-revokes) | `POST auth/password` → `RevokeAll` |
+| Admin resets password | admin with `passwords`: `silo user passwd`, `POST admin/accounts/{id}/password` | deletes every row except `invite` | `credential.RevokeAll` |
+| Admin revokes one or all | admin on the host: `silo token revoke <email> [id]` | deletes the named row, or every row except `invite` | `credential.Revoke` / `RevokeAll` |
+| Change role or capabilities | admin with `grant`: `PUT admin/accounts/{id}/role`, `…/caps` | **nothing.** The role is read through the `Resolve` join on the next request, so a demotion takes effect without a sign-out | `admin.SetRole` |
+| Disable → *disabled* | admin with `users`: `silo user disable`, `POST admin/accounts/{id}/active`; refused for the last admin | **nothing is deleted.** Every row goes dormant through the `is_active` join on the next request. This is deliberate: see [Operating it](#operating-it) | `admin.SetActive` |
+| Enable → *active* | admin with `users` | every dormant row **resumes**, including the one that prompted the disable. An administrator who meant to end a credential rather than pause the person uses `silo token revoke` or the password reset | `admin.SetActive` |
+| Library deleted | the owner | every row **scoped to that library** is deleted, in the same transaction | `libmgr` → `credential.RevokeByLibrary` |
+| Delete account | — | **not built.** The schema refuses it while a credential exists, and nothing revokes first | — |
+
+**Three things the table makes visible that the prose did not.**
+
+- **Deactivation revokes nothing, and re-enabling is a resurrection.** That is
+  the right shape for "on leave" and the wrong one for "compromised", and the
+  administrator has to know which they mean: the compromised case is the
+  password reset, which revokes, and disabling is the pause. Nothing in the
+  API says so at the moment an admin reaches for one or the other.
+- **`invite` rows are never deleted, only expired.** Every delete on
+  `Credential` has to exclude the kind, because the `Invite` table references
+  it and foreign keys are on. `RevokeKind` has no caller today and gets the
+  same clause when it does.
+- **Only the password change asks for write permission.** Every revocation
+  takes access away and needs no permission to do it; the password change is
+  the one row that *sets* something.
+
+[`plans/credential-management.md`](plans/credential-management.md) adds two
+rows — the person listing their own credentials and revoking one by id — and
+neither changes a state.
 
 ## Split-derivation login, on this side
 

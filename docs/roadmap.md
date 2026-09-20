@@ -299,6 +299,17 @@ is an admin reading or setting someone else's cap.
 
 Tracked: no issue yet.
 
+**Self-service credential management.** An account can list the credentials it
+holds and revoke one of them, which today it cannot: the only self-service
+verbs are sign-out-here, sign-out-everywhere, and a password change that
+revokes everything as a side effect. The store layer is already written —
+`credential.ListByAccount` and an owner-scoped `credential.Revoke` — so the
+work is two handlers, a CLI command, and only then the drive clients. The
+ordering is the substance of it: the blunt revoke on password change cannot be
+reconsidered until a targeted one exists.
+[`plans/credential-management.md`](plans/credential-management.md). Tracked: no
+issue yet.
+
 **Proof of possession.** Public keys registered at enrolment, RFC 9421
 signatures on the Silo lane. [`auth.md`](auth.md) item 1, independent of OIDC —
 whichever is wanted first. Tracked: no issue yet.
