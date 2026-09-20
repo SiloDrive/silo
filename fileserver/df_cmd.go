@@ -71,7 +71,7 @@ func RunDF(args []string) error {
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if !*quiet {
-		fmt.Fprintln(w, "LIBRARY\tHEAD\tHISTORY\tUNREFERENCED\tTOTAL")
+		_, _ = fmt.Fprintln(w, "LIBRARY\tHEAD\tHISTORY\tUNREFERENCED\tTOTAL")
 	}
 
 	var total objmgr.Census
@@ -83,7 +83,7 @@ func RunDF(args []string) error {
 			// a census is what somebody runs when they already suspect
 			// something is wrong, and the run that refuses to say anything
 			// about the rest is the least useful possible response to that.
-			fmt.Fprintf(w, "%s\t--\t--\t--\t(%v)\n", id, err)
+			_, _ = fmt.Fprintf(w, "%s\t--\t--\t--\t(%v)\n", id, err)
 			failed++
 			continue
 		}
@@ -91,16 +91,16 @@ func RunDF(args []string) error {
 		total.History = addExtent(total.History, c.History)
 		total.Unreferenced = addExtent(total.Unreferenced, c.Unreferenced)
 		if !*quiet {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", id,
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", id,
 				formatBytes(c.Head.Bytes), formatBytes(c.History.Bytes),
 				formatBytes(c.Unreferenced.Bytes), formatBytes(censusTotal(c)))
 		}
 	}
 
 	if !*quiet {
-		fmt.Fprintln(w, "\t\t\t\t")
+		_, _ = fmt.Fprintln(w, "\t\t\t\t")
 	}
-	fmt.Fprintf(w, "TOTAL\t%s\t%s\t%s\t%s\n",
+	_, _ = fmt.Fprintf(w, "TOTAL\t%s\t%s\t%s\t%s\n",
 		formatBytes(total.Head.Bytes), formatBytes(total.History.Bytes),
 		formatBytes(total.Unreferenced.Bytes), formatBytes(censusTotal(total)))
 	if err := w.Flush(); err != nil {
@@ -136,26 +136,26 @@ func printServerHeadroom() {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
 	if free, err := diskfree.Available(absDataDir); err != nil {
-		fmt.Fprintf(w, "free on disk\t--\t(%v)\n", err)
+		_, _ = fmt.Fprintf(w, "free on disk\t--\t(%v)\n", err)
 	} else if option.DiskReserve > 0 {
-		fmt.Fprintf(w, "free on disk\t%s\t(keeping %s back, so %s admissible)\n",
+		_, _ = fmt.Fprintf(w, "free on disk\t%s\t(keeping %s back, so %s admissible)\n",
 			formatBytes(free), formatBytes(option.DiskReserve),
 			formatBytes(max(free-option.DiskReserve, 0)))
 	} else {
-		fmt.Fprintf(w, "free on disk\t%s\t(no reserve set)\n", formatBytes(free))
+		_, _ = fmt.Fprintf(w, "free on disk\t%s\t(no reserve set)\n", formatBytes(free))
 	}
 
 	if option.ServerQuota > 0 {
 		used, err := libmgr.ServerUsage()
 		if err != nil {
-			fmt.Fprintf(w, "server ceiling\t%s\t(usage unreadable: %v)\n", formatBytes(option.ServerQuota), err)
+			_, _ = fmt.Fprintf(w, "server ceiling\t%s\t(usage unreadable: %v)\n", formatBytes(option.ServerQuota), err)
 		} else {
-			fmt.Fprintf(w, "server ceiling\t%s\t(%s used, %s admissible; logical-at-head)\n",
+			_, _ = fmt.Fprintf(w, "server ceiling\t%s\t(%s used, %s admissible; logical-at-head)\n",
 				formatBytes(option.ServerQuota), formatBytes(used.Size),
 				formatBytes(max(option.ServerQuota-used.Size, 0)))
 		}
 	} else {
-		fmt.Fprintf(w, "server ceiling\tnone\t(set [quota] server to bound what everybody together may hold)\n")
+		_, _ = fmt.Fprintf(w, "server ceiling\tnone\t(set [quota] server to bound what everybody together may hold)\n")
 	}
 	_ = w.Flush()
 }
@@ -181,7 +181,7 @@ func censusTotal(c objmgr.Census) int64 {
 func reportPacks(ids []string, quiet bool) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if !quiet {
-		fmt.Fprintln(w, "LIBRARY\tPACK\tHEAD\tLIVE\tDEAD\tDEAD%\tON DISK")
+		_, _ = fmt.Fprintln(w, "LIBRARY\tPACK\tHEAD\tLIVE\tDEAD\tDEAD%\tON DISK")
 	}
 
 	var frames, live, dead, onDisk int64
@@ -189,13 +189,13 @@ func reportPacks(ids []string, quiet bool) error {
 	for _, id := range ids {
 		_, st, head, err := openLibraryAtHead(id)
 		if err != nil {
-			fmt.Fprintf(w, "%s\t--\t--\t--\t--\t--\t(%v)\n", id, err)
+			_, _ = fmt.Fprintf(w, "%s\t--\t--\t--\t--\t--\t(%v)\n", id, err)
 			failed++
 			continue
 		}
 		stats, err := st.PackCensus(head)
 		if err != nil {
-			fmt.Fprintf(w, "%s\t--\t--\t--\t--\t--\t(%v)\n", id, err)
+			_, _ = fmt.Fprintf(w, "%s\t--\t--\t--\t--\t--\t(%v)\n", id, err)
 			failed++
 			continue
 		}
@@ -206,7 +206,7 @@ func reportPacks(ids []string, quiet bool) error {
 			dead += p.DeadBytes()
 			onDisk += p.FileBytes
 			if !quiet {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%.0f%%\t%s\n",
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%.0f%%\t%s\n",
 					id, p.PackID[:12],
 					formatBytes(p.HeadBytes), formatBytes(p.LiveBytes),
 					formatBytes(p.DeadBytes()), p.DeadFraction()*100,
@@ -227,13 +227,13 @@ func reportPacks(ids []string, quiet bool) error {
 	}
 
 	if !quiet {
-		fmt.Fprintln(w, "\t\t\t\t\t\t")
+		_, _ = fmt.Fprintln(w, "\t\t\t\t\t\t")
 	}
 	var pct float64
 	if frames > 0 {
 		pct = float64(dead) / float64(frames) * 100
 	}
-	fmt.Fprintf(w, "TOTAL\t%d packs\t\t%s\t%s\t%.0f%%\t%s\n",
+	_, _ = fmt.Fprintf(w, "TOTAL\t%d packs\t\t%s\t%s\t%.0f%%\t%s\n",
 		counted, formatBytes(live), formatBytes(dead), pct, formatBytes(onDisk))
 	if err := w.Flush(); err != nil {
 		return err

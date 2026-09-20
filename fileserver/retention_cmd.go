@@ -113,14 +113,14 @@ func reportAllRetention() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "LIBRARY\tHISTORY")
+	_, _ = fmt.Fprintln(w, "LIBRARY\tHISTORY")
 	for _, id := range ids {
 		days, err := libmgr.RetentionDays(id)
 		if err != nil {
-			fmt.Fprintf(w, "%s\t(%v)\n", id, err)
+			_, _ = fmt.Fprintf(w, "%s\t(%v)\n", id, err)
 			continue
 		}
-		fmt.Fprintf(w, "%s\t%s\n", id, describeDays(days))
+		_, _ = fmt.Fprintf(w, "%s\t%s\n", id, describeDays(days))
 	}
 	if err := w.Flush(); err != nil {
 		return err

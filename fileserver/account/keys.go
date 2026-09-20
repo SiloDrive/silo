@@ -221,7 +221,7 @@ func GetKeys(ctx context.Context, id ID) (*Keys, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading recovery wraps: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var w RecoveryWrap
 		if err := rows.Scan(&w.Ordinal, &w.WrappedKey, &w.Ctime); err != nil {

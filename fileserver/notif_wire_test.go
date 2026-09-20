@@ -144,7 +144,7 @@ func TestARenameRingsAnAccountScopedSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "content": map[string]any{"account": true}}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestTheNotifyTokenLaneIsGone(t *testing.T) {
 	} {
 		conn, resp, err := websocket.DefaultDialer.Dial(wsURL, tc.header)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			t.Errorf("a socket with %s was upgraded; it must be refused", tc.name)
 			continue
 		}
@@ -244,7 +244,7 @@ func TestTheNotifyTokenLaneIsGone(t *testing.T) {
 			t.Errorf("dial with %s failed without a response: %v", tc.name, err)
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("dial with %s: status %d, want %d", tc.name, resp.StatusCode, http.StatusUnauthorized)
 		}
@@ -257,7 +257,7 @@ func TestTheNotifyTokenLaneIsGone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	frame := map[string]any{"type": "subscribe", "content": map[string]any{
 		"libraries": []map[string]any{{"id": libraryID, "jwt_token": "a token nothing issues any more"}},
 	}}

@@ -85,7 +85,7 @@ func stubNotifSocket(t *testing.T, onConn func(n int, conn *websocket.Conn)) *AP
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		mu.Lock()
 		n++
 		which := n

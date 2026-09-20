@@ -312,12 +312,12 @@ func clientOptions(dsn, environment, release string, rate float64) sentry.Client
 		// and "token" by name; it does not know that a library name or a path
 		// is somebody's data too.
 		//
-		// So the collection is stated here rather than inherited. Note that a
-		// non-nil DataCollection *supersedes* SendDefaultPII entirely, so the
-		// line above is now a summary rather than a setting -- it is kept
-		// because it is the line a reader looks for, but this block is what
-		// governs.
-		SendDefaultPII: true,
+		// So the collection is stated here rather than inherited. For the
+		// reader who wants the one-line answer: PII is on -- the account
+		// behind a request, not the bodies it carries. SendDefaultPII used to
+		// be that line and is gone rather than kept as a summary: a non-nil
+		// DataCollection supersedes it entirely, so it governed nothing while
+		// reading as though it did, and the SDK now deprecates it outright.
 		DataCollection: &sentry.DataCollection{
 			// Not filtered -- not collected. There is no denylist that knows
 			// which of a body's keys are file contents.

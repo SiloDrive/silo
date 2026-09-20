@@ -80,7 +80,7 @@ func TestLogoutRequiresACredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logout: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}

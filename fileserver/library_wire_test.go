@@ -77,7 +77,7 @@ func wire(t *testing.T) (base, token string) {
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out struct {
 		Token string `json:"token"`
 	}
@@ -108,7 +108,7 @@ func call(t *testing.T, method, url, token, body string) (int, string) {
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(out)
 }
@@ -329,7 +329,7 @@ func TestNoTableOrColumnSaysLibrary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading sqlite_master: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var names []string
 	for rows.Next() {
@@ -363,7 +363,7 @@ func TestNoTableOrColumnSaysLibrary(t *testing.T) {
 				t.Errorf("column %s.%s still says library", n, c)
 			}
 		}
-		cols.Close()
+		_ = cols.Close()
 	}
 	_ = dbutil.Prepare // the schema under test is the one this builds
 }

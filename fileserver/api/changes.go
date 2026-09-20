@@ -137,8 +137,6 @@ func ChangesHandler(w http.ResponseWriter, r *http.Request) {
 	// paged answer consistent: without it, a commit landing between pages
 	// changes the diff the offset indexes into, and items shift across the page
 	// boundary in both directions.
-	target := library.HeadCommitID
-
 	target, changes, err := libraryChanges(library, since, pinned)
 	if err != nil {
 		writeChangesErr(w, err, since, target, libraryID)

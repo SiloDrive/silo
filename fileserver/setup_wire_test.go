@@ -60,7 +60,7 @@ func TestServerInfoSaysSetupIsRequiredOnlyWhileItIs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("server-info: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var m map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
 			t.Fatalf("decoding server-info: %v", err)
@@ -234,7 +234,7 @@ func TestSetupIsRateLimited(t *testing.T) {
 		}
 		code := resp.StatusCode
 		retry := resp.Header.Get("Retry-After")
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if code == http.StatusTooManyRequests {
 			limited = true
@@ -268,7 +268,7 @@ func TestAnExhaustedSetupBucketDoesNotLeakIntoTheNextTest(t *testing.T) {
 		if err != nil {
 			t.Fatalf("attempt %d: %v", i, err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	// A second server, as a second test would stand up. Its setup must be

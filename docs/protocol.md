@@ -1030,8 +1030,7 @@ for every request and flags 404s as `WARN`. Off by default.
 Anything outside `/api/silo/v1/*` and `/notification` is a 404, including
 every path listed in older revisions of this document under the
 legacy sync lane — see the note at the top. That includes
-`/protocol-version` itself: `handleProtocolVersion` in `fileserver/server.go`
-still exists but nothing mounts it, so it's dead code rather than a live route.
+`/protocol-version` itself: no route mounts it and no handler answers it.
 
 ## Divergence policy
 

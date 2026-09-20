@@ -140,7 +140,7 @@ func TestTheLastUserAgentIsRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET libraries: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET libraries: status %d", resp.StatusCode)
 	}

@@ -131,8 +131,8 @@ key it does not recognise would go out verbatim.
 `clientOptions` therefore names the collection explicitly:
 `HTTPBodies` empty, cookies off, headers and query parameters on the SDK's
 denylist, user info on. A non-nil `DataCollection` supersedes `SendDefaultPII`
-entirely, so that flag is a summary of the intent rather than the thing doing
-the work.
+entirely, so that flag is not set at all: it would govern nothing, and the SDK
+now deprecates it.
 
 **Setup tokens are stripped from event text.** A `BeforeSend` hook redacts
 anything matching the setup token's format from messages, tags, exception values

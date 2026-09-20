@@ -41,9 +41,9 @@ func TestATruncatedObjectPUTIsNotAnswered200(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			path := fmt.Sprintf("/api/silo/v1/libraries/%s/%s/%s", libraryID, kind, id)
-			fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\n\r\n",
+			_, _ = fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\n\r\n",
 				path, u.Host, token, len(full))
 			if _, err := conn.Write(full[:len(full)/2]); err != nil {
 				t.Fatal(err)
@@ -56,7 +56,7 @@ func TestATruncatedObjectPUTIsNotAnswered200(t *testing.T) {
 			// EOF has not been told anything. A success is not.
 			resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 			if err == nil {
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 					t.Fatalf("a PUT with half its body was answered %d", resp.StatusCode)
 				}

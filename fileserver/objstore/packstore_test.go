@@ -236,7 +236,7 @@ func TestTheOpenPackIsAskedBeforeTheSealedOnes(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := filledPack(t, objDir, lib, [][]byte{frame}, []string{id})
-	defer live.close()
+	defer func() { _ = live.close() }()
 
 	set, err := loadPackSet(objDir, lib)
 	if err != nil {
@@ -273,7 +273,7 @@ func TestTwoOpenPacksInOneLibraryAreRefused(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		id, frame := framed(t, key, fmt.Sprintf("written by writer %d", i))
 		p := filledPack(t, objDir, lib, [][]byte{frame}, []string{id})
-		defer p.close()
+		defer func() { _ = p.close() }()
 	}
 
 	if _, err := loadPackSet(objDir, lib); !errors.Is(err, ErrPackCorrupt) {

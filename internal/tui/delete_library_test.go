@@ -161,7 +161,7 @@ func TestTypingTheNameDeletesAFullLibrary(t *testing.T) {
 	m = press(t, m, strings.Split("Photos", "")...)
 	next, cmd := m.Update(key("enter"))
 	m = next.(model)
-	m = run(t, m, cmd)
+	run(t, m, cmd)
 
 	if got := fake.deletions(); len(got) != 1 || got[0] != "library" {
 		t.Fatalf("deletions %v, want one for %q", got, "library")
@@ -213,7 +213,7 @@ func TestAnEmptyLibraryIsStillDeletedWithY(t *testing.T) {
 
 	next, cmd := m.Update(key("y"))
 	m = next.(model)
-	m = run(t, m, cmd)
+	run(t, m, cmd)
 
 	if got := fake.deletions(); len(got) != 1 {
 		t.Fatalf("deletions %v, want one: an empty library takes a plain y", got)

@@ -2,9 +2,11 @@ package notif
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,17 +59,37 @@ func captureDebug(t *testing.T) *logBuffer {
 	return buf
 }
 
-// awaitLine waits for a line mentioning the client's socket, and returns it.
-func awaitLine(t *testing.T, buf *logBuffer) string {
+// comingClientID names the id NewClient will give the next connection.
+//
+// The counter only ever goes up, and no test in this package runs in parallel,
+// so the client the next dial creates is this one. Read it before dialling:
+// the handshake completes before NewClient takes its id, so reading afterwards
+// races with the connection the caller just made.
+func comingClientID() uint64 {
+	return atomic.LoadUint64(&nextClientID) + 1
+}
+
+// awaitLine waits for a line about client id, and returns that one line.
+//
+// Both halves of that matter, because the logger is process-wide. A connection
+// closed by an earlier test's cleanup is still logging its own teardown from
+// the server's goroutine, and nothing waits for it -- so it lands in whichever
+// buffer is installed when it arrives, which is this test's. Matching any
+// "notif: client" line read those as this test's own, and returning the whole
+// buffer let a stranger's line fail an assertion about the absence of one.
+func awaitLine(t *testing.T, buf *logBuffer, id uint64) string {
 	t.Helper()
+	want := fmt.Sprintf("notif: client %d ", id)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if out := buf.String(); strings.Contains(out, "notif: client") {
-			return out
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if strings.Contains(line, want) {
+				return line
+			}
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("the socket ended and nothing was logged about it: %s", buf.String())
+	t.Fatalf("the socket ended and nothing was logged about client %d: %s", id, buf.String())
 	return ""
 }
 
@@ -77,6 +99,7 @@ func TestAPoliteCloseIsNotLoggedAsAReadError(t *testing.T) {
 	authorizeReturning(t, func(*credential.Credential, string) bool { return true })
 
 	buf := captureDebug(t)
+	id := comingClientID()
 	conn := dialWithCredential(t, testCredential())
 
 	// 1001, RFC 6455's "going away": what a client sends when it is shutting
@@ -86,7 +109,7 @@ func TestAPoliteCloseIsNotLoggedAsAReadError(t *testing.T) {
 		t.Fatalf("sending the close frame: %v", err)
 	}
 
-	line := awaitLine(t, buf)
+	line := awaitLine(t, buf, id)
 	if !strings.Contains(line, "disconnected") {
 		t.Errorf("a clean close is not logged as a disconnect: %s", line)
 	}
@@ -105,6 +128,7 @@ func TestABrokenSocketIsStillLoggedAsAReadError(t *testing.T) {
 	authorizeReturning(t, func(*credential.Credential, string) bool { return true })
 
 	buf := captureDebug(t)
+	id := comingClientID()
 	conn := dialWithCredential(t, testCredential())
 
 	// No close frame: the TCP connection goes away underneath the websocket,
@@ -120,7 +144,7 @@ func TestABrokenSocketIsStillLoggedAsAReadError(t *testing.T) {
 		t.Fatalf("closing the socket: %v", err)
 	}
 
-	line := awaitLine(t, buf)
+	line := awaitLine(t, buf, id)
 	if !strings.Contains(line, "read error") {
 		t.Errorf("a broken socket is not logged as a read error: %s", line)
 	}
