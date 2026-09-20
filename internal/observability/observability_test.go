@@ -154,14 +154,14 @@ func TestInitWithoutDSNIsInert(t *testing.T) {
 func TestCallSiteNamesTheCaller(t *testing.T) {
 	// Sentry orders frames oldest-first, so the plumbing sits at the end.
 	st := &sentry.Stacktrace{Frames: []sentry.Frame{
-		{Module: "github.com/dkam/silo/fileserver", Function: "Run"},
-		{Module: "github.com/dkam/silo/fileserver", Function: "blockOperCB"},
+		{Module: "github.com/SiloDrive/silo/fileserver", Function: "Run"},
+		{Module: "github.com/SiloDrive/silo/fileserver", Function: "blockOperCB"},
 		{Module: "github.com/sirupsen/logrus", Function: "(*Entry).Errorf"},
 		{Module: "github.com/sirupsen/logrus", Function: "LevelHooks.Fire"},
-		{Module: "github.com/dkam/silo/internal/observability", Function: "(*logrusHook).Fire"},
+		{Module: "github.com/SiloDrive/silo/internal/observability", Function: "(*logrusHook).Fire"},
 	}}
 	trimmed := trimPlumbing(st)
-	if got, want := callSite(trimmed), "github.com/dkam/silo/fileserver.blockOperCB"; got != want {
+	if got, want := callSite(trimmed), "github.com/SiloDrive/silo/fileserver.blockOperCB"; got != want {
 		t.Errorf("callSite() = %q, want %q", got, want)
 	}
 	if n := len(trimmed.Frames); n != 2 {
@@ -174,7 +174,7 @@ func TestCallSiteNamesTheCaller(t *testing.T) {
 func TestCallSiteOnAllPlumbing(t *testing.T) {
 	st := &sentry.Stacktrace{Frames: []sentry.Frame{
 		{Module: "github.com/sirupsen/logrus", Function: "LevelHooks.Fire"},
-		{Module: "github.com/dkam/silo/internal/observability", Function: "(*logrusHook).Fire"},
+		{Module: "github.com/SiloDrive/silo/internal/observability", Function: "(*logrusHook).Fire"},
 	}}
 	if got := callSite(trimPlumbing(st)); got != "" {
 		t.Errorf("callSite() = %q, want empty", got)

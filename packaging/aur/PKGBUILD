@@ -6,7 +6,7 @@ pkgver=0.4.4
 pkgrel=1
 pkgdesc="Self-hosted Dropbox in one binary - SeaDrive-compatible, SQLite-backed, TUI-managed (prebuilt)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/dkam/silo"
+url="https://github.com/SiloDrive/silo"
 license=('AGPL-3.0-only')
 # NOTE: no provides/conflicts on 'silo' - that AUR name belongs to LLNL's
 # unrelated scientific data format library, and claiming it would make the two

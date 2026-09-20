@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/store"
 )
 
 // seal closes every open pack in the process, which is what a clean shutdown

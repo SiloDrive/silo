@@ -2,8 +2,8 @@
 #
 # Silo installer.
 #
-#   curl -sSfL https://raw.githubusercontent.com/dkam/silo/main/install.sh | sh
-#   wget -qO- https://raw.githubusercontent.com/dkam/silo/main/install.sh | sh
+#   curl -sSfL https://raw.githubusercontent.com/SiloDrive/silo/main/install.sh | sh
+#   wget -qO- https://raw.githubusercontent.com/SiloDrive/silo/main/install.sh | sh
 #
 # Environment:
 #   VERSION            release tag to install, e.g. v0.5.1 (default: latest)
@@ -18,7 +18,7 @@
 #   SILO_INSTALL_MARKER  Where that install records itself
 #                      (default: /usr/share/silo/install-method)
 #
-#   curl -sSfL https://raw.githubusercontent.com/dkam/silo/main/install.sh \
+#   curl -sSfL https://raw.githubusercontent.com/SiloDrive/silo/main/install.sh \
 #     | VERSION=v0.5.1 INSTALL_DIR=$HOME/.local/bin sh
 #
 # This installs the binary only. On a server you almost certainly want the
@@ -62,7 +62,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-REPO="dkam/silo"
+REPO="SiloDrive/silo"
 : "${VERSION:=}"
 : "${INSTALL_DIR:=}"
 

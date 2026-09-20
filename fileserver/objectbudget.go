@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // The object lanes hand whole objects to memory, and until this there was no

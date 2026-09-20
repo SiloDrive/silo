@@ -23,7 +23,7 @@
 
 set -euo pipefail
 
-REPO="${SILO_REPO:-dkam/silo}"
+REPO="${SILO_REPO:-SiloDrive/silo}"
 # Matches install.sh, and for the same reason: a tap pointed at a mirror or a
 # gitea instance only needs this one variable moved.
 RELEASE_BASE="${SILO_RELEASE_BASE:-https://github.com/${REPO}/releases/download}"

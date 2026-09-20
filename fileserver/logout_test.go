@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/credential"
 )
 
 // Logout. docs/auth.md's list of what is left calls this "the smallest gap":

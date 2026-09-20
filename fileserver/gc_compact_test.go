@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/internal/format"
-	storefmt "github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/internal/format"
+	storefmt "github.com/SiloDrive/silo/store"
 )
 
 // packedHistoryFixture is historyFixture with its packs sealed, which is the

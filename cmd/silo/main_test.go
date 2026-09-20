@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	silod "github.com/dkam/silo/fileserver"
-	"github.com/dkam/silo/internal/upgrade"
+	silod "github.com/SiloDrive/silo/fileserver"
+	"github.com/SiloDrive/silo/internal/upgrade"
 )
 
 // TestNormalizeVersion pins the one format server-info reports, regardless of

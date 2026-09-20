@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/internal/format"
 )
 
 // RunToken lists and revokes the credentials a user holds.
@@ -90,15 +91,15 @@ func listTokens(acct *account.Account) error {
 	for _, c := range creds {
 		fmt.Printf("  %s  %-7s  %s\n", c.ID, c.Kind, c.Label)
 		fmt.Printf("  %s  created %s  %s  last used %s\n",
-			blanks(len(c.ID)), formatTime(c.Ctime), expiryState(c.ExpiresAt, now), lastUsed(c.LastUsed))
+			format.Blanks(len(c.ID)), format.Time(c.Ctime), format.Expiry(c.ExpiresAt, now), format.LastUsed(c.LastUsed))
 		// The narrowing is printed whenever there is one. A read-only
 		// credential that looked identical to a full one in this listing would
 		// undo the reason the listing exists: an operator deciding what to
 		// revoke needs to see which rows are already harmless.
 		if s := c.Scope.String(); s != "" {
-			fmt.Printf("  %s  scope %s  perm %s\n", blanks(len(c.ID)), s, c.Perm)
+			fmt.Printf("  %s  scope %s  perm %s\n", format.Blanks(len(c.ID)), s, c.Perm)
 		} else if c.Perm != "rw" {
-			fmt.Printf("  %s  every library, perm %s\n", blanks(len(c.ID)), c.Perm)
+			fmt.Printf("  %s  every library, perm %s\n", format.Blanks(len(c.ID)), c.Perm)
 		}
 		// The label was frozen at enrolment -- renewal inherits it -- so on
 		// its own it says which build enrolled this device and reads as if it
@@ -107,10 +108,10 @@ func listTokens(acct *account.Account) error {
 		// renewals and re-enrolments, and the last-seen User-Agent is the
 		// only part of the row that moves when the client upgrades.
 		if c.ClientID != "" {
-			fmt.Printf("  %s  device %s\n", blanks(len(c.ID)), c.ClientID)
+			fmt.Printf("  %s  device %s\n", format.Blanks(len(c.ID)), c.ClientID)
 		}
 		if c.LastUA != "" {
-			fmt.Printf("  %s  last seen %s\n", blanks(len(c.ID)), c.LastUA)
+			fmt.Printf("  %s  last seen %s\n", format.Blanks(len(c.ID)), c.LastUA)
 		}
 	}
 	return nil
@@ -184,38 +185,6 @@ func resolveAccount(email string) (*account.Account, error) {
 		return nil, fmt.Errorf("looking up %s: %v", email, err)
 	}
 	return acct, nil
-}
-
-func expiryState(expiresAt, now int64) string {
-	switch {
-	case expiresAt == 0:
-		return "no expiry"
-	case expiresAt <= now:
-		return "EXPIRED " + formatTime(expiresAt)
-	default:
-		return "expires " + formatTime(expiresAt)
-	}
-}
-
-// lastUsed distinguishes a credential that has never been presented from one
-// presented long ago. They are the two ends of the same question -- is anybody
-// still using this? -- and "unknown" would answer neither.
-func lastUsed(sec int64) string {
-	if sec == 0 {
-		return "never"
-	}
-	return formatTime(sec)
-}
-
-func formatTime(sec int64) string {
-	if sec == 0 {
-		return "unknown"
-	}
-	return time.Unix(sec, 0).Format(time.RFC3339)
-}
-
-func blanks(n int) string {
-	return fmt.Sprintf("%*s", n, "")
 }
 
 func pluralS(n int64) string {

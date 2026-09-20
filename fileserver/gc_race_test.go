@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/objmgr"
+	"github.com/SiloDrive/silo/store"
 )
 
 // A write that was in flight when a sweep started loses its head move.

@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/dkam/silo/internal/observability"
+	"github.com/SiloDrive/silo/internal/observability"
 	log "github.com/sirupsen/logrus"
 )
 

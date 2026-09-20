@@ -266,7 +266,7 @@ func Advise(m Method, current string, r Release, goos, goarch string) string {
 		return fmt.Sprintf("%s  (installed with Homebrew)\n\n  brew update && brew upgrade silo\n", header)
 
 	case Tarball:
-		return fmt.Sprintf("%s  (installed from a release tarball)\n\n  curl -sSfL https://raw.githubusercontent.com/dkam/silo/main/install.sh | sh\n%s",
+		return fmt.Sprintf("%s  (installed from a release tarball)\n\n  curl -sSfL https://raw.githubusercontent.com/SiloDrive/silo/main/install.sh | sh\n%s",
 			header, restart)
 
 	default:
@@ -285,7 +285,7 @@ func Advise(m Method, current string, r Release, goos, goarch string) string {
 // endpoint and can be pointed elsewhere; so can this, for the same reason --
 // a Gitea instance serves the identical shape at
 // /api/v1/repos/<owner>/<repo>/releases/latest.
-const DefaultLatestURL = "https://api.github.com/repos/dkam/silo/releases/latest"
+const DefaultLatestURL = "https://api.github.com/repos/SiloDrive/silo/releases/latest"
 
 // FetchLatest reads the latest release, including the real names of the files
 // it published.

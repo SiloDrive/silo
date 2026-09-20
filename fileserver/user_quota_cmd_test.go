@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // The cap this command writes has to be the one the write path reads. Not a

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/fileserver/objstore"
 )
 
 // The compiled-in answer is the one the store already had. A config file that

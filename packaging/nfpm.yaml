@@ -29,7 +29,7 @@ description: |
   defined chunking, SHA-256 content addressing, and per-library end-to-end
   encryption.
 vendor: Silo
-homepage: https://github.com/dkam/silo
+homepage: https://github.com/SiloDrive/silo
 license: AGPL-3.0
 
 contents:

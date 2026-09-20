@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 const (

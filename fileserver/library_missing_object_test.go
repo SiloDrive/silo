@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/middleware"
 )
 
 const (

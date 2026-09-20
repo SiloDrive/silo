@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // printServerHeadroom is what an operator reads after a sync stops, so what it

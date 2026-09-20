@@ -7,7 +7,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/dkam/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/credential"
 )
 
 // liveClient dials a real notification socket and returns both ends of it: the

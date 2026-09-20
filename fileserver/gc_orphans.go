@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/internal/format"
-	storefmt "github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/objmgr"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/internal/format"
+	storefmt "github.com/SiloDrive/silo/store"
 	log "github.com/sirupsen/logrus"
 )
 

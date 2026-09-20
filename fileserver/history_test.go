@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/api"
-	"github.com/dkam/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/api"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
 )
 
 // commitList is the commits endpoint's body, named here so a field cannot be

@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Reading an encrypted library, by the client, over HTTP.

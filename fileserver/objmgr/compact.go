@@ -17,8 +17,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/store"
 )
 
 // CompactionPlan is what one library's pass would do, and what it would leave.

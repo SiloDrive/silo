@@ -12,8 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/internal/format"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/internal/format"
 )
 
 // Views

@@ -20,7 +20,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // LibraryFS is one library, addressed by plaintext path.

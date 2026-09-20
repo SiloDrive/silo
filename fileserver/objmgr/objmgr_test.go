@@ -7,8 +7,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/store"
 )
 
 const testStoreID = "b1f2ad61-9164-418a-a47f-ab805dbd5694"

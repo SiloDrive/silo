@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/internal/format"
-	storefmt "github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/objmgr"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/internal/format"
+	storefmt "github.com/SiloDrive/silo/store"
 	log "github.com/sirupsen/logrus"
 )
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/traffic"
+	"github.com/SiloDrive/silo/fileserver/traffic"
 )
 
 func TestBothDirectionsAreCounted(t *testing.T) {

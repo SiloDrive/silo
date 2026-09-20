@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/credential"
 )
 
 // DefaultLifetime is how long an invite lives when the caller says nothing.

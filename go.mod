@@ -1,4 +1,4 @@
-module github.com/dkam/silo
+module github.com/SiloDrive/silo
 
 go 1.26.0
 

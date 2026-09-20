@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/authmgr"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/authmgr"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/store"
 )
 
 // The account side of end-to-end encryption: the key material an account

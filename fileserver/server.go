@@ -15,25 +15,25 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/admin"
-	"github.com/dkam/silo/fileserver/adminui"
-	"github.com/dkam/silo/fileserver/api"
-	"github.com/dkam/silo/fileserver/authmgr"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/fileserver/invite"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/notif"
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/serversecret"
-	"github.com/dkam/silo/fileserver/setup"
-	"github.com/dkam/silo/fileserver/share"
-	"github.com/dkam/silo/fileserver/utils"
-	"github.com/dkam/silo/internal/observability"
-	"github.com/dkam/silo/internal/xdg"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/admin"
+	"github.com/SiloDrive/silo/fileserver/adminui"
+	"github.com/SiloDrive/silo/fileserver/api"
+	"github.com/SiloDrive/silo/fileserver/authmgr"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/dbutil"
+	"github.com/SiloDrive/silo/fileserver/invite"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/notif"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/serversecret"
+	"github.com/SiloDrive/silo/fileserver/setup"
+	"github.com/SiloDrive/silo/fileserver/share"
+	"github.com/SiloDrive/silo/fileserver/utils"
+	"github.com/SiloDrive/silo/internal/observability"
+	"github.com/SiloDrive/silo/internal/xdg"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 
@@ -699,6 +699,14 @@ func newHTTPRouter() *mux.Router {
 	apiRouter.HandleFunc("/account/keys/recovery/{ordinal:[0-9]+}",
 		api.DeleteRecoveryWrapHandler).Methods("DELETE")
 	apiRouter.HandleFunc("/account/usage", api.AccountUsageHandler).Methods("GET")
+	// Account-wide, so both take the narrowing: seeing or revoking every
+	// credential an account holds is strictly wider than a scope cut to one
+	// library. Contrast auth/logout and auth/renew above, which are mounted
+	// outside this subrouter because they are about the row presenting them --
+	// a mount cut to one library must still be able to sign itself out and
+	// replace its own credential.
+	apiRouter.HandleFunc("/account/credentials", api.ListCredentialsHandler).Methods("GET")
+	apiRouter.HandleFunc("/account/credentials/{id}", api.RevokeCredentialHandler).Methods("DELETE")
 
 	// The administrative surface. Each route names the capability that opens
 	// it at the mount rather than inside the handler, because the pairing is

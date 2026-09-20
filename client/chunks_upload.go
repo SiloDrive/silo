@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Sending many chunks in one request.

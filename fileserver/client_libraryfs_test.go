@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/store"
 )
 
 // One interface over both library types.

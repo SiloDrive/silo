@@ -13,7 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/dkam/silo/client"
+	"github.com/SiloDrive/silo/client"
 )
 
 // fakeLibrary is a server over a fixed tree that also remembers what was asked

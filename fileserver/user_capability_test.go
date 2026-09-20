@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/admin"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/admin"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // The CLI is the only way authority is handed out until the admin routes land,

@@ -12,9 +12,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/fileserver/notif"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/fileserver/notif"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // The whole chain, end to end: one client deletes a file, and a second client

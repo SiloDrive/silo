@@ -6,8 +6,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/internal/format"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/internal/format"
 )
 
 func printJSON(w io.Writer, v any) error {

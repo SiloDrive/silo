@@ -3,7 +3,7 @@ package silod
 import (
 	"bytes"
 	"context"
-	"github.com/dkam/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/account"
 	"io"
 	"math/rand"
 	"net/http"
@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/fileserver/api"
-	"github.com/dkam/silo/fileserver/authmgr"
-	"github.com/dkam/silo/fileserver/share"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/fileserver/api"
+	"github.com/SiloDrive/silo/fileserver/authmgr"
+	"github.com/SiloDrive/silo/fileserver/share"
+	"github.com/SiloDrive/silo/store"
 )
 
 // The chunk lane, from a real client to a real server and back.

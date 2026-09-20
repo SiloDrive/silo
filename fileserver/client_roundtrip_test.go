@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/store"
 )
 
 // The whole of end-to-end encryption, over HTTP, against a real server.

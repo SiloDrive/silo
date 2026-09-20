@@ -1,6 +1,6 @@
 [Unit]
 Description=Silo file sync server
-Documentation=https://github.com/dkam/silo
+Documentation=https://github.com/SiloDrive/silo
 After=network-online.target
 Wants=network-online.target
 

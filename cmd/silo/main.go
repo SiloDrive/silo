@@ -13,12 +13,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dkam/silo/fileserver" // package silod
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/internal/cli"
-	"github.com/dkam/silo/internal/observability"
-	"github.com/dkam/silo/internal/tui"
-	"github.com/dkam/silo/internal/upgrade"
+	"github.com/SiloDrive/silo/fileserver" // package silod
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/internal/cli"
+	"github.com/SiloDrive/silo/internal/observability"
+	"github.com/SiloDrive/silo/internal/tui"
+	"github.com/SiloDrive/silo/internal/upgrade"
 )
 
 const defaultServerURL = "http://localhost:8082"
@@ -313,6 +313,8 @@ Usage:
   silo user revoke <email> <caps> Take administrative capabilities away
   silo token list <email>         Show a user's sync and API tokens
   silo token revoke <email> [tok] Revoke every token a user holds, or just one
+  silo credential list [--json]   Show the credentials your own account holds
+  silo credential revoke <id>     Revoke one of them
   silo tui [url]                  Launch the interactive terminal UI
   silo libraries [--json]         List libraries
   silo library create <name>      Create a library (prints ID)
@@ -374,6 +376,14 @@ with echo off, a pipe is read from stdin, and -generate invents one and prints
 it once. Flags come before the subcommand: "silo user -generate add a@b.c".
 Disabling an account stops every credential it holds at once; the tokens
 themselves survive and work again if it is re-enabled.
+
+"silo credential" is the self-service half of "silo token": the same table,
+asked of the server over HTTP by the person who owns it rather than read from
+silo.db by an operator on the host. That is the difference that matters when a
+laptop is stolen -- the machine you want to revoke is the one you cannot revoke
+it from, and this works from any machine with the binary and the password.
+It signs its own session out when it finishes, so listing credentials does not
+add one.
 
 "silo backup-db" writes a consistent snapshot of silo.db, safely while the
 server runs — copying it with cp loses everything since the last WAL

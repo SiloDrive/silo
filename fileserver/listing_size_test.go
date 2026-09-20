@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dkam/silo/client"
+	"github.com/SiloDrive/silo/client"
 )
 
 func listing(t *testing.T, c *client.APIClient, libraryID, path string) []client.DirEntry {

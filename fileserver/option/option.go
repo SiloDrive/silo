@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dkam/silo/fileserver/utils"
+	"github.com/SiloDrive/silo/fileserver/utils"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/ini.v1"
 )

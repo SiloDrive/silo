@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/store"
 
 	"github.com/google/uuid"
 )

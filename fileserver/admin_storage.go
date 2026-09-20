@@ -15,10 +15,10 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/diskfree"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/traffic"
+	"github.com/SiloDrive/silo/fileserver/diskfree"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/traffic"
 	log "github.com/sirupsen/logrus"
 )
 

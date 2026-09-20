@@ -67,7 +67,7 @@ Silo also ships with `silo`, a terminal UI built on [Bubble Tea](https://github.
 On macOS or Linux via Homebrew:
 
 ```bash
-brew install dkam/silo/silo
+brew install SiloDrive/silo/silo
 ```
 
 Homebrew auto-taps `dkam/homebrew-silo` on first install, so no separate `brew tap` step is needed.
@@ -75,7 +75,7 @@ Homebrew auto-taps `dkam/homebrew-silo` on first install, so no separate `brew t
 ### Debian, Ubuntu, Fedora, RHEL
 
 `.deb` and `.rpm` packages for amd64 and arm64 are attached to each
-[release](https://github.com/dkam/silo/releases). They install the binary, a
+[release](https://github.com/SiloDrive/silo/releases). They install the binary, a
 hardened systemd unit, a `silo` system user and a commented
 `/etc/silo/silo.conf`:
 
@@ -114,7 +114,7 @@ systemctl --user enable --now silo
 For a binary and nothing else, on macOS or Linux:
 
 ```bash
-curl -sSfL https://raw.githubusercontent.com/dkam/silo/main/install.sh | sh
+curl -sSfL https://raw.githubusercontent.com/SiloDrive/silo/main/install.sh | sh
 ```
 
 It resolves the latest release, verifies the published SHA-256, and installs to
@@ -122,7 +122,7 @@ It resolves the latest release, verifies the published SHA-256, and installs to
 release and `INSTALL_DIR` moves the destination:
 
 ```bash
-curl -sSfL https://raw.githubusercontent.com/dkam/silo/main/install.sh \
+curl -sSfL https://raw.githubusercontent.com/SiloDrive/silo/main/install.sh \
   | VERSION=v0.5.1 INSTALL_DIR=$HOME/.local/bin sh
 ```
 
@@ -135,7 +135,7 @@ Recommended: this machine has a package manager, and the .deb installs
 more than this script does — the systemd unit, a silo service account and
 /etc/silo — and leaves the upgrade path to deb.
 
-  curl -sSfLO https://github.com/dkam/silo/releases/download/v0.9.0/silo_0.9.0_amd64.deb
+  curl -sSfLO https://github.com/SiloDrive/silo/releases/download/v0.9.0/silo_0.9.0_amd64.deb
   sudo dpkg -i silo_0.9.0_amd64.deb
 
 Install the binary anyway? [y/N]
@@ -157,7 +157,7 @@ your service runs. `SILO_ALLOW_SHADOW=1` overrides that.
 
 ### Download a release
 
-Prebuilt binaries for macOS and Linux are published on the [releases page](https://github.com/dkam/silo/releases), each with a `.sha256` beside it.
+Prebuilt binaries for macOS and Linux are published on the [releases page](https://github.com/SiloDrive/silo/releases), each with a `.sha256` beside it.
 
 ### Build from source
 
@@ -178,7 +178,7 @@ else — it never replaces its own binary:
 $ silo upgrade
 0.7.0 → 0.9.0  (installed from a .deb)
 
-  curl -sSfLO https://github.com/dkam/silo/releases/download/v0.9.0/silo_0.9.0_amd64.deb
+  curl -sSfLO https://github.com/SiloDrive/silo/releases/download/v0.9.0/silo_0.9.0_amd64.deb
   sudo dpkg -i silo_0.9.0_amd64.deb
   sudo systemctl restart silo
 ```
@@ -213,7 +213,7 @@ mkdir -p /path/to/silo-data && chown -R 65532:65532 /path/to/silo-data
 Build and run directly from GitHub — no clone needed:
 
 ```bash
-docker build -t silo https://github.com/dkam/silo.git
+docker build -t silo https://github.com/SiloDrive/silo.git
 docker run -d --name silo -p 8082:8082 -v /path/to/silo-data:/data silo
 docker logs silo          # the setup token is here
 ```
@@ -222,7 +222,7 @@ Multi-arch images (linux/amd64, linux/arm64) are also published to GitHub Contai
 
 ```bash
 docker run -d --name silo -p 8082:8082 -v /path/to/silo-data:/data \
-  ghcr.io/dkam/silo:latest
+  ghcr.io/SiloDrive/silo:latest
 docker logs silo          # the setup token is here
 ```
 
@@ -231,7 +231,7 @@ Or with Docker Compose — save as `docker-compose.yml`:
 ```yaml
 services:
   silo:
-    image: ghcr.io/dkam/silo:latest
+    image: ghcr.io/SiloDrive/silo:latest
     ports:
       - "8082:8082"
     volumes:

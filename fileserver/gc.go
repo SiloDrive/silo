@@ -7,9 +7,9 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/internal/format"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/internal/format"
 	log "github.com/sirupsen/logrus"
 )
 

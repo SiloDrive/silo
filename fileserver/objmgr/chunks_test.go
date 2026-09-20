@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // putChunks stores raw chunks and returns their ids in order.

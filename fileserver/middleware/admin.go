@@ -12,8 +12,8 @@ package middleware
 import (
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/admin"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/admin"
+	"github.com/SiloDrive/silo/fileserver/option"
 	log "github.com/sirupsen/logrus"
 )
 

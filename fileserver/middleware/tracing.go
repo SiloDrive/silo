@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dkam/silo/internal/observability"
+	"github.com/SiloDrive/silo/internal/observability"
 	"github.com/gorilla/mux"
 )
 

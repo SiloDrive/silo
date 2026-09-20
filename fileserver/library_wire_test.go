@@ -3,7 +3,7 @@ package silod
 import (
 	"context"
 	"encoding/json"
-	"github.com/dkam/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/account"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,16 +12,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/admin"
-	"github.com/dkam/silo/fileserver/api"
-	"github.com/dkam/silo/fileserver/authmgr"
-	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/fileserver/invite"
-	"github.com/dkam/silo/fileserver/notif"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/setup"
-	"github.com/dkam/silo/fileserver/share"
-	"github.com/dkam/silo/internal/lexicon"
+	"github.com/SiloDrive/silo/fileserver/admin"
+	"github.com/SiloDrive/silo/fileserver/api"
+	"github.com/SiloDrive/silo/fileserver/authmgr"
+	"github.com/SiloDrive/silo/fileserver/dbutil"
+	"github.com/SiloDrive/silo/fileserver/invite"
+	"github.com/SiloDrive/silo/fileserver/notif"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/setup"
+	"github.com/SiloDrive/silo/fileserver/share"
+	"github.com/SiloDrive/silo/internal/lexicon"
 )
 
 // The wire says library.

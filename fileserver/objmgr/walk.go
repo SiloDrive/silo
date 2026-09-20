@@ -3,7 +3,7 @@ package objmgr
 import (
 	"fmt"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // A tree is not a tree.

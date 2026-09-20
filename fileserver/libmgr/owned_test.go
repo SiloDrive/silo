@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // OwnedLibraryIDs answers with the account's own libraries and nobody else's.

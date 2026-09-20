@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // treeServer is a fake Silo that knows the three surfaces a tree upload uses.

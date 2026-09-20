@@ -15,11 +15,11 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/share"
-	"github.com/dkam/silo/fileserver/utils"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/share"
+	"github.com/SiloDrive/silo/fileserver/utils"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )

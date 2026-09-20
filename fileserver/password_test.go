@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Self-service password change. docs/auth.md fixes two things about it that

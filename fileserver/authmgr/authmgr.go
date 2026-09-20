@@ -15,9 +15,9 @@ import (
 
 	"golang.org/x/crypto/pbkdf2"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/setup"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/setup"
 	log "github.com/sirupsen/logrus"
 )
 

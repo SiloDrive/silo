@@ -10,7 +10,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/dkam/silo/fileserver/notif"
+	"github.com/SiloDrive/silo/fileserver/notif"
 )
 
 const watchLibraryID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"

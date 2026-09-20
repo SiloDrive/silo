@@ -14,9 +14,9 @@ package api
 import (
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/option"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -49,6 +49,14 @@ type revokedResponse struct {
 	// handler, where nothing changed, and a client cannot cache the right
 	// password without knowing which happened.
 	SessionsStillLive bool `json:"sessions_still_live,omitempty"`
+
+	// Current says the revoked row was the one that made the request, so a
+	// client can tell "I signed something else out" from "I have just signed
+	// myself out" without comparing ids it may not have kept. Set only by
+	// DELETE account/credentials/{id}: the logout routes do not need it --
+	// one is always the caller and the other is always everything -- and
+	// omitempty keeps their bodies byte-for-byte what they were.
+	Current bool `json:"current,omitempty"`
 }
 
 // LogoutHandler handles POST /api/silo/v1/auth/logout: discard the credential

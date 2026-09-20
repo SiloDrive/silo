@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/ratelimit"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/ratelimit"
 )
 
 // resetLoginLimiters gives each test its own buckets — they are process

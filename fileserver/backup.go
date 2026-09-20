@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/internal/format"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/internal/format"
 )
 
 // RunBackupDB snapshots the SQLite database into a destination directory.

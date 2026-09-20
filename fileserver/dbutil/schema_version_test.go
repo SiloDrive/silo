@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/internal/lexicon"
+	"github.com/SiloDrive/silo/internal/lexicon"
 )
 
 // The migration record has to cover the databases written before it existed.

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/utils"
+	"github.com/SiloDrive/silo/fileserver/utils"
 )
 
 // These pin what LoadFileServerOptions does, key by key, before option.go is

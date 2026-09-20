@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/store"
 
 	"github.com/google/uuid"
 )

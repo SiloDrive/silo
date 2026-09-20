@@ -1,7 +1,7 @@
 package observability
 
 import (
-	"github.com/dkam/silo/fileserver/setup"
+	"github.com/SiloDrive/silo/fileserver/setup"
 	"github.com/getsentry/sentry-go"
 )
 

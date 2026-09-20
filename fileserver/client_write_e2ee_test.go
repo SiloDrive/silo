@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Writing an encrypted library.

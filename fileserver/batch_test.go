@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/store"
 )
 
 // A batch whose last operation fails must leave the library exactly as it was.

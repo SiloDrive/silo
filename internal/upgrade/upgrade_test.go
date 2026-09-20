@@ -76,7 +76,7 @@ func TestParseMethod(t *testing.T) {
 // release is the shape the build workflow actually publishes: tarballs and
 // sha256 sidecars from the `build` job, debs and rpms from `packages`.
 func release() Release {
-	r := Release{Tag: "v0.8.0", URL: "https://github.com/dkam/silo/releases/tag/v0.8.0"}
+	r := Release{Tag: "v0.8.0", URL: "https://github.com/SiloDrive/silo/releases/tag/v0.8.0"}
 	for _, n := range []string{
 		"silo_0.8.0_amd64.deb",
 		"silo_0.8.0_arm64.deb",
@@ -208,7 +208,7 @@ func TestAdviseWithoutAKnownMethodSuggestsNoCommand(t *testing.T) {
 			t.Errorf("Advise(Unknown) suggests %q without knowing it is safe:\n%s", forbidden, out)
 		}
 	}
-	if !strings.Contains(out, "https://github.com/dkam/silo/releases/tag/v0.8.0") {
+	if !strings.Contains(out, "https://github.com/SiloDrive/silo/releases/tag/v0.8.0") {
 		t.Errorf("Advise(Unknown) does not link the release page:\n%s", out)
 	}
 }
@@ -221,7 +221,7 @@ func TestAdviseFallsBackWhenTheArchHasNoPackage(t *testing.T) {
 	if strings.Contains(out, "riscv64.deb") {
 		t.Errorf("Advise invented a package name for an unbuilt arch:\n%s", out)
 	}
-	if !strings.Contains(out, "https://github.com/dkam/silo/releases/tag/v0.8.0") {
+	if !strings.Contains(out, "https://github.com/SiloDrive/silo/releases/tag/v0.8.0") {
 		t.Errorf("Advise does not fall back to the release page:\n%s", out)
 	}
 }
@@ -265,7 +265,7 @@ func TestAdviseSaysNothingToDoWhenCurrent(t *testing.T) {
 func TestFetchLatestReadsTheAssetListRatherThanGuessingIt(t *testing.T) {
 	const body = `{
 	  "tag_name": "v0.8.0",
-	  "html_url": "https://github.com/dkam/silo/releases/tag/v0.8.0",
+	  "html_url": "https://github.com/SiloDrive/silo/releases/tag/v0.8.0",
 	  "assets": [
 	    {"name": "silo_0.8.0_amd64.deb", "browser_download_url": "https://example.test/silo_0.8.0_amd64.deb"},
 	    {"name": "silo-0.8.0.x86_64.rpm", "browser_download_url": "https://example.test/silo-0.8.0.x86_64.rpm"}
@@ -284,7 +284,7 @@ func TestFetchLatestReadsTheAssetListRatherThanGuessingIt(t *testing.T) {
 	if got.Tag != "v0.8.0" {
 		t.Errorf("Tag = %q, want v0.8.0", got.Tag)
 	}
-	if got.URL != "https://github.com/dkam/silo/releases/tag/v0.8.0" {
+	if got.URL != "https://github.com/SiloDrive/silo/releases/tag/v0.8.0" {
 		t.Errorf("URL = %q", got.URL)
 	}
 	if len(got.Assets) != 2 {

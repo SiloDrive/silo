@@ -18,7 +18,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // ErrNoRecoveryWrap reports a code that opens none of the account's wraps.

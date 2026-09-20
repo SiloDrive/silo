@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/admin"
-	"github.com/dkam/silo/fileserver/invite"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/admin"
+	"github.com/SiloDrive/silo/fileserver/invite"
 )
 
 // The capability model's invariant is that nobody hands on, or takes away, an

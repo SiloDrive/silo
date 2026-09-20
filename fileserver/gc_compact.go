@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dkam/silo/internal/format"
-	storefmt "github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/internal/format"
+	storefmt "github.com/SiloDrive/silo/store"
 	log "github.com/sirupsen/logrus"
 )
 

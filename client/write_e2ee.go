@@ -27,7 +27,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // headAttempts bounds the rebuild loop.

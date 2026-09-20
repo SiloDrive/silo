@@ -52,7 +52,7 @@ sandbox() {
 
     cat > "$T/rel.json" <<JSON
 {"tag_name":"v9.9.9",
- "html_url":"https://github.com/dkam/silo/releases/tag/v9.9.9",
+ "html_url":"https://github.com/SiloDrive/silo/releases/tag/v9.9.9",
  "assets":[
    {"name":"$asset","browser_download_url":"file://$T/dl/v9.9.9/$asset"},
    {"name":"silo_9.9.9_${goarch}.deb","browser_download_url":"file://$T/dl/v9.9.9/silo_9.9.9_${goarch}.deb"},
