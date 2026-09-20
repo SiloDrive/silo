@@ -188,6 +188,33 @@ On a machine with no `dpkg`, the deb is an `ar` archive:
 ar x silo_0.0.0~dev_amd64.deb && zstd -dc data.tar.zst | tar -tv
 ```
 
+## The silodrive.io download page
+
+`packaging/build-release.sh alpha linux/amd64 linux/arm64 darwin/arm64`
+writes tarballs and a `builds.json` into `dist/alpha/silo/`, ready to rsync
+to the web host. It exists because this repository is private: Silo is
+AGPLv3 and the source will be public, but until it is there are no release
+assets anybody outside can fetch, and `brew install dkam/silo/silo` reaches
+a tap pointing at a 404. Somebody installing SiloDrive needs a server to
+point it at, so the server goes on the same page as the clients.
+
+It does not replace `build.yml`, which is what a tagged release is. Both
+call `make build`, so a tarball from either differs only in which commit it
+came from, and the tarball's inner filename is `silo` in both.
+
+The manifest it writes has **no expiry field**. Silo has no deadline -- it is
+AGPLv3 -- and the page reads an absent date as "perpetual" and says so. The
+SiloDrive clients on the same page do carry a ninety-day stamp; that is a
+fact about those binaries, not about this one.
+
+```sh
+packaging/build-release.sh alpha linux/amd64 linux/arm64
+
+# binaries first, manifest last: the page offers what the manifest names
+rsync -av --exclude builds.json dist/alpha/silo/ web:/srv/silodrive/alpha/silo/
+rsync -av dist/alpha/silo/builds.json             web:/srv/silodrive/alpha/silo/
+```
+
 ## In CI
 
 The `packages` job in `build.yml` runs after `build`, downloads the two Linux
