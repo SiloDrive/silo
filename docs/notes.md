@@ -27,7 +27,7 @@ What replaced what: the web layer's login became `POST auth/login` and a
 `/api/silo/v1/` handlers in `fileserver/api/`; the separate notification
 server runs in-process on `/notification`; the RPC client, its socket and the
 controller were removed outright. The one compatibility constraint that
-survived the migration is password hashes — see § Password formats below.
+survived the migration is password hashes — see § Password hash formats below.
 
 One consequence worth knowing: anything the web layer authorized is simply
 absent. The share-link routes (`/f/`, `/u/`, `/d/`) and the web

@@ -101,7 +101,7 @@ func checkLibrarySharePerm(libraryID string, user account.ID) string {
 // principals were being asked about, which is now a parameter rather than a
 // second query.
 func grantedDirs(ctx context.Context, originLibraryID string, principals []Principal) (map[string]string, error) {
-	dirs := make(map[string]string)
+	dirs := map[string]string{}
 	if len(principals) == 0 {
 		return dirs, nil
 	}

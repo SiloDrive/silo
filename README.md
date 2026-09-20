@@ -725,3 +725,10 @@ keeps. [`LICENSE.txt`](LICENSE.txt) is the FSF's text unmodified, with no
 additional permissions and no exceptions; the upstream project's OpenSSL
 exception was removed once no code needing it remained. [`NOTICE`](NOTICE) names
 the origin as a courtesy and says what `scripts/lineage-check.sh` measures.
+
+The AGPL binds those who receive Silo, not the copyright holder. An
+organisation that cannot take the AGPL — a policy that forbids it, or a plan
+to run a modified server as a service without publishing the changes — can be
+licensed on other terms instead. Open an issue to ask. What makes that
+possible is that the copyright is whole, which is why Silo takes no outside
+pull requests — see [`CONTRIBUTING.md`](CONTRIBUTING.md).

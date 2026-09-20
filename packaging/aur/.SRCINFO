@@ -1,5 +1,5 @@
 pkgbase = silo-bin
-	pkgdesc = Self-hosted Dropbox in one binary - SeaDrive-compatible, SQLite-backed, TUI-managed (prebuilt)
+	pkgdesc = Single-binary file sync server with per-library end-to-end encryption
 	pkgver = 0.4.4
 	pkgrel = 1
 	url = https://github.com/SiloDrive/silo

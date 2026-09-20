@@ -66,3 +66,41 @@ func itoa(n int) string {
 	}
 	return string(b)
 }
+
+// sectionRef matches a section reference that says which way to look:
+// `§ Password formats below`, `§ Reclaiming above`. The qualifier is what
+// makes it checkable — a bare `§ Reclaiming` may point into another document,
+// but "below" and "above" can only mean this one, so the heading has to exist
+// here, spelled the same way.
+var sectionRef = regexp.MustCompile(`§ ([A-Za-z][A-Za-z ]*?) (?:below|above)\b`)
+
+func TestQualifiedSectionReferencesNameARealHeading(t *testing.T) {
+	root := filepath.Join("..", "..", "docs")
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
+			return err
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		headings := map[string]bool{}
+		for _, line := range strings.Split(string(body), "\n") {
+			if strings.HasPrefix(line, "#") {
+				headings[strings.TrimSpace(strings.TrimLeft(line, "#"))] = true
+			}
+		}
+		rel, _ := filepath.Rel(root, p)
+		for n, line := range strings.Split(string(body), "\n") {
+			for _, m := range sectionRef.FindAllStringSubmatch(line, -1) {
+				if !headings[m[1]] {
+					t.Errorf("%s:%d  § %s: no heading by that name in this file", rel, n+1, m[1])
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
