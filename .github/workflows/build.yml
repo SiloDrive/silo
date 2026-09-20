@@ -269,7 +269,7 @@ jobs:
   # to become visible and then fetch the sidecars back over HTTP, which is a
   # race and a network round trip for data this job already has on disk.
   #
-  # Needs a HOMEBREW_TAP_TOKEN secret with contents:write on dkam/homebrew-silo.
+  # Needs a HOMEBREW_TAP_TOKEN secret with contents:write on SiloDrive/homebrew-silo.
   # Without it the job reports what to run by hand and succeeds, because a
   # missing tap token must not turn a good release red.
   homebrew:
@@ -305,7 +305,7 @@ jobs:
         if: steps.gate.outputs.ok == 'true'
         uses: actions/checkout@v4
         with:
-          repository: dkam/homebrew-silo
+          repository: SiloDrive/homebrew-silo
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 

@@ -70,7 +70,7 @@ On macOS or Linux via Homebrew:
 brew install SiloDrive/silo/silo
 ```
 
-Homebrew auto-taps `dkam/homebrew-silo` on first install, so no separate `brew tap` step is needed.
+Homebrew auto-taps `SiloDrive/homebrew-silo` on first install, so no separate `brew tap` step is needed.
 
 ### Debian, Ubuntu, Fedora, RHEL
 

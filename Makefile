@@ -3,7 +3,7 @@
 # whose flags are not optional and are easy to forget, and the checks that are
 # not `go test` and would otherwise only run when someone remembers them.
 
-.PHONY: build check test vet fmt vuln check-refs check-install integration
+.PHONY: build check test vet fmt vuln check-refs check-install check-formula integration
 
 # The deploy build: the same flags a release ships, so a binary built here and
 # one downloaded from a release differ only in which commit they came from.
@@ -38,7 +38,7 @@ build:
 	  -ldflags "-s -w -X main.Version=$(VERSION) -X main.InstallMethod=$(INSTALL_METHOD)" -o "$(OUT)" ./cmd/silo
 
 # Everything CI should care about, in the order that fails fastest.
-check: fmt vet test vuln check-refs check-install
+check: fmt vet test vuln check-refs check-install check-formula
 
 fmt:
 	@out="$$(gofmt -l .)"; \
@@ -85,3 +85,8 @@ check-refs:
 # it is reachable from `go test`. See scripts/test-install.sh.
 check-install:
 	@./scripts/test-install.sh
+
+# The Homebrew formula is generated here rather than in the tap, so a
+# mistake in it is a mistake in this repository. See scripts/test-formula.sh.
+check-formula:
+	@./scripts/test-formula.sh

@@ -8,7 +8,7 @@ already produces. There is no second compile: `nfpm` takes a finished
 
 This directory owns the Debian and RPM side, the service definition, the AUR
 recipe in `aur/`, and the Homebrew formula generator in `homebrew/`. The
-tap those formulae are served from lives elsewhere, in `dkam/homebrew-silo`;
+tap those formulae are served from lives elsewhere, in `SiloDrive/homebrew-silo`;
 `install.sh` at the repository root owns the binary-only install.
 
 ## What the package installs
@@ -92,7 +92,7 @@ use.
 ## Homebrew
 
 `homebrew/generate-formula.sh` writes the `Formula/silo.rb` that the
-`dkam/homebrew-silo` tap serves. The formula itself lives in the tap; what
+`SiloDrive/homebrew-silo` tap serves. The formula itself lives in the tap; what
 lives here is the thing that produces it, because the inputs are here.
 
 ```sh
@@ -115,7 +115,7 @@ no round trip, and the checksums are provably the ones that were published
 rather than whatever the URL answers with.
 
 The job needs a `HOMEBREW_TAP_TOKEN` secret with `contents:write` on
-`dkam/homebrew-silo`. **Without it the job succeeds and prints the command to
+`SiloDrive/homebrew-silo`. **Without it the job succeeds and prints the command to
 run by hand** — a missing tap token should not turn a good release red. It also
 skips the push when the formula is already at that version, so a re-run is
 harmless.
@@ -145,7 +145,7 @@ characters, no article, no formula name, which is what `brew audit` wants.
 
 ### The tap still has its own copy
 
-`dkam/homebrew-silo` has `bin/generate-formula.sh`, which is where this script
+`SiloDrive/homebrew-silo` has `bin/generate-formula.sh`, which is where this script
 came from. Two generators for one formula is one too many, and the tap's copy
 carries both bugs above. Replacing it with a line pointing here is the tidy-up;
 it is a change to the other repository, so it is not made from this one.
@@ -291,7 +291,15 @@ and owns that file the way it owns the binary beside it:
 | --- | --- | --- |
 | deb, rpm | the `packages` job stages it per format; `nfpm.yaml` installs it | `deb`, `rpm` |
 | AUR | `package()` in `aur/PKGBUILD` | `aur` |
-| Homebrew | the formula's ldflags, no marker needed — it builds from source | `homebrew` |
+| Homebrew | `def install` in the formula `homebrew/generate-formula.sh` writes | `homebrew` |
+
+The Homebrew row was wrong until it was tested. The formula was assumed to
+build from source, where the `-X main.InstallMethod=` stamp would have been
+enough — it does not. It installs the same prebuilt tarball as everything else
+above, so it needs the same marker, and without it `silo upgrade` was going to
+hand a `brew` user the `install.sh` pipe and shadow the Cellar binary with one
+in `/usr/local/bin`. `scripts/test-formula.sh` now asserts the marker is in the
+generated formula, at the path `internal/upgrade.MarkerPath` reads.
 
 The path is derived from the binary's own location, not hard-coded, which is
 what keeps a loose `/usr/local/bin/silo` from reading the marker a `.deb` left
