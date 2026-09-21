@@ -309,7 +309,7 @@ func FetchLatest(ctx context.Context, c *http.Client, url string) (Release, erro
 	if err != nil {
 		return Release{}, fmt.Errorf("checking for the latest release: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		// Named rather than swallowed: 403 here is almost always GitHub's

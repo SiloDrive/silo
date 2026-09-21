@@ -273,7 +273,7 @@ func TestFetchLatestReadsTheAssetListRatherThanGuessingIt(t *testing.T) {
 	}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, body)
+		_, _ = io.WriteString(w, body)
 	}))
 	defer srv.Close()
 
@@ -303,7 +303,7 @@ func TestFetchLatestReadsTheAssetListRatherThanGuessingIt(t *testing.T) {
 func TestFetchLatestReportsAnHTTPFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		io.WriteString(w, `{"message":"API rate limit exceeded"}`)
+		_, _ = io.WriteString(w, `{"message":"API rate limit exceeded"}`)
 	}))
 	defer srv.Close()
 
@@ -319,7 +319,7 @@ func TestFetchLatestReportsAnHTTPFailure(t *testing.T) {
 // surface three layers away as an unexplained "cannot be compared".
 func TestFetchLatestRejectsAReleaseWithNoTag(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"assets":[]}`)
+		_, _ = io.WriteString(w, `{"assets":[]}`)
 	}))
 	defer srv.Close()
 

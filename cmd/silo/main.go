@@ -82,10 +82,10 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 		case "--check", "-check":
 			check = true
 		case "-h", "--help", "help":
-			fmt.Fprint(stdout, upgradeUsage)
+			_, _ = fmt.Fprint(stdout, upgradeUsage)
 			return 0
 		default:
-			fmt.Fprintf(stderr, "silo upgrade: unknown argument %q\n\n%s", a, upgradeUsage)
+			_, _ = fmt.Fprintf(stderr, "silo upgrade: unknown argument %q\n\n%s", a, upgradeUsage)
 			return 2
 		}
 	}
@@ -102,7 +102,7 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 
 	rel, err := upgrade.FetchLatest(ctx, nil, latestURL)
 	if err != nil {
-		fmt.Fprintf(stderr, "silo upgrade: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "silo upgrade: %v\n", err)
 		return 2
 	}
 
@@ -113,7 +113,7 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 	exe, _ := os.Executable()
 	method := upgrade.Resolve(InstallMethod, exe, upgrade.FileMarker)
 
-	fmt.Fprint(stdout, upgrade.Advise(method, Version, rel, runtime.GOOS, runtime.GOARCH))
+	_, _ = fmt.Fprint(stdout, upgrade.Advise(method, Version, rel, runtime.GOOS, runtime.GOARCH))
 	return upgradeExit(check, upgrade.Compare(Version, rel.Tag))
 }
 
