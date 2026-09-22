@@ -858,7 +858,8 @@ built; the lifecycle ends at disabled.
 | Renew | the credential itself | issues a **second** row and leaves the old one to die on its own `expires_at` — one-in-one-out would lock out a client whose response was lost. No other row is touched | `POST auth/renew` |
 | Log out | the credential itself, any perm, any scope | deletes its own row | `POST auth/logout` |
 | Log out everywhere | the person, any perm, unscoped | deletes every row **except `invite`** | `POST auth/logout/everywhere` → `credential.RevokeAll` |
-| Change own password | the person, write perm, unscoped, holding the current password | deletes every row except `invite`, the caller's included — see [above](#changing-a-password-and-what-it-revokes) | `POST auth/password` → `RevokeAll` |
+| Log out others | the person, any perm, unscoped | deletes every row except `invite` **and the one that asked** | `POST auth/logout/others` → `credential.RevokeOthers` |
+| Change own password | the person, write perm, unscoped, holding the current password | **nothing**, by default. With `"revoke_others": true`, every row except `invite` and the caller's own — see [above](#changing-a-password-and-what-it-revokes) | `POST auth/password` → `RevokeOthers`, or nothing |
 | Admin resets password | admin with `passwords`: `silo user passwd`, `POST admin/accounts/{id}/password` | deletes every row except `invite` | `credential.RevokeAll` |
 | Admin revokes one or all | admin on the host: `silo token revoke <email> [id]` | deletes the named row, or every row except `invite` | `credential.Revoke` / `RevokeAll` |
 | Change role or capabilities | admin with `grant`: `PUT admin/accounts/{id}/role`, `…/caps` | **nothing.** The role is read through the `Resolve` join on the next request, so a demotion takes effect without a sign-out | `admin.SetRole` |
