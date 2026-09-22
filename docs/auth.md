@@ -175,7 +175,7 @@ mint for is a client that has misread the model rather than one to accommodate.
 ```sql
 CREATE TABLE Credential (
   id          TEXT    PRIMARY KEY,   -- public, travels in the token
-  kind        TEXT    NOT NULL,      -- 'session'|'device'|'access'|'s3'
+  kind        TEXT    NOT NULL,      -- 'session'|'device'|'invite'|'access'|'s3'
   secret_hash BLOB,                  -- SHA-256 of the secret, for bearer kinds
   public_key  BLOB,                  -- SPKI, for proof-of-possession kinds
   account_id  BLOB    NOT NULL REFERENCES Account(id),
@@ -548,10 +548,11 @@ right screen rather than a login form that cannot work.
 Three things about it are worth stating because they are exceptions to rules
 this document makes elsewhere.
 
-**It is a second secret outside `Credential`.** Rule 2 says every secret a
-client presents is a row in one table resolved by one function, with the
-notification token as the single documented exception. This is the second, and
-the reason is structural rather than convenience: `Credential.account_id`
+**It is the one secret outside `Credential`.** Rule 2 says every secret a
+client presents is a row in one table resolved by one function. This is the
+only exception — the notification token that used to be the other one is gone,
+see [No JWT anywhere](#no-jwt-anywhere) — and the reason is structural rather
+than convenience: `Credential.account_id`
 references `Account(id)`, so on a server with no accounts the rule's own table
 cannot hold it. It authenticates nobody, names no account, and authorises
 exactly one transition — after which its row is gone. It lives in `SetupToken`,
@@ -726,6 +727,19 @@ reason: the subject is the row making the request, which is not wider than that
 row's own scope, so a mount cut to one library may replace its own credential
 without an operator.
 
+**What ninety days bounds, and what it does not.** Nothing in the server asks a
+device to present its password again after ninety days. Each renewal is a full
+fresh lifetime, there is no cap counted from the original enrolment, and no
+column links a successor to its parent — so a device that is used often enough
+to renew before its row dies never re-enters the password at all. What the
+number bounds is an *idle* device and a *stolen* row: a credential that has not
+been renewed dies ninety days after it was minted whatever happens, and a
+client that renews from inside the last thirty days (as silo-drive does) will
+find itself enrolling from the password only after a stretch of disuse longer
+than thirty days — always, after one longer than ninety. Anyone who wants a
+hard "sign in again every N days" is asking for a chain cap the schema cannot
+express yet, and should say so here before building it.
+
 **The old row is left alone, and that is a choice with a cost.** One-in-one-out
 would be tidier to reason about — and it would mean a response lost in transit
 costs a headless client both the credential it was holding and the one it never
@@ -784,6 +798,14 @@ The count never includes the caller's own row, in either mode. A client
 branches on the `logout-others` capability rather than the version: without
 that name it is talking to a server where this request still signs everything
 out, and it should say so rather than let somebody find out.
+
+**A revoke that fails after the password has changed is `200`, not `500`:**
+`{ "revoked": 0, "sessions_still_live": true }`. By then the password *is*
+changed, and a `500` would be indistinguishable from the one where nothing
+was — a client reading it as failure keeps the old password and strands itself
+at its next login. The field is named for the era when only sessions were
+revoked; it now means credentials of every kind, and keeps its spelling so
+existing decoders still read it.
 
 **With `client_kdf_params`, the same request is the split-derivation
 crossover.** `new_password` then carries an `authKey` rather than a password,
@@ -1115,7 +1137,20 @@ silo user enable <email>             undo a disable
 silo token list <email>              id, kind, label, created, expires, last used, narrowing
 silo token revoke <email> <id>       stop one credential
 silo token revoke <email>            stop all of them
+
+silo credential list [--json]        what the logged-in account holds, "this command" marked
+silo credential revoke <id>          stop one of them
+silo credential revoke --others      stop every one but this command's own
 ```
+
+`silo user` and `silo token` run on the host, against the database, and are
+the operator's; `silo token list` is the one listing that shows `invite` rows.
+`silo credential` speaks HTTP as the account holder and is the same surface a
+client offers — it logs in for a 24h session, does the one thing, and discards
+that session on the way out, so it never litters the list it just printed.
+There is deliberately no `--everywhere`: a flag that signs the running command
+out reads as a bug in the command, and `--others` is the thing a person who has
+just lost a laptop came for — it should not require reading ids off a list.
 
 **Disabling does not delete.** Re-enabling restores the user's devices rather
 than making everyone log in again, and the `is_active` join means the stop takes

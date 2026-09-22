@@ -7,21 +7,22 @@ package api
 //     authenticated. Otherwise a stolen device credential upgrades itself into
 //     account takeover, and the point of a scoped, revocable credential is
 //     that it cannot become the account.
-//   - It revokes every credential the account holds, device credentials
-//     included, and the one that asked along with them. It used to revoke only
-//     sessions, on the argument that unmounting somebody's laptop as a side
-//     effect of routine hygiene teaches them to stop doing hygiene. That cost
-//     is real and is still paid; what it was weighed against was not. Changing
-//     the password is the action a person already knows to reach for when they
-//     think something has been taken, and under the old rule it left the
-//     credential most worth worrying about untouched -- a device credential is
-//     ninety days and renews from itself, so a stolen one outlived the
-//     password it was minted under indefinitely. The recovery was
-//     `auth/logout/everywhere`, which is a second endpoint the person has to
-//     know about in the moment they are least likely to go looking for one.
-//     `silo user passwd` -- an administrator resetting a password somebody has
-//     lost control of -- has always revoked everything, and this is the same
-//     act performed by the person themselves.
+//   - It revokes nothing unless the caller sends `revoke_others`, and never
+//     the credential that asked. This is the third rule the handler has had,
+//     and the two before it are worth keeping in view. It began by revoking
+//     only sessions, on the argument that unmounting somebody's laptop as a
+//     side effect of routine hygiene teaches them to stop doing hygiene --
+//     which spared precisely the credential most worth worrying about, since
+//     a device credential is ninety days and renews from itself, so a stolen
+//     one outlived the password it was minted under indefinitely. It then
+//     revoked everything, the caller included, because changing the password
+//     is the action a person already knows to reach for when they think
+//     something has been taken and nothing else was pointed at a stolen
+//     device row. That argument was right and is now spent: `auth/logout/
+//     others` says the same thing by name, so the password change no longer
+//     carries it as a side effect. `silo user passwd` -- an administrator
+//     resetting a password somebody has lost control of -- still revokes
+//     everything, because which thing was lost is not knowable from there.
 
 import (
 	"context"
