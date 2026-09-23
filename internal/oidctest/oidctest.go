@@ -165,6 +165,21 @@ func (idp *IdP) Deny(t testing.TB, userCode string) {
 	f.denied = true
 }
 
+// Pending returns the user codes of flows nobody has approved or denied yet,
+// for a test that drives a client which shows the code rather than returning
+// it.
+func (idp *IdP) Pending() []string {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	var out []string
+	for code, f := range idp.byUserCode {
+		if f.approved == nil && !f.denied {
+			out = append(out, code)
+		}
+	}
+	return out
+}
+
 // Started is how many device flows have been started, so a test can check a
 // refusal happened before the IdP was asked anything.
 func (idp *IdP) Started() int {

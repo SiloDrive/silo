@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 type APIClient struct {
@@ -93,8 +94,11 @@ type DirEntry struct {
 	Modifier string `json:"modifier,omitempty"`
 }
 
+// NewClient returns a client for the server at baseURL. A trailing slash is
+// dropped: every path this client sends begins with one, and SILO_URL typed
+// with one is the same server rather than a request for "//api/...".
 func NewClient(baseURL string) *APIClient {
-	return &APIClient{BaseURL: baseURL}
+	return &APIClient{BaseURL: strings.TrimRight(baseURL, "/")}
 }
 
 // doRequest performs an authenticated HTTP request, transparently re-logging
@@ -159,6 +163,9 @@ type StatusError struct {
 	Code   int
 	Status string
 	Body   string
+
+	// retryAfter is a 429's Retry-After, where one was sent.
+	retryAfter time.Duration
 }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("%s: %s", e.Status, e.Body) }
@@ -347,6 +354,23 @@ func (c *APIClient) Login(email, password string) error {
 	c.password = password
 	return c.reloginLocked()
 }
+
+// UseCredential presents a credential this client did not mint, such as one
+// `silo login` stored. It holds no password, so a 401 is final rather than a
+// cue to sign in again: the credential was revoked or ran out, and only the
+// person can decide how to get another.
+func (c *APIClient) UseCredential(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.token = token
+	c.email, c.password = "", ""
+}
+
+// OwnsSession reports whether the credential in use was minted by this client
+// signing in with a password, which makes it this process's to discard when it
+// is done. A credential handed to UseCredential is not: it belongs to whoever
+// stored it, and discarding it would sign that host out.
+func (c *APIClient) OwnsSession() bool { return c.hasCreds() }
 
 // Setup creates this server's first account and signs in as it.
 //

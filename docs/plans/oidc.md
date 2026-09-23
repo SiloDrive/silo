@@ -334,16 +334,24 @@ saying why. End-to-end tests against the fake IdP:
 
 ### Step 5 — the CLI
 
-`silo login` runs the device flow when the server lists `oidc`. It prints the
-code and URL (and a QR code in a terminal that can show one) and stores the
-**device** credential it collects under the XDG config directory, mode 0600.
-`cli.Run` uses a stored credential before it falls back to `SILO_EMAIL` and
-`SILO_PASSWORD`, and `silo logout` deletes it through `auth/logout`.
+`silo login` runs the device flow when the server lists `oidc`, or asks for a
+password (`-password` forces it) when it does not. It prints the code and URL,
+and stores the **device** credential it collects under the XDG config
+directory, mode 0600, keyed by server URL, together with a client id minted
+once per host. Signing in again discards the credential it replaces. `cli.Run`
+uses `SILO_EMAIL` and `SILO_PASSWORD` when both are set, so a script that
+signs in with a password behaves as before, and the stored credential
+otherwise. `silo logout` revokes it through `auth/logout` and forgets it.
 
-This also fixes the leftover that credential-management.md recorded: with a
-stored credential, `cli.Run` stops minting a 24-hour session for every `silo
-ls`. The cause was that the CLI had no credential to keep, which this step
-gives it.
+A command running on a stored credential does not sign it out afterwards.
+`silo credential` used to, correctly, because every CLI session was a
+throwaway; with a stored credential that would sign the host out as a side
+effect of looking at a list.
+
+This fixes the leftover credential-management.md recorded for anyone who uses
+`silo login`: with a stored credential, `cli.Run` stops minting a 24-hour
+session for every `silo ls`. A script that still signs in with a password
+still mints one per command.
 
 ### Step 6 — what an administrator sees
 

@@ -45,26 +45,43 @@ var commands = map[string]func(*client.APIClient, []string) error{
 }
 
 // Run executes a single CLI subcommand. args[0] is the subcommand name; the
-// rest are its arguments and flags. It logs in using email+password before
-// each operation.
+// rest are its arguments and flags. It signs in with SILO_EMAIL and
+// SILO_PASSWORD when both are set, and otherwise presents the credential
+// `silo login` stored for this server.
 func Run(serverURL, email, password string, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("no subcommand given")
 	}
 
 	sub, rest := args[0], args[1:]
+	switch sub {
+	case "login":
+		return runLogin(serverURL, email, password, rest)
+	case "logout":
+		return runLogout(serverURL, rest)
+	}
 	cmd, ok := commands[sub]
 	if !ok {
 		return fmt.Errorf("unknown subcommand: %s (run \"silo help\" for the list)", sub)
 	}
 
-	if email == "" || password == "" {
-		return fmt.Errorf("SILO_EMAIL and SILO_PASSWORD must be set")
-	}
-
 	c := client.NewClient(serverURL)
-	if err := c.Login(email, password); err != nil {
-		return fmt.Errorf("login: %w", err)
+	switch {
+	// The environment first, so nothing that scripts the CLI with a password
+	// changes underneath it.
+	case email != "" && password != "":
+		if err := c.Login(email, password); err != nil {
+			return fmt.Errorf("login: %w", err)
+		}
+	default:
+		stored, ok, err := storedFor(serverURL)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("not signed in to %s: run `silo login`, or set SILO_EMAIL and SILO_PASSWORD", serverURL)
+		}
+		c.UseCredential(stored.Credential)
 	}
 
 	return cmd(c, rest)

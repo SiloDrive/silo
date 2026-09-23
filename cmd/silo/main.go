@@ -313,6 +313,9 @@ Usage:
   silo user revoke <email> <caps> Take administrative capabilities away
   silo token list <email>         Show a user's sync and API tokens
   silo token revoke <email> [tok] Revoke every token a user holds, or just one
+  silo login [-password]          Sign this host in, through the server's identity
+                                  provider if it has one; later commands use it
+  silo logout                     Sign this host out and forget its credential
   silo credential list [--json]   Show the credentials your own account holds
   silo credential revoke <id>     Revoke one of them
   silo credential revoke --others Revoke every other one, keeping this session
@@ -346,7 +349,8 @@ Server environment:
 Client environment:
   SILO_URL               Server base URL (default: http://localhost:8082)
   SILO_EMAIL             Account email for TUI/CLI
-  SILO_PASSWORD          Account password for TUI/CLI
+  SILO_PASSWORD          Account password for TUI/CLI; when both are set they
+                         win over the credential "silo login" stored
 
 Run "silo serve -h" for server-side flags.
 

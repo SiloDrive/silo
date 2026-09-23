@@ -61,10 +61,21 @@ func cmdCredential(c *client.APIClient, args []string) error {
 // fills up with rows nobody can account for.
 func withLogout(c *client.APIClient, run func() error) error {
 	err := run()
-	if lerr := c.Logout(); lerr != nil && err == nil {
+	if lerr := discardSession(c); lerr != nil && err == nil {
 		return fmt.Errorf("signing this command's own session out: %w", lerr)
 	}
 	return err
+}
+
+// discardSession signs this process's throwaway session out, and does nothing
+// when the credential in use is one `silo login` stored. That one is the host's
+// sign-in rather than this command's, and discarding it would sign the host out
+// as a side effect of looking at a list.
+func discardSession(c *client.APIClient) error {
+	if !c.OwnsSession() {
+		return nil
+	}
+	return c.Logout()
 }
 
 func credentialList(c *client.APIClient, args []string) error {
@@ -160,8 +171,14 @@ func credentialRevoke(c *client.APIClient, args []string) error {
 		// The session is still live, so it still needs discarding. The
 		// revocation's own error is what the person asked about and is the one
 		// returned.
-		_ = c.Logout()
+		_ = discardSession(c)
 		return err
+	}
+	if current && !c.OwnsSession() {
+		// The stored sign-in, revoked from itself. Nothing else was touched,
+		// and this host now has to sign in again to do anything.
+		fmt.Printf("Revoked %s, which was this host's own sign-in. Run `silo login` to sign in again.\n", id)
+		return nil
 	}
 	if current {
 		// The id given was this command's own throwaway session, so the
@@ -173,5 +190,5 @@ func credentialRevoke(c *client.APIClient, args []string) error {
 		return nil
 	}
 	fmt.Printf("Revoked %s.\n", id)
-	return c.Logout()
+	return discardSession(c)
 }

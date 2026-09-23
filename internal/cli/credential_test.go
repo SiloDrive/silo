@@ -240,3 +240,41 @@ func TestRevokingOthersRefusesAnIdAsWell(t *testing.T) {
 		t.Errorf("a refused command revoked something anyway: others=%d ids=%v", s.othersRevoked, s.revoked)
 	}
 }
+
+// A credential `silo login` stored is not this command's to discard.
+//
+// Signing out afterwards is right for the throwaway session a password login
+// mints, and wrong for a stored credential: it is the one the person signed
+// in to keep, and discarding it would sign this host out as a side effect of
+// looking at the list.
+func TestListingCredentialsLeavesAStoredCredentialAlone(t *testing.T) {
+	s := &credentialServer{creds: []client.Credential{{ID: "a", Kind: "device", Label: "laptop", Perm: "rw"}}}
+	c := newCredentialServer(t, s)
+	c.UseCredential("session-token")
+
+	if err := cmdCredential(c, []string{"list"}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if s.loggedOut != 0 {
+		t.Errorf("listing with a stored credential signed it out (%d logout requests)", s.loggedOut)
+	}
+}
+
+func TestRevokingAnotherCredentialLeavesAStoredCredentialAlone(t *testing.T) {
+	s := &credentialServer{}
+	c := newCredentialServer(t, s)
+	c.UseCredential("session-token")
+
+	if err := cmdCredential(c, []string{"revoke", "someone-else"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if s.loggedOut != 0 {
+		t.Errorf("revoking another credential signed the stored one out (%d logout requests)", s.loggedOut)
+	}
+	if err := cmdCredential(c, []string{"revoke", "--others"}); err != nil {
+		t.Fatalf("revoke --others: %v", err)
+	}
+	if s.loggedOut != 0 {
+		t.Errorf("revoking the others signed the stored one out (%d logout requests)", s.loggedOut)
+	}
+}

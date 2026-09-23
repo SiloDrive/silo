@@ -244,3 +244,22 @@ func TestChangingThePasswordLeavesTheClientSignedIn(t *testing.T) {
 		t.Errorf("a call after the change: %v -- the client re-authenticated with the old password", err)
 	}
 }
+
+// SILO_URL typed with a trailing slash is the same server. Joined naively it
+// put "//api/..." on the wire, which the router answers with 404 -- so every
+// command failed with a message that pointed at the server rather than at a
+// slash.
+func TestABaseURLWithATrailingSlashReachesTheSameRoutes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/silo/v1/server-info" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"version":"test","features":[]}`))
+	}))
+	defer srv.Close()
+
+	if _, err := NewClient(srv.URL + "/").GetServerInfo(); err != nil {
+		t.Fatalf("server-info through %s/: %v", srv.URL, err)
+	}
+}
