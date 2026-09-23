@@ -384,6 +384,16 @@ func arrivedIn(ctx context.Context, q rowQuerier, email string) (bool, error) {
 	return arrived, nil
 }
 
+// HasPassword reports whether an account can sign in with a password.
+func HasPassword(ctx context.Context, id ID) (bool, error) {
+	var has bool
+	if err := readDB.QueryRowContext(ctx,
+		"SELECT EXISTS (SELECT 1 FROM AccountPassword WHERE account_id = ?)", id).Scan(&has); err != nil {
+		return false, fmt.Errorf("asking whether an account has a password: %v", err)
+	}
+	return has, nil
+}
+
 // SetPassword stores a hash for an account, replacing any it already had, and
 // clears the client KDF parameters beside it.
 //
@@ -528,6 +538,117 @@ func LinkIdentityTx(ctx context.Context, tx *sql.Tx, issuer, subject string, id 
 		return fmt.Errorf("linking an identity: %v", err)
 	}
 	return nil
+}
+
+// Identity is one external identity linked to an account.
+type Identity struct {
+	Issuer  string
+	Subject string
+	Ctime   int64
+}
+
+// ErrIdentityTaken is linking an identity another account already has. One
+// identity is one person, which is what the primary key says.
+var ErrIdentityTaken = errors.New("that identity is already linked to another account")
+
+// ErrLastWayIn is unlinking the only thing an account can sign in with.
+var ErrLastWayIn = errors.New("that is the account's only way to sign in")
+
+// Identities lists the external identities linked to every account, for the
+// operator's listing. One query rather than one per account.
+func Identities(ctx context.Context) (map[ID][]Identity, error) {
+	rows, err := readDB.QueryContext(ctx,
+		"SELECT account_id, issuer, subject, ctime FROM AccountIdentity ORDER BY ctime, issuer, subject")
+	if err != nil {
+		return nil, fmt.Errorf("listing identities: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[ID][]Identity{}
+	for rows.Next() {
+		var id ID
+		var i Identity
+		if err := rows.Scan(&id, &i.Issuer, &i.Subject, &i.Ctime); err != nil {
+			return nil, fmt.Errorf("listing identities: %v", err)
+		}
+		out[id] = append(out[id], i)
+	}
+	return out, rows.Err()
+}
+
+// LinkIdentity links an external identity to the account holding an address,
+// by an operator's hand: the way an existing account is reached under a policy
+// that never matches by address, and the repair when an IdP changes somebody's
+// subject.
+func LinkIdentity(ctx context.Context, email, issuer, subject string) (*Account, error) {
+	tx, err := writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("linking an identity: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	a, err := ByEmailTx(ctx, tx, email)
+	if err != nil {
+		return nil, err
+	}
+	switch holder, err := IdentityTx(ctx, tx, issuer, subject); {
+	case err == nil && holder == a.ID:
+		return a, nil // already linked here; nothing to do
+	case err == nil:
+		return nil, fmt.Errorf("%w (%s)", ErrIdentityTaken, holder)
+	case !errors.Is(err, ErrNotFound):
+		return nil, err
+	}
+	if err := LinkIdentityTx(ctx, tx, issuer, subject, a.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("linking an identity: %v", err)
+	}
+	return a, nil
+}
+
+// UnlinkIdentity removes an external identity from the account holding an
+// address, and reports whether there was one to remove.
+//
+// It refuses to remove an account's last way in -- the only identity of an
+// account with no password -- and the refusal is not tidiness. Such an account
+// would have neither of the things Arrived asks about, so it would read as a
+// tombstone, and a tombstone is what an invite or an IdP login at its address
+// may claim: every library it holds would go to whoever arrived next. Set a
+// password or link another identity first.
+func UnlinkIdentity(ctx context.Context, email, issuer, subject string) (bool, error) {
+	tx, err := writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("unlinking an identity: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	a, err := ByEmailTx(ctx, tx, email)
+	if err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx,
+		"DELETE FROM AccountIdentity WHERE account_id = ? AND issuer = ? AND subject = ?",
+		a.ID, issuer, subject)
+	if err != nil {
+		return false, fmt.Errorf("unlinking an identity: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	// Asked after the delete, inside the same transaction, so the question is
+	// about the account as it would be left.
+	arrived, err := ArrivedTx(ctx, tx, a.Email)
+	if err != nil {
+		return false, err
+	}
+	if !arrived {
+		return false, ErrLastWayIn
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("unlinking an identity: %v", err)
+	}
+	return true, nil
 }
 
 // ActivateTx switches an account on with a role, inside a transaction the

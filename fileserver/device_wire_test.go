@@ -284,3 +284,39 @@ func TestStartRefusals(t *testing.T) {
 		}
 	})
 }
+
+// An account that arrived through the IdP has no password, and GET /account
+// says so, so that a client hides "change password" rather than offering a
+// form that asks for a current password nobody has.
+func TestAccountSaysWhetherThereIsAPassword(t *testing.T) {
+	base, passwordToken := wire(t)
+	idp := oidctest.New(t)
+	withOIDC(t, idp, "create")
+
+	hasPassword := func(token string) any {
+		t.Helper()
+		code, body := call(t, "GET", base+"/api/silo/v1/account", token, "")
+		if code != http.StatusOK {
+			t.Fatalf("GET /account = %d, %s", code, body)
+		}
+		var m map[string]any
+		decodeInto(t, body, &m)
+		return m["has_password"]
+	}
+
+	if got := hasPassword(passwordToken); got != true {
+		t.Errorf("has_password for a password account = %v, want true", got)
+	}
+
+	_, s, _ := startDevice(t, base, laptop)
+	idp.Approve(t, s.UserCode, oidctest.Identity{Subject: "sub", Email: "sso@example.com", EmailVerified: oidctest.Verified})
+	code, body := pollUntilDone(t, base, s)
+	if code != http.StatusOK {
+		t.Fatalf("collect = %d, %s", code, body)
+	}
+	var got deviceEnrolled
+	decodeInto(t, body, &got)
+	if v := hasPassword(got.Credential); v != false {
+		t.Errorf("has_password for an account made through the IdP = %v, want false", v)
+	}
+}

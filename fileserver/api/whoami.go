@@ -17,7 +17,9 @@ package api
 import (
 	"net/http"
 
+	"github.com/SiloDrive/silo/fileserver/account"
 	"github.com/SiloDrive/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/option"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -27,6 +29,17 @@ type accountResponse struct {
 	// spelling of the same id produces a blob that does not open.
 	AccountID string `json:"account_id"`
 	Email     string `json:"email"`
+
+	// HasPassword is false for an account that signs in only through an
+	// identity provider. A client uses it to hide "change password": that
+	// form asks for the current password, and there is none to give.
+	//
+	// A new key on an existing response, which is the change
+	// docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md
+	// is about. Checked rather than assumed: the Linux client decodes this
+	// response into a struct, Android sets ignoreUnknownKeys, and the macOS
+	// client does not call it.
+	HasPassword bool `json:"has_password"`
 }
 
 // AccountHandler handles GET /api/silo/v1/account.
@@ -37,8 +50,17 @@ func AccountHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+	ctx, cancel := option.WithDBTimeout(r.Context())
+	defer cancel()
+	hasPassword, err := account.HasPassword(ctx, acct.ID)
+	if err != nil {
+		log.Errorf("Failed to read whether %s has a password: %v", acct.Email, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, accountResponse{
-		AccountID: acct.ID.String(),
-		Email:     acct.Email,
+		AccountID:   acct.ID.String(),
+		Email:       acct.Email,
+		HasPassword: hasPassword,
 	})
 }

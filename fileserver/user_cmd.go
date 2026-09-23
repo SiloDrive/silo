@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -105,6 +107,25 @@ func RunUser(args []string) error {
 		} else {
 			run = func() error { return revokeUser(email, caps) }
 		}
+	case "identity":
+		// Linking by hand is how an existing account is reached through an
+		// IdP whose address claims are not believed, and unlinking is how a
+		// wrong link is undone. Both name the identity in full: a subject is
+		// only meaningful beside its issuer.
+		if len(rest) < 3 || (rest[1] != "list" && len(rest) != 5) || (rest[1] == "list" && len(rest) != 3) {
+			return fmt.Errorf("silo user identity needs list <email>, or link|unlink <email> <issuer> <subject>\n\n%s", UserUsage)
+		}
+		verb, email := rest[1], rest[2]
+		switch verb {
+		case "list":
+			run = func() error { return listIdentities(email) }
+		case "link":
+			run = func() error { return linkIdentity(email, rest[3], rest[4]) }
+		case "unlink":
+			run = func() error { return unlinkIdentity(email, rest[3], rest[4]) }
+		default:
+			return fmt.Errorf("unknown identity subcommand %q (want list, link or unlink)\n\n%s", verb, UserUsage)
+		}
 	case "add", "passwd", "disable", "enable":
 		// Every one of these names one person, and names them by the address
 		// the operator knows rather than the id the tables hold.
@@ -154,6 +175,9 @@ const UserUsage = `usage:
   silo user enable <email>                    Undo a disable
   silo user quota <email>                     Show the cap and what is used
   silo user quota <email> <size|none>         Set the cap: 100gb, 500mb, none
+  silo user identity list <email>             Show the IdP identities it signs in with
+  silo user identity link <email> <iss> <sub> Link one by hand
+  silo user identity unlink <email> <iss> <sub>  Remove one
   silo user grant <email> <caps>              Give administrative capabilities
   silo user revoke <email> <caps>             Take them away
                                               (caps: users, passwords, quota,
@@ -178,9 +202,13 @@ func listUsers(asJSON bool) error {
 	if err != nil {
 		return err
 	}
+	idents, err := account.Identities(ctx)
+	if err != nil {
+		return err
+	}
 
 	if asJSON {
-		return printUsersJSON(users, caps)
+		return printUsersJSON(users, caps, idents)
 	}
 	if len(users) == 0 {
 		fmt.Println("No accounts. The server will mint a bootstrap admin on its next start.")
@@ -191,15 +219,15 @@ func listUsers(asJSON bool) error {
 	// an operator has to read with a ruler is one they will read wrong, and
 	// hand-computed widths only ever measure the column somebody remembered.
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "EMAIL\tSTATUS\tROLE\tPASSWORD\tCREATED\tCAPABILITIES")
+	_, _ = fmt.Fprintln(tw, "EMAIL\tSTATUS\tROLE\tPASSWORD\tIDP\tCREATED\tCAPABILITIES")
 	for _, u := range users {
 		status := "active"
 		if !u.IsActive {
 			status = "DISABLED"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			displayEmail(u), status, string(u.Role), yesNo(u.HasPassword),
-			format.Time(u.Ctime), admin.Join(caps[u.ID]))
+			issuerHosts(idents[u.ID]), format.Time(u.Ctime), admin.Join(caps[u.ID]))
 	}
 	return tw.Flush()
 }
@@ -212,6 +240,25 @@ func displayEmail(u account.Listed) string {
 		return "(no address: " + u.ID.String() + ")"
 	}
 	return u.Email
+}
+
+// issuerHosts is the IDP column: which identity providers an account signs in
+// through, by host, since that is how an operator knows them. A dash for none.
+func issuerHosts(ids []account.Identity) string {
+	if len(ids) == 0 {
+		return "-"
+	}
+	var hosts []string
+	for _, i := range ids {
+		h := i.Issuer
+		if u, err := url.Parse(i.Issuer); err == nil && u.Host != "" {
+			h = u.Host
+		}
+		if !slices.Contains(hosts, h) {
+			hosts = append(hosts, h)
+		}
+	}
+	return strings.Join(hosts, ",")
 }
 
 func yesNo(b bool) string {
@@ -487,16 +534,23 @@ func readPasswordLine(r io.Reader) (string, error) {
 // userJSON is the listing's wire shape, named here rather than inlined so
 // that a field cannot be renamed by accident.
 type userJSON struct {
-	ID           string   `json:"id"`
-	Email        string   `json:"email"`
-	IsActive     bool     `json:"is_active"`
-	Role         string   `json:"role"`
-	Capabilities []string `json:"capabilities"`
-	HasPassword  bool     `json:"has_password"`
-	Created      string   `json:"created"`
+	ID           string         `json:"id"`
+	Email        string         `json:"email"`
+	IsActive     bool           `json:"is_active"`
+	Role         string         `json:"role"`
+	Capabilities []string       `json:"capabilities"`
+	HasPassword  bool           `json:"has_password"`
+	Identities   []identityJSON `json:"identities"`
+	Created      string         `json:"created"`
 }
 
-func printUsersJSON(users []account.Listed, caps map[account.ID][]admin.Capability) error {
+type identityJSON struct {
+	Issuer  string `json:"issuer"`
+	Subject string `json:"subject"`
+}
+
+func printUsersJSON(users []account.Listed, caps map[account.ID][]admin.Capability,
+	idents map[account.ID][]account.Identity) error {
 	out := make([]userJSON, 0, len(users))
 	for _, u := range users {
 		// An empty list rather than null: a consumer iterating the field
@@ -506,7 +560,12 @@ func printUsersJSON(users []account.Listed, caps map[account.ID][]admin.Capabili
 		for _, c := range caps[u.ID] {
 			held = append(held, string(c))
 		}
+		ids := []identityJSON{}
+		for _, i := range idents[u.ID] {
+			ids = append(ids, identityJSON{Issuer: i.Issuer, Subject: i.Subject})
+		}
 		out = append(out, userJSON{
+			Identities:   ids,
 			ID:           u.ID.String(),
 			Email:        u.Email,
 			IsActive:     u.IsActive,
@@ -594,5 +653,61 @@ func reportCapabilities(ctx context.Context, acct *account.Account) error {
 			acct.Email, acct.Role)
 		fmt.Printf("Capabilities are half of the rule: the account must be an admin as well.\n")
 	}
+	return nil
+}
+
+func listIdentities(email string) error {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	a, err := account.ByEmail(ctx, email)
+	if err != nil {
+		return fmt.Errorf("%s: %w", email, err)
+	}
+	all, err := account.Identities(ctx)
+	if err != nil {
+		return err
+	}
+	if len(all[a.ID]) == 0 {
+		fmt.Printf("%s signs in through no identity provider.\n", a.Email)
+		return nil
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "ISSUER\tSUBJECT\tLINKED")
+	for _, i := range all[a.ID] {
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", i.Issuer, i.Subject, format.Time(i.Ctime))
+	}
+	return tw.Flush()
+}
+
+func linkIdentity(email, issuer, subject string) error {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	a, err := account.LinkIdentity(ctx, email, issuer, subject)
+	if err != nil {
+		return fmt.Errorf("linking %s %s to %s: %w", issuer, subject, email, err)
+	}
+	fmt.Printf("Linked %s subject %s to %s.\n", issuer, subject, a.Email)
+	if !a.IsActive {
+		fmt.Printf("%s is disabled, so signing in through it is refused until \"silo user enable %s\".\n",
+			a.Email, a.Email)
+	}
+	return nil
+}
+
+func unlinkIdentity(email, issuer, subject string) error {
+	ctx, cancel := option.WithDBTimeout(context.Background())
+	defer cancel()
+	removed, err := account.UnlinkIdentity(ctx, email, issuer, subject)
+	switch {
+	case errors.Is(err, account.ErrLastWayIn):
+		return fmt.Errorf("%w: %s has no password and no other identity, and would be left claimable by "+
+			"whoever arrived at its address next. Set a password (silo user passwd) or link another identity first",
+			err, email)
+	case err != nil:
+		return fmt.Errorf("unlinking from %s: %w", email, err)
+	case !removed:
+		return fmt.Errorf("%s has no identity %s from %s", email, subject, issuer)
+	}
+	fmt.Printf("Unlinked %s subject %s from %s.\n", issuer, subject, email)
 	return nil
 }

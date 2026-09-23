@@ -27,6 +27,10 @@ type AccountInfo struct {
 	// only alongside the blobs it opens.
 	AccountID string `json:"account_id"`
 	Email     string `json:"email"`
+	// HasPassword is false for an account that signs in only through an
+	// identity provider, which has no password to change or to derive keys
+	// from.
+	HasPassword bool `json:"has_password"`
 }
 
 // AccountInfo asks the server who this credential belongs to.

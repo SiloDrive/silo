@@ -445,3 +445,26 @@ func TestASubjectIsOnlyMeaningfulBesideItsIssuer(t *testing.T) {
 		t.Fatalf("the same subject from another issuer = %v, want ErrNoAccount", err)
 	}
 }
+
+// An IdP that mints a new subject for the same person -- Clinch does, after
+// "Revoke Access" destroys the consent the subject was derived from -- is not a
+// stranger under link or create. The old identity still marks the account as
+// arrived, so the new subject with the same verified address is linked beside
+// it rather than refused or given a second account.
+func TestANewSubjectForTheSamePersonIsLinkedBesideTheOld(t *testing.T) {
+	for _, p := range []oidc.Policy{oidc.PolicyLink, oidc.PolicyCreate} {
+		pair := testDB(t)
+		// Arrived through the IdP, with no password at all.
+		first, err := Account(ctx(t), policy(oidc.PolicyCreate), person("old-sub", "sso@example.com", true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Account(ctx(t), policy(p), person("new-sub", "sso@example.com", true))
+		if err != nil || got != first {
+			t.Fatalf("%s: the new subject = %v, %v; want the same account %v", p, got, err, first)
+		}
+		if n := accountCount(t, pair); n != 1 {
+			t.Errorf("%s: %d accounts, want 1", p, n)
+		}
+	}
+}

@@ -355,20 +355,30 @@ still mints one per command.
 
 ### Step 6 — what an administrator sees
 
-`silo user` lists each account's identities (issuer host, subject), and
-accounts with no password read as `oidc`, not as a blank. `silo user identity
-link <email> <issuer> <subject>` and `unlink` take the same arguments. Linking
-is how an existing account is reached under `isolated`, and unlinking is the
-recovery for auth.md's changing-`sub` problem. When an IdP mints a new subject after its consent is
-revoked, an administrator unlinks the stale row, and the next login matches by
-address (trusted issuers) and not by a subject that no longer exists.
+`silo user list` gains an IDP column (issuer hosts) and `identities` in its
+JSON. `silo user identity list <email>` shows them in full, and `link` and
+`unlink <email> <issuer> <subject>` change them by hand. Linking is how an
+existing account is reached under `isolated`. Linking an identity another
+account holds is refused: one identity is one person.
 
-`GET /account` gains `has_password`. A client then hides "change password" for
-an account with nothing to change. That key is new on an existing response, so
-it goes through the same review
-`docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md` asked
-of the token body. This one is an object, not a token string, and the
-existing clients decode it tolerantly, but that is to be checked, not assumed.
+**Unlinking an account's last way in is refused.** An account with no password
+whose only identity goes would have neither thing `account.Arrived` asks about,
+so it would read as a tombstone — which an invite, or an IdP login at its
+address, may claim, libraries and all. Set a password or link another identity
+first.
+
+The changing-`sub` problem auth.md warns about turns out to need no manual
+repair under `link` or `create`: the old identity row still marks the account
+as arrived, so a login with the new subject and the same verified address is
+linked beside it (and logged as a warning). Under `isolated`, it is `silo user
+identity link` with the new subject.
+
+`GET /account` gains `has_password`, so a client hides "change password" for an
+account with nothing to change. A new key on an existing response, which is
+what `docs/bugs/fixed/adding-a-number-to-a-token-response-breaks-clients.md`
+is about: checked rather than assumed, all three drive clients tolerate it —
+Linux decodes into a struct, Android sets `ignoreUnknownKeys`, and macOS does
+not call the endpoint.
 
 ### Step 7 — against a real IdP
 

@@ -309,6 +309,8 @@ Usage:
   silo user disable <email>       Stop every credential the account holds
   silo user enable <email>        Undo a disable
   silo user quota <email> [size]  Show the storage cap and usage, or set it
+  silo user identity list <email> Show the IdP identities an account signs in with
+  silo user identity link|unlink <email> <issuer> <subject>
   silo user grant <email> <caps>  Give administrative capabilities
   silo user revoke <email> <caps> Take administrative capabilities away
   silo token list <email>         Show a user's sync and API tokens
