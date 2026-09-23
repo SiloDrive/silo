@@ -1,9 +1,10 @@
 # Plan: OIDC login through the device grant
 
-**Status: proposed. Nothing is built.** The design is settled in
-[`auth.md`](../auth.md) § OIDC and is not re-argued here; this is the order to
-build it in, the decisions the design left open, and three places where
-building it against the code turned up something the design did not say.
+**Status: steps 0-6 are built on the `oidc` branch, and step 7 has been run
+against Clinch.** The design is settled in [`auth.md`](../auth.md) § OIDC and
+is not re-argued here; this is the order to build it in, the decisions the
+design left open, and three places where building it against the code turned
+up something the design did not say.
 
 The shape, in one paragraph: Silo is the OAuth client and the RFC 8628
 "device". A client asks Silo to start a login; Silo asks the IdP; the IdP's
@@ -382,15 +383,31 @@ not call the endpoint.
 
 ### Step 7 — against a real IdP
 
-Not in CI. Before this is called done, run it once by hand against Authentik
-or Keycloak in a container, and against Clinch. The fake IdP proves Silo's
-half. Only a real one proves the two halves agree about discovery, the device
-page, and `email_verified`. Check the changing-`sub` behaviour auth.md warns
-about on each of them, since the failure is silent.
+Not in CI. The fake IdP proves Silo's half; only a real one proves the two
+halves agree about discovery, the device page, and `email_verified`.
 
-Then auth.md's OIDC section moves from Part 2 to Part 1, with the corrections
-above folded in. The roadmap entry closes, and `docs/protocol.md` documents
-the two endpoints.
+**Clinch, 23 Sep 2026** — v0.18.2 in development on :3035, a confidential client
+with Clinch's defaults, `silo login` from the branch:
+
+- **Works end to end.** Discovery, the device request, approval on Clinch's own
+  `/device` page, the token, and a ninety-day device credential stored by
+  `silo login` and used by the next command.
+- **PKCE.** Clinch requires a challenge of a confidential client by default,
+  device grant included, and would have refused the plan as first written.
+  Silo now sends one; see the third discovery above.
+- **Changing `sub`.** After the equivalent of "Revoke Access", Clinch minted a
+  new subject, and Silo linked it beside the old one on the same account.
+- **`email_verified` is hard-coded `true`**, and a Clinch user can change their
+  own address with no re-verification. A second Clinch user who set their
+  address to that of a Silo account with no Clinch user was linked to that
+  account and handed a credential. Under `link` against Clinch that is account
+  takeover, and it is Clinch's claim that fails rather than Silo's rule. auth.md
+  records it; the fix belongs in Clinch — keep a verification state and clear it
+  when the address changes.
+
+Still to run: Authentik or Keycloak in a container, for a second opinion on
+the same four points. Then auth.md's OIDC section moves from Part 2 to Part 1,
+with the corrections above folded in, and the roadmap entry closes.
 
 ## Not in this plan
 

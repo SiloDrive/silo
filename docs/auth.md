@@ -1537,7 +1537,20 @@ recovery — merging two accounts — is not something this schema supports. Cli
 has the behaviour today, where `sub` is `OidcUserConsent#sid` and "Revoke Access"
 destroys the consent; "Logout" preserves it and is safe. The durable fix belongs
 on the Clinch side, since a pairwise subject is specified to be stable and this
-affects every relying party.
+affects every relying party. Checked against Clinch on 23 Sep 2026: a new
+subject after "Revoke Access" is linked beside the old one on the same account,
+under `link` and `create`, because the old identity row still marks the account
+as arrived.
+
+**Clinch's `email_verified` is not a proof, so `link` against it is not safe
+yet.** It is hard-coded `true`, and a user can change their own address at
+`/profile` with no re-verification. Demonstrated on the same day: a Clinch user
+who set their address to that of a Silo account which had no Clinch user was
+linked to it and handed a credential. That is `link` behaving exactly as
+specified — the claim is what failed. Until Clinch tracks verification and
+clears it on a change, run Clinch under `isolated` (or `link` only where every
+Silo address is also a Clinch user's, since Clinch refuses a duplicate
+address).
 
 ### Logout and revocation
 

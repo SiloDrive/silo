@@ -102,12 +102,17 @@ func credentialList(c *client.APIClient, args []string) error {
 	fmt.Printf("Credentials (%d):\n", len(creds))
 	now := time.Now().Unix()
 	for _, cr := range creds {
-		// "this command" rather than "current": the row is this invocation's
-		// throwaway session, and a person who read it as their laptop would
-		// revoke the wrong thing. It is about to be signed out anyway.
+		// "this command" rather than "current" for a password sign-in: the
+		// row is this invocation's throwaway session, and a person who read
+		// it as their laptop would revoke the wrong thing. It is about to be
+		// signed out anyway. On the credential `silo login` stored it is the
+		// opposite -- the host's own sign-in, and the one row to keep.
 		marker := ""
 		if cr.Current {
 			marker = "  <- this command"
+			if !c.OwnsSession() {
+				marker = "  <- this host"
+			}
 		}
 		fmt.Printf("  %s  %-7s  %s%s\n", cr.ID, cr.Kind, cr.Label, marker)
 		fmt.Printf("  %s  created %s  %s  last used %s\n",

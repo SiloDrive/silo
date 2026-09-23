@@ -2,8 +2,11 @@ package cli
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -276,5 +279,31 @@ func TestRevokingAnotherCredentialLeavesAStoredCredentialAlone(t *testing.T) {
 	}
 	if s.loggedOut != 0 {
 		t.Errorf("revoking the others signed the stored one out (%d logout requests)", s.loggedOut)
+	}
+}
+
+// On a stored credential the current row is this host's sign-in, not a
+// throwaway: marking it "this command" would invite revoking the one
+// credential the person meant to keep.
+func TestAStoredCredentialIsMarkedAsThisHost(t *testing.T) {
+	s := &credentialServer{creds: []client.Credential{{ID: "a", Kind: "device", Label: "laptop", Perm: "rw", Current: true}}}
+	c := newCredentialServer(t, s)
+	c.UseCredential("session-token")
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	was := os.Stdout
+	os.Stdout = w
+	runErr := cmdCredential(c, []string{"list"})
+	os.Stdout = was
+	_ = w.Close()
+	out, _ := io.ReadAll(r)
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if !strings.Contains(string(out), "<- this host") || strings.Contains(string(out), "this command") {
+		t.Errorf("listing = %q; want the current row marked as this host", out)
 	}
 }
