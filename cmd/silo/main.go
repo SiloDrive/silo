@@ -26,7 +26,7 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.8.0"
+var Version = "0.9.0"
 
 // InstallMethod is stamped at build time via -ldflags
 // "-X main.InstallMethod=..." by whatever produced this binary: the Makefile
@@ -43,8 +43,8 @@ var InstallMethod = ""
 // normalizeVersion drops the leading "v" a git tag carries, so the version this
 // binary reports does not depend on how it was built.
 //
-// The source default is bare — "0.8.0" — while CI stamps `git describe
-// --tags`, which for the same commit is "v0.8.0". Without this,
+// The source default is bare — "0.9.0" — while CI stamps `git describe
+// --tags`, which for the same commit is "v0.9.0". Without this,
 // /api/silo/v1/server-info answers one spelling from a development build and
 // the other from a release, and a client
 // comparing versions has to guess which it got. One did, decided the value was
