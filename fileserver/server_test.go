@@ -4,7 +4,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 func TestProfilingAuthorized(t *testing.T) {

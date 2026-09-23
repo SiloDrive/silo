@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Self-service password change. docs/auth.md fixes two things about it that
@@ -24,29 +24,27 @@ func changePassword(t *testing.T, base, token, body string) (int, string) {
 	return call(t, "POST", base+"/api/silo/v1/auth/password", token, body)
 }
 
-// A password change signs the account out of everywhere, device credentials
-// included.
+// A password change leaves the account's other hosts signed in, unless it is
+// asked not to.
 //
-// This reverses what docs/auth.md argued for, and the argument it reverses is
-// a real one: unmounting somebody's laptop as a side effect of routine hygiene
-// teaches them to stop doing hygiene, so sessions went and devices stayed.
-// What that reasoning weighs is the cost of the two mistakes, and it weighed
-// only one of them. The other is that changing the password is what a person
-// reaches for when they think something has been taken -- it is the one action
-// they already know -- and under the old rule it did nothing at all about the
-// credential most worth worrying about. A device credential is ninety days,
-// renewable from itself, so a stolen one outlived the password it was minted
-// under indefinitely; the recovery existed, and it was a second endpoint the
-// person had to know to call, in the moment they were least likely to go
-// looking. A security control that has to be discovered under stress is not
-// one.
+// This is the third answer to a question that has now had all three. The
+// original rule revoked sessions and spared devices, which is the worst of
+// them: it spared precisely the long-lived, self-renewing credential worth
+// worrying about while still unmounting things. It was replaced by revoking
+// everything, on the argument that changing a password is what a person
+// reaches for when they think something has been taken, and that the blanket
+// revoke was the only thing pointed at a stolen device credential -- true at
+// the time, and the reason the hygiene cost was accepted.
 //
-// So the two cases are now the same case: `silo user passwd` already revoked
-// everything for an administrator resetting a password, and this is the same
-// act performed by the person themselves. The hygiene cost is real and is paid
-// in one place -- the count comes back, so a client can say "signed out of 4
-// places" and the user knows to expect their laptop to ask again.
-func TestChangingThePasswordSignsEveryCredentialOut(t *testing.T) {
+// It is not true any more. auth/logout/others says the same thing by name, so
+// the password change no longer has to carry it as a side effect, and
+// everybody rotating a password has stopped paying for the rare case. What the
+// default costs is recorded in docs/plans/credential-management.md § Step 3:
+// somebody who changes their password *because* they are worried, and stops
+// there, is no longer covered by something they did not know was happening.
+// That is answered by saying so -- the count comes back zero and the CLI names
+// the next step -- rather than by revoking hosts nobody asked about.
+func TestChangingThePasswordLeavesOtherHostsSignedIn(t *testing.T) {
 	base, token := wire(t)
 	device := issueCredential(t, credential.IssueOpts{Kind: credential.KindDevice, Perm: "rw"})
 	session := issueCredential(t, credential.IssueOpts{Kind: credential.KindSession, Perm: "rw"})
@@ -56,34 +54,52 @@ func TestChangingThePasswordSignsEveryCredentialOut(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("changing the password: status %d, body %s", code, body)
 	}
-	if n := revokedCount(t, body); n != 3 {
-		t.Errorf("revoked = %d, want 3 -- two sessions and the device", n)
+	if n := revokedCount(t, body); n != 0 {
+		t.Errorf("revoked = %d, want 0 -- a password change revokes nothing unless asked", n)
 	}
 
-	if alive(t, base, device) {
-		t.Error("a device credential survived a password change, so a stolen one still works")
+	if !alive(t, base, device) {
+		t.Error("a device credential was signed out by a password change nobody asked to revoke")
 	}
-	if alive(t, base, session) {
-		t.Error("a session credential survived a password change")
+	if !alive(t, base, session) {
+		t.Error("a session credential was signed out by a password change nobody asked to revoke")
 	}
-	// Including the one that asked. It gets no exemption: the rule is about
-	// the account, and a carve-out for "this one" would mean a client could
-	// not tell from the count whether it had been signed out.
-	if alive(t, base, token) {
-		t.Error("the session that changed the password survived it")
+	if !alive(t, base, token) {
+		t.Error("the session that changed the password was signed out by it")
 	}
 }
 
-// The other half of the finding, and the reason revoking only sessions was not
-// merely incomplete but self-undoing: a device credential mints its successor
-// from itself, so a chain that started before the password change would
-// otherwise run on forever without the password ever being presented again.
+// Asked to, it signs the others out and keeps the one that asked.
 //
-// A renewal *before* the change is the credential the thief holds. It has to
-// stop working too, and its parent stopping is not enough -- the parent is
-// deliberately left alive by RenewHandler, so revoking only what an operator
-// can see was never the whole set.
-func TestAPasswordChangeEndsARenewedDeviceCredentialToo(t *testing.T) {
+// The exemption is the point: the caller demonstrably holds the password, it
+// just sent it, so signing it out proves nothing and is the part of the old
+// behaviour that most read as a bug.
+func TestAPasswordChangeRevokesOtherHostsWhenAsked(t *testing.T) {
+	base, token := wire(t)
+	device := issueCredential(t, credential.IssueOpts{Kind: credential.KindDevice, Perm: "rw"})
+	session := issueCredential(t, credential.IssueOpts{Kind: credential.KindSession, Perm: "rw"})
+
+	code, body := changePassword(t, base, token,
+		`{"current_password":"`+wirePassword+`","new_password":"`+newPassword+`","revoke_others":true}`)
+	if code != http.StatusOK {
+		t.Fatalf("changing the password: status %d, body %s", code, body)
+	}
+	if n := revokedCount(t, body); n != 2 {
+		t.Errorf("revoked = %d, want 2 -- the device and the other session, not the caller", n)
+	}
+
+	if alive(t, base, device) {
+		t.Error("a device credential survived a revoking password change, so a stolen one still works")
+	}
+	if alive(t, base, session) {
+		t.Error("a session credential survived a revoking password change")
+	}
+	if !alive(t, base, token) {
+		t.Error("the session that asked to revoke the others revoked itself as well")
+	}
+}
+
+func TestARevokingPasswordChangeEndsARenewedDeviceCredentialToo(t *testing.T) {
 	base, token := wire(t)
 	device := issueCredential(t, credential.IssueOpts{Kind: credential.KindDevice, Perm: "rw"})
 
@@ -102,8 +118,11 @@ func TestAPasswordChangeEndsARenewedDeviceCredentialToo(t *testing.T) {
 		t.Fatal("the renewed credential did not work before the password changed")
 	}
 
+	// revoke_others, because that is the mode this test is about: the question
+	// is whether a renewal escapes a revocation, not whether a password change
+	// revokes by default -- it does not.
 	if code, body := changePassword(t, base, token,
-		`{"current_password":"`+wirePassword+`","new_password":"`+newPassword+`"}`); code != http.StatusOK {
+		`{"current_password":"`+wirePassword+`","new_password":"`+newPassword+`","revoke_others":true}`); code != http.StatusOK {
 		t.Fatalf("changing the password: status %d, body %s", code, body)
 	}
 

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/ratelimit"
-	"github.com/dkam/silo/fileserver/utils"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/ratelimit"
+	"github.com/SiloDrive/silo/fileserver/utils"
 	log "github.com/sirupsen/logrus"
 )
 

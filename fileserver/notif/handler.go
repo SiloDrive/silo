@@ -6,7 +6,7 @@ import (
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/middleware"
 )
 
 var upgrader = websocket.Upgrader{

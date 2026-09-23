@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/dbutil"
+	"github.com/SiloDrive/silo/fileserver/dbutil"
 )
 
 func testDB(t *testing.T) {

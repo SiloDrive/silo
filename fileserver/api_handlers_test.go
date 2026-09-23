@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
 )
 
 func TestCheckEntryName(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 func mustEmpty(t *testing.T, s *Store) store.ID {

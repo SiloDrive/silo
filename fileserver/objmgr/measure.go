@@ -4,7 +4,7 @@ import (
 	"errors"
 	"math"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Usage is what a tree holds: the logical size of the files it reaches, and

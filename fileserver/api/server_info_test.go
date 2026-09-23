@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // TestServerInfoAdvertisesFeatures covers the reason the endpoint exists: a

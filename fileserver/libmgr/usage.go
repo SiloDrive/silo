@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/fileserver/option"
-	storefmt "github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/objmgr"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/fileserver/option"
+	storefmt "github.com/SiloDrive/silo/store"
 	log "github.com/sirupsen/logrus"
 )
 

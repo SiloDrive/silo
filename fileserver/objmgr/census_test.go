@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/store"
 )
 
 // commitOn writes a commit for a root and returns its id.

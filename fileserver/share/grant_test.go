@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 func grantCtx(t *testing.T) context.Context {

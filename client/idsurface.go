@@ -16,7 +16,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // ErrNotFound reports something the library does not hold: a path with no

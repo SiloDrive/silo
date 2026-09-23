@@ -2,14 +2,14 @@ package silod
 
 import (
 	"fmt"
-	"github.com/dkam/silo/fileserver/diskfree"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/diskfree"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/option"
 	"text/tabwriter"
 
 	"os"
 
-	"github.com/dkam/silo/fileserver/objmgr"
+	"github.com/SiloDrive/silo/fileserver/objmgr"
 )
 
 // RunDF reports where a server's disk has gone, per library.

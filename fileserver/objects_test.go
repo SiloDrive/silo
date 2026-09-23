@@ -7,10 +7,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/store"
 	"github.com/gorilla/mux"
 )
 

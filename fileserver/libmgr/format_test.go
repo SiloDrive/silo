@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 func TestTheDefaultFormatIsOneTheChunkerAccepts(t *testing.T) {

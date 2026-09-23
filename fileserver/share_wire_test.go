@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/account"
 )
 
 // The share surface: the grant model over HTTP.

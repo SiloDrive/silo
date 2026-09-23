@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // dagBomb builds a chain of directories where each level names the level below

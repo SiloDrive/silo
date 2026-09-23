@@ -2,7 +2,7 @@ package credential
 
 import (
 	"errors"
-	"github.com/dkam/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/account"
 	"testing"
 )
 

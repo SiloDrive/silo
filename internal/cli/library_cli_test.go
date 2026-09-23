@@ -2,7 +2,7 @@ package cli
 
 import (
 	"encoding/json"
-	"github.com/dkam/silo/internal/lexicon"
+	"github.com/SiloDrive/silo/internal/lexicon"
 	"net/http"
 	"net/http/httptest"
 	"strings"

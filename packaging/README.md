@@ -8,7 +8,7 @@ already produces. There is no second compile: `nfpm` takes a finished
 
 This directory owns the Debian and RPM side, the service definition, the AUR
 recipe in `aur/`, and the Homebrew formula generator in `homebrew/`. The
-tap those formulae are served from lives elsewhere, in `dkam/homebrew-silo`;
+tap those formulae are served from lives elsewhere, in `SiloDrive/homebrew-silo`;
 `install.sh` at the repository root owns the binary-only install.
 
 ## What the package installs
@@ -92,7 +92,7 @@ use.
 ## Homebrew
 
 `homebrew/generate-formula.sh` writes the `Formula/silo.rb` that the
-`dkam/homebrew-silo` tap serves. The formula itself lives in the tap; what
+`SiloDrive/homebrew-silo` tap serves. The formula itself lives in the tap; what
 lives here is the thing that produces it, because the inputs are here.
 
 ```sh
@@ -115,7 +115,7 @@ no round trip, and the checksums are provably the ones that were published
 rather than whatever the URL answers with.
 
 The job needs a `HOMEBREW_TAP_TOKEN` secret with `contents:write` on
-`dkam/homebrew-silo`. **Without it the job succeeds and prints the command to
+`SiloDrive/homebrew-silo`. **Without it the job succeeds and prints the command to
 run by hand** — a missing tap token should not turn a good release red. It also
 skips the push when the formula is already at that version, so a re-run is
 harmless.
@@ -138,15 +138,14 @@ assert_equal version.to_s, shell_output("#{bin}/silo version").strip
 ```
 
 **The description was inherited from a server Silo no longer is.** It
-advertised compatibility with the upstream project Silo was forked from;
-that compatibility was dropped on purpose, and `brew info` was still
-selling it. It now reads "Single-binary file sync server with per-library
-end-to-end encryption" — 69 characters, no article, no formula name, which
-is what `brew audit` wants.
+advertised compatibility with the upstream's clients; that compatibility was
+dropped on purpose, and `brew info` was still advertising it. It now reads
+"Single-binary file sync server with per-library end-to-end encryption" — 69
+characters, no article, no formula name, which is what `brew audit` wants.
 
 ### The tap still has its own copy
 
-`dkam/homebrew-silo` has `bin/generate-formula.sh`, which is where this script
+`SiloDrive/homebrew-silo` has `bin/generate-formula.sh`, which is where this script
 came from. Two generators for one formula is one too many, and the tap's copy
 carries both bugs above. Replacing it with a line pointing here is the tidy-up;
 it is a change to the other repository, so it is not made from this one.
@@ -187,6 +186,33 @@ On a machine with no `dpkg`, the deb is an `ar` archive:
 
 ```sh
 ar x silo_0.0.0~dev_amd64.deb && zstd -dc data.tar.zst | tar -tv
+```
+
+## The silodrive.io download page
+
+`packaging/build-release.sh alpha linux/amd64 linux/arm64 darwin/arm64`
+writes tarballs and a `builds.json` into `dist/alpha/silo/`, ready to rsync
+to the web host. It exists because this repository is private: Silo is
+AGPLv3 and the source will be public, but until it is there are no release
+assets anybody outside can fetch, and `brew install dkam/silo/silo` reaches
+a tap pointing at a 404. Somebody installing SiloDrive needs a server to
+point it at, so the server goes on the same page as the clients.
+
+It does not replace `build.yml`, which is what a tagged release is. Both
+call `make build`, so a tarball from either differs only in which commit it
+came from, and the tarball's inner filename is `silo` in both.
+
+The manifest it writes has **no expiry field**. Silo has no deadline -- it is
+AGPLv3 -- and the page reads an absent date as "perpetual" and says so. The
+SiloDrive clients on the same page do carry a ninety-day stamp; that is a
+fact about those binaries, not about this one.
+
+```sh
+packaging/build-release.sh alpha linux/amd64 linux/arm64
+
+# binaries first, manifest last: the page offers what the manifest names
+rsync -av --exclude builds.json dist/alpha/silo/ web:/srv/silodrive/alpha/silo/
+rsync -av dist/alpha/silo/builds.json             web:/srv/silodrive/alpha/silo/
 ```
 
 ## In CI
@@ -249,3 +275,34 @@ makepkg -si                # build and install it locally before pushing
 No `provides`/`conflicts` on `silo` is deliberate and the `PKGBUILD` says why:
 that AUR name belongs to LLNL's unrelated scientific data format library, and
 claiming it would make the two falsely exclusive.
+
+## How `silo upgrade` knows what installed it
+
+`silo upgrade` prints a command rather than replacing the binary, so it has to
+name the right package manager. It cannot work that out from the binary alone:
+the `.deb`, the `.rpm` and `silo-bin` all ship the binary the tarball build
+produced, so the `-X main.InstallMethod=` stamp in every one of them says
+`tarball` — true of how it was compiled, wrong about how it arrived.
+
+So each package writes its own name to `<prefix>/share/silo/install-method`,
+and owns that file the way it owns the binary beside it:
+
+| Package | Written by | Value |
+| --- | --- | --- |
+| deb, rpm | the `packages` job stages it per format; `nfpm.yaml` installs it | `deb`, `rpm` |
+| AUR | `package()` in `aur/PKGBUILD` | `aur` |
+| Homebrew | `def install` in the formula `homebrew/generate-formula.sh` writes | `homebrew` |
+
+The Homebrew row was wrong until it was tested. The formula was assumed to
+build from source, where the `-X main.InstallMethod=` stamp would have been
+enough — it does not. It installs the same prebuilt tarball as everything else
+above, so it needs the same marker, and without it `silo upgrade` was going to
+hand a `brew` user the `install.sh` pipe and shadow the Cellar binary with one
+in `/usr/local/bin`. `scripts/test-formula.sh` now asserts the marker is in the
+generated formula, at the path `internal/upgrade.MarkerPath` reads.
+
+The path is derived from the binary's own location, not hard-coded, which is
+what keeps a loose `/usr/local/bin/silo` from reading the marker a `.deb` left
+in `/usr/share` and reporting that dpkg owns it. `internal/upgrade` holds the
+rule and the tests for it; the `.deb` smoke test in `build.yml` checks the file
+is actually in the package.

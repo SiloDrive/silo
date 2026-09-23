@@ -14,9 +14,9 @@ package api
 import (
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/option"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -49,6 +49,14 @@ type revokedResponse struct {
 	// handler, where nothing changed, and a client cannot cache the right
 	// password without knowing which happened.
 	SessionsStillLive bool `json:"sessions_still_live,omitempty"`
+
+	// Current says the revoked row was the one that made the request, so a
+	// client can tell "I signed something else out" from "I have just signed
+	// myself out" without comparing ids it may not have kept. Set only by
+	// DELETE account/credentials/{id}: the logout routes do not need it --
+	// one is always the caller and the other is always everything -- and
+	// omitempty keeps their bodies byte-for-byte what they were.
+	Current bool `json:"current,omitempty"`
 }
 
 // LogoutHandler handles POST /api/silo/v1/auth/logout: discard the credential
@@ -118,5 +126,51 @@ func LogoutEverywhereHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Infof("Signed %s out everywhere: %d credential(s) revoked", acct.Email, n)
+	writeJSON(w, http.StatusOK, revokedResponse{Revoked: n})
+}
+
+// LogoutOthersHandler handles POST /api/silo/v1/auth/logout/others: discard
+// every credential the account holds except the one that asked.
+//
+// The third of three verbs, and the one that was missing. `logout` is this
+// credential, `logout/everywhere` is all of them including this one, and
+// neither could say "the others" -- so a person who wanted to sign a lost
+// laptop out from the desktop they were sitting at had to sign the desktop out
+// too, or revoke ids one at a time.
+//
+// It is what makes the password change able to revoke nothing by default. That
+// default is only defensible because the operation it stopped doing silently
+// is available by name; see docs/plans/credential-management.md § Step 3.
+//
+// Account-wide, so it takes the narrowing, exactly as logout/everywhere does.
+// No write permission, as no revocation route asks for one.
+func LogoutOthersHandler(w http.ResponseWriter, r *http.Request) {
+	acct := middleware.GetAccount(r)
+	if acct == nil {
+		log.Errorf("Logout reached %s with no account in context", r.URL.Path)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	cur := middleware.GetCredential(r)
+	if cur == nil {
+		// Unreachable from the authenticated lane, and a 500 rather than a
+		// fallback to RevokeAll: guessing here would sign the caller out of
+		// the session they are holding, which is the one thing this route
+		// exists not to do.
+		log.Errorf("Logout reached %s with no credential in context", r.URL.Path)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	ctx, cancel := option.WithDBTimeout(r.Context())
+	defer cancel()
+
+	n, err := credential.RevokeOthers(ctx, acct.ID, cur.ID)
+	if err != nil {
+		log.Errorf("Failed to revoke other credentials for %s: %v", acct.Email, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	log.Infof("Signed %s out of everywhere else: %d credential(s) revoked", acct.Email, n)
 	writeJSON(w, http.StatusOK, revokedResponse{Revoked: n})
 }

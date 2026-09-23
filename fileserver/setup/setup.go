@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/admin"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/admin"
 )
 
 var readDB *sql.DB

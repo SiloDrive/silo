@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/api"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/api"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // checkQuota used to read owner, quota and usage as three independent

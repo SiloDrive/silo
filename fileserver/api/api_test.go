@@ -9,14 +9,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/setup"
-	"github.com/dkam/silo/fileserver/share"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/dbutil"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/setup"
+	"github.com/SiloDrive/silo/fileserver/share"
 )
 
 const (

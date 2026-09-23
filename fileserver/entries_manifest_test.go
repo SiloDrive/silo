@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // A file's manifest, addressed by the path the client already has.

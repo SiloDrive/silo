@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/dkam/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/credential"
 )
 
 // A socket ends in one of two ways, and the log has to say which.

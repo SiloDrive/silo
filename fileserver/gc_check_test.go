@@ -4,9 +4,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/objmgr"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Every commit checks the GC generation, and it is structural rather than a

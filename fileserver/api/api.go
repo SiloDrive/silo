@@ -9,16 +9,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/authmgr"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/notif"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/setup"
-	"github.com/dkam/silo/fileserver/share"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/authmgr"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/notif"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/setup"
+	"github.com/SiloDrive/silo/fileserver/share"
+	"github.com/SiloDrive/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )
@@ -123,6 +123,18 @@ func features() []string {
 		// credential live.
 		"logout",          // POST auth/logout, POST auth/logout/everywhere
 		"password-change", // POST auth/password
+		// Seeing what the account holds, and revoking one row of it. One name
+		// for both, because a client that can list without revoking has a page
+		// of things it cannot act on, and one that can revoke without listing
+		// has no id to name.
+		"credentials", // GET account/credentials, DELETE account/credentials/{id}
+		// "The others", and the password change that no longer implies it. One
+		// name, because they are one decision: a client that sees it knows the
+		// password change leaves other hosts alone unless asked, and knows
+		// where the operation went. A client that does not see it is talking
+		// to a server where changing a password still signs everything out,
+		// and should say so rather than let somebody discover it.
+		"logout-others", // POST auth/logout/others, revoke_others on auth/password
 		// A live device credential minting its successor. This one has to be
 		// discoverable rather than learned from a 404, because the fallback is
 		// not "try again later" but an architecture: a client that cannot renew

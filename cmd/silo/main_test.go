@@ -4,7 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	silod "github.com/dkam/silo/fileserver"
+	silod "github.com/SiloDrive/silo/fileserver"
+	"github.com/SiloDrive/silo/internal/upgrade"
 )
 
 // TestNormalizeVersion pins the one format server-info reports, regardless of
@@ -92,4 +93,45 @@ func subcommandsIn(usage string) []string {
 		}
 	}
 	return subs
+}
+
+// TestUpgradeExitStatus pins the contract --check exists for: a cron or a
+// monitoring check wants "is there something to do" as a status, not as prose
+// it has to grep.
+//
+// The case worth being deliberate about is ComparisonUnknown. That is what a
+// rate-limited API or an untagged development build produces, and neither is
+// news. Reporting it as "upgrade available" would have every such check page
+// somebody the first time GitHub's 60-an-hour limit is reached.
+func TestUpgradeExitStatus(t *testing.T) {
+	cases := []struct {
+		check bool
+		c     upgrade.Comparison
+		want  int
+	}{
+		{false, upgrade.Behind, 0},
+		{false, upgrade.UpToDate, 0},
+
+		{true, upgrade.Behind, 1},
+		{true, upgrade.UpToDate, 0},
+		{true, upgrade.Development, 0},
+		{true, upgrade.Ahead, 0},
+		{true, upgrade.ComparisonUnknown, 0},
+	}
+	for _, c := range cases {
+		if got := upgradeExit(c.check, c.c); got != c.want {
+			t.Errorf("upgradeExit(%v, %v) = %d, want %d", c.check, c.c, got, c.want)
+		}
+	}
+}
+
+// TestHelpNamesUpgrade. The help screen is the only place a subcommand is
+// discoverable, and TestHelpNamesEverySubcommandOfUser above exists because a
+// command once shipped working and invisible.
+func TestHelpNamesUpgrade(t *testing.T) {
+	var help strings.Builder
+	printUsage(&help)
+	if !strings.Contains(help.String(), "silo upgrade") {
+		t.Error("the top-level help never mentions `silo upgrade`, so nobody reading it knows it exists")
+	}
 }

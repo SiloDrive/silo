@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/account"
 )
 
 // The invite surface over HTTP: minting, listing and withdrawing on the

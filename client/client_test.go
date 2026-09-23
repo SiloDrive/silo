@@ -2,7 +2,7 @@ package client
 
 import (
 	"encoding/json"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 	"io"
 	"net/http"
 	"net/http/httptest"

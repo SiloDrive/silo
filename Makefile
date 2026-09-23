@@ -3,7 +3,7 @@
 # whose flags are not optional and are easy to forget, and the checks that are
 # not `go test` and would otherwise only run when someone remembers them.
 
-.PHONY: build check test vet fmt vuln check-refs integration
+.PHONY: build check test vet fmt vuln check-refs check-install check-formula integration
 
 # The deploy build: the same flags a release ships, so a binary built here and
 # one downloaded from a release differ only in which commit they came from.
@@ -27,13 +27,18 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 GOOS    ?= linux
 GOARCH  ?= amd64
 OUT     ?= silo
+# How a binary built here arrives on a machine. The .deb, .rpm and AUR packages
+# repackage this same binary, so they do not override it -- they install a
+# marker at <prefix>/share/silo/install-method instead, which `silo upgrade`
+# prefers. See internal/upgrade.
+INSTALL_METHOD ?= tarball
 
 build:
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath \
-	  -ldflags "-s -w -X main.Version=$(VERSION)" -o "$(OUT)" ./cmd/silo
+	  -ldflags "-s -w -X main.Version=$(VERSION) -X main.InstallMethod=$(INSTALL_METHOD)" -o "$(OUT)" ./cmd/silo
 
 # Everything CI should care about, in the order that fails fastest.
-check: fmt vet test vuln check-refs
+check: fmt vet test vuln check-refs check-install check-formula
 
 fmt:
 	@out="$$(gofmt -l .)"; \
@@ -74,3 +79,14 @@ integration:
 # the cited line with nothing to catch it. See scripts/check-refs.sh.
 check-refs:
 	@./scripts/check-refs.sh
+
+# install.sh decides things -- whether a native package would be a better
+# install, whether it may write over one a package manager owns -- and none of
+# it is reachable from `go test`. See scripts/test-install.sh.
+check-install:
+	@./scripts/test-install.sh
+
+# The Homebrew formula is generated here rather than in the tap, so a
+# mistake in it is a mistake in this repository. See scripts/test-formula.sh.
+check-formula:
+	@./scripts/test-formula.sh

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Extent is a number of stored objects and the bytes they occupy on disk.

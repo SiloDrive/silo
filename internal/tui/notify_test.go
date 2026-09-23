@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/client"
+	"github.com/SiloDrive/silo/client"
 )
 
 // notifyServer answers the two listings a refresh can ask for, so a reload

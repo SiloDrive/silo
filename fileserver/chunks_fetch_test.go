@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // The download half of the chunk surface: many chunks in one response, framed

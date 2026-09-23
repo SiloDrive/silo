@@ -7,8 +7,8 @@ import (
 	"mime"
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/store"
 	log "github.com/sirupsen/logrus"
 )
 

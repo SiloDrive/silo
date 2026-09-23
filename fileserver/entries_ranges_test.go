@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/store"
 )
 
 // QUERY entries/{path}: the manifest and the chunks covering a byte range, in

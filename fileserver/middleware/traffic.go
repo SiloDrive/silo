@@ -6,8 +6,8 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/traffic"
-	"github.com/dkam/silo/internal/observability"
+	"github.com/SiloDrive/silo/fileserver/traffic"
+	"github.com/SiloDrive/silo/internal/observability"
 )
 
 // CountTraffic records the wire bytes of every request and response.

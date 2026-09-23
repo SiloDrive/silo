@@ -8,7 +8,7 @@ import (
 
 	"github.com/getsentry/sentry-go"
 
-	"github.com/dkam/silo/fileserver/setup"
+	"github.com/SiloDrive/silo/fileserver/setup"
 )
 
 // eventFrom runs one capture through a real client built from clientOptions and

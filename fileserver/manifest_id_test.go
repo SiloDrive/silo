@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // The id a PUT returns is a manifest id, and computing it is not hashing the

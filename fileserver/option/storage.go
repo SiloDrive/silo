@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dkam/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/fileserver/objstore"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/ini.v1"
 )

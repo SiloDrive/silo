@@ -4,17 +4,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
+	"time"
 
-	"github.com/dkam/silo/fileserver" // package silod
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/internal/cli"
-	"github.com/dkam/silo/internal/observability"
-	"github.com/dkam/silo/internal/tui"
+	"github.com/SiloDrive/silo/fileserver" // package silod
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/internal/cli"
+	"github.com/SiloDrive/silo/internal/observability"
+	"github.com/SiloDrive/silo/internal/tui"
+	"github.com/SiloDrive/silo/internal/upgrade"
 )
 
 const defaultServerURL = "http://localhost:8082"
@@ -22,13 +26,25 @@ const defaultServerURL = "http://localhost:8082"
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 // The default is the current source-tree version; CI overrides it with
 // `git describe --tags --always --dirty` so tagged builds report the tag.
-var Version = "0.7.0"
+var Version = "0.8.0"
+
+// InstallMethod is stamped at build time via -ldflags
+// "-X main.InstallMethod=..." by whatever produced this binary: the Makefile
+// says "tarball", packaging/nfpm.yaml says "deb" or "rpm", the PKGBUILD says
+// "aur", a Homebrew formula says "homebrew". `silo upgrade` uses it to name the
+// package manager that owns this file.
+//
+// It is stamped rather than detected because nothing observable at runtime
+// separates a binary dpkg put at /usr/bin/silo from one somebody copied there,
+// and an unstamped build -- plain `go build ./cmd/silo` -- correctly gets the
+// general advice rather than a guess.
+var InstallMethod = ""
 
 // normalizeVersion drops the leading "v" a git tag carries, so the version this
 // binary reports does not depend on how it was built.
 //
-// The source default is bare — "0.7.0" — while CI stamps `git describe
-// --tags`, which for the same commit is "v0.7.0". Without this,
+// The source default is bare — "0.8.0" — while CI stamps `git describe
+// --tags`, which for the same commit is "v0.8.0". Without this,
 // /api/silo/v1/server-info answers one spelling from a development build and
 // the other from a release, and a client
 // comparing versions has to guess which it got. One did, decided the value was
@@ -44,6 +60,77 @@ func normalizeVersion(v string) string {
 	}
 	return v
 }
+
+// upgradeExit maps a comparison to a process exit status.
+//
+// Only --check reports through the status at all, and only Behind is a
+// non-zero: ComparisonUnknown is what a rate-limited API or an untagged
+// development build produces, and neither is something to wake anybody for.
+func upgradeExit(check bool, c upgrade.Comparison) int {
+	if check && c == upgrade.Behind {
+		return 1
+	}
+	return 0
+}
+
+// runUpgrade reports what to type to move from this build to the latest
+// release. It changes nothing on disk -- see package upgrade for why.
+func runUpgrade(args []string, stdout, stderr io.Writer) int {
+	check := false
+	for _, a := range args {
+		switch a {
+		case "--check", "-check":
+			check = true
+		case "-h", "--help", "help":
+			_, _ = fmt.Fprint(stdout, upgradeUsage)
+			return 0
+		default:
+			_, _ = fmt.Fprintf(stderr, "silo upgrade: unknown argument %q\n\n%s", a, upgradeUsage)
+			return 2
+		}
+	}
+
+	// Same override install.sh takes, so both can be pointed at a Gitea
+	// instance or a mirror without either one being special.
+	latestURL := os.Getenv("SILO_LATEST_URL")
+	if latestURL == "" {
+		latestURL = upgrade.DefaultLatestURL
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	rel, err := upgrade.FetchLatest(ctx, nil, latestURL)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "silo upgrade: %v\n", err)
+		return 2
+	}
+
+	// The stamp alone is not enough: the .deb, the .rpm and silo-bin all ship
+	// a binary built by the tarball path, so they carry "tarball". Resolve
+	// prefers the marker the installing package manager left at
+	// <prefix>/share/silo/install-method.
+	exe, _ := os.Executable()
+	method := upgrade.Resolve(InstallMethod, exe, upgrade.FileMarker)
+
+	_, _ = fmt.Fprint(stdout, upgrade.Advise(method, Version, rel, runtime.GOOS, runtime.GOARCH))
+	return upgradeExit(check, upgrade.Compare(Version, rel.Tag))
+}
+
+const upgradeUsage = `silo upgrade — report how to move to the latest release
+
+Usage:
+  silo upgrade            Print the command for this install method
+  silo upgrade --check    The same, exiting 1 when a newer release exists
+
+It prints; it never replaces the binary. Where a package manager owns
+/usr/bin/silo, writing over that file leaves its database describing something
+that is no longer there, so the command belongs to the package manager.
+
+Environment:
+  SILO_LATEST_URL  Release API returning JSON with "tag_name" and "assets"
+                   (default: the GitHub API; install.sh takes the same value)
+`
 
 func main() {
 	args := os.Args[1:]
@@ -124,6 +211,8 @@ func main() {
 		printUsage(os.Stdout)
 	case "version", "-v", "--version":
 		fmt.Println(Version)
+	case "upgrade":
+		os.Exit(runUpgrade(rest, os.Stdout, os.Stderr))
 	default:
 		if err := cli.Run(serverURL(), email(), password(), args); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -224,6 +313,9 @@ Usage:
   silo user revoke <email> <caps> Take administrative capabilities away
   silo token list <email>         Show a user's sync and API tokens
   silo token revoke <email> [tok] Revoke every token a user holds, or just one
+  silo credential list [--json]   Show the credentials your own account holds
+  silo credential revoke <id>     Revoke one of them
+  silo credential revoke --others Revoke every other one, keeping this session
   silo tui [url]                  Launch the interactive terminal UI
   silo libraries [--json]         List libraries
   silo library create <name>      Create a library (prints ID)
@@ -237,6 +329,7 @@ Usage:
   silo rename <library-id> <path> <new-name>
   silo changes <library-id> <since-commit> [--json]
   silo version                    Print the build version
+  silo upgrade [--check]          Report how to move to the latest release
 
 Server environment:
   SILO_DATA_DIR          Data directory (default: ~/.local/share/silo)
@@ -284,6 +377,21 @@ with echo off, a pipe is read from stdin, and -generate invents one and prints
 it once. Flags come before the subcommand: "silo user -generate add a@b.c".
 Disabling an account stops every credential it holds at once; the tokens
 themselves survive and work again if it is re-enabled.
+
+"silo credential" is the self-service half of "silo token": the same table,
+asked of the server over HTTP by the person who owns it rather than read from
+silo.db by an operator on the host. That is the difference that matters when a
+laptop is stolen -- the machine you want to revoke is the one you cannot revoke
+it from, and this works from any machine with the binary and the password.
+It signs its own session out when it finishes, so listing credentials does not
+add one.
+
+"--others" is what to reach for after losing a laptop: it signs every other
+host out and leaves the machine you are typing on alone. Changing a password
+does NOT do this any more -- rotating a password is not evidence anything was
+stolen, and unmounting somebody's laptop, NAS and phone because they improved a
+password is how people learn not to improve passwords. If you changed your
+password because you were worried about something, run this as well.
 
 "silo backup-db" writes a consistent snapshot of silo.db, safely while the
 server runs — copying it with cp loses everything since the last WAL

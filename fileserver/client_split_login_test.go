@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/client"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/client"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Split-derivation login, from the client side.

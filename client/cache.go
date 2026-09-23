@@ -3,7 +3,7 @@ package client
 import (
 	"container/list"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // The two caches EncryptedLibrary keeps are both keyed by object id, and an

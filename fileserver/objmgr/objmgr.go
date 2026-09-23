@@ -28,9 +28,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/store"
 )
 
 // ErrNoContentKey reports an operation that needs the library's content key

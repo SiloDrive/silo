@@ -474,7 +474,7 @@ func trimPlumbing(st *sentry.Stacktrace) *sentry.Stacktrace {
 
 func isPlumbing(module string) bool {
 	return module == "github.com/sirupsen/logrus" ||
-		module == "github.com/dkam/silo/internal/observability"
+		module == "github.com/SiloDrive/silo/internal/observability"
 }
 
 // callSite names the innermost frame as package.Function, which survives the

@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dkam/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/account"
 )
 
 // Capability is one administrative operation, and the vocabulary is closed.

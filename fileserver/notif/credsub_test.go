@@ -8,9 +8,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/middleware"
 )
 
 // authorizeReturning replaces the authorizer for one test.

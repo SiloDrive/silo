@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/setup"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/setup"
 )
 
 // RunSetupToken prints the token that creates this server's first account.

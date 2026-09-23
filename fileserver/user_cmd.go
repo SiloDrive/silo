@@ -13,11 +13,12 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/admin"
-	"github.com/dkam/silo/fileserver/authmgr"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/admin"
+	"github.com/SiloDrive/silo/fileserver/authmgr"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/internal/format"
 )
 
 // RunUser is the account lifecycle, on the host, without a running server.
@@ -198,7 +199,7 @@ func listUsers(asJSON bool) error {
 		}
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			displayEmail(u), status, string(u.Role), yesNo(u.HasPassword),
-			formatTime(u.Ctime), admin.Join(caps[u.ID]))
+			format.Time(u.Ctime), admin.Join(caps[u.ID]))
 	}
 	return tw.Flush()
 }
@@ -512,7 +513,7 @@ func printUsersJSON(users []account.Listed, caps map[account.ID][]admin.Capabili
 			Role:         string(u.Role),
 			Capabilities: held,
 			HasPassword:  u.HasPassword,
-			Created:      formatTime(u.Ctime),
+			Created:      format.Time(u.Ctime),
 		})
 	}
 	enc := json.NewEncoder(os.Stdout)

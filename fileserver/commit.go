@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/notif"
-	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/notif"
+	"github.com/SiloDrive/silo/fileserver/objmgr"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/store"
 	log "github.com/sirupsen/logrus"
 )
 

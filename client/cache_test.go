@@ -3,7 +3,7 @@ package client
 import (
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 func dirOfSize(entries int) *directory {

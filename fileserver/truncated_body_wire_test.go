@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // A body that ends before its Content-Length is not an upload, and the answer

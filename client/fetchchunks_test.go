@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // chunkFixtures builds ids the decoder will accept: a chunk's id is the

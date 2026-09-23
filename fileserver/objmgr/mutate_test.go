@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 const opTime = 1756000000

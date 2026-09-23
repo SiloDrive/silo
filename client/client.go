@@ -19,6 +19,12 @@ import (
 type APIClient struct {
 	BaseURL string
 
+	// UserAgent labels the credential a login mints: the server takes the
+	// label from this header, so a row in the account's credential list reads
+	// "silo credential" rather than "Go-http-client/1.1". Empty leaves Go's
+	// default, which is what every caller before this one sent.
+	UserAgent string
+
 	// mu guards token/email/password. Bubble Tea runs tea.Cmd callbacks in
 	// separate goroutines, so concurrent requests can race on token refresh.
 	mu       sync.Mutex
@@ -263,6 +269,9 @@ func (c *APIClient) sendRequest(method, path string, bodyBytes []byte, token str
 	if bodyBytes != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -370,20 +379,22 @@ func (c *APIClient) Setup(email, password, setupToken string) error {
 // and the server is the one insisting: a credential handed to a device must not
 // be able to promote itself into the account. See api.ChangePasswordHandler.
 //
-// The two things after the request are not tidying. The server revokes every
-// credential the account holds, and the TUI holds one, so by the time this returns the
-// token that made the call is dead and the cached password it would replay on
-// the resulting 401 is the one that no longer works. Swapping the cache and
-// signing in again is what keeps a successful change from presenting as being
-// signed out with a complaint about a password the caller just proved they
-// knew.
+// Swapping the cached password is not tidying: doRequest replays it on a 401,
+// so a cache left holding the old one turns the next expiry into a re-login
+// that cannot succeed.
 //
-// The order matters on the failure paths. The cache is swapped before the
-// re-login rather than after, so that a re-login which fails for its own
-// reasons -- the server restarting in the gap, a network that dropped -- still
-// leaves the client holding the password that is now true; the next request
-// retries against it and succeeds. Swapping afterwards would strand the client
-// on a password the server has forgotten.
+// What this no longer does is sign in again afterwards. It used to have to: the
+// server revoked every credential the account held, the caller's own included,
+// so by the time the call returned the token that made it was dead. That is
+// not the behaviour any more -- the caller keeps its credential in both modes,
+// and revoking the others is something the caller asks for by name -- so an
+// unconditional re-login would mint a second credential and abandon the first,
+// which is precisely the litter the credential list exists to show people.
+//
+// Against a server old enough to still revoke everything, the credential is
+// dead and the next request gets a 401; doRequest re-logs in with the password
+// swapped above and the recovery happens on its own. So the old case is handled
+// by machinery that already existed, rather than by paying for it every time.
 // ChangePassword sets a new password on the signed-in account and reports how
 // many credentials the server signed out.
 //
@@ -416,11 +427,7 @@ func (c *APIClient) ChangePassword(current, next string) (int, error) {
 	}
 	c.mu.Lock()
 	c.password = secret
-	email := c.email
 	c.mu.Unlock()
-	if err := c.Login(email, secret); err != nil {
-		return revoked, fmt.Errorf("password changed, but signing back in failed: %w", err)
-	}
 	return revoked, nil
 }
 
@@ -721,4 +728,92 @@ func (c *APIClient) Batch(libraryID string, ops []BatchOp) (*BatchResult, error)
 		return nil, err
 	}
 	return &result, nil
+}
+
+// Credential is one row of the account's credential list.
+//
+// ExpiresAt and LastUsed are pointers because the server omits them rather than
+// sending zero: a credential that never expires and one never yet used have no
+// instant to report, and zero is a real one that renders as 1970.
+type Credential struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
+	Scope     string `json:"scope"`
+	Perm      string `json:"perm"`
+	ClientID  string `json:"client_id"`
+	Created   int64  `json:"created"`
+	ExpiresAt *int64 `json:"expires_at"`
+	LastUsed  *int64 `json:"last_used"`
+	LastUA    string `json:"last_ua"`
+	// Current marks the row this client's own credential is, so a caller can
+	// say "this command" beside it rather than inviting somebody to revoke the
+	// session they are holding.
+	Current bool `json:"current"`
+}
+
+// ListCredentials returns every credential the account holds.
+func (c *APIClient) ListCredentials() ([]Credential, error) {
+	var out struct {
+		Credentials []Credential `json:"credentials"`
+	}
+	if err := c.doRequest("GET", "/api/silo/v1/account/credentials", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Credentials, nil
+}
+
+// RevokeCredential discards one credential by id, and reports whether the one
+// discarded was this client's own.
+func (c *APIClient) RevokeCredential(id string) (current bool, err error) {
+	var out struct {
+		Revoked int  `json:"revoked"`
+		Current bool `json:"current"`
+	}
+	if err := c.doRequest("DELETE", "/api/silo/v1/account/credentials/"+url.PathEscape(id), nil, &out); err != nil {
+		return false, err
+	}
+	return out.Current, nil
+}
+
+// Logout discards the credential this client is holding.
+//
+// It clears the stored password as well as the token, and the order matters:
+// doRequest re-logs in and retries once on a 401, so a client that logged out
+// and was then used again would quietly mint a second credential -- which is
+// the litter this exists to avoid. After Logout the client is spent, and a
+// further request fails rather than silently signing back in.
+func (c *APIClient) Logout() error {
+	token := c.getToken()
+	if token == "" {
+		return nil
+	}
+	c.mu.Lock()
+	c.token = ""
+	c.email = ""
+	c.password = ""
+	c.mu.Unlock()
+
+	resp, err := c.sendRequest("POST", "/api/silo/v1/auth/logout", nil, token)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("logout: %s", resp.Status)
+	}
+	return nil
+}
+
+// LogoutOthers discards every credential the account holds except this one,
+// and reports how many went.
+func (c *APIClient) LogoutOthers() (int, error) {
+	var out struct {
+		Revoked int `json:"revoked"`
+	}
+	if err := c.doRequest("POST", "/api/silo/v1/auth/logout/others", nil, &out); err != nil {
+		return 0, err
+	}
+	return out.Revoked, nil
 }

@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/store"
 )
 
 // The two encryptions are two, and this is the test that shows it.

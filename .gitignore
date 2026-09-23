@@ -10,6 +10,9 @@
 /silo
 cmd/silo/silo
 
+# What packaging/build-release.sh writes for the silodrive.io download page.
+/dist/
+
 # Local data
 *.db
 *.log

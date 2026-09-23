@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/client"
+	"github.com/SiloDrive/silo/client"
 )
 
 // clientListing returns a client whose only surface is the libraries listing,

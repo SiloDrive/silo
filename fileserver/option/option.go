@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dkam/silo/fileserver/utils"
+	"github.com/SiloDrive/silo/fileserver/utils"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/ini.v1"
 )
@@ -20,7 +20,7 @@ import (
 // It is what libmgr.AccountQuota returns, what the admin API serialises, and
 // what sits in the quota column of every install that has ever run. Changing
 // the number would re-read all of those rows as something else, silently.
-const InfiniteQuota = -2
+const InfiniteQuota int64 = -2
 
 // DefaultDiskReserve is the free space a server keeps back when nobody has
 // said otherwise. See DiskReserve for why it is not zero.
@@ -48,7 +48,7 @@ const DefaultMaxBufferedObjectBytes = 512 * MB
 // decimal choice is the whole point of the block and a literal 1000000000 does
 // not show it.
 const (
-	KB = 1000
+	KB = 1_000
 	MB = 1000 * KB
 	GB = 1000 * MB
 	TB = 1000 * GB
@@ -243,7 +243,7 @@ func resetToDefaults() {
 	ServerQuota = InfiniteQuota
 	DiskReserve = DefaultDiskReserve
 	DefaultKeepDays = 0
-	DBOpTimeout = 60 * time.Second
+	DBOpTimeout = time.Minute
 	SyncObjectWrites = true
 	VerifyFSObjectHashes = true
 	LoginRateLimit = true

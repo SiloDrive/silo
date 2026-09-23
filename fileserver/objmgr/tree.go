@@ -9,7 +9,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // ErrNotFound reports a path or entry that is not in the tree. It is distinct

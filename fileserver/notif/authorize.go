@@ -13,12 +13,12 @@ package notif
 import (
 	"context"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/fileserver/share"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/share"
 )
 
 // authorize reports whether cred may watch libraryID.

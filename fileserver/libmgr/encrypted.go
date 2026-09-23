@@ -19,10 +19,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/fileserver/option"
-	storefmt "github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/dbutil"
+	"github.com/SiloDrive/silo/fileserver/option"
+	storefmt "github.com/SiloDrive/silo/store"
 )
 
 // ErrBadSeed reports initial objects this server will not build a library

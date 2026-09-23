@@ -14,12 +14,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dkam/silo/fileserver/api"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/api"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/objmgr"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/store"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )

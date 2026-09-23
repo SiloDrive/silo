@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Node is one entry as the tree holds it, with its name in the clear.

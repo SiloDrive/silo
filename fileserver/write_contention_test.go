@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/objmgr"
-	"github.com/dkam/silo/fileserver/option"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/objmgr"
+	"github.com/SiloDrive/silo/fileserver/option"
+	"github.com/SiloDrive/silo/store"
 )
 
 // The bug: a write that lost the race for the branch head every time came back

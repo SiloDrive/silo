@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/store"
 )
 
 // stat builds a PackStat with a given dead fraction, for the scheduling tests.

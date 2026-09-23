@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"text/tabwriter"
 
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // RunRetention reads and sets how long a library keeps history.

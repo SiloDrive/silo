@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // buildTree writes this shape and returns the root directory id:

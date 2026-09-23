@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/client"
+	"github.com/SiloDrive/silo/client"
 )
 
 // Changing the password of an enrolled account.

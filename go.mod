@@ -1,4 +1,4 @@
-module github.com/dkam/silo
+module github.com/SiloDrive/silo
 
 go 1.26.0
 
@@ -30,6 +30,8 @@ require (
 	modernc.org/sqlite v1.48.2
 )
 
+require golang.org/x/mod v0.41.0
+
 require (
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
@@ -54,7 +56,6 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/smartystreets/goconvey v1.8.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260908163034-4bcc4b2ee518 // indirect

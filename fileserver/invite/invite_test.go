@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/dbutil"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 func testDB(t *testing.T) *dbutil.DBPair {
@@ -445,5 +445,105 @@ func TestRevokingAnInviteThatDoesNotExistIsNotFound(t *testing.T) {
 	testDB(t)
 	if err := Revoke(ctx(t), "no-such-credential"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Revoke = %v, want ErrNotFound", err)
+	}
+}
+
+// Signing out of everything works for somebody who arrived through an invite.
+//
+// The Invite row references the invite credential and there is no ON DELETE on
+// it, which is deliberate: that row is the record of who was invited and when
+// they arrived, and credential.Expire exists precisely so an invite can be
+// killed without taking the record with it. What was missed is that the
+// credential is issued against the *invitee's own* account -- Mint tombstones
+// the address and issues against that id -- and Redeem leaves the row in place
+// on purpose. So the account ends up holding one row that a bulk delete cannot
+// remove, and because SQLite fails the statement rather than the row, the
+// foreign key takes every other credential down with it.
+//
+// That is auth/logout/everywhere and auth/password answering 500 for every
+// account an administrator did not create by hand. The existing revocation
+// tests miss it because they build accounts with account.Create, which mints
+// no invite.
+func TestRevokingEverythingWorksForAnInvitedAccount(t *testing.T) {
+	testDB(t)
+	by := admin(t)
+
+	inv, token, err := Mint(ctx(t), Options{Email: "new@example.com", Role: account.RoleUser, By: by})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if _, err := Redeem(ctx(t), token); err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+
+	// The credentials the person picks up after arriving -- a session from
+	// logging in, a device from mounting something. These are what a sign-out
+	// is actually aimed at.
+	for _, label := range []string{"laptop", "phone"} {
+		if _, _, err := credential.Issue(ctx(t), credential.IssueOpts{
+			Kind: credential.KindSession, AccountID: inv.AccountID, Label: label, Perm: "rw",
+		}); err != nil {
+			t.Fatalf("Issue %s: %v", label, err)
+		}
+	}
+
+	n, err := credential.RevokeAll(ctx(t), inv.AccountID)
+	if err != nil {
+		t.Fatalf("RevokeAll on an invited account: %v", err)
+	}
+	// Two, not three: the spent invite is not a credential anybody signs out
+	// of, and the count is what a client shows the person.
+	if n != 2 {
+		t.Errorf("revoked %d, want 2", n)
+	}
+
+	// The record survives the sign-out.
+	if _, err := byCredential(ctx(t), inv.CredentialID); err != nil {
+		t.Errorf("the Invite row did not survive revocation: %v", err)
+	}
+}
+
+// The targeted revoke has the same two halves: it reaches a real credential an
+// invited account holds, and it declines to reach the spent invite.
+//
+// The second half is what the self-service DELETE stands on. Revoke reports
+// "no row went" for the invite rather than failing on the foreign key, so the
+// endpoint answers 404 for an id it should never have offered -- the same
+// answer it gives for an id belonging to somebody else.
+func TestRevokingOneCredentialOfAnInvitedAccount(t *testing.T) {
+	testDB(t)
+	by := admin(t)
+
+	inv, token, err := Mint(ctx(t), Options{Email: "new@example.com", Role: account.RoleUser, By: by})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if _, err := Redeem(ctx(t), token); err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+
+	laptop, _, err := credential.Issue(ctx(t), credential.IssueOpts{
+		Kind: credential.KindDevice, AccountID: inv.AccountID, Label: "laptop", Perm: "rw",
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	switch gone, err := credential.Revoke(ctx(t), laptop.ID, inv.AccountID); {
+	case err != nil:
+		t.Fatalf("Revoke a device an invited account holds: %v", err)
+	case !gone:
+		t.Error("Revoke reported nothing went, want the device revoked")
+	}
+
+	switch gone, err := credential.Revoke(ctx(t), inv.CredentialID, inv.AccountID); {
+	case err != nil:
+		t.Fatalf("Revoke on the spent invite: %v, want no error and no row", err)
+	case gone:
+		t.Error("Revoke removed the spent invite; the Invite row is the record of an arrival")
+	}
+
+	if _, err := byCredential(ctx(t), inv.CredentialID); err != nil {
+		t.Errorf("the Invite row did not survive: %v", err)
 	}
 }

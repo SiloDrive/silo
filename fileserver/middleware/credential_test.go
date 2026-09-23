@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/dbutil"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 func testDB(t *testing.T) *dbutil.DBPair {

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/objstore"
-	"github.com/dkam/silo/internal/format"
+	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/internal/format"
 )
 
 // sealedPackCount is how many sealed packs a library holds across both stores.

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // parseBindAddr reads the argument to -b, which is either a host on its own or

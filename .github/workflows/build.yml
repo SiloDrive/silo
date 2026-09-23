@@ -193,6 +193,10 @@ jobs:
             tar -xzf "$tarball" -C packaging/.staged silo
             chmod 0755 packaging/.staged/silo
             for format in deb rpm; do
+              # Staged per format for the same reason as the binary: nfpm does
+              # not expand ${...} in contents[].src. This is what `silo upgrade`
+              # reads to know dpkg owns the file rather than install.sh.
+              printf '%s\n' "$format" > packaging/.staged/install-method
               ARCH="$arch" nfpm pkg -f packaging/nfpm.yaml -p "$format" -t dist/
             done
           done
@@ -212,6 +216,7 @@ jobs:
           test -x /usr/bin/silo
           test -f /usr/lib/systemd/system/silo.service
           test -f /etc/silo/silo.conf
+          [ "$(cat /usr/share/silo/install-method)" = "deb" ]
           [ "$(stat -c '%a' /etc/silo/silo.env)" = "600" ]
           getent passwd silo >/dev/null
           silo version
@@ -264,7 +269,7 @@ jobs:
   # to become visible and then fetch the sidecars back over HTTP, which is a
   # race and a network round trip for data this job already has on disk.
   #
-  # Needs a HOMEBREW_TAP_TOKEN secret with contents:write on dkam/homebrew-silo.
+  # Needs a HOMEBREW_TAP_TOKEN secret with contents:write on SiloDrive/homebrew-silo.
   # Without it the job reports what to run by hand and succeeds, because a
   # missing tap token must not turn a good release red.
   homebrew:
@@ -300,7 +305,7 @@ jobs:
         if: steps.gate.outputs.ok == 'true'
         uses: actions/checkout@v4
         with:
-          repository: dkam/homebrew-silo
+          repository: SiloDrive/homebrew-silo
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 

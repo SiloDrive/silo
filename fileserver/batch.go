@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/middleware"
 	"github.com/gorilla/mux"
 )
 

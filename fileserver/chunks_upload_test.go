@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // The write half of the batched chunk surface.

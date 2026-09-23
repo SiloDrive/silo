@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 func ctx(t *testing.T) context.Context {

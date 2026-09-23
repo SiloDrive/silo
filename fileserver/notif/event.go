@@ -5,7 +5,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/dkam/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/account"
 )
 
 // Event type strings exchanged over the wire.

@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/middleware"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 )

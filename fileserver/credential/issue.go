@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/dbutil"
+	"github.com/SiloDrive/silo/fileserver/option"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -200,9 +200,25 @@ func ListByAccount(ctx context.Context, id account.ID) ([]*Credential, error) {
 // to get the ownership test wrong and a race between the second and the third.
 // It reports whether a row went, so a caller can tell "revoked" from "there
 // was nothing there" without asking a second question.
+//
+// The invite kind is excluded here and in RevokeAll, and refused by
+// RevokeKind, and the reason is a foreign key rather than a policy. An Invite
+// row references the credential that carried it and has no ON DELETE, because
+// that row is the record of who was invited and when they arrived; Expire is
+// how an invite is killed without taking the record with it. But Mint issues
+// the invite against the *invitee's own* account, so an invited person holds a
+// row a delete cannot remove -- and SQLite fails the statement rather than the
+// row, so without this clause the foreign key took every other credential down
+// with it and logout/everywhere answered 500 for everybody who did not arrive
+// by hand.
+//
+// Excluding it rather than cascading is what keeps the record: see the note on
+// Expire, and docs/plans/credential-management.md for the whole argument.
+// Nothing is lost by it. A spent invite opens one route, which refuses it on
+// redeemed_at, and an unspent one is killed through invite.Revoke.
 func Revoke(ctx context.Context, id string, owner account.ID) (bool, error) {
 	res, err := writeDB.ExecContext(ctx,
-		"DELETE FROM Credential WHERE id = ? AND account_id = ?", id, owner)
+		"DELETE FROM Credential WHERE id = ? AND account_id = ? AND kind != ?", id, owner, KindInvite)
 	if err != nil {
 		return false, fmt.Errorf("revoking credential: %v", err)
 	}
@@ -263,9 +279,33 @@ func RevokeByLibrary(ctx context.Context, tx *sql.Tx, libraryID string) error {
 // delete, and no way to run all three as one decision.
 func RevokeAll(ctx context.Context, owner account.ID) (int64, error) {
 	res, err := writeDB.ExecContext(ctx,
-		"DELETE FROM Credential WHERE account_id = ?", owner)
+		"DELETE FROM Credential WHERE account_id = ? AND kind != ?", owner, KindInvite)
 	if err != nil {
 		return 0, fmt.Errorf("revoking credentials: %v", err)
+	}
+	return dbutil.RowsAffected(res), nil
+}
+
+// RevokeOthers deletes every credential an account holds except one, and
+// returns how many went.
+//
+// The exception is the row that asked, which is what separates this from
+// RevokeAll: signing every other host out is a thing a person wants to do from
+// a host they intend to keep using, and RevokeAll made that impossible to
+// express -- the only way to reach the other rows was to take your own with
+// them.
+//
+// It is also what the password change calls when it is asked to revoke, so
+// "everything but me" is one operation with one implementation rather than a
+// special case living inside a handler that is mostly about something else.
+//
+// The invite kind is excluded for the reason Revoke gives.
+func RevokeOthers(ctx context.Context, owner account.ID, keep string) (int64, error) {
+	res, err := writeDB.ExecContext(ctx,
+		"DELETE FROM Credential WHERE account_id = ? AND id != ? AND kind != ?",
+		owner, keep, KindInvite)
+	if err != nil {
+		return 0, fmt.Errorf("revoking other credentials: %v", err)
 	}
 	return dbutil.RowsAffected(res), nil
 }
@@ -292,6 +332,14 @@ func RevokeAll(ctx context.Context, owner account.ID) (int64, error) {
 func RevokeKind(ctx context.Context, owner account.ID, kind Kind) (int64, error) {
 	if !kind.valid() {
 		return 0, fmt.Errorf("%w: %q", ErrBadKind, kind)
+	}
+	// Refused rather than filtered, for the reason Revoke excludes it. A
+	// filter would make RevokeKind(invite) report a successful revocation of
+	// nothing, which is exactly the failure mode the paragraph above refuses
+	// unrecognised kinds to prevent; an invite is killed with Expire, through
+	// invite.Revoke, and a caller reaching for this one wants that instead.
+	if kind == KindInvite {
+		return 0, fmt.Errorf("%w: %q is killed with Expire, not deleted", ErrBadKind, kind)
 	}
 	res, err := writeDB.ExecContext(ctx,
 		"DELETE FROM Credential WHERE account_id = ? AND kind = ?", owner, string(kind))

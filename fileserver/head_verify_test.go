@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/libmgr"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/libmgr"
+	"github.com/SiloDrive/silo/store"
 )
 
 // A head move publishes everything its commit reaches, and the server is the

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/setup"
+	"github.com/SiloDrive/silo/fileserver/setup"
 )
 
 // unclaimed stands up a server that has never had an account, and returns its

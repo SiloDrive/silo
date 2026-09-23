@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dkam/silo/fileserver/authmgr"
-	"github.com/dkam/silo/fileserver/setup"
+	"github.com/SiloDrive/silo/fileserver/authmgr"
+	"github.com/SiloDrive/silo/fileserver/setup"
 )
 
 // setupCmdStore is what RunSetupToken's body wires up for itself, over an empty

@@ -13,7 +13,7 @@ import (
 	"path"
 	"slices"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // ErrExists reports a path that already holds an entry, for the operations

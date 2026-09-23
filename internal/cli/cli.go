@@ -14,7 +14,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/dkam/silo/client"
+	"github.com/SiloDrive/silo/client"
 )
 
 func newFlagSet(name string) *flag.FlagSet {
@@ -39,6 +39,9 @@ var commands = map[string]func(*client.APIClient, []string) error{
 	"mv":        cmdMv,
 	"rename":    cmdRename,
 	"changes":   cmdChanges,
+	// Self-service, and distinct from `silo token`, which is the operator
+	// reading the same table on the host. See credential.go.
+	"credential": cmdCredential,
 }
 
 // Run executes a single CLI subcommand. args[0] is the subcommand name; the

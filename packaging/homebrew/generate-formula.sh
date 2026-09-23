@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Generate Formula/silo.rb for the dkam/homebrew-silo tap.
+# Generate Formula/silo.rb for the SiloDrive/homebrew-silo tap.
 #
 # Two modes, because there are two callers:
 #
@@ -23,7 +23,7 @@
 
 set -euo pipefail
 
-REPO="${SILO_REPO:-dkam/silo}"
+REPO="${SILO_REPO:-SiloDrive/silo}"
 # Matches install.sh, and for the same reason: a tap pointed at a mirror or a
 # gitea instance only needs this one variable moved.
 RELEASE_BASE="${SILO_RELEASE_BASE:-https://github.com/${REPO}/releases/download}"
@@ -121,6 +121,21 @@ class Silo < Formula
 
   def install
     bin.install "silo"
+
+    # Which package manager owns this binary. The binary inside the release
+    # tarball is the tarball build, stamped InstallMethod=tarball, so without
+    # this marker \`silo upgrade\` would tell a Homebrew user to pipe
+    # install.sh into sh -- which writes a second silo to /usr/local/bin,
+    # ahead of the Cellar one on PATH. The .deb, the .rpm and the AUR package
+    # each write the same file; this is the fourth.
+    #
+    # internal/upgrade.MarkerPath reads <prefix>/share/silo/install-method,
+    # derived from the binary's own location. That lands here whether
+    # os.Executable resolves the symlink (Linux, via /proc/self/exe, giving
+    # the Cellar path) or not (macOS, giving #{HOMEBREW_PREFIX}/bin/silo,
+    # whose share/silo is the symlink \`brew link\` made to this one).
+    (share/"silo").mkpath
+    (share/"silo/install-method").write "homebrew\n"
   end
 
   test do

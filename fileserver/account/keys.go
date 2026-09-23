@@ -19,8 +19,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/fileserver/dbutil"
+	"github.com/SiloDrive/silo/store"
 )
 
 // ErrNoKeys means the account has published no identity key. It is separate

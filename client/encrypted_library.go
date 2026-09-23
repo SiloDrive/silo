@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 
 	"github.com/google/uuid"
 )

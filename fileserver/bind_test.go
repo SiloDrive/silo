@@ -3,7 +3,7 @@ package silod
 import (
 	"testing"
 
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 func TestParseBindAddr(t *testing.T) {

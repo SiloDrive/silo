@@ -13,9 +13,9 @@ import (
 
 	"golang.org/x/crypto/pbkdf2"
 
-	"github.com/dkam/silo/fileserver/account"
-	"github.com/dkam/silo/fileserver/dbutil"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/account"
+	"github.com/SiloDrive/silo/fileserver/dbutil"
+	"github.com/SiloDrive/silo/fileserver/option"
 )
 
 // Helper: generate a PBKDF2SHA256 stored hash for testing.

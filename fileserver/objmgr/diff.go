@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"path"
 
-	"github.com/dkam/silo/store"
+	"github.com/SiloDrive/silo/store"
 )
 
 // Change is one difference between two trees.

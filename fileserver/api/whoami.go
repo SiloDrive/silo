@@ -17,7 +17,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/middleware"
 	log "github.com/sirupsen/logrus"
 )
 

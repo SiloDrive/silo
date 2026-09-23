@@ -24,9 +24,9 @@ package api
 import (
 	"net/http"
 
-	"github.com/dkam/silo/fileserver/credential"
-	"github.com/dkam/silo/fileserver/middleware"
-	"github.com/dkam/silo/fileserver/option"
+	"github.com/SiloDrive/silo/fileserver/credential"
+	"github.com/SiloDrive/silo/fileserver/middleware"
+	"github.com/SiloDrive/silo/fileserver/option"
 	log "github.com/sirupsen/logrus"
 )
 
