@@ -75,6 +75,7 @@ because a client author has to grep for it.
 | [`plans/sharing.md`](plans/sharing.md) | **plan.** Accounts, roles and invites, public read-only libraries, and share links — including links out of E2EE libraries, which wrap keys rather than re-encrypting content |
 | [`target.md`](target.md) | **plan.** The end state Silo is aiming at — no steps, no dates. Where `roadmap.md` is the route, this is the destination |
 | [`plans/credential-management.md`](plans/credential-management.md) | **plan.** Listing and revoking the credentials an account holds, without an administrator and without signing everything out. Why the password change revokes everything today, and what has to exist before that can be reconsidered |
+| [`plans/oidc.md`](plans/oidc.md) | **plan.** OIDC login through the device grant, with Silo as the OAuth client: who gets an account, the two endpoints, and three hazards the design in auth.md did not name |
 | [`plans/events.md`](plans/events.md) | **plan.** An append-only log for the control plane and access, for the questions the schema forgets |
 | [`plans/e2ee-completion.md`](plans/e2ee-completion.md) | **plan.** From a server that can store E2EE to a person who can use it: the sealing client, split-derivation login, sharing, silo-drive — with the issue that tracks each |
 | [`plans/locking.md`](plans/locking.md) | **plan, parked.** Per-file advisory locks, and why they should not ship without the push event |
