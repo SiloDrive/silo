@@ -98,6 +98,7 @@ func StartLoginLimiterCleanup() {
 // resetRateLimiters refills every bucket this package keeps. Init calls it; see
 // the reasoning there for why that is the seam rather than an exported reset.
 func resetRateLimiters() {
+	deviceIPLimiter.ResetAll()
 	loginIPLimiter.ResetAll()
 	loginAccountLimiter.ResetAll()
 	kdfIPLimiter.ResetAll()
@@ -160,6 +161,29 @@ func redeemFailed(r *http.Request) {
 		return
 	}
 	redeemIPLimiter.Penalize(utils.ClientIP(r, option.TrustProxyHeaders))
+}
+
+// The device-login start gets a bucket of its own, per address, spent on every
+// request. There is no failure to count: starting a login proves nothing and
+// costs the server a request to the IdP and a goroutine polling it for up to
+// the code's lifetime. Ten a minute is several abandoned attempts more than a
+// person needs, and a small fraction of the pending-flow cap one host could
+// otherwise fill on its own.
+var deviceIPLimiter = ratelimit.New(10, time.Minute)
+
+// allowDeviceStart reports whether a device-login start may proceed, writing a
+// 429 itself when it may not.
+func allowDeviceStart(w http.ResponseWriter, r *http.Request) bool {
+	if !option.LoginRateLimit {
+		return true
+	}
+	ip := utils.ClientIP(r, option.TrustProxyHeaders)
+	if ok, retry := deviceIPLimiter.Spend(ip); !ok {
+		tooManyAttempts(w, "sign-in", retry)
+		log.Warnf("Device sign-in rate limit reached for address %s", ip)
+		return false
+	}
+	return true
 }
 
 // allowKDFRequest reports whether a pre-login parameter request may proceed,

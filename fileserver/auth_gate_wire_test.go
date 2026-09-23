@@ -34,10 +34,12 @@ var unauthenticatedRoutes = map[string]string{
 	// There is nothing yet to authenticate as. Each of these is guarded by
 	// something other than a credential, and server.go says what at each
 	// registration.
-	"/api/silo/v1/auth/login":  "this is how a caller gets a credential",
-	"/api/silo/v1/auth/setup":  "creates the first account; guarded by the setup token",
-	"/api/silo/v1/auth/kdf":    "pre-login parameters; a client needs these to build what it sends",
-	"/api/silo/v1/auth/redeem": "activates an invited account; guarded by the invite token",
+	"/api/silo/v1/auth/login":       "this is how a caller gets a credential",
+	"/api/silo/v1/auth/setup":       "creates the first account; guarded by the setup token",
+	"/api/silo/v1/auth/kdf":         "pre-login parameters; a client needs these to build what it sends",
+	"/api/silo/v1/auth/redeem":      "activates an invited account; guarded by the invite token",
+	"/api/silo/v1/auth/device":      "starts an IdP sign-in; a credential comes only from an approval at the IdP",
+	"/api/silo/v1/auth/device/poll": "collects that credential; guarded by a 256-bit poll token",
 
 	// Carries no data of its own.
 	"/api/silo/v1/server-info": "the feature list, which a client reads before it can log in",

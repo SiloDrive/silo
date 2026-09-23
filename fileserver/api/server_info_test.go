@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/SiloDrive/silo/fileserver/oidc"
 	"github.com/SiloDrive/silo/fileserver/option"
 )
 
@@ -82,5 +83,39 @@ func TestNotificationsFeatureFollowsConfiguration(t *testing.T) {
 		if got := slices.Contains(features(), "notifications"); got != enabled {
 			t.Errorf("EnableNotification = %v, advertised = %v", enabled, got)
 		}
+	}
+}
+
+// oidc is runtime configuration, like notifications: a client that sees it
+// offers "sign in with your identity provider" as its first screen, and one
+// that does not collects an address and password. It follows the
+// configuration, not the IdP's health -- a client should show the right screen
+// during an outage and report the outage when it meets it.
+func TestServerInfoAdvertisesOIDCOnlyWhenConfigured(t *testing.T) {
+	emptyDB(t)
+	t.Cleanup(func() { _ = oidc.Configure(option.OIDCOptions{}) })
+
+	features := func() []string {
+		w := httptest.NewRecorder()
+		ServerInfoHandler(w, httptest.NewRequest("GET", "/api/silo/v1/server-info", nil))
+		var got siloServerInfo
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Features
+	}
+
+	if slices.Contains(features(), "oidc") {
+		t.Error("oidc is advertised by a server with no [oidc]")
+	}
+	// Nothing listens at this issuer, which is the point: the name follows
+	// the configuration, and configuring makes no request.
+	if err := oidc.Configure(option.OIDCOptions{
+		Issuer: "https://id.example.com", ClientID: "silo", ClientSecret: "secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(features(), "oidc") {
+		t.Error("oidc is not advertised by a server configured for it")
 	}
 }

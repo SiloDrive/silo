@@ -28,6 +28,7 @@ import (
 	"github.com/SiloDrive/silo/fileserver/notif"
 	"github.com/SiloDrive/silo/fileserver/objstore"
 	"github.com/SiloDrive/silo/fileserver/oidc"
+	"github.com/SiloDrive/silo/fileserver/oidc/bind"
 	"github.com/SiloDrive/silo/fileserver/option"
 	"github.com/SiloDrive/silo/fileserver/serversecret"
 	"github.com/SiloDrive/silo/fileserver/setup"
@@ -445,6 +446,7 @@ func Run(args []string) error {
 
 	setup.Init(siloPair.Read, siloPair.Write)
 	invite.Init(siloPair.Read, siloPair.Write)
+	bind.Init(siloPair.Write)
 
 	// Mint the setup token, if this server has never had an account.
 	//
@@ -674,6 +676,13 @@ func newHTTPRouter() *mux.Router {
 	// opens no lane until it does -- and guarded by the invite token instead.
 	// See api.RedeemInviteHandler.
 	r.HandleFunc("/api/silo/v1/auth/redeem", api.RedeemInviteHandler).Methods("POST")
+	// Signing in through the identity provider. Unauthenticated for login's
+	// reason -- this is how a caller gets a credential -- and guarded by the
+	// IdP: a credential comes out of the poll only after somebody approved at
+	// the IdP's device page and the binding accepted who they were. The poll
+	// token is 256 bits and names one pending sign-in. See api/device.go.
+	r.HandleFunc("/api/silo/v1/auth/device", api.DeviceStartHandler).Methods("POST")
+	r.HandleFunc("/api/silo/v1/auth/device/poll", api.DevicePollHandler).Methods("POST")
 	// The administrative page. Unauthenticated because it carries no data: it
 	// is a form and two empty tables, and every number on it arrives from a
 	// fetch the browser makes with a credential the person typed in. Gating the

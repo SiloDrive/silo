@@ -312,6 +312,8 @@ are registered there too, but are authenticated: see the lane note above.
 | DELETE | `/api/silo/v1/account/credentials/{id}` | Revoke one of them → `200 {"revoked": 1}`, with `"current": true` when it was the caller's own, which is allowed. `404` — not `403` — for an id that is unknown, another account's, or the spent invite; the three are deliberately indistinguishable. No write permission needed |
 | POST | `/api/silo/v1/auth/setup` | **No auth**, because it is the request that creates the first account — there is nothing to authenticate it against yet. `{"email":…,"password":…,"setup_token":…}` → `201 {"token":…}`, login's shape exactly. The address and password are the operator's choice; the setup token, printed at boot and by `silo setup-token`, is what proves they own the host. `401` for a wrong *or* malformed token, indistinguishably; `409` once any account exists. Guarded by `setup_required` above rather than by trying it |
 | POST | `/api/silo/v1/auth/redeem` | **No auth**, for setup's reason: the account this activates opens no lane until it does. `{"invite_token":…,"password":…}` → `201 {"token":…}`, login's shape. The invite binds the address — there is no `email` field, and delivery to that inbox is the verification — and the password is the redeemer's choice, or an `authKey` when `"client_kdf_params"` is sent alongside, exactly as on `auth/password`. `401` for a token that is malformed, unknown, withdrawn or lapsed, indistinguishably; `409` for one already redeemed. Publish key material next, with the session this hands back. Feature name `invites` |
+| POST | `/api/silo/v1/auth/device` | **No auth**, for login's reason. Starts a sign-in through the identity provider: the enrolment half of a login request — `{"kind":…,"client_name":…,"client_id":…,"perm":…,"scope":…}`, `client_name` required — and no address or password, because the IdP is who the person proves themselves to. → `200 {"user_code","verification_uri","verification_uri_complete","poll_token","interval","expires_in"}`. Show the code and the URL (or open `verification_uri_complete` locally, or render it as a QR code); keep the `poll_token`, which is the only thing that collects the result. The client never speaks to the IdP. `404` when this server has no IdP configured, `409` while it has not been set up, `429` past ten starts a minute from one address, `503` when the IdP cannot be reached or too many sign-ins are pending. Feature name `oidc` |
+| POST | `/api/silo/v1/auth/device/poll` | **No auth**; the 256-bit `poll_token` is the guard. `{"poll_token":…}`. Poll at `interval` seconds. `202` still waiting for the person; `429` with `Retry-After` for polling faster than that; `200 {"credential","expires_at","email"}` — the enrolment response, **once** — when they approved and the server accepted who they are; `403` when they denied it at the IdP or the server refused the identity, with a body written for the person (no account and no invite, a disabled account, an address outside the allowed domains, an address the IdP did not vouch for); `410` when it expired, was already collected, or never existed. A `403` or `410` ends the sign-in; start again |
 | POST | `/api/silo/v1/auth/kdf` | **No auth.** `{"email":…}` → the argon2id parameters that address's password is stretched under, client-side. Never `404`: an address with no account gets plausible, stable, per-address parameters, so this cannot be used to ask which addresses exist |
 | GET | `/api/silo/v1/account` | `{"account_id","email"}` — who this credential belongs to. Behind any credential; nothing here is a secret. It answers before enrolment, which `account/keys` does not, and that is what it is for: `store.WrapIdentity` binds the `account_id`, so a client cannot wrap an identity key until it knows one |
 | GET | `/api/silo/v1/account/keys` | The account's `account_id` — the holder its wraps are bound to — with its published X25519 public key, its wrapped identity private key, its recovery wraps and its `kdf_params`. `404` before anything is published. Readable with a `perm: "r"` credential |
@@ -1139,6 +1141,7 @@ are documented above.
 | `e2ee-libraries` | `POST /libraries` with `"e2ee": true`, `GET libraries/{id}/key` |
 | `setup` | `POST auth/setup`, and `setup_required` on `server-info` |
 | `invites` | `POST auth/redeem`, and the admin invite routes behind it |
+| `oidc` | `POST auth/device`, `POST auth/device/poll` — **only when the server has an identity provider configured** |
 | `shares` | `GET`/`POST libraries/{id}/shares`, `DELETE …/shares/{principal}` |
 | `history` | `GET commits`, `GET entries/{path}?at=`, `GET entries/{path}?type=history` |
 | `entries-ranges` | `QUERY entries/{path}` — the manifest and the chunks covering a byte range, one framed response |
@@ -1146,8 +1149,10 @@ are documented above.
 | `notifications-credential` | subscribe with no `jwt_token` |
 | `notifications-account` | subscribe with `{"account": true}`, and `account-update` |
 
-The last three are conditional on `option.EnableNotification`; every other name
-is a property of the build.
+`oidc` is conditional on `[oidc]` being configured — not on the IdP answering,
+so a client shows the sign-in screen during an outage and reports the outage
+when it meets it. The last three are conditional on `option.EnableNotification`.
+Every other name is a property of the build.
 
 Check `notifications-credential` before subscribing without a `jwt_token`.
 This is the one place where guessing wrong is expensive rather than merely

@@ -18,6 +18,7 @@ import (
 	"github.com/SiloDrive/silo/fileserver/dbutil"
 	"github.com/SiloDrive/silo/fileserver/invite"
 	"github.com/SiloDrive/silo/fileserver/notif"
+	"github.com/SiloDrive/silo/fileserver/oidc/bind"
 	"github.com/SiloDrive/silo/fileserver/option"
 	"github.com/SiloDrive/silo/fileserver/setup"
 	"github.com/SiloDrive/silo/fileserver/share"
@@ -54,6 +55,7 @@ func serveTestAPI(t *testing.T) string {
 	admin.Init(siloPair.Read, siloPair.Write)
 	setup.Init(siloPair.Read, siloPair.Write)
 	invite.Init(siloPair.Read, siloPair.Write)
+	bind.Init(siloPair.Write)
 
 	// serveHandler rather than the bare router, so a wire test exercises the
 	// stack the server actually runs.

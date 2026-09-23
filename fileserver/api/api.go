@@ -15,6 +15,7 @@ import (
 	"github.com/SiloDrive/silo/fileserver/libmgr"
 	"github.com/SiloDrive/silo/fileserver/middleware"
 	"github.com/SiloDrive/silo/fileserver/notif"
+	"github.com/SiloDrive/silo/fileserver/oidc"
 	"github.com/SiloDrive/silo/fileserver/option"
 	"github.com/SiloDrive/silo/fileserver/setup"
 	"github.com/SiloDrive/silo/fileserver/share"
@@ -206,6 +207,15 @@ func features() []string {
 		// client checking for "entries-query" would have been told it was
 		// there.
 		"entries-ranges", // QUERY entries/{path} {"ranges":[[offset,length],…]}
+	}
+	// Signing in through the identity provider. Conditional, like
+	// notifications, and on the configuration rather than on the IdP
+	// answering: a client that sees the name shows "sign in with your
+	// organisation" as its first screen, and should do so during an outage
+	// and report the outage when it meets it. A client that does not see it
+	// collects an address and password.
+	if oidc.Enabled() {
+		f = append(f, "oidc") // POST auth/device, POST auth/device/poll
 	}
 	if option.EnableNotification {
 		f = append(f, "notifications") // WS /notification

@@ -371,6 +371,9 @@ print their own.
 | `SILO_TRUST_PROXY_HEADERS` | Believe `X-Forwarded-For` / `X-Real-Ip` — **set this behind a reverse proxy** | `false` |
 | `SILO_TRUSTED_PROXY_HOPS` | How many proxies stand in front, deciding which `X-Forwarded-For` entry is the client's. Raise it only if something sits in front of your proxy: too high reads an entry the client wrote | `1` |
 | `SILO_ALLOW_USER_CREATE_LIBRARY` | Let accounts with the `user` role create libraries (`[libraries] allow_user_create_library`). `false` is the curated install: only an admin makes libraries, and everybody else syncs what they are shared. Never applies to an admin, and never promotes a guest | `true` |
+| `SILO_OIDC_ISSUER`, `SILO_OIDC_CLIENT_ID`, `SILO_OIDC_CLIENT_SECRET` | Sign in through an OpenID Connect identity provider (`[oidc]`), using the device flow: the client shows a code, the person approves at the IdP. All three or none. The IdP must support RFC 8628 (Authentik, Keycloak, Okta, Entra, Auth0 do). Password login stays on. See [`docs/plans/oidc.md`](docs/plans/oidc.md) | — (off) |
+| `SILO_OIDC_ACCOUNTS` | Who an IdP sign-in may become. `link`: accounts that already exist, matched by verified address, and invited addresses. `create`: `link`, plus a new account for anyone else the IdP signs in. `isolated`: a new account per identity and never a match by address, for an IdP whose address claims cannot be believed | `link` |
+| `SILO_OIDC_ALLOWED_DOMAINS` | Comma-separated domains whose addresses may sign in through the IdP. Required for `create` or `isolated` against Google or multi-tenant Entra, where anyone can have an account | — (any) |
 | `SILO_SENTRY_DSN` | Send errors, panics and request timings to Sentry, [Splat](https://github.com/dkam/splat) or GlitchTip (`SENTRY_DSN` also works) | — (send nothing) |
 | `SILO_SENTRY_ENVIRONMENT` | Environment name on reported events | `production` |
 | `SILO_SENTRY_RELEASE` | Release name on reported events | `silo@<version>` |
