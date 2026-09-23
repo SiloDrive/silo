@@ -1407,7 +1407,7 @@ sessions would introduce a class of vulnerability it currently cannot have.
 1. Client → Silo   POST /api/silo/v1/device/code
                    { client_name: "SiloDrive 1.2 (macOS)", perm: "r" }
 
-2. Silo   → IdP    POST /oauth/device_authorization  (client_secret_post + PKCE)
+2. Silo   → IdP    POST /oauth/device_authorization  (client_secret_post)
    IdP    → Silo   user_code, verification_uri, device_code, interval, expires_in
 
 3. Silo   → Client { user_code, verification_uri, verification_uri_complete,
@@ -1473,12 +1473,17 @@ Deliberately not used:
 SILO_OIDC_ISSUER=https://id.example.com
 SILO_OIDC_CLIENT_ID=silo
 SILO_OIDC_CLIENT_SECRET=...
-SILO_OIDC_TRUSTED=1     # this issuer's verified addresses may claim an account
+SILO_OIDC_ACCOUNTS=link           # link | create | isolated
+SILO_OIDC_ALLOWED_DOMAINS=example.com
 ```
 
-Silo is a confidential client and authenticates with `client_secret_post`, with
-PKCE (S256) on every flow: it costs a SHA-256 and closes code interception
-independently of secret confidentiality. Every endpoint comes from
+Silo is a confidential client and authenticates with `client_secret_post` at
+both the device endpoint and the token endpoint — RFC 8628 § 3.1 requires it at
+the first as well, and `golang.org/x/oauth2` does not send it there unless
+told. There is no PKCE in the device grant: RFC 7636 protects an authorization
+code on its way back through a redirect, and this flow has neither; the device
+code never leaves Silo. PKCE belongs to the authorization-code fallback, if that
+is ever built. Every endpoint comes from
 `/.well-known/openid-configuration` — hardcoding those URLs is how integrations
 break on an IdP upgrade.
 
@@ -1494,8 +1499,7 @@ nobody able to administer the server; resolve it with `silo user passwd` on the
 host rather than a standing exception for admin accounts. Anyone who can run the
 CLI already owns the data directory, so it grants nothing they did not have.
 
-Dependencies: `github.com/coreos/go-oidc/v3` and `golang.org/x/oauth2`, neither
-in `go.mod`. They cover discovery, JWKS fetching and rotation, and ID token
+Dependencies: `github.com/coreos/go-oidc/v3` and `golang.org/x/oauth2`. They cover discovery, JWKS fetching and rotation, and ID token
 verification — three things that are subtly wrong when hand-rolled.
 
 ### Binding an external identity to a Silo account
@@ -1504,11 +1508,19 @@ verification — three things that are subtly wrong when hand-rolled.
 
 1. Look up `(iss, sub)`. Found → that account. Done.
 2. Not found, `email_verified` is true, and the address is in `AccountEmail` →
-   link `(iss, sub)` to that account. **Only when the issuer is trusted**
-   (`SILO_OIDC_TRUSTED`): against an IdP you do not control this is account
-   takeover by whoever can set an email claim. Against your own, it is the
-   difference between a working system and a support ticket.
-3. Otherwise → provision `Account`, `AccountEmail`, `AccountIdentity`.
+   link `(iss, sub)` to that account. **Only under a policy that believes the
+   issuer's addresses** (`link` or `create`, not `isolated`): against an IdP
+   where somebody other than the owner can set an address, this is account
+   takeover by whoever sets it. Against your own, it is the difference between
+   a working system and a support ticket.
+3. Otherwise → provision `Account`, `AccountEmail`, `AccountIdentity` — only
+   under `create` or `isolated`, and never when the address turns out to be
+   taken: `account.Create` returns the existing account for a taken address,
+   and trusting that answer would be step 2 with none of step 2's checks.
+
+The full rules, including invites, disabled accounts and the domain list, are
+[`plans/oidc.md`](plans/oidc.md) § Who gets an account, and
+`fileserver/oidc/bind` implements them.
 
 Never key on an address alone, and never treat an unverified address as
 identifying.

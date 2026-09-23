@@ -176,6 +176,24 @@ func ByID(ctx context.Context, id ID) (*Account, error) {
 		selectAccount+" WHERE a.id = ? AND e.is_primary = 1", id))
 }
 
+// ByEmailTx is ByEmail inside a transaction the caller holds.
+func ByEmailTx(ctx context.Context, tx *sql.Tx, email string) (*Account, error) {
+	norm := Normalize(email)
+	if norm == "" {
+		return nil, ErrNotFound
+	}
+	return scanOne(tx.QueryRowContext(ctx, selectAccount+" WHERE e.email = ?", norm))
+}
+
+// ByIDTx is ByID inside a transaction the caller holds.
+func ByIDTx(ctx context.Context, tx *sql.Tx, id ID) (*Account, error) {
+	if id.IsZero() {
+		return nil, ErrNotFound
+	}
+	return scanOne(tx.QueryRowContext(ctx,
+		selectAccount+" WHERE a.id = ? AND e.is_primary = 1", id))
+}
+
 // Create makes an account for an address, or reports that one already exists.
 //
 // It is the only way an account comes into being, so it is also the only place
@@ -339,12 +357,21 @@ func PasswordHash(ctx context.Context, email string) (ID, string, error) {
 //
 // An address nobody holds has not arrived, and says so without an error.
 func Arrived(ctx context.Context, email string) (bool, error) {
+	return arrivedIn(ctx, readDB, email)
+}
+
+// ArrivedTx is Arrived inside a transaction the caller holds.
+func ArrivedTx(ctx context.Context, tx *sql.Tx, email string) (bool, error) {
+	return arrivedIn(ctx, tx, email)
+}
+
+func arrivedIn(ctx context.Context, q rowQuerier, email string) (bool, error) {
 	norm := Normalize(email)
 	if norm == "" {
 		return false, nil
 	}
 	var arrived bool
-	err := readDB.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM AccountPassword WHERE account_id = e.account_id)
 		     OR EXISTS (SELECT 1 FROM AccountIdentity WHERE account_id = e.account_id)
 		 FROM AccountEmail e WHERE e.email = ?`, norm).Scan(&arrived)
@@ -463,6 +490,60 @@ func SetActive(ctx context.Context, id ID, active bool) error {
 	if _, err := writeDB.ExecContext(ctx,
 		"UPDATE Account SET is_active = ? WHERE id = ?", active, id); err != nil {
 		return fmt.Errorf("setting an account active: %v", err)
+	}
+	return nil
+}
+
+// IdentityTx returns the account an external identity is linked to, or
+// ErrNotFound.
+//
+// The pair is the key, never the subject alone: a subject is only meaningful
+// beside the issuer that minted it, and two IdPs are free to mint the same one.
+func IdentityTx(ctx context.Context, tx *sql.Tx, issuer, subject string) (ID, error) {
+	var id ID
+	err := tx.QueryRowContext(ctx,
+		"SELECT account_id FROM AccountIdentity WHERE issuer = ? AND subject = ?",
+		issuer, subject).Scan(&id)
+	if err == sql.ErrNoRows {
+		return Zero, ErrNotFound
+	}
+	if err != nil {
+		return Zero, fmt.Errorf("looking up an identity: %v", err)
+	}
+	return id, nil
+}
+
+// LinkIdentityTx records that an external identity is this account.
+//
+// A plain INSERT: the primary key is what decides two links racing for one
+// identity, and losing that race has to fail the caller's transaction rather
+// than leave the identity pointing wherever the loser wanted.
+func LinkIdentityTx(ctx context.Context, tx *sql.Tx, issuer, subject string, id ID) error {
+	if issuer == "" || subject == "" {
+		return fmt.Errorf("refusing to link an identity with no issuer or subject")
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO AccountIdentity (issuer, subject, account_id, ctime) VALUES (?, ?, ?, ?)",
+		issuer, subject, id, time.Now().Unix()); err != nil {
+		return fmt.Errorf("linking an identity: %v", err)
+	}
+	return nil
+}
+
+// ActivateTx switches an account on with a role, inside a transaction the
+// caller holds. It is what claiming a tombstone is: the role a tombstone was
+// minted with is provisional, and whatever activates it settles it.
+func ActivateTx(ctx context.Context, tx *sql.Tx, id ID, role Role) error {
+	if _, err := ParseRole(string(role)); err != nil {
+		return fmt.Errorf("refusing to activate an account: %v", err)
+	}
+	res, err := tx.ExecContext(ctx,
+		"UPDATE Account SET is_active = 1, role = ? WHERE id = ?", role, id)
+	if err != nil {
+		return fmt.Errorf("activating an account: %v", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

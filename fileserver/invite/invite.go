@@ -284,6 +284,49 @@ func Redeem(ctx context.Context, token string) (*Invite, error) {
 	return inv, nil
 }
 
+// SpendForAddressTx spends the newest outstanding invite for an address, inside
+// a transaction the caller holds, and returns it. ErrNotFound means there was
+// none: never minted, already redeemed, withdrawn or lapsed.
+//
+// It is Redeem for a person who proved the address some other way. An invite
+// is delivered to an inbox so that redeeming it proves the redeemer reads that
+// mail; an identity provider asserting the address as verified proves the same
+// thing, and the invite's role and single use still apply. What it does not do
+// is activate anything -- the caller holds the account and the transaction, and
+// activation belongs with the link it is part of.
+//
+// The spend is the same conditional write Redeem's is, so an invite link
+// clicked at the same moment an IdP login lands admits one of them.
+func SpendForAddressTx(ctx context.Context, tx *sql.Tx, email string) (*Invite, error) {
+	email = account.Normalize(email)
+	now := time.Now().Unix()
+	var inv Invite
+	err := tx.QueryRowContext(ctx,
+		`SELECT i.credential_id, i.email, i.role, c.account_id, i.created_by, i.ctime
+		 FROM Invite i JOIN Credential c ON c.id = i.credential_id
+		 WHERE i.email = ? AND i.redeemed_at IS NULL
+		   AND (c.expires_at IS NULL OR c.expires_at > ?)
+		 ORDER BY i.ctime DESC LIMIT 1`, email, now).
+		Scan(&inv.CredentialID, &inv.Email, &inv.Role, &inv.AccountID, &inv.CreatedBy, &inv.Ctime)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("finding an invite for %s: %v", email, err)
+	}
+	res, err := tx.ExecContext(ctx,
+		"UPDATE Invite SET redeemed_at = ? WHERE credential_id = ? AND redeemed_at IS NULL",
+		now, inv.CredentialID)
+	if err != nil {
+		return nil, fmt.Errorf("spending an invite: %v", err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return nil, ErrSpent
+	}
+	inv.RedeemedAt = now
+	return &inv, nil
+}
+
 // refuseEnrolled reports an address whose person has already arrived.
 //
 // Arrival is a password row or an identity row: see account.Arrived for why a
