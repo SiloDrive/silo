@@ -37,7 +37,6 @@ import (
 	"github.com/SiloDrive/silo/fileserver/option"
 	"github.com/SiloDrive/silo/fileserver/setup"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/oauth2"
 )
 
 // maxPendingDeviceFlows bounds what starting logins can cost: each pending one
@@ -247,7 +246,7 @@ func DeviceStartHandler(w http.ResponseWriter, r *http.Request) {
 
 // waitForApproval is the goroutine behind one pending login: it waits out the
 // IdP, decides the account, and records the outcome for the client's poll.
-func waitForApproval(ctx context.Context, client *oidc.Client, da *oauth2.DeviceAuthResponse, f *deviceFlow) {
+func waitForApproval(ctx context.Context, client *oidc.Client, da *oidc.Pending, f *deviceFlow) {
 	claims, err := client.Wait(ctx, da)
 	if err != nil {
 		f.mu.Lock()

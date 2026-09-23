@@ -288,3 +288,19 @@ func TestConfigureClearsAPreviousConfiguration(t *testing.T) {
 		t.Error("OIDC is still enabled after a configuration with none")
 	}
 }
+
+// Clinch requires PKCE of a confidential client by default, device grant
+// included. PKCE protects nothing here -- there is no redirect and the device
+// code never leaves Silo -- but refusing to send it would make every such
+// operator untick a box, and it costs a SHA-256.
+func TestAnIdPThatRequiresPKCEIsSatisfied(t *testing.T) {
+	idp := oidctest.New(t)
+	idp.RequirePKCE = true
+	claims, err := login(t, idp, client(t, idp), oidctest.Identity{Subject: "sub-1"})
+	if err != nil {
+		t.Fatalf("a flow against an IdP requiring PKCE: %v", err)
+	}
+	if claims.Subject != "sub-1" {
+		t.Errorf("subject = %q", claims.Subject)
+	}
+}

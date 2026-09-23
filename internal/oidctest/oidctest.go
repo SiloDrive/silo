@@ -22,6 +22,8 @@ package oidctest
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -75,6 +77,11 @@ type IdP struct {
 	Interval  int
 	ExpiresIn time.Duration
 
+	// RequirePKCE refuses a device authorization with no S256 code_challenge,
+	// and a token request whose code_verifier does not match it. Clinch does
+	// this by default for confidential clients, device grant included.
+	RequirePKCE bool
+
 	srv     *httptest.Server
 	key     *rsa.PrivateKey
 	foreign *rsa.PrivateKey
@@ -89,6 +96,7 @@ type IdP struct {
 }
 
 type flow struct {
+	challenge  string
 	deviceCode string
 	userCode   string
 	expires    time.Time
@@ -254,10 +262,20 @@ func (idp *IdP) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	challenge := r.PostFormValue("code_challenge")
+	if challenge != "" && r.PostFormValue("code_challenge_method") != "S256" {
+		oauthError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
 	idp.mu.Lock()
 	defer idp.mu.Unlock()
+	if idp.RequirePKCE && challenge == "" {
+		oauthError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
 	idp.started++
 	f := &flow{
+		challenge:  challenge,
 		deviceCode: randomHex(16),
 		userCode:   strings.ToUpper(randomHex(2) + "-" + randomHex(2)),
 		expires:    time.Now().Add(idp.ExpiresIn),
@@ -289,6 +307,11 @@ func (idp *IdP) token(w http.ResponseWriter, r *http.Request) {
 	idp.tokenCalls++
 	f, ok := idp.flows[r.PostFormValue("device_code")]
 	if !ok {
+		idp.mu.Unlock()
+		oauthError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+	if f.challenge != "" && s256(r.PostFormValue("code_verifier")) != f.challenge {
 		idp.mu.Unlock()
 		oauthError(w, http.StatusBadRequest, "invalid_grant")
 		return
@@ -386,6 +409,11 @@ func (idp *IdP) sign(id Identity) (string, error) {
 		return "", err
 	}
 	return jws.CompactSerialize()
+}
+
+func s256(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func hasScope(scopes, want string) bool {

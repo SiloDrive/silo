@@ -299,22 +299,39 @@ func (c *Client) ctx(ctx context.Context) context.Context {
 	return context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 }
 
+// Pending is a device flow the IdP has started: what to show the person, and
+// the PKCE verifier Wait has to send back.
+type Pending struct {
+	*oauth2.DeviceAuthResponse
+	verifier string
+}
+
 // Start asks the IdP for a device code.
 //
 // The client secret is sent here explicitly. golang.org/x/oauth2's DeviceAuth
 // sends client_id alone, but a confidential client authenticates at the device
 // endpoint as at the token endpoint (RFC 8628 § 3.1), and an IdP enforcing that
 // refuses the request without it.
-func (c *Client) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, error) {
+//
+// So is a PKCE challenge, and not because it protects anything. PKCE guards an
+// authorization code on its way back through a redirect; the device grant has
+// no redirect, and the device code never leaves Silo. But Clinch requires it
+// of a confidential client by default, device grant included, and an IdP that
+// does not want it ignores it -- so sending it costs a SHA-256 and spares every
+// such operator a setting to find.
+func (c *Client) Start(ctx context.Context) (*Pending, error) {
 	cfg, _, err := c.ready()
 	if err != nil {
 		return nil, err
 	}
-	da, err := cfg.DeviceAuth(c.ctx(ctx), oauth2.SetAuthURLParam("client_secret", c.Config.ClientSecret))
+	verifier := oauth2.GenerateVerifier()
+	da, err := cfg.DeviceAuth(c.ctx(ctx),
+		oauth2.SetAuthURLParam("client_secret", c.Config.ClientSecret),
+		oauth2.S256ChallengeOption(verifier))
 	if err != nil {
 		return nil, fmt.Errorf("%w: device authorization: %v", ErrUnavailable, err)
 	}
-	return da, nil
+	return &Pending{DeviceAuthResponse: da, verifier: verifier}, nil
 }
 
 // Claims is what a verified ID token says about the person. Nothing else of the
@@ -334,12 +351,12 @@ type Claims struct {
 // The polling itself is golang.org/x/oauth2's: interval, slow_down and
 // authorization_pending are the subtle parts of RFC 8628, and getting them
 // wrong is how a relying party gets rate-limited by its IdP.
-func (c *Client) Wait(ctx context.Context, da *oauth2.DeviceAuthResponse) (*Claims, error) {
+func (c *Client) Wait(ctx context.Context, p *Pending) (*Claims, error) {
 	cfg, verifier, err := c.ready()
 	if err != nil {
 		return nil, err
 	}
-	tok, err := cfg.DeviceAccessToken(c.ctx(ctx), da)
+	tok, err := cfg.DeviceAccessToken(c.ctx(ctx), p.DeviceAuthResponse, oauth2.VerifierOption(p.verifier))
 	if err != nil {
 		var re *oauth2.RetrieveError
 		switch {

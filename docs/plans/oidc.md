@@ -38,14 +38,14 @@ has since been deactivated, would redeem into their account. Arrival has to
 become *a password row or an `AccountIdentity` row*, in one function that both
 the invite package and the OIDC binding ask.
 
-**3. PKCE is not part of the device grant.** auth.md says "client_secret_post
-+ PKCE" for this flow. RFC 7636 protects an authorization code on its way back
-through a redirect; RFC 8628 has no redirect and no code, and the device code
-itself never leaves Silo. Some IdPs accept a `code_challenge` on the device
-authorization request and most ignore it. Silo authenticates to the token
-endpoint with its client secret, which is the protection that applies. PKCE
-stays in the design for the authorization-code fallback, where it means
-something. auth.md is corrected in the same change as step 3.
+**3. PKCE is not part of the device grant — and Silo sends it anyway.**
+auth.md said "client_secret_post + PKCE" for this flow. RFC 7636 protects an
+authorization code on its way back through a redirect; RFC 8628 has no
+redirect and no code, and the device code never leaves Silo. So it protects
+nothing here. But Clinch, the IdP this is first tested against, requires a
+challenge of every confidential client by default, device grant included, and
+an IdP that does not want one ignores it. Sending it costs a SHA-256 and spares
+every such operator a setting to find, so Silo sends one; auth.md says why.
 
 ## Decisions
 

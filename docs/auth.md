@@ -1480,10 +1480,11 @@ SILO_OIDC_ALLOWED_DOMAINS=example.com
 Silo is a confidential client and authenticates with `client_secret_post` at
 both the device endpoint and the token endpoint — RFC 8628 § 3.1 requires it at
 the first as well, and `golang.org/x/oauth2` does not send it there unless
-told. There is no PKCE in the device grant: RFC 7636 protects an authorization
-code on its way back through a redirect, and this flow has neither; the device
-code never leaves Silo. PKCE belongs to the authorization-code fallback, if that
-is ever built. Every endpoint comes from
+told. PKCE protects nothing in the device grant — RFC 7636 guards an authorization
+code on its way back through a redirect, this flow has neither, and the device
+code never leaves Silo — but Silo sends an S256 challenge anyway: Clinch
+requires one of a confidential client by default, device grant included, and
+an IdP that does not want it ignores it. Every endpoint comes from
 `/.well-known/openid-configuration` — hardcoding those URLs is how integrations
 break on an IdP upgrade.
 
