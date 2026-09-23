@@ -211,6 +211,32 @@ var (
 	AllowUserCreateLibrary = true
 )
 
+// OIDCOptions is the identity provider Silo logs people in through, as
+// configured. It is carried raw: fileserver/oidc validates it and refuses to
+// start on a configuration it cannot use, because refusing here would be a
+// log.Fatalf no test can watch -- see loadServerSection.
+type OIDCOptions struct {
+	Issuer       string
+	ClientID     string
+	ClientSecret string
+	Accounts     string // link | create | isolated; empty is link
+	// AllowedDomains is the list as written. It is parsed by fileserver/oidc
+	// rather than here because a list this loader could not read would keep
+	// the default, and the default is no restriction at all: a typo in the
+	// one setting that narrows who gets in would widen it, with a warning.
+	AllowedDomains string
+}
+
+// Configured reports whether any of the three connection settings is set.
+// Any one of them is somebody trying to configure OIDC, so a partial set is a
+// mistake to report rather than a feature left off.
+func (o OIDCOptions) Configured() bool {
+	return o.Issuer != "" || o.ClientID != "" || o.ClientSecret != ""
+}
+
+// OIDC is read from [oidc] and then from SILO_OIDC_*, which wins.
+var OIDC OIDCOptions
+
 // resetToDefaults puts every option back to its compiled default, so that what
 // a load produces depends on the config file and the environment and not on
 // whatever a previous load left behind.
@@ -254,6 +280,7 @@ func resetToDefaults() {
 	ProfilePassword = ""
 	LogLevel = ""
 	utils.TrustedProxyHops = utils.DefaultTrustedProxyHops
+	OIDC = OIDCOptions{}
 	initStorageDefaults()
 }
 
@@ -411,7 +438,27 @@ func LoadFileServerOptions(configFile string) {
 		DiskReserve = fromSection(section, "reserve", DiskReserve, quotaSize)
 	}
 
+	loadOIDC(sectionOf(config, "oidc"))
+
 	LogLevel = fromEnv("SILO_LOG_LEVEL", LogLevel, parseText)
+}
+
+// loadOIDC reads [oidc] and then the environment. The secret belongs in the
+// environment -- the packages install silo.env 0600 for exactly this -- but the
+// file is accepted too, for the same reason every other key is.
+func loadOIDC(section *ini.Section) {
+	if section != nil {
+		OIDC.Issuer = fromSection(section, "issuer", OIDC.Issuer, parseText)
+		OIDC.ClientID = fromSection(section, "client_id", OIDC.ClientID, parseText)
+		OIDC.ClientSecret = fromSection(section, "client_secret", OIDC.ClientSecret, parseText)
+		OIDC.Accounts = fromSection(section, "accounts", OIDC.Accounts, parseText)
+		OIDC.AllowedDomains = fromSection(section, "allowed_domains", OIDC.AllowedDomains, parseText)
+	}
+	OIDC.Issuer = fromEnv("SILO_OIDC_ISSUER", OIDC.Issuer, parseText)
+	OIDC.ClientID = fromEnv("SILO_OIDC_CLIENT_ID", OIDC.ClientID, parseText)
+	OIDC.ClientSecret = fromEnv("SILO_OIDC_CLIENT_SECRET", OIDC.ClientSecret, parseText)
+	OIDC.Accounts = fromEnv("SILO_OIDC_ACCOUNTS", OIDC.Accounts, parseText)
+	OIDC.AllowedDomains = fromEnv("SILO_OIDC_ALLOWED_DOMAINS", OIDC.AllowedDomains, parseText)
 }
 
 // sectionOf returns a section, or nil when the file has no such section.

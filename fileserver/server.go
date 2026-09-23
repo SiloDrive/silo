@@ -27,6 +27,7 @@ import (
 	"github.com/SiloDrive/silo/fileserver/middleware"
 	"github.com/SiloDrive/silo/fileserver/notif"
 	"github.com/SiloDrive/silo/fileserver/objstore"
+	"github.com/SiloDrive/silo/fileserver/oidc"
 	"github.com/SiloDrive/silo/fileserver/option"
 	"github.com/SiloDrive/silo/fileserver/serversecret"
 	"github.com/SiloDrive/silo/fileserver/setup"
@@ -392,6 +393,13 @@ func Run(args []string) error {
 	// objstore.Configure.
 	if err := objstore.Configure(option.Packs); err != nil {
 		log.Fatalf("Failed to apply the [storage] settings: %v", err)
+	}
+	// A configuration that cannot work refuses to start here, rather than
+	// starting and failing every IdP login in a way that reads as an outage.
+	// It makes no request: an IdP that is down at boot must not keep the file
+	// server down with it. See oidc.Client.
+	if err := oidc.Configure(option.OIDC); err != nil {
+		return err
 	}
 	// After the options, so the flag beats both SILO_HOST and the config file.
 	// Same precedence as -d over SILO_DATA_DIR: what you typed on this command
