@@ -136,9 +136,10 @@ func Mint(ctx context.Context, o Options) (*Invite, string, error) {
 	// it with a password of your choosing. Nothing in that sequence needed the
 	// passwords capability, and what came back was the account entire.
 	//
-	// A password is the mark of arrival. A tombstone has none -- that is the
-	// whole of what makes it a placeholder -- so this refuses exactly the rows
-	// that belong to somebody and none of the ones that do not.
+	// Arrival is the mark: a password, or an identity somebody signed in
+	// through. A tombstone has neither -- that is the whole of what makes it a
+	// placeholder -- so this refuses exactly the rows that belong to somebody
+	// and none of the ones that do not.
 	if err := refuseEnrolled(ctx, email); err != nil {
 		return nil, "", err
 	}
@@ -285,19 +286,19 @@ func Redeem(ctx context.Context, token string) (*Invite, error) {
 
 // refuseEnrolled reports an address whose person has already arrived.
 //
-// A password row is the mark of arrival: a tombstone has none, which is the
-// whole of what makes it a placeholder rather than a way in. account.ErrNotFound
-// from this lookup means either no account or no password, and both are the
-// answer this wants -- the address is free.
+// Arrival is a password row or an identity row: see account.Arrived for why a
+// password alone stopped being the answer. A tombstone has neither, which is
+// the whole of what makes it a placeholder rather than a way in, and an
+// address nobody holds is free.
 func refuseEnrolled(ctx context.Context, email string) error {
-	switch _, _, err := account.PasswordHash(ctx, email); {
-	case err == nil:
-		return fmt.Errorf("%w: %s", ErrEnrolledAccount, email)
-	case errors.Is(err, account.ErrNotFound):
-		return nil
-	default:
+	arrived, err := account.Arrived(ctx, email)
+	if err != nil {
 		return err
 	}
+	if arrived {
+		return fmt.Errorf("%w: %s", ErrEnrolledAccount, email)
+	}
+	return nil
 }
 
 // Revoke withdraws an outstanding invite.

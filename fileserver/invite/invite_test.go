@@ -547,3 +547,58 @@ func TestRevokingOneCredentialOfAnInvitedAccount(t *testing.T) {
 		t.Errorf("the Invite row did not survive: %v", err)
 	}
 }
+
+// linkIdentity gives an account an external identity the way OIDC login will,
+// written directly because nothing in the server can write one yet.
+func linkIdentity(t *testing.T, pair *dbutil.DBPair, id account.ID) {
+	t.Helper()
+	if _, err := pair.Write.ExecContext(ctx(t),
+		"INSERT INTO AccountIdentity (issuer, subject, account_id, ctime) VALUES (?, ?, ?, ?)",
+		"https://id.example.com", "subject-1", id, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The takeover TestAnInviteCannotClaimTheAddressOfAnEnrolledAccount closed,
+// reopened by an account that arrived through an identity provider.
+//
+// refuseEnrolled told a person from a placeholder by whether the account had a
+// password. An account that signs in through the IdP has none -- that is the
+// reason AccountPassword is its own table -- so, once it was switched off, it
+// read as a tombstone, and an invite for its address redeemed into it with a
+// password of the redeemer's choosing.
+func TestAnInviteCannotClaimAnAccountThatArrivedThroughAnIdentityProvider(t *testing.T) {
+	pair := testDB(t)
+	by := admin(t)
+
+	id, _, err := account.Create(ctx(t), "sso@example.com", "", account.RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkIdentity(t, pair, id)
+	if err := account.SetActive(ctx(t), id, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := Mint(ctx(t), Options{Email: "sso@example.com", Role: account.RoleAdmin, By: by}); !errors.Is(err, ErrEnrolledAccount) {
+		t.Errorf("minting for a deactivated identity-only account = %v, want ErrEnrolledAccount", err)
+	}
+}
+
+// And the same with the order reversed: the invite was minted while the
+// address was a tombstone, its person then arrived through the IdP and was
+// switched off. Redeem asks again for exactly this reason.
+func TestRedeemingRefusesAnAccountThatArrivedThroughAnIdentityProviderSinceMinting(t *testing.T) {
+	pair := testDB(t)
+	by := admin(t)
+
+	inv, token, err := Mint(ctx(t), Options{Email: "sso@example.com", Role: account.RoleUser, By: by})
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkIdentity(t, pair, inv.AccountID)
+
+	if _, err := Redeem(ctx(t), token); !errors.Is(err, ErrEnrolledAccount) {
+		t.Errorf("redeeming into an account that arrived through an IdP = %v, want ErrEnrolledAccount", err)
+	}
+}

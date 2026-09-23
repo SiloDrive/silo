@@ -326,6 +326,37 @@ func PasswordHash(ctx context.Context, email string) (ID, string, error) {
 	return id, hash, nil
 }
 
+// Arrived reports whether the account holding an address belongs to a person,
+// as opposed to being a tombstone minted for that address before anybody came.
+//
+// A password row used to be the whole answer, and callers asked PasswordHash.
+// It stops being the whole answer the moment an account can sign in through an
+// identity provider, because such an account has no password -- which is the
+// reason AccountPassword is a table of its own. Asked that way, a deactivated
+// identity-only account read as a tombstone, and a tombstone is what an invite
+// may claim. So arrival is either row, and it is asked here rather than in each
+// caller, where the second half would be the one somebody forgot.
+//
+// An address nobody holds has not arrived, and says so without an error.
+func Arrived(ctx context.Context, email string) (bool, error) {
+	norm := Normalize(email)
+	if norm == "" {
+		return false, nil
+	}
+	var arrived bool
+	err := readDB.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM AccountPassword WHERE account_id = e.account_id)
+		     OR EXISTS (SELECT 1 FROM AccountIdentity WHERE account_id = e.account_id)
+		 FROM AccountEmail e WHERE e.email = ?`, norm).Scan(&arrived)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("asking whether %s has arrived: %v", norm, err)
+	}
+	return arrived, nil
+}
+
 // SetPassword stores a hash for an account, replacing any it already had, and
 // clears the client KDF parameters beside it.
 //
